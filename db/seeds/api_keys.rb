@@ -10,12 +10,14 @@ setup_key = ENV["SETUP_API_KEY"].to_s.strip
 first_name = ENV["SETUP_FIRSTNAME"].to_s.strip
 last_name = ENV["SETUP_LASTNAME"].to_s.strip
 currency = ENV["SETUP_CURRENCY"].to_s.strip.upcase
+country = ENV["SETUP_COUNTRY"].to_s.strip.upcase
 
 # Apply defaults
 setup_key = "auto" if setup_key.blank? || setup_key == "auto"
 first_name = "Admin" if first_name.blank?
 last_name = "User" if last_name.blank?
 currency = "USD" if currency.blank?
+country = "US" if country.blank?
 
 # Validate password
 unless password.present? && password.length >= 8
@@ -42,6 +44,14 @@ rescue Money::Currency::UnknownCurrencyError
   return
 end
 
+# Validate country: 2-letter ISO 3166-1 alpha-2 code (e.g. US, NZ, GB).
+# Family.country is a freeform string column, so we only enforce shape — the
+# downstream code paths in Sure tolerate any code that follows that format.
+unless country.match?(/\A[A-Z]{2}\z/)
+  puts "ERROR: SETUP_COUNTRY must be a 2-letter ISO 3166-1 alpha-2 code (e.g. US, NZ, GB)"
+  return
+end
+
 # Generate or validate API key
 if setup_key == "auto"
   api_key_value = ApiKey.generate_secure_key
@@ -64,7 +74,8 @@ begin
     # Create family first since user belongs_to :family is required
     family = Family.create!(
       name: "#{email.split('@').first.capitalize} Family",
-      currency: currency
+      currency: currency,
+      country: country
     )
 
     user = User.create!(
