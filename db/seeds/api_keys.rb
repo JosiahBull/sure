@@ -7,9 +7,15 @@ return unless ENV["SETUP_ADMIN_EMAIL"].present?
 email = ENV["SETUP_ADMIN_EMAIL"].to_s.strip.downcase
 password = ENV["SETUP_ADMIN_PASSWORD"].to_s
 setup_key = ENV["SETUP_API_KEY"].to_s.strip
+first_name = ENV["SETUP_FIRSTNAME"].to_s.strip
+last_name = ENV["SETUP_LASTNAME"].to_s.strip
+currency = ENV["SETUP_CURRENCY"].to_s.strip.upcase
 
-# Default to auto-generate if not provided or set to "auto"
+# Apply defaults
 setup_key = "auto" if setup_key.blank? || setup_key == "auto"
+first_name = "Admin" if first_name.blank?
+last_name = "User" if last_name.blank?
+currency = "USD" if currency.blank?
 
 # Validate password
 unless password.present? && password.length >= 8
@@ -20,6 +26,12 @@ end
 # Validate email format
 unless email.match?(URI::MailTo::EMAIL_REGEXP)
   puts "ERROR: SETUP_ADMIN_EMAIL must be a valid email address"
+  return
+end
+
+# Validate currency: must be a 3-letter ISO 4217 code recognised by the Money gem.
+unless currency.match?(/\A[A-Z]{3}\z/) && Money::Currency.find(currency)
+  puts "ERROR: SETUP_CURRENCY must be a valid 3-letter ISO 4217 currency code (e.g. USD, NZD)"
   return
 end
 
@@ -43,15 +55,18 @@ begin
     puts "Found existing user: #{email}"
   else
     # Create family first since user belongs_to :family is required
-    family = Family.create!(name: "#{email.split('@').first.capitalize} Family")
+    family = Family.create!(
+      name: "#{email.split('@').first.capitalize} Family",
+      currency: currency
+    )
 
     user = User.create!(
       email: email,
       password: password,
       password_confirmation: password,
       family: family,
-      first_name: "Admin",
-      last_name: "User",
+      first_name: first_name,
+      last_name: last_name,
       role: :admin,
       onboarded_at: Time.current
     )
