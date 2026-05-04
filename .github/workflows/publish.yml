@@ -98,6 +98,11 @@ jobs:
           if [[ $GITHUB_EVENT_NAME == "schedule" ]]; then
             BASE_CONFIG+=$'\n'"type=schedule,pattern=nightly"
             BASE_CONFIG+=$'\n'"type=schedule,pattern=nightly-{{date 'ddd'}}"
+          elif [[ $GITHUB_EVENT_NAME == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            # Also re-tag :nightly on every push to main so consumers pulling
+            # `:nightly` pick up changes immediately, instead of waiting up to
+            # 24h for the schedule cron (which has historically been flaky).
+            BASE_CONFIG+=$'\n'"type=raw,value=nightly"
           elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG_NAME="${GITHUB_REF#refs/tags/}"
             if [[ "$TAG_NAME" == v* ]]; then
