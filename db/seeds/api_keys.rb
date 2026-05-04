@@ -30,8 +30,15 @@ unless email.match?(URI::MailTo::EMAIL_REGEXP)
 end
 
 # Validate currency: must be a 3-letter ISO 4217 code recognised by the Money gem.
-unless currency.match?(/\A[A-Z]{3}\z/) && Money::Currency.find(currency)
-  puts "ERROR: SETUP_CURRENCY must be a valid 3-letter ISO 4217 currency code (e.g. USD, NZD)"
+# Money::Currency.new raises Money::Currency::UnknownCurrencyError for unknown codes.
+unless currency.match?(/\A[A-Z]{3}\z/)
+  puts "ERROR: SETUP_CURRENCY must be a 3-letter ISO 4217 code (e.g. USD, NZD)"
+  return
+end
+begin
+  Money::Currency.new(currency)
+rescue Money::Currency::UnknownCurrencyError
+  puts "ERROR: SETUP_CURRENCY '#{currency}' is not a recognised ISO 4217 currency code"
   return
 end
 
