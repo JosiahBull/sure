@@ -102,11 +102,45 @@ class UserTest < ActiveSupport::TestCase
     user = users(:family_member)
     user.setup_mfa!
     user.enable_mfa!
+    user.webauthn_credentials.create!(
+      nickname: "YubiKey",
+      credential_id: "credential-id",
+      public_key: "public-key"
+    )
+
     user.disable_mfa!
 
     assert_nil user.otp_secret
     assert_not user.otp_required?
     assert_empty user.otp_backup_codes
+    assert_empty user.webauthn_credentials
+  end
+
+  test "ensure_webauthn_id! generates a stable credential user handle" do
+    user = users(:family_member)
+    assert_nil user.webauthn_id
+
+    webauthn_id = user.ensure_webauthn_id!
+
+    assert webauthn_id.present?
+    assert_equal webauthn_id, user.reload.ensure_webauthn_id!
+  end
+
+  test "webauthn_enabled? requires MFA and at least one credential" do
+    user = users(:family_member)
+    assert_not user.webauthn_enabled?
+
+    user.setup_mfa!
+    user.enable_mfa!
+    assert_not user.webauthn_enabled?
+
+    user.webauthn_credentials.create!(
+      nickname: "Touch ID",
+      credential_id: "touch-id-credential",
+      public_key: "public-key"
+    )
+
+    assert user.webauthn_enabled?
   end
 
   test "verify_otp? validates TOTP codes" do
@@ -242,6 +276,89 @@ class UserTest < ActiveSupport::TestCase
     assert user.ui_layout_dashboard?
     assert user.show_sidebar?
     assert user.show_ai_sidebar?
+  end
+
+  test "new member defaults show_ai_sidebar to false when AI is not available" do
+    Rails.application.config.app_mode.stubs(:self_hosted?).returns(true)
+    previous = Setting.openai_access_token
+    with_env_overrides OPENAI_ACCESS_TOKEN: nil, EXTERNAL_ASSISTANT_URL: nil, EXTERNAL_ASSISTANT_TOKEN: nil do
+      Setting.openai_access_token = nil
+      user = User.new(
+        family: families(:empty),
+        email: "member-no-ai@example.com",
+        password: "Password1!",
+        password_confirmation: "Password1!",
+        role: :member
+      )
+      assert user.save, user.errors.full_messages.to_sentence
+      assert_not user.show_ai_sidebar?
+    end
+  ensure
+    Setting.openai_access_token = previous
+  end
+
+  test "new admin defaults show_ai_sidebar to true even when AI is not available" do
+    Rails.application.config.app_mode.stubs(:self_hosted?).returns(true)
+    previous = Setting.openai_access_token
+    with_env_overrides OPENAI_ACCESS_TOKEN: nil, EXTERNAL_ASSISTANT_URL: nil, EXTERNAL_ASSISTANT_TOKEN: nil do
+      Setting.openai_access_token = nil
+      user = User.new(
+        family: families(:empty),
+        email: "admin-no-ai@example.com",
+        password: "Password1!",
+        password_confirmation: "Password1!",
+        role: :admin
+      )
+      assert user.save, user.errors.full_messages.to_sentence
+      assert user.show_ai_sidebar?
+    end
+  ensure
+    Setting.openai_access_token = previous
+  end
+
+  test "new member defaults show_ai_sidebar to true when AI is available" do
+    Rails.application.config.app_mode.stubs(:self_hosted?).returns(false)
+    user = User.new(
+      family: families(:empty),
+      email: "member-with-ai@example.com",
+      password: "Password1!",
+      password_confirmation: "Password1!",
+      role: :member
+    )
+    assert user.save, user.errors.full_messages.to_sentence
+    assert user.show_ai_sidebar?
+  end
+
+  test "new guest defaults show_ai_sidebar to false when AI is not available" do
+    Rails.application.config.app_mode.stubs(:self_hosted?).returns(true)
+    previous = Setting.openai_access_token
+    with_env_overrides OPENAI_ACCESS_TOKEN: nil, EXTERNAL_ASSISTANT_URL: nil, EXTERNAL_ASSISTANT_TOKEN: nil do
+      Setting.openai_access_token = nil
+      user = User.new(
+        family: families(:empty),
+        email: "guest-no-ai@example.com",
+        password: "Password1!",
+        password_confirmation: "Password1!",
+        role: :guest
+      )
+      assert user.save, user.errors.full_messages.to_sentence
+      assert_not user.show_ai_sidebar?
+    end
+  ensure
+    Setting.openai_access_token = previous
+  end
+
+  test "new guest defaults show_ai_sidebar to false when AI is available" do
+    Rails.application.config.app_mode.stubs(:self_hosted?).returns(false)
+    user = User.new(
+      family: families(:empty),
+      email: "guest-with-ai@example.com",
+      password: "Password1!",
+      password_confirmation: "Password1!",
+      role: :guest
+    )
+    assert user.save, user.errors.full_messages.to_sentence
+    assert_not user.show_ai_sidebar?
   end
 
   test "update_dashboard_preferences handles concurrent updates atomically" do

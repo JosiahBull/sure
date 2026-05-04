@@ -310,6 +310,72 @@ class Family::DataExporterTest < ActiveSupport::TestCase
     end
   end
 
+  test "exports valuation kind in NDJSON" do
+    valuation_entry = @account.entries.create!(
+      date: Date.parse("2020-04-01"),
+      amount: 1000,
+      name: "Opening balance",
+      currency: "USD",
+      entryable: Valuation.new(kind: "opening_anchor")
+    )
+
+    zip_data = @exporter.generate_export
+
+    Zip::File.open_buffer(zip_data) do |zip|
+      ndjson_content = zip.read("all.ndjson")
+      valuation_lines = ndjson_content.split("\n").select do |line|
+        JSON.parse(line)["type"] == "Valuation"
+      end
+
+      assert valuation_lines.any?
+
+      valuation_data = valuation_lines
+        .map { |line| JSON.parse(line) }
+        .find { |line| line.dig("data", "entry_id") == valuation_entry.id }
+
+      assert valuation_data
+      assert_equal "opening_anchor", valuation_data["data"]["kind"]
+    end
+  end
+
+  test "exports recurring transactions in NDJSON" do
+    merchant = @family.merchants.create!(name: "Internet Provider")
+    recurring_transaction = @family.recurring_transactions.create!(
+      account: @account,
+      merchant: merchant,
+      amount: -89.99,
+      currency: "USD",
+      expected_day_of_month: 14,
+      last_occurrence_date: Date.parse("2024-01-14"),
+      next_expected_date: Date.parse("2024-02-14"),
+      status: "active",
+      occurrence_count: 6,
+      manual: true,
+      expected_amount_min: -95,
+      expected_amount_max: -85,
+      expected_amount_avg: -89.99
+    )
+
+    zip_data = @exporter.generate_export
+
+    Zip::File.open_buffer(zip_data) do |zip|
+      ndjson_content = zip.read("all.ndjson")
+      recurring_data = ndjson_content
+        .split("\n")
+        .map { |line| JSON.parse(line) }
+        .find { |line| line["type"] == "RecurringTransaction" && line.dig("data", "id") == recurring_transaction.id }
+
+      assert recurring_data
+      assert_equal recurring_transaction.id, recurring_data["data"]["id"]
+      assert_equal @account.id, recurring_data["data"]["account_id"]
+      assert_equal merchant.id, recurring_data["data"]["merchant_id"]
+      assert_equal "-89.99", BigDecimal(recurring_data["data"]["amount"].to_s).to_s("F")
+      assert_equal "active", recurring_data["data"]["status"]
+      assert_equal true, recurring_data["data"]["manual"]
+      assert_not recurring_data["data"].key?("family_id")
+    end
+  end
+
   test "only exports rules from the specified family" do
     # Create a rule for another family that should NOT be exported
     other_rule = @other_family.rules.build(

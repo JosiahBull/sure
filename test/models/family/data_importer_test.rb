@@ -31,6 +31,157 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     assert_equal "Depository", account.accountable_type
   end
 
+  test "imports non-destructive account status from ndjson" do
+    ndjson = build_ndjson([
+      {
+        type: "Account",
+        data: {
+          id: "disabled-account",
+          name: "Closed Checking",
+          balance: "0.00",
+          currency: "USD",
+          accountable_type: "Depository",
+          status: "disabled"
+        }
+      }
+    ])
+
+    importer = Family::DataImporter.new(@family, ndjson)
+    result = importer.import!
+
+    account = result[:accounts].first
+    assert_equal "Closed Checking", account.name
+    assert_equal "disabled", account.status
+  end
+
+  test "does not import pending deletion account status" do
+    ndjson = build_ndjson([
+      {
+        type: "Account",
+        data: {
+          id: "pending-delete-account",
+          name: "Pending Delete Checking",
+          balance: "0.00",
+          currency: "USD",
+          accountable_type: "Depository",
+          status: "pending_deletion"
+        }
+      }
+    ])
+
+    importer = Family::DataImporter.new(@family, ndjson)
+    result = importer.import!
+
+    account = result[:accounts].first
+    assert_equal "Pending Delete Checking", account.name
+    assert_equal "active", account.status
+  end
+
+  test "dates synthesized account opening balance before oldest imported activity" do
+    ndjson = build_ndjson([
+      {
+        type: "Account",
+        data: {
+          id: "acct-1",
+          name: "Main Account",
+          balance: "5000",
+          currency: "USD",
+          accountable_type: "Depository"
+        }
+      },
+      {
+        type: "Transaction",
+        data: {
+          id: "txn-1",
+          account_id: "acct-1",
+          date: "2020-04-02",
+          amount: "-50.00",
+          name: "Grocery Store",
+          currency: "USD"
+        }
+      }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    account = @family.accounts.find_by!(name: "Main Account")
+    opening_anchor = account.valuations.opening_anchor.first
+
+    assert_not_nil opening_anchor
+    assert_equal Date.parse("2020-04-01"), opening_anchor.entry.date
+  end
+
+  test "clamps explicit account opening balance dates before imported activity" do
+    ndjson = build_ndjson([
+      {
+        type: "Account",
+        data: {
+          id: "acct-1",
+          name: "Main Account",
+          balance: "5000",
+          currency: "USD",
+          accountable_type: "Depository",
+          opening_balance_date: "2020-04-02"
+        }
+      },
+      {
+        type: "Transaction",
+        data: {
+          id: "txn-1",
+          account_id: "acct-1",
+          date: "2020-04-02",
+          amount: "-50.00",
+          name: "Grocery Store",
+          currency: "USD"
+        }
+      }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    account = @family.accounts.find_by!(name: "Main Account")
+    opening_anchor = account.valuations.opening_anchor.first
+
+    assert_not_nil opening_anchor
+    assert_equal Date.parse("2020-04-01"), opening_anchor.entry.date
+  end
+
+  test "imports explicit opening anchor valuations without synthesizing duplicates" do
+    ndjson = build_ndjson([
+      {
+        type: "Account",
+        data: {
+          id: "acct-1",
+          name: "Main Account",
+          balance: "5000",
+          currency: "USD",
+          accountable_type: "Depository"
+        }
+      },
+      {
+        type: "Valuation",
+        data: {
+          id: "val-opening",
+          account_id: "acct-1",
+          date: "2020-04-01",
+          amount: "5000",
+          name: "Opening balance",
+          currency: "USD",
+          kind: "opening_anchor"
+        }
+      }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    account = @family.accounts.find_by!(name: "Main Account")
+    opening_anchors = account.valuations.opening_anchor.to_a
+
+    assert_equal 1, opening_anchors.count
+    assert_equal Date.parse("2020-04-01"), opening_anchors.first.entry.date
+    assert_equal 5000.0, opening_anchors.first.entry.amount.to_f
+  end
+
   test "imports categories with parent relationships" do
     ndjson = build_ndjson([
       {
@@ -101,6 +252,176 @@ class Family::DataImporterTest < ActiveSupport::TestCase
 
     merchant = @family.merchants.find_by(name: "Amazon")
     assert_not_nil merchant
+  end
+
+  test "imports recurring transactions with remapped account and merchant references" do
+    ndjson = build_ndjson([
+      {
+        type: "Account",
+        data: {
+          id: "acct-1",
+          name: "Main Checking",
+          balance: "5000",
+          currency: "USD",
+          accountable_type: "Depository"
+        }
+      },
+      {
+        type: "Merchant",
+        data: {
+          id: "merchant-1",
+          name: "Internet Provider"
+        }
+      },
+      {
+        type: "RecurringTransaction",
+        data: {
+          id: "recurring-1",
+          account_id: "acct-1",
+          merchant_id: "merchant-1",
+          amount: "-89.99",
+          currency: "USD",
+          expected_day_of_month: 14,
+          last_occurrence_date: "2024-01-14",
+          next_expected_date: "2024-02-14",
+          status: "active",
+          occurrence_count: 6,
+          manual: true,
+          expected_amount_min: "-95.00",
+          expected_amount_max: "-85.00",
+          expected_amount_avg: "-89.99"
+        }
+      }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    recurring_transaction = @family.recurring_transactions.first
+    assert_not_nil recurring_transaction
+    assert_equal "Main Checking", recurring_transaction.account.name
+    assert_equal "Internet Provider", recurring_transaction.merchant.name
+    assert_equal(-89.99, recurring_transaction.amount.to_f)
+    assert_equal "USD", recurring_transaction.currency
+    assert_equal 14, recurring_transaction.expected_day_of_month
+    assert_equal Date.parse("2024-01-14"), recurring_transaction.last_occurrence_date
+    assert_equal Date.parse("2024-02-14"), recurring_transaction.next_expected_date
+    assert_equal "active", recurring_transaction.status
+    assert_equal 6, recurring_transaction.occurrence_count
+    assert_equal true, recurring_transaction.manual
+    assert_equal(-95.0, recurring_transaction.expected_amount_min.to_f)
+    assert_equal(-85.0, recurring_transaction.expected_amount_max.to_f)
+    assert_equal(-89.99, recurring_transaction.expected_amount_avg.to_f)
+  end
+
+  test "imports recurring transactions with unknown status fallback" do
+    ndjson = build_ndjson([
+      {
+        type: "Account",
+        data: {
+          id: "acct-1",
+          name: "Main Checking",
+          balance: "5000",
+          currency: "USD",
+          accountable_type: "Depository"
+        }
+      },
+      {
+        type: "Merchant",
+        data: {
+          id: "merchant-1",
+          name: "Streaming Service"
+        }
+      },
+      {
+        type: "RecurringTransaction",
+        data: {
+          id: "recurring-1",
+          account_id: "acct-1",
+          merchant_id: "merchant-1",
+          amount: "-15.99",
+          currency: "USD",
+          expected_day_of_month: "8",
+          last_occurrence_date: "2024-01-08",
+          next_expected_date: "2024-02-08",
+          status: "paused",
+          occurrence_count: 2
+        }
+      }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    recurring_transaction = @family.recurring_transactions.first
+    assert_not_nil recurring_transaction
+    assert_equal 8, recurring_transaction.expected_day_of_month
+    assert_equal Date.parse("2024-01-08"), recurring_transaction.last_occurrence_date
+    assert_equal Date.parse("2024-02-08"), recurring_transaction.next_expected_date
+    assert_equal "active", recurring_transaction.status
+  end
+
+  test "skips recurring transactions with missing recurrence dates" do
+    ndjson = build_ndjson([
+      {
+        type: "RecurringTransaction",
+        data: {
+          id: "recurring-1",
+          amount: "-15.99",
+          currency: "USD",
+          expected_day_of_month: "8",
+          last_occurrence_date: nil,
+          status: "active",
+          occurrence_count: 2,
+          name: "Streaming Service"
+        }
+      }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    assert_equal 0, @family.recurring_transactions.count
+  end
+
+  test "skips recurring transactions when referenced account is missing" do
+    ndjson = build_ndjson([
+      {
+        type: "RecurringTransaction",
+        data: {
+          id: "recurring-1",
+          account_id: "missing-account",
+          amount: "-89.99",
+          currency: "USD",
+          expected_day_of_month: 14,
+          last_occurrence_date: "2024-01-14",
+          next_expected_date: "2024-02-14",
+          status: "active",
+          name: "Internet Provider"
+        }
+      }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    assert_equal 0, @family.recurring_transactions.count
+  end
+
+  test "skips recurring transactions with blank expected day" do
+    ndjson = build_ndjson([
+      {
+        type: "RecurringTransaction",
+        data: {
+          id: "recurring-1",
+          amount: "-89.99",
+          currency: "USD",
+          expected_day_of_month: "",
+          status: "active",
+          name: "Internet Provider"
+        }
+      }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    assert_equal 0, @family.recurring_transactions.count
   end
 
   test "imports transactions with references" do
@@ -236,6 +557,39 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     valuation = account.valuations.joins(:entry).find_by(entries: { name: "Updated valuation" })
     assert_not_nil valuation
     assert_equal 520000.0, valuation.entry.amount.to_f
+  end
+
+  test "imports unknown valuation kinds as reconciliations" do
+    ndjson = build_ndjson([
+      {
+        type: "Account",
+        data: {
+          id: "prop-acct-1",
+          name: "Property",
+          balance: "500000",
+          currency: "USD",
+          accountable_type: "Property"
+        }
+      },
+      {
+        type: "Valuation",
+        data: {
+          id: "val-1",
+          account_id: "prop-acct-1",
+          date: "2024-06-15",
+          amount: "520000",
+          name: "Updated valuation",
+          currency: "USD",
+          kind: "legacy_unknown_kind"
+        }
+      }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    account = @family.accounts.find_by!(name: "Property")
+    valuation = account.valuations.joins(:entry).find_by!(entries: { name: "Updated valuation" })
+    assert_equal "reconciliation", valuation.kind
   end
 
   test "imports budgets" do
@@ -492,6 +846,23 @@ class Family::DataImporterTest < ActiveSupport::TestCase
       },
       # Transaction
       {
+        type: "RecurringTransaction",
+        data: {
+          id: "recurring-grocery",
+          account_id: "acct-main",
+          merchant_id: "merchant-1",
+          amount: "-75.50",
+          currency: "USD",
+          expected_day_of_month: 15,
+          last_occurrence_date: "2024-01-15",
+          next_expected_date: "2024-02-15",
+          status: "active",
+          occurrence_count: 3,
+          manual: false
+        }
+      },
+      # Transaction
+      {
         type: "Transaction",
         data: {
           id: "txn-1",
@@ -554,6 +925,7 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     assert_equal 1, @family.categories.count
     assert_equal 1, @family.tags.count
     assert_equal 1, @family.merchants.count
+    assert_equal 1, @family.recurring_transactions.count
     assert_equal 1, @family.transactions.count
     assert_equal 1, @family.budgets.count
     assert_equal 1, @family.budget_categories.count
@@ -564,6 +936,10 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     assert_equal "Food", transaction.category.name
     assert_equal "Local Grocery", transaction.merchant.name
     assert_equal "Weekly", transaction.tags.first.name
+
+    recurring_transaction = @family.recurring_transactions.first
+    assert_equal "Main Checking", recurring_transaction.account.name
+    assert_equal "Local Grocery", recurring_transaction.merchant.name
   end
 
   private
