@@ -9,7 +9,8 @@
     "build:fast": "vite build",
     "preview": "vite preview --port 4173 --strictPort",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:expr": "node scripts/expr-roundtrip.mjs"
   },
   "dependencies": {
     "@sure/client": "workspace:*",

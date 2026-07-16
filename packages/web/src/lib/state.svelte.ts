@@ -13,6 +13,8 @@ export const RANGES: { key: RangeKey; label: string }[] = [
 export const filters = $state({
   range: "last_12m" as RangeKey,
   includeOneOff: false,
+  /** Brush-selected window (Grafana-style zoom) that overrides `range` while set. */
+  custom: null as { from: string; to: string } | null,
 });
 
 function iso(d: Date): string {
@@ -39,4 +41,10 @@ export function rangeDates(range: RangeKey = filters.range): { from?: string; to
     case "all":
       return {};
   }
+}
+
+/** Effective query window: an active brush selection wins over the preset range. */
+export function activeRange(): { from?: string; to?: string } {
+  if (filters.custom) return { from: filters.custom.from, to: filters.custom.to };
+  return rangeDates(filters.range);
 }

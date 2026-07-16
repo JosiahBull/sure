@@ -1,4 +1,7 @@
 packages:
-  - "packages/web"
-  - "packages/client"
-  - "packages/api-tests"
+  - packages/web
+  - packages/client
+  - packages/api-tests
+
+onlyBuiltDependencies:
+  - esbuild

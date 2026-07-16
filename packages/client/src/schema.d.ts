@@ -2269,7 +2269,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List the per-transaction changes made by a run. */
+        /** List the per-transaction changes made by a run (with transaction detail for display). */
         get: {
             parameters: {
                 query?: never;
@@ -2286,7 +2286,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["RuleApplication"][];
+                        "application/json": components["schemas"]["RuleApplicationDetail"][];
                     };
                 };
             };
@@ -3309,29 +3309,32 @@ export interface components {
             created_at: string;
             updated_at: string;
         };
-        RuleApplication: {
+        /**
+         * @description One change from a run, enriched with the transaction it touched, for the audit log's
+         *     expandable diff. Category/merchant ids are resolved to names by the client; the
+         *     before/after ids are enough to render "Groceries → Dining" style changes.
+         */
+        RuleApplicationDetail: {
             /** Format: int64 */
             id: number;
             /** Format: int64 */
-            rule_run_id: number;
-            /** Format: int64 */
-            rule_id?: number | null;
-            /** Format: int64 */
             transaction_id: number;
+            posted_at: string;
+            description: string;
+            /** Format: int64 */
+            amount_minor: number;
+            currency_code: string;
             /** Format: int64 */
             prev_category_id?: number | null;
             /** Format: int64 */
             new_category_id?: number | null;
             /** Format: int64 */
-            prev_categorized_by_rule_id?: number | null;
-            prev_one_off?: boolean | null;
-            new_one_off?: boolean | null;
-            /** Format: int64 */
             prev_merchant_id?: number | null;
             /** Format: int64 */
             new_merchant_id?: number | null;
+            prev_one_off?: boolean | null;
+            new_one_off?: boolean | null;
             reverted: boolean;
-            created_at: string;
         };
         RulePreview: {
             /** Format: int64 */

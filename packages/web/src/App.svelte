@@ -42,7 +42,14 @@
       </a>
       {#if showFilters}
         <div class="row" style="gap:10px">
-          <select class="select" style="width:auto" bind:value={filters.range} aria-label="Time range">
+          {#if filters.custom}
+            <button class="btn zoom-out" onclick={() => (filters.custom = null)}
+                    title="Clear the zoomed range and return to the selected preset">
+              ⤢ Reset zoom
+            </button>
+          {/if}
+          <select class="select" style="width:auto" bind:value={filters.range}
+                  onchange={() => (filters.custom = null)} aria-label="Time range">
             {#each RANGES as r}
               <option value={r.key}>{r.label}</option>
             {/each}
@@ -115,5 +122,10 @@
   }
   .navlink:hover {
     color: var(--text);
+  }
+  .zoom-out {
+    padding: 6px 11px;
+    font-size: 13px;
+    white-space: nowrap;
   }
 </style>

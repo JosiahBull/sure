@@ -13,7 +13,8 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 pub use sure_dal::rules::{
-    PreviewMatch, PreviewRequest, Rule, RuleApplication, RulePreview, RuleRun, RunResult, SaveRule,
+    PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RunResult,
+    SaveRule,
 };
 use sure_dal::rules::{PlannedApplication, TxCtx};
 
@@ -142,13 +143,13 @@ pub async fn list_runs(State(st): State<AppState>) -> AppResult<Json<Vec<RuleRun
     Ok(Json(sure_dal::rules::list_runs(&st.db).await?))
 }
 
-/// List the per-transaction changes made by a run.
+/// List the per-transaction changes made by a run (with transaction detail for display).
 #[utoipa::path(get, path = "/api/rules/runs/{run_id}", tag = "rules", params(("run_id" = i64, Path,)),
-    responses((status = 200, body = [RuleApplication])))]
+    responses((status = 200, body = [RuleApplicationDetail])))]
 pub async fn run_applications(
     State(st): State<AppState>,
     Path(run_id): Path<i64>,
-) -> AppResult<Json<Vec<RuleApplication>>> {
+) -> AppResult<Json<Vec<RuleApplicationDetail>>> {
     Ok(Json(sure_dal::rules::run_applications(&st.db, run_id).await?))
 }
 

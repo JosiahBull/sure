@@ -2,6 +2,18 @@
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, type Schemas } from "../lib/api";
   import { RANGES, rangeDates, type RangeKey } from "../lib/state.svelte";
+  import { router } from "../lib/router.svelte";
+
+  // Deep links via the hash query, read once at mount:
+  //   ?tx=<id>        highlight & scroll to a transaction (from the rules audit log)
+  //   ?category=<id>  filter to a category and its whole subtree (from the overview pies)
+  //   ?range=<key>    apply a preset time range
+  const params = new URLSearchParams(router.path.split("?")[1] ?? "");
+  const num = (v: string | null) => (v && Number.isFinite(Number(v)) ? Number(v) : null);
+  const isRangeKey = (v: string | null): v is RangeKey => !!v && RANGES.some((r) => r.key === v);
+  const highlightId = num(params.get("tx"));
+  const paramCategory = num(params.get("category"));
+  const paramRange = params.get("range");
 
   type Tx = Schemas["Transaction"];
   type Account = Schemas["Account"];
@@ -16,10 +28,14 @@
   let error = $state<string | null>(null);
 
   let accountId = $state<number | "">("");
-  let categoryId = $state<number | "">("");
+  let categoryId = $state<number | "">(paramCategory ?? "");
   let search = $state("");
   let includeOneOff = $state(true);
-  let range = $state<RangeKey>("last_90");
+  // A range from the link wins; otherwise a deep-linked transaction can be any date, so
+  // widen to "all" to be sure it's loaded.
+  let range = $state<RangeKey>(
+    isRangeKey(paramRange) ? paramRange : highlightId != null ? "all" : "last_90",
+  );
 
   let showAdd = $state(false);
   let form = $state({
@@ -34,12 +50,42 @@
 
   const accountName = $derived(new Map(accounts.map((a) => [a.id, a.name])));
   const currencyOf = $derived(new Map(accounts.map((a) => [a.id, a.currency_code])));
+
+  const childrenOf = $derived.by(() => {
+    const m = new Map<number, number[]>();
+    for (const c of categories) {
+      if (c.parent_id != null) {
+        const arr = m.get(c.parent_id);
+        if (arr) arr.push(c.id);
+        else m.set(c.parent_id, [c.id]);
+      }
+    }
+    return m;
+  });
+  // The selected category plus all its descendants. The category breakdown rolls up to
+  // top-level categories, so filtering by a parent must include its children's transactions.
+  const categorySubtree = $derived.by(() => {
+    if (categoryId === "") return null;
+    const out = new Set<number>([categoryId]);
+    const stack = [categoryId];
+    while (stack.length) {
+      for (const ch of childrenOf.get(stack.pop()!) ?? []) {
+        if (!out.has(ch)) {
+          out.add(ch);
+          stack.push(ch);
+        }
+      }
+    }
+    return out;
+  });
+
   const visible = $derived(
-    search
-      ? txns.filter((t) =>
-          `${t.description} ${t.merchant ?? ""}`.toLowerCase().includes(search.toLowerCase())
-        )
-      : txns
+    txns.filter((t) => {
+      if (categorySubtree && !(t.category_id != null && categorySubtree.has(t.category_id))) return false;
+      if (search && !`${t.description} ${t.merchant ?? ""}`.toLowerCase().includes(search.toLowerCase()))
+        return false;
+      return true;
+    })
   );
 
   async function loadRefs() {
@@ -60,7 +106,7 @@
     const { from, to } = rangeDates(range);
     const query: Record<string, unknown> = { from, to, include_one_off: includeOneOff, limit: 2000 };
     if (accountId !== "") query.account_id = accountId;
-    if (categoryId !== "") query.category_id = categoryId;
+    // Category is filtered client-side (subtree-aware) in `visible`, not on the server.
     const { data, error: e } = await api.GET("/api/transactions", { params: { query } });
     txns = data ?? [];
     if (e) error = "Failed to load transactions.";
@@ -69,11 +115,22 @@
 
   onMount(loadRefs);
   $effect(() => {
+    // Category is filtered client-side, so it isn't a reload trigger.
     accountId;
-    categoryId;
     includeOneOff;
     range;
     loadTx();
+  });
+
+  // Once the deep-linked row has rendered, scroll it into view (flash comes from CSS).
+  let didScroll = false;
+  $effect(() => {
+    void visible.length; // re-run as the rendered rows change
+    if (highlightId == null || didScroll) return;
+    const el = document.getElementById(`tx-${highlightId}`);
+    if (!el) return;
+    didScroll = true;
+    requestAnimationFrame(() => el.scrollIntoView({ block: "center", behavior: "smooth" }));
   });
 
   async function addTx() {
@@ -218,7 +275,7 @@
         </thead>
         <tbody>
           {#each visible as t (t.id)}
-            <tr>
+            <tr id={`tx-${t.id}`} class:highlight={t.id === highlightId}>
               <td class="faint small" style="white-space:nowrap">{formatDate(t.posted_at)}</td>
               <td>
                 {t.description || "—"}
@@ -267,3 +324,17 @@
     <div class="small faint" style="margin-top:10px">{visible.length} transactions</div>
   {/if}
 </section>
+
+<style>
+  /* Deep-linked transaction (e.g. from the rules audit log): a brief flash that settles
+     into a subtle persistent tint so the row stays identifiable. */
+  tr.highlight td {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    animation: tx-flash 1.8s ease-out;
+  }
+  @keyframes tx-flash {
+    from {
+      background: color-mix(in srgb, var(--accent) 34%, transparent);
+    }
+  }
+</style>

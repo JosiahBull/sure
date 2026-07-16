@@ -22,10 +22,11 @@ test("overview shows net worth, category breakdown and the money-flow sankey", a
 
 test("rules lists the seeded rule and its audit run", async ({ page }) => {
   await goto(page, "/rules");
-  await expect(page.getByText("Supermarkets → Groceries")).toBeVisible();
-  // The seed ran the rule, so the audit log has at least one row.
+  // The rule name now appears both in the Active rules card and the audit log, so scope.
+  await expect(page.getByText("Supermarkets → Groceries").first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Audit log" })).toBeVisible();
-  await expect(page.getByRole("row").filter({ hasText: "rule" }).first()).toBeVisible();
+  // The seed ran the rule, so the audit log lists a run under its rule's name.
+  await expect(page.locator("table tbody")).toContainText("Supermarkets → Groceries");
   await expect(page).toHaveScreenshot("rules.png", { fullPage: true });
 });
 

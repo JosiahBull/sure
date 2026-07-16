@@ -96,6 +96,26 @@ pub struct RuleApplication {
     pub created_at: String,
 }
 
+/// One change from a run, enriched with the transaction it touched, for the audit log's
+/// expandable diff. Category/merchant ids are resolved to names by the client; the
+/// before/after ids are enough to render "Groceries → Dining" style changes.
+#[derive(Serialize, FromRow, ToSchema)]
+pub struct RuleApplicationDetail {
+    pub id: i64,
+    pub transaction_id: i64,
+    pub posted_at: String,
+    pub description: String,
+    pub amount_minor: i64,
+    pub currency_code: String,
+    pub prev_category_id: Option<i64>,
+    pub new_category_id: Option<i64>,
+    pub prev_merchant_id: Option<i64>,
+    pub new_merchant_id: Option<i64>,
+    pub prev_one_off: Option<bool>,
+    pub new_one_off: Option<bool>,
+    pub reverted: bool,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct RunResult {
     pub run_id: i64,
@@ -331,10 +351,18 @@ pub async fn list_runs(db: &Db) -> AppResult<Vec<RuleRun>> {
     )
 }
 
-/// The per-transaction changes made by a run.
-pub async fn run_applications(db: &Db, run_id: i64) -> AppResult<Vec<RuleApplication>> {
-    Ok(sqlx::query_as::<_, RuleApplication>(
-        "SELECT * FROM rule_applications WHERE rule_run_id=?1 ORDER BY id",
+/// The per-transaction changes made by a run, each joined to its transaction's current
+/// description/date/amount for display. `transaction_id` is `ON DELETE CASCADE`, so an
+/// application row can't outlive its transaction and the inner join always matches.
+pub async fn run_applications(db: &Db, run_id: i64) -> AppResult<Vec<RuleApplicationDetail>> {
+    Ok(sqlx::query_as::<_, RuleApplicationDetail>(
+        "SELECT a.id, a.transaction_id, t.posted_at, t.description, t.amount_minor, t.currency_code,
+                a.prev_category_id, a.new_category_id, a.prev_merchant_id, a.new_merchant_id,
+                a.prev_one_off, a.new_one_off, a.reverted
+         FROM rule_applications a
+         JOIN transactions t ON t.id = a.transaction_id
+         WHERE a.rule_run_id = ?1
+         ORDER BY a.id",
     )
     .bind(run_id)
     .fetch_all(db)

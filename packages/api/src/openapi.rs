@@ -113,7 +113,7 @@ use utoipa::OpenApi;
         crate::routes::rules::Rule,
         crate::routes::rules::SaveRule,
         crate::routes::rules::RuleRun,
-        crate::routes::rules::RuleApplication,
+        crate::routes::rules::RuleApplicationDetail,
         crate::routes::rules::RunResult,
         crate::routes::rules::PreviewRequest,
         crate::routes::rules::RulePreview,
