@@ -1,0 +1,35 @@
+# Keep the Docker build context small and reproducible. Everything the image needs is
+# rebuilt inside it, so build outputs, deps, and local artifacts are excluded — the
+# Dockerfile COPYs the specific source paths it wants.
+**/target
+**/node_modules
+**/dist
+**/dist-ssr
+.git
+.github
+docs
+scripts/*.mjs
+
+# Local databases and test/build artifacts
+/data
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/test-results
+**/playwright-report
+**/blob-report
+**/.playwright
+**/.playwright-mcp
+**/.server.pid
+
+# Generated (regenerated inside the image from the backend)
+packages/client/openapi.json
+
+# Editor / OS cruft and loose images
+**/.DS_Store
+.idea
+.vscode
+*.png
+*.local
+.env
+.env.*

@@ -1,0 +1,4 @@
+packages:
+  - "packages/web"
+  - "packages/client"
+  - "packages/api-tests"

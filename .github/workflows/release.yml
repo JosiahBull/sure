@@ -1,0 +1,101 @@
+name: Release
+
+# Cut a release when a version tag is pushed:
+#   git tag v0.1.0 && git push origin v0.1.0
+# The tag must match the version declared in Cargo.toml / package.json (enforced by the
+# `versions` gate in the reusable checks workflow).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  REGISTRY: ghcr.io
+
+jobs:
+  # Run the full merge-gate suite against the tag before publishing anything. Same
+  # reusable workflow CI runs, so there is no release-only copy of any check — and on a
+  # tag the version gate also asserts the tag matches the declared version.
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  # Build the single combined image (SPA + backend) for amd64 + arm64 and push it to
+  # GHCR. arm64 is built under QEMU emulation on the amd64 runner, so this job is slow;
+  # that is the accepted cost of a multi-arch image without dedicated arm64 runners.
+  docker:
+    name: Build and push image
+    needs: [checks]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ghcr.io/<owner>/<repo>, tagged 0.1.0, 0.1, and latest. metadata-action lowercases
+      # the owner/repo for GHCR automatically.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/api/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Sequenced after the image push so the release page never advertises a tag whose
+  # image failed to build. Notes are auto-generated from commits since the previous tag.
+  github-release:
+    name: Create GitHub release
+    needs: [docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # --generate-notes walks back to the previous release tag
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag
+          # Append a pointer to the published image beneath the auto-generated notes.
+          gh release view "${GITHUB_REF_NAME}" --json body --jq .body > notes.md
+          {
+            echo
+            echo "---"
+            echo "Container image: \`${IMAGE}:${GITHUB_REF_NAME#v}\` (also tagged \`latest\`)."
+          } >> notes.md
+          gh release edit "${GITHUB_REF_NAME}" --notes-file notes.md

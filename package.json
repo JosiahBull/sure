@@ -1,0 +1,29 @@
+{
+  "name": "sure",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sure — a fast, local financial tracker (Rust + Axum + SQLite backend, Svelte SPA frontend).",
+  "packageManager": "pnpm@10.29.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,magenta \"pnpm dev:api\" \"pnpm dev:web\"",
+    "dev:api": "cargo run -p sure-api --bin sure-api",
+    "dev:web": "pnpm --filter @sure/web dev",
+    "build": "pnpm gen:client && cargo build --release && pnpm --filter @sure/web build",
+    "gen:openapi": "cargo run -p sure-api --bin gen-openapi -- packages/client/openapi.json",
+    "gen:client": "pnpm gen:openapi && pnpm --filter @sure/client generate",
+    "test": "pnpm test:api && pnpm test:web",
+    "test:api": "pnpm --filter @sure/api-tests test",
+    "test:api:check": "pnpm --filter @sure/api-tests check",
+    "test:web": "pnpm --filter @sure/web test",
+    "test:web:install": "pnpm --filter @sure/web exec playwright install chromium",
+    "seed": "node scripts/seed.mjs",
+    "lint:rust": "cargo clippy --all-targets -- -D warnings",
+    "fmt:rust": "cargo fmt --all"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

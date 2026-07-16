@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "packages/core",
+    "packages/dal",
+    "packages/providers",
+    "packages/api",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = ""
+
+# Shared dependency versions so the api crate and the e2e test crate stay in lockstep.
+[workspace.dependencies]
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors", "fs"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "chrono",
+    "macros",
+    "migrate",
+    "json",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+# NOTE: SQLite has no native NUMERIC type, so decimals (fx rates, share prices) are
+# persisted as TEXT and parsed into `Decimal` in Rust — sqlx's decimal feature targets
+# Postgres/MySQL and is intentionally not wired into the SQLite pool.
+rust_decimal = { version = "1", features = ["serde"] }
+rust_decimal_macros = "1"
+utoipa = { version = "5", features = ["axum_extras", "chrono", "decimal", "preserve_order"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+async-trait = "0.1"
+csv = "1"
+zen-expression = "0.55"
+
+# Internal crates
+sure-core = { path = "packages/core" }
+sure-dal = { path = "packages/dal" }
+sure-providers = { path = "packages/providers" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

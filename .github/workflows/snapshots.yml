@@ -1,0 +1,50 @@
+name: Update snapshots
+
+# Regenerate the committed Playwright screenshot baselines in the EXACT CI environment
+# (the same pinned Playwright image checks.yml uses), then commit them back. Run this:
+#   * once, to bootstrap the -linux.png baselines the web-tests gate needs, and
+#   * after any intentional UI change, or after bumping the @playwright/test version
+#     (update the image tag in checks.yml and here to match, then run this).
+# Trigger from the Actions tab → "Update snapshots" → Run workflow.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  web-snapshots:
+    name: Regenerate web baselines
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+    steps:
+      - uses: actions/checkout@v7
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install Rust + C toolchain
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config curl
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm gen:client
+      - name: Regenerate baselines
+        run: pnpm --filter @sure/web exec playwright test --update-snapshots
+      - name: Commit updated baselines
+        run: |
+          git add packages/web/tests/**/*.png
+          if git diff --cached --quiet; then
+            echo "No snapshot changes."
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "chore: update Playwright Linux snapshots"
+            git push
+          fi

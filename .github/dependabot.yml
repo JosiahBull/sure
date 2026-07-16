@@ -1,0 +1,48 @@
+# Dependabot opens dependency-update PRs on a schedule. Those PRs run CI (the reusable
+# checks suite); the dependabot-auto-merge workflow turns on GitHub auto-merge so a bump
+# lands only once CI is green (requires branch protection with the checks as required).
+version: 2
+updates:
+  # Rust crates across the whole Cargo workspace (Cargo.toml + Cargo.lock).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # Bundle low-risk bumps into one PR to cut noise; majors still arrive individually.
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Node/pnpm packages across the pnpm workspace (pnpm-lock.yaml).
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # The GitHub Actions used by the CI, release, and snapshot workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      github-actions:
+        patterns:
+          - "*"

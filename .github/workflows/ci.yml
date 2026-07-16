@@ -1,0 +1,17 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR branch).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # All merge gates live in the reusable checks workflow so release.yml can run the
+  # identical suite on a tag (see .github/workflows/checks.yml).
+  checks:
+    uses: ./.github/workflows/checks.yml

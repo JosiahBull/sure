@@ -1,0 +1,17 @@
+{
+  "name": "@sure/api-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end API tests: drive the real backend binary through the generated @sure/client.",
+  "scripts": {
+    "test": "playwright test",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.10.5",
+    "openapi-fetch": "^0.13.5",
+    "typescript": "^5.9.2"
+  }
+}

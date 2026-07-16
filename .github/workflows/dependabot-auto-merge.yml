@@ -1,0 +1,23 @@
+name: Dependabot auto-merge
+
+# Turn on GitHub's auto-merge for Dependabot PRs. Auto-merge waits for the required
+# status checks (the CI / checks suite, enforced by branch protection on main), so a
+# dependency bump lands automatically only if CI passes.
+on: pull_request
+
+# The default token on a Dependabot-triggered run is read-only; grant the write scopes
+# needed to enable auto-merge on the PR.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Enable auto-merge
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,38 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# Node
+node_modules
+.pnpm-store
+dist
+dist-ssr
+*.local
+.vite
+
+# SQLite databases (dev + test artifacts)
+*.db
+*.db-shm
+*.db-wal
+/data
+
+# Generated OpenAPI artifact (regenerated from the backend)
+/packages/client/openapi.json
+
+# Playwright (keep committed snapshot baselines under tests/*-snapshots/)
+/packages/web/test-results
+/packages/web/playwright-report
+/packages/web/blob-report
+/packages/web/.playwright
+/packages/web/tests/.server.pid
+/.playwright-mcp
+
+# Env / editor
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json

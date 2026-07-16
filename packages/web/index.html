@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0"
+    />
+    <meta name="theme-color" content="#0b1120" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Sure" />
+    <!-- "default" (not black-translucent): the installed-PWA status-bar style is
+         static on iOS — JS can't retint it after launch — and black-translucent
+         forces white status text with the app full-bleed underneath, which is
+         invisible on the light theme. "default" lets iOS manage contrast, so the
+         bar stays legible in both themes. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>Sure</title>
+    <!-- Resolve the saved theme before first paint to avoid a flash of the
+         wrong palette. Mirrors src/lib/theme.svelte.ts; keep colours in sync. -->
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem("sure:theme");
+          var resolved =
+            pref === "light" || pref === "dark"
+              ? pref
+              : window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light";
+          document.documentElement.setAttribute("data-theme", resolved);
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", resolved === "dark" ? "#0b1120" : "#f5f7fb");
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
