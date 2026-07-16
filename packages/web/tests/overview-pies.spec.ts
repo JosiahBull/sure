@@ -14,6 +14,8 @@ test("hovering a pie segment names it and greys the others", async ({ page }) =>
   await pie.locator('svg .seg[aria-label="Housing"]').dispatchEvent("pointerenter");
 
   await expect(pie.locator(".pie-center .cl")).toHaveText("Housing"); // centre names the segment
+  // Whole dollars, no cents — cents made the value overflow the donut hole.
+  await expect(pie.locator(".pie-center .cv")).not.toContainText(".");
   await expect(pie.locator("svg .seg.dim")).not.toHaveCount(0); // the others are dimmed
   await expect(pie.locator("svg .seg:not(.dim)")).toHaveCount(1); // only the hovered one is lit
 });
@@ -54,4 +56,33 @@ test("the legend mirrors the pie and is clickable", async ({ page }) => {
 
   await pie.locator(".legend-row", { hasText: "Housing" }).click();
   await expect(page).toHaveURL(/#\/transactions\?category=\d+/);
+});
+
+// ---- Sankey (Money flow) -------------------------------------------------------------
+// Nodes are full-width groups; drive them directly like the pie segments.
+
+test("hovering a sankey node names it and dims the unconnected flows", async ({ page }) => {
+  await goto(page, "/");
+  const flow = page.locator(".card", { hasText: "Money flow" });
+  await flow.locator("g.node", { hasText: "Housing" }).dispatchEvent("pointerenter");
+
+  await expect(flow.locator(".tip")).toContainText("Housing"); // tooltip names the node
+  // An income node isn't connected to an expense node, so it dims.
+  await expect(flow.locator("g.node", { hasText: "Income" })).toHaveAttribute("opacity", "0.25");
+});
+
+test("hovering a sankey link shows the flow and its value", async ({ page }) => {
+  await goto(page, "/");
+  const flow = page.locator(".card", { hasText: "Money flow" });
+  await flow.locator("path.link").first().dispatchEvent("pointerenter");
+  await expect(flow.locator(".tip")).toContainText("→"); // "source → target"
+});
+
+test("clicking a sankey category node opens its filtered transactions", async ({ page }) => {
+  await goto(page, "/");
+  const flow = page.locator(".card", { hasText: "Money flow" });
+  await flow.locator("g.node", { hasText: "Housing" }).dispatchEvent("click");
+
+  await expect(page).toHaveURL(/#\/transactions\?category=\d+&range=last_12m/);
+  await expect(page.locator("table tbody tr").first()).toBeVisible();
 });

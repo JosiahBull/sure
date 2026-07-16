@@ -59,6 +59,8 @@
   });
 
   const currency = $derived(breakdown?.currency ?? nw?.currency ?? "NZD");
+  // Whole-dollar money (no cents) — keeps the donut centre from overflowing on hover.
+  const money0 = (v: number) => formatMoney(v, currency).replace(/\.\d+$/, "");
   const points = $derived((nw?.points ?? []).map((p) => ({ x: p.as_of, y: p.net_worth_minor })));
   const latest = $derived(nw?.points.at(-1) ?? null);
   const first = $derived(nw?.points[0] ?? null);
@@ -164,12 +166,12 @@
               slices={panel.slices}
               size={150}
               thickness={26}
-              centerValue={formatMoney(panel.total, currency).replace(/\.\d+$/, "")}
+              centerValue={money0(panel.total)}
               centerLabel="total"
               active={hovered[pi]}
               onhover={(i) => (hovered[pi] = i)}
               onselect={(i) => goToCategory(panel.slices[i].categoryId)}
-              format={(v) => formatMoney(v, currency)}
+              format={money0}
             />
             <ul class="legend grow">
               {#each panel.slices.slice(0, 6) as s, si}
@@ -206,7 +208,12 @@
         <h2>Money flow</h2>
         <span class="muted small">income → cash flow → expenses</span>
       </div>
-      <Sankey nodes={sankey.nodes} links={sankeyLinks} />
+      <Sankey
+        nodes={sankey.nodes}
+        links={sankeyLinks}
+        format={(v) => formatMoney(v, currency)}
+        onselect={goToCategory}
+      />
     </section>
   {/if}
 </div>
