@@ -14,7 +14,7 @@
 # that keeps the slow, emulated work down to just the arm64 Rust compile.
 
 ARG RUST_VERSION=1
-ARG NODE_VERSION=22
+ARG NODE_VERSION=24
 
 # ---- Emit the OpenAPI spec (arch-independent → build once, on the native platform) --
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-bookworm AS spec

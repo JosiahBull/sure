@@ -5,7 +5,7 @@
   "description": "Sure — a fast, local financial tracker (Rust + Axum + SQLite backend, Svelte SPA frontend).",
   "packageManager": "pnpm@10.29.1",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "dev": "concurrently -n api,web -c blue,magenta \"pnpm dev:api\" \"pnpm dev:web\"",
