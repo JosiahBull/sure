@@ -8,12 +8,14 @@
   //   ?tx=<id>        highlight & scroll to a transaction (from the rules audit log)
   //   ?category=<id>  filter to a category and its whole subtree (from the overview pies)
   //   ?range=<key>    apply a preset time range
+  //   ?at=<id>        resume the scroll position around a transaction (written as the list scrolls)
   const params = new URLSearchParams(router.path.split("?")[1] ?? "");
   const num = (v: string | null) => (v && Number.isFinite(Number(v)) ? Number(v) : null);
   const isRangeKey = (v: string | null): v is RangeKey => !!v && RANGES.some((r) => r.key === v);
   const highlightId = num(params.get("tx"));
   const paramCategory = num(params.get("category"));
   const paramRange = params.get("range");
+  const paramAnchor = num(params.get("at"));
 
   type Tx = Schemas["Transaction"];
   type Account = Schemas["Account"];
@@ -110,7 +112,7 @@
     return out;
   });
 
-  const visible = $derived.by(() => {
+  const sortedFiltered = $derived.by(() => {
     const filtered = txns.filter((t) => {
       if (categorySubtree && !(t.category_id != null && categorySubtree.has(t.category_id))) return false;
       if (search && !`${t.description} ${t.merchant ?? ""}`.toLowerCase().includes(search.toLowerCase()))
@@ -125,6 +127,94 @@
       if (va > vb) return dir;
       return 0;
     });
+  });
+
+  // Virtualised, "infinite scroll" rendering: the table can easily hold thousands of rows
+  // (each with two <select> menus), which is what actually makes the page feel slow — so
+  // only a window of rows around `anchorId` is ever mounted, and it's recomputed straight
+  // from the live scroll position on every scroll event (rather than incrementally sliding
+  // step by step — that got stuck permanently the moment a step happened to be a geometric
+  // no-op, e.g. right at the top of the list, since nothing then left/re-entered to trigger
+  // the next one). The window is anchored to a transaction *id*, not a row index, so it keeps
+  // pointing at the same transactions when new ones are added/removed elsewhere in the
+  // (sorted) list — an index would silently drift. The anchor is persisted to `?at=`
+  // (debounced) so a refresh resumes near the same transactions instead of at a fixed pixel
+  // offset.
+  const RENDER_COUNT = 60;
+  const ROW_HEIGHT = 56; // estimate: converts scrolled px into an approximate row index
+  const OVERSCAN = 15; // rendered on each side of the estimated position as a scroll buffer
+
+  let anchorId = $state<number | null>(null);
+  const resolvedAnchorIndex = $derived(
+    anchorId == null ? 0 : Math.max(0, sortedFiltered.findIndex((t) => t.id === anchorId)),
+  );
+  const windowStart = $derived(Math.max(0, resolvedAnchorIndex - OVERSCAN));
+  const windowEnd = $derived(Math.min(sortedFiltered.length, windowStart + RENDER_COUNT));
+  const windowed = $derived(sortedFiltered.slice(windowStart, windowEnd));
+
+  let persistTimer: ReturnType<typeof setTimeout> | undefined;
+  function writeAnchorToUrl(id: number | null) {
+    const p = new URLSearchParams(router.path.split("?")[1] ?? "");
+    if (id == null) p.delete("at");
+    else p.set("at", String(id));
+    const base = router.path.split("?")[0];
+    const qs = p.toString();
+    history.replaceState(null, "", `#${base}${qs ? "?" + qs : ""}`);
+  }
+  function schedulePersist() {
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => writeAnchorToUrl(anchorId), 250);
+  }
+
+  // How far the table has scrolled past the viewport's top edge, converted to a row index —
+  // recomputed fresh each time, so it can't get stuck the way an incremental step could.
+  let tableEl = $state<HTMLElement | null>(null);
+  let scrollRaf: ReturnType<typeof requestAnimationFrame> | undefined;
+  function onScroll() {
+    if (scrollRaf != null) return;
+    scrollRaf = requestAnimationFrame(() => {
+      scrollRaf = undefined;
+      if (!tableEl || sortedFiltered.length === 0) return;
+      const scrolledPast = Math.max(0, -tableEl.getBoundingClientRect().top);
+      const estIndex = Math.min(sortedFiltered.length - 1, Math.floor(scrolledPast / ROW_HEIGHT));
+      const id = sortedFiltered[estIndex]?.id;
+      if (id != null && id !== anchorId) {
+        anchorId = id;
+        schedulePersist();
+      }
+    });
+  }
+  $effect(() => {
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (scrollRaf != null) cancelAnimationFrame(scrollRaf);
+      clearTimeout(persistTimer);
+    };
+  });
+
+  // Resolve the initial anchor (from a highlight deep-link or a resumed `?at=`) once the
+  // data it refers to has loaded, then let scrolling take over.
+  let didInitAnchor = false;
+  $effect(() => {
+    if (didInitAnchor || sortedFiltered.length === 0) return;
+    didInitAnchor = true;
+    const initial = highlightId ?? paramAnchor;
+    if (initial != null && sortedFiltered.some((t) => t.id === initial)) anchorId = initial;
+  });
+
+  // Filters/sort changing what's in the list makes the current anchor meaningless — jump
+  // back to the top. (A reload with the same filters, e.g. after saving a row, is not a
+  // change here, so the scroll position survives it.)
+  let prevFilterSig: string | null = null;
+  $effect(() => {
+    const sig = `${accountId}|${categoryId}|${search}|${includeOneOff}|${range}|${sortKey}|${sortDir}`;
+    if (prevFilterSig != null && sig !== prevFilterSig && anchorId != null) {
+      anchorId = null;
+      writeAnchorToUrl(null);
+      window.scrollTo({ top: 0 });
+    }
+    prevFilterSig = sig;
   });
 
   async function loadRefs() {
@@ -145,7 +235,7 @@
     const { from, to } = rangeDates(range);
     const query: Record<string, unknown> = { from, to, include_one_off: includeOneOff, limit: 2000 };
     if (accountId !== "") query.account_id = accountId;
-    // Category is filtered client-side (subtree-aware) in `visible`, not on the server.
+    // Category is filtered client-side (subtree-aware) in `sortedFiltered`, not on the server.
     const { data, error: e } = await api.GET("/api/transactions", { params: { query } });
     txns = data ?? [];
     if (e) error = "Failed to load transactions.";
@@ -161,15 +251,21 @@
     loadTx();
   });
 
-  // Once the deep-linked row has rendered, scroll it into view (flash comes from CSS).
+  // Once the anchor row has rendered (as the first row of the window, see above), scroll it
+  // into view — smoothly with a flash for an explicit ?tx= deep-link, instantly/silently when
+  // just resuming a scroll position from ?at=.
   let didScroll = false;
   $effect(() => {
-    void visible.length; // re-run as the rendered rows change
-    if (highlightId == null || didScroll) return;
-    const el = document.getElementById(`tx-${highlightId}`);
+    void windowed.length; // re-run as the rendered rows change
+    const target = highlightId ?? paramAnchor;
+    if (target == null || didScroll) return;
+    const el = document.getElementById(`tx-${target}`);
     if (!el) return;
     didScroll = true;
-    requestAnimationFrame(() => el.scrollIntoView({ block: "center", behavior: "smooth" }));
+    const highlighting = highlightId != null;
+    requestAnimationFrame(() =>
+      el.scrollIntoView({ block: highlighting ? "center" : "start", behavior: highlighting ? "smooth" : "auto" }),
+    );
   });
 
   async function addTx() {
@@ -303,11 +399,11 @@
 
   {#if loading && txns.length === 0}
     <div class="row" style="justify-content:center;padding:30px"><span class="spinner"></span></div>
-  {:else if visible.length === 0}
+  {:else if sortedFiltered.length === 0}
     <div class="empty">No transactions.</div>
   {:else}
     <div style="overflow-x:auto">
-      <table class="table">
+      <table class="table" bind:this={tableEl}>
         <thead>
           <tr>
             <th><button class="sort-btn" onclick={() => toggleSort("date")}>Date{sortArrow("date")}</button></th>
@@ -320,7 +416,10 @@
           </tr>
         </thead>
         <tbody>
-          {#each visible as t (t.id)}
+          <tr aria-hidden="true">
+            <td colspan="7" style={`padding:0;border:none;height:${windowStart * ROW_HEIGHT}px`}></td>
+          </tr>
+          {#each windowed as t (t.id)}
             <tr id={`tx-${t.id}`} class:highlight={t.id === highlightId}>
               <td class="faint small" style="white-space:nowrap">{formatDate(t.posted_at)}</td>
               <td>
@@ -364,10 +463,13 @@
               </td>
             </tr>
           {/each}
+          <tr aria-hidden="true">
+            <td colspan="7" style={`padding:0;border:none;height:${(sortedFiltered.length - windowEnd) * ROW_HEIGHT}px`}></td>
+          </tr>
         </tbody>
       </table>
     </div>
-    <div class="small faint" style="margin-top:10px">{visible.length} transactions</div>
+    <div class="small faint" style="margin-top:10px">{sortedFiltered.length} transactions</div>
   {/if}
 </section>
 
