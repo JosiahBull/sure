@@ -7,6 +7,7 @@
   // Deep links via the hash query, read once at mount:
   //   ?tx=<id>        highlight & scroll to a transaction (from the rules audit log)
   //   ?category=<id>  filter to a category and its whole subtree (from the overview pies)
+  //   ?account=<id>   filter to a single account (from the accounts list)
   //   ?range=<key>    apply a preset time range
   //   ?at=<id>        resume the scroll position around a transaction (written as the list scrolls)
   const params = new URLSearchParams(router.path.split("?")[1] ?? "");
@@ -14,6 +15,7 @@
   const isRangeKey = (v: string | null): v is RangeKey => !!v && RANGES.some((r) => r.key === v);
   const highlightId = num(params.get("tx"));
   const paramCategory = num(params.get("category"));
+  const paramAccount = num(params.get("account"));
   const paramRange = params.get("range");
   const paramAnchor = num(params.get("at"));
 
@@ -29,7 +31,7 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
 
-  let accountId = $state<number | "">("");
+  let accountId = $state<number | "">(paramAccount ?? "");
   let categoryId = $state<number | "">(paramCategory ?? "");
   let search = $state("");
   let includeOneOff = $state(true);
@@ -45,10 +47,15 @@
     }
   }
   const sortArrow = (key: SortKey) => (sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : "");
-  // A range from the link wins; otherwise a deep-linked transaction can be any date, so
-  // widen to "all" to be sure it's loaded.
+  // A range from the link wins; otherwise a deep-linked transaction (or a "show me this
+  // account's transactions" link, which implies the whole history, not just a recent
+  // slice) can be any date, so widen to "all" to be sure it's loaded.
   let range = $state<RangeKey>(
-    isRangeKey(paramRange) ? paramRange : highlightId != null ? "all" : "last_90",
+    isRangeKey(paramRange)
+      ? paramRange
+      : highlightId != null || paramAccount != null
+        ? "all"
+        : "last_90",
   );
 
   let showAdd = $state(false);
@@ -382,7 +389,7 @@
     <select class="select" style="width:auto" bind:value={range}>
       {#each RANGES as r}<option value={r.key}>{r.label}</option>{/each}
     </select>
-    <select class="select" style="width:auto" bind:value={accountId}>
+    <select class="select" style="width:auto" aria-label="Filter by account" bind:value={accountId}>
       <option value="">All accounts</option>
       {#each accounts as a}<option value={a.id}>{a.name}</option>{/each}
     </select>

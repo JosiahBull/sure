@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
+use crate::types::SaveAccount;
+
 #[derive(Serialize, ToSchema)]
 pub struct Provider {
     pub id: i64,
@@ -34,6 +36,25 @@ pub struct SyncRequest {
     /// Inline data for payload-based providers (e.g. CSV text).
     #[serde(default)]
     pub payload: Option<String>,
+}
+
+/// Link an upstream account (surfaced by `GET /provider-kinds/{kind}/accounts`) to a local
+/// account, creating the `providers` connection in the same step. Exactly one of
+/// `new_account` / `existing_account_id` must be set.
+#[derive(Deserialize, ToSchema)]
+pub struct LinkProviderAccount {
+    pub kind: String,
+    /// The upstream's stable identifier for this account (`ProviderAccount::external_id`);
+    /// stored as `config.external_account_id` on the created `providers` row.
+    pub external_id: String,
+    /// Name for the new `providers` row (not the account itself).
+    pub name: String,
+    /// Create a new local account for this external account.
+    #[serde(default)]
+    pub new_account: Option<SaveAccount>,
+    /// Or attach to an already-existing local account instead.
+    #[serde(default)]
+    pub existing_account_id: Option<i64>,
 }
 
 #[derive(Serialize, ToSchema)]

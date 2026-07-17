@@ -47,6 +47,42 @@ pub async fn update(db: &Db, id: i64, input: SaveMerchant) -> AppResult<Merchant
     .ok_or(AppError::NotFound("merchant"))
 }
 
+/// Find an existing merchant by name (case-insensitive) or create one with the given
+/// default category. Used by provider imports to reuse a source's own merchant
+/// enrichment (e.g. Akahu's) without duplicating a merchant on every sync — an
+/// already-known merchant's `category_id` is left untouched even if a later import
+/// suggests a different one.
+pub async fn find_or_create(db: &Db, name: &str, category_id: Option<i64>) -> AppResult<Merchant> {
+    let name = name.trim();
+    if let Some(existing) =
+        sqlx::query_as::<_, Merchant>("SELECT * FROM merchants WHERE name = ?1 COLLATE NOCASE")
+            .bind(name)
+            .fetch_optional(db)
+            .await?
+    {
+        return Ok(existing);
+    }
+    match sqlx::query_as::<_, Merchant>(
+        "INSERT INTO merchants (name, category_id) VALUES (?1, ?2) RETURNING *",
+    )
+    .bind(name)
+    .bind(category_id)
+    .fetch_one(db)
+    .await
+    {
+        Ok(m) => Ok(m),
+        // Lost a race with a concurrent import of the same merchant name — reuse theirs.
+        Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
+            sqlx::query_as::<_, Merchant>("SELECT * FROM merchants WHERE name = ?1 COLLATE NOCASE")
+                .bind(name)
+                .fetch_optional(db)
+                .await?
+                .ok_or(AppError::NotFound("merchant"))
+        }
+        Err(e) => Err(AppError::from(e)),
+    }
+}
+
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM merchants WHERE id=?1")
         .bind(id)

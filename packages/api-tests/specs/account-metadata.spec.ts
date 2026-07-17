@@ -78,6 +78,21 @@ test("a mortgage carries rate/terms metadata and links to its property", async (
   expect(meta.capital_paid_minor).toBe(6_500_000);
 });
 
+test("a mortgage/loan's original borrowed amount round-trips", async ({ api }) => {
+  const mortgage = await createAccount(api, "Home Loan", "mortgage", "NZD", {
+    metadata: { profile: "mortgage", lender: "ASB", original_amount_minor: 48_500_000 },
+  });
+  const loan = await createAccount(api, "Student Loan", "student_loan", "NZD", {
+    metadata: { profile: "loan", original_amount_minor: 3_000_000 },
+  });
+
+  const m = await api.GET("/api/accounts/{id}", { params: { path: { id: mortgage.id } } });
+  expect((m.data?.metadata as Schemas["MortgageMeta"]).original_amount_minor).toBe(48_500_000);
+
+  const l = await api.GET("/api/accounts/{id}", { params: { path: { id: loan.id } } });
+  expect((l.data?.metadata as Schemas["LoanMeta"]).original_amount_minor).toBe(3_000_000);
+});
+
 test("shares under the same profile accept a broker/ticker regardless of kind", async ({ api }) => {
   for (const kind of ["shares_nz", "shares_us", "shares_private"] as const) {
     const acc = await createAccount(api, `Holdings ${kind}`, kind, "USD", {
@@ -89,6 +104,16 @@ test("shares under the same profile accept a broker/ticker regardless of kind", 
     expect(meta.broker).toBe("Sharesies");
     expect(meta.ticker).toBe("VOO");
   }
+});
+
+test("a credit card's credit limit round-trips and drives remaining-borrowing", async ({ api }) => {
+  const card = await createAccount(api, "Visa Platinum", "credit_card", "NZD", {
+    metadata: { profile: "depository", account_number: "••1234", credit_limit_minor: 1_000_000 },
+  });
+  const { data } = await api.GET("/api/accounts/{id}", { params: { path: { id: card.id } } });
+  const meta = data?.metadata as Schemas["DepositoryMeta"] & { profile: string };
+  expect(meta.credit_limit_minor).toBe(1_000_000);
+  expect(meta.account_number).toBe("••1234");
 });
 
 test("metadata whose profile does not match the kind is rejected", async ({ api }) => {

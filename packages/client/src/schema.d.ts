@@ -1683,6 +1683,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/provider-kinds/{kind}/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Upstream accounts a discovery-capable provider kind can see, excluding any already
+         *     linked to a local account.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    kind: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProviderAccount"][];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/providers": {
         parameters: {
             query?: never;
@@ -1720,6 +1768,57 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": components["schemas"]["SaveProvider"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Provider"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/providers/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Link an upstream account (from [`discover_accounts`]) to a local account, creating it
+         *     first if `new_account` is given rather than `existing_account_id`. Triggers an
+         *     immediate best-effort sync so the account isn't empty until the next scheduled poll.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["LinkProviderAccount"];
                 };
             };
             responses: {
@@ -3148,6 +3247,14 @@ export interface components {
         DepositoryMeta: {
             /** @description Account or card number (store a masked value if you like, e.g. `••4321`). */
             account_number?: string | null;
+            /**
+             * Format: int64
+             * @description Credit limit in minor units, for a `credit_card`/`revolving_credit` account —
+             *     lets "remaining borrowing" (limit minus what's owed) be shown. Meaningless for
+             *     other depository kinds, so left unset there. Auto-populated on sync for
+             *     providers that report a live limit (e.g. Akahu); editable manually otherwise.
+             */
+            credit_limit_minor?: number | null;
             /** @description A link to online banking or the statement portal. */
             url?: string | null;
             notes?: string | null;
@@ -3236,6 +3343,27 @@ export interface components {
             name: string;
             version: string;
         };
+        /**
+         * @description Link an upstream account (surfaced by `GET /provider-kinds/{kind}/accounts`) to a local
+         *     account, creating the `providers` connection in the same step. Exactly one of
+         *     `new_account` / `existing_account_id` must be set.
+         */
+        LinkProviderAccount: {
+            kind: string;
+            /**
+             * @description The upstream's stable identifier for this account (`ProviderAccount::external_id`);
+             *     stored as `config.external_account_id` on the created `providers` row.
+             */
+            external_id: string;
+            /** @description Name for the new `providers` row (not the account itself). */
+            name: string;
+            new_account?: null | components["schemas"]["SaveAccount"];
+            /**
+             * Format: int64
+             * @description Or attach to an already-existing local account instead.
+             */
+            existing_account_id?: number | null;
+        };
         LinkRequest: {
             /** Format: int64 */
             linked_transaction_id: number;
@@ -3243,6 +3371,14 @@ export interface components {
         /** @description A generic loan (personal loan, student loan, vehicle financing, ...). */
         LoanMeta: {
             lender?: string | null;
+            /**
+             * Format: int64
+             * @description The original amount borrowed, in minor units — lets a paid-down percentage be
+             *     derived from the current balance. Auto-populated on sync for providers that
+             *     report it (e.g. Akahu's `loan_details.initial_principal`); editable manually
+             *     otherwise.
+             */
+            original_amount_minor?: number | null;
             /**
              * Format: int64
              * @description Annual interest rate in basis points (e.g. 8.90% = 890).
@@ -3275,6 +3411,14 @@ export interface components {
         /** @description A mortgage secured against a property (link it with `secured_by_account_id`). */
         MortgageMeta: {
             lender?: string | null;
+            /**
+             * Format: int64
+             * @description The original amount borrowed, in minor units — lets a paid-down percentage be
+             *     derived from the current balance. Auto-populated on sync for providers that
+             *     report it (e.g. Akahu's `loan_details.initial_principal`); editable manually
+             *     otherwise.
+             */
+            original_amount_minor?: number | null;
             /**
              * Format: int64
              * @description Annual interest rate in basis points (e.g. 5.49% = 549).
@@ -3379,11 +3523,39 @@ export interface components {
             created_at: string;
             updated_at: string;
         };
+        /**
+         * @description An upstream account surfaced by a provider that supports account discovery
+         *     (see [`TransactionProvider::list_accounts`]) — not yet linked to a local `Account`.
+         */
+        ProviderAccount: {
+            /**
+             * @description Stable identifier from the source; stored as `config.external_account_id` on the
+             *     `providers` row once linked, and used to fetch that account's transactions.
+             */
+            external_id: string;
+            name: string;
+            currency_code: string;
+            /** @description The financial institution's display name (e.g. "ASB"), if the source reports one. */
+            institution?: string | null;
+            /**
+             * @description Best-effort suggestion for the local account's `kind`; the user confirms/edits it
+             *     when linking, so an imperfect guess here isn't a correctness problem.
+             */
+            kind_hint: components["schemas"]["AccountKind"];
+            /** Format: int64 */
+            balance_minor: number;
+            /**
+             * @description Whether the source can provide transaction history for this account (some upstream
+             *     account types are balance-only).
+             */
+            supports_transactions: boolean;
+        };
         /** @description Metadata about an available provider kind, surfaced via the API. */
         ProviderKind: {
             kind: string;
             description: string;
             accepts_payload: boolean;
+            supports_account_discovery: boolean;
         };
         ProviderSync: {
             /** Format: int64 */

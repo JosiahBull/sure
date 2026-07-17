@@ -1,6 +1,7 @@
 pub mod config;
 pub mod exchange_rates;
 pub mod openapi;
+pub mod provider_poll;
 pub mod routes;
 pub mod state;
 
@@ -63,6 +64,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         pool.clone(),
         std::sync::Arc::new(providers::FrankfurterProvider::new()),
     )));
+    scheduler.register(Box::new(provider_poll::ProviderPollTask::new(pool.clone())));
     scheduler.spawn();
 
     let state = AppState::new(pool);

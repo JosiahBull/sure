@@ -14,7 +14,8 @@ sure-dal   ──►  core, scheduler    SQLite pool + migrations + every SQL qu
                                      repository modules: accounts, transactions, rules, …)
                                      + the scheduler's SQLite-backed TaskStateStore
 sure-providers ─► sure-core        TransactionProvider + ExchangeRateProvider traits,
-                                     registry, CSV importer, Frankfurter FX client
+                                     registry, CSV importer, Akahu (NZ banking) client,
+                                     Frankfurter FX client
 sure-api   ──►  core, dal,         Axum HTTP layer: handlers, DTOs, OpenAPI, and the pure
                 providers,           compute engines (rule eval, report aggregation). No SQL.
                 scheduler            Also wires up the Scheduler with the app's background
@@ -109,7 +110,10 @@ pub trait TransactionProvider: Send + Sync {
     fn kind(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn accepts_payload(&self) -> bool { false }
+    fn supports_account_discovery(&self) -> bool { false }
     async fn fetch(&self, ctx: SyncContext<'_>) -> anyhow::Result<Vec<ProviderTransaction>>;
+    async fn list_accounts(&self) -> anyhow::Result<Vec<ProviderAccount>> { Err(...) }
+    async fn current_balance(&self, ctx: SyncContext<'_>) -> anyhow::Result<Option<ProviderBalance>> { Ok(None) }
 }
 ```
 
@@ -117,6 +121,44 @@ A `Registry` holds the available implementations; the sync route handles persist
 dedupe (on `(provider, external_id)`), and audit generically. The bundled `CsvProvider`
 is a credential-free reference implementation. To add a bank/broker integration you
 implement the trait, add it to `Registry::new()`, and touch nothing else.
+
+`list_accounts` is the account-discovery half: providers whose credentials can surface
+many upstream accounts (e.g. `AkahuProvider`, reading `AKAHU_APP_TOKEN`/`AKAHU_USER_TOKEN`
+from the environment) implement it to enumerate accounts not yet linked to a local one.
+`POST /api/providers/link` then creates (or attaches to) a local account and the
+`providers` row in one step, storing the upstream identifier in `config`
+(`{"external_account_id": "..."}`) — no schema change needed, since `providers.config` is
+already a free-form JSON column. `sure-api`'s `ProviderPollTask` auto-syncs every enabled
+provider whose kind doesn't `accepts_payload()` (i.e. needs no human-supplied data) on a
+fixed interval, sharing the same fetch/dedupe/audit path (`sync_provider`) as the manual
+sync route — new discovery-and-poll-capable provider kinds get both for free. Linking also
+triggers one immediate best-effort sync (via the same `sync_provider`), so a freshly-linked
+account isn't sitting empty until the next scheduled poll.
+
+`current_balance` addresses a gap transactions alone can't: a provider's transaction
+history often doesn't reach back to when the account was opened (a mortgage's full term,
+say), so summing only the available transactions drifts from the real balance.
+`sync_provider` upserts a same-day, `source = 'provider'` valuation from whatever this
+returns after every successful sync — `account_value_at` (the balance/net-worth logic in
+`routes::reports`) already prefers the latest valuation over summed transactions for any
+account kind, so this anchors the displayed balance to the upstream's live figure going
+forward, while transactions remain the detailed ledger for the rules engine and history.
+A partial unique index (`valuations(account_id, as_of) WHERE source = 'provider'`, added
+in `0010_provider_valuations.sql`) makes repeated same-day syncs update that day's snapshot
+in place rather than accumulating rows; manual/cron valuations are unaffected. The same
+balance fetch also carries an optional credit `limit_minor` (Akahu's `balance.limit`),
+which `sync_provider` patches into a `credit_card`/`revolving_credit` account's
+`DepositoryMeta.credit_limit_minor` (`accounts::set_credit_limit`, a no-op for any other
+kind) — the web UI computes "remaining borrowing" from that plus the current balance.
+
+`ProviderTransaction.category` (a `ProviderCategory { name, group }`) is the other piece
+of enrichment a source can carry — Akahu's NZFCC classification, for instance.
+`import_transactions` (`sure-dal`) resolves it via `categories::find_or_create` /
+`merchants::find_or_create` (a group becomes the parent of its named category; a newly-
+seen merchant is seeded with that category as its default) so imported transactions are
+categorized instead of landing uncategorized, without duplicating a category/merchant
+already reused by name across a sync's many rows (cached per `import_transactions` call).
+An already-known merchant's own default category is never overwritten by a later import.
 
 The crate also carries a second, unrelated port — `ExchangeRateProvider` — for pulling
 currency exchange rates from an upstream source (`fetch_rates(base) -> Vec<ExchangeRateQuote>`).

@@ -41,3 +41,36 @@ test("Institution shows for banks but not shares (which use a broker)", async ({
   await page.locator(".acct", { hasText: "Everyday" }).getByRole("button", { name: "Edit" }).click();
   await expect(page.getByLabel("Institution", { exact: true })).toBeVisible();
 });
+
+test("clicking an account jumps to its filtered transactions", async ({ page }) => {
+  await goto(page, "/accounts");
+  await page
+    .locator(".acct", { hasText: "Everyday" })
+    .getByRole("button", { name: "View transactions for Everyday" })
+    .click();
+
+  await expect(page).toHaveURL(/#\/transactions\?account=\d+$/);
+  await expect(page.getByRole("heading", { name: "Transactions" })).toBeVisible();
+
+  const accountFilter = page.getByLabel("Filter by account");
+  await expect(accountFilter).not.toHaveValue(""); // not "All accounts"
+  const selectedLabel = await accountFilter.locator("option:checked").textContent();
+  expect(selectedLabel).toBe("Everyday");
+
+  // Every visible row belongs to the filtered account — not a mix.
+  const accountCells = page.locator("table tbody tr td:nth-child(3)");
+  await expect(accountCells.first()).toBeVisible();
+  const distinctAccounts = new Set(await accountCells.allTextContents());
+  expect([...distinctAccounts]).toEqual(["Everyday"]);
+});
+
+test("Edit and Delete on an account row don't trigger the transactions jump", async ({ page }) => {
+  await goto(page, "/accounts");
+  await page.locator(".acct", { hasText: "Everyday" }).getByRole("button", { name: "Edit" }).click();
+  await expect(page).toHaveURL(/#\/accounts$/);
+  await page.locator(".acct", { hasText: "Everyday" }).getByRole("button", { name: "Close" }).click();
+
+  await page.locator(".acct", { hasText: "Everyday" }).getByRole("button", { name: "Delete Everyday" }).click();
+  await expect(page).toHaveURL(/#\/accounts$/);
+  await page.getByRole("button", { name: "Cancel" }).click();
+});

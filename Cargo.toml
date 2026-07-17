@@ -60,3 +60,9 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# TEMPORARY: akahu-client 0.2.0 (unpublished) adds Account.connection/meta, which
+# sure-providers needs for institution names and a loan's initial_principal. Points at a
+# local clone the user is patching; remove once a real 0.2.0 is published to crates.io.
+[patch.crates-io]
+akahu-client = { path = "../akahu-client" }

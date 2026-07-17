@@ -49,9 +49,13 @@ export const test = base.extend<{ server: Server; api: SureClient }>({
     const port = await freePort();
     const dir = mkdtempSync(path.join(tmpdir(), "sure-e2e-"));
     const baseURL = `http://127.0.0.1:${port}`;
+    // Deliberately unset rather than inherited: tests assert the specific "not configured"
+    // error the Akahu provider returns when these are absent, which must hold regardless
+    // of whatever the developer's own shell happens to have exported.
+    const { AKAHU_APP_TOKEN, AKAHU_USER_TOKEN, ...envWithoutAkahu } = process.env;
     const proc = spawn(BIN, [], {
       env: {
-        ...process.env,
+        ...envWithoutAkahu,
         DATABASE_URL: `sqlite:${path.join(dir, "test.db")}`,
         BIND_ADDR: `127.0.0.1:${port}`,
         RUST_LOG: "error",

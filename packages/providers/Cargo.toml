@@ -17,3 +17,13 @@ utoipa = { workspace = true }
 anyhow = { workspace = true }
 rust_decimal = { workspace = true }
 reqwest = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+akahu-client = "0.2"
+# akahu-client depends on reqwest 0.13, one major ahead of the workspace's 0.12 (used by
+# the other providers above) — renamed so both can coexist without touching the rest of
+# this crate. Feature set mirrors what akahu-client itself requests.
+reqwest-akahu = { package = "reqwest", version = "0.13", default-features = false, features = [
+    "json",
+    "rustls",
+] }

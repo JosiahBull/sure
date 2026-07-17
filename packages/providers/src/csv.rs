@@ -67,6 +67,7 @@ impl TransactionProvider for CsvProvider {
                 currency_code: get(&record, i_ccy).map(|s| s.to_uppercase()),
                 description,
                 merchant: get(&record, i_merchant),
+                category: None,
             });
         }
         Ok(out)

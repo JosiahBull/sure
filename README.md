@@ -40,7 +40,9 @@ on old devices.
   vesting, exercises, and intrinsic value that rolls into net worth.
 - **Provider trait**: a generic Rust interface to pull transactions from external
   sources, with a credential-free CSV importer as the reference implementation
-  (dedupes on re-sync).
+  (dedupes on re-sync). Providers that expose credentialed APIs can also discover
+  upstream accounts and link them to a new or existing local account — see the Akahu
+  (NZ open banking) implementation, which additionally auto-syncs on a schedule.
 
 **Reports & UI**
 - Net-worth line over time, income/expense donut per category, and a **Sankey**
@@ -59,7 +61,7 @@ with a one-way dependency graph (`core ← dal, providers ← api`) — see
 packages/
   core/         Rust: shared domain types + AppError, feature-gated for HTTP (sure-core).
   dal/          Rust: SQLite pool, pragmas, and embedded migrations (sure-dal).
-  providers/    Rust: TransactionProvider trait + registry + CSV importer (sure-providers).
+  providers/    Rust: TransactionProvider trait + registry + CSV/Akahu implementations (sure-providers).
   api/          Rust: Axum HTTP layer + report/rules engines; `sure-api` + `gen-openapi` bins.
   api-tests/    TypeScript: Playwright e2e — spawns the real binary per test, driven through @sure/client.
   client/       Generated TypeScript client (openapi-typescript + openapi-fetch).
@@ -83,6 +85,11 @@ error. (See `packages/client/strip-operation-ids.mjs` for why the spec is post-p
 
 - Rust (nightly is used here; stable ≥ 1.85 with edition 2021 also works)
 - Node ≥ 22 and `pnpm` (`corepack enable`)
+- **Temporary**: `akahu-client` is patched to a local clone (see `[patch.crates-io]` in
+  the root `Cargo.toml`) until a real `0.2.0` is published — clone
+  `github.com/josiahbull/akahu-client` as a sibling directory (`../akahu-client` relative
+  to this repo) before building. Remove the patch and bump
+  `packages/providers/Cargo.toml`'s version requirement once that's published.
 
 ## Quick start
 
@@ -140,6 +147,12 @@ WEB_DIR=packages/web/dist DATABASE_URL=sqlite:data/sure.db ./target/release/sure
 
 Configuration via env: `DATABASE_URL` (default `sqlite:data/sure.db`), `BIND_ADDR`
 (default `127.0.0.1:8080`), `WEB_DIR` (serve the SPA when set), `RUST_LOG`.
+
+For the Akahu bank-feed provider (NZ accounts + transactions), set `AKAHU_APP_TOKEN` and
+`AKAHU_USER_TOKEN` (from your Akahu personal-app dashboard) — without these, "akahu" still
+appears as a provider kind but discovery/sync fail with a clear error naming the missing
+var. No OAuth redirect flow is implemented; these are the static tokens Akahu issues
+directly for personal-app use.
 
 ## License
 

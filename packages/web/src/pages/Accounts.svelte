@@ -1,10 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, formatMoney, type Schemas } from "../lib/api";
-  import { kindLabel, metaSummary, showsInstitution } from "../lib/accountMeta";
+  import {
+    kindLabel,
+    metaSummary,
+    showsInstitution,
+    remainingBorrowing,
+    loanPaidOffPct,
+  } from "../lib/accountMeta";
   import AccountForm from "../lib/AccountForm.svelte";
   import EquityPanel from "../lib/EquityPanel.svelte";
   import PropertyPanel from "../lib/PropertyPanel.svelte";
+  import { navigate } from "../lib/router.svelte";
 
   let balances = $state<Schemas["BalancesReport"] | null>(null);
   let currencies = $state<Schemas["Currency"][]>([]);
@@ -46,6 +53,12 @@
     showAdd = false;
     editing = null;
     load();
+  }
+
+  // Jump to the transactions page filtered to just this account (mirrors Dashboard's
+  // goToCategory, which does the same for a category slice).
+  function goToAccount(accountId: number) {
+    navigate(`/transactions?account=${accountId}`);
   }
 
   function askDelete(id: number) {
@@ -107,8 +120,14 @@
             {@const full = byId.get(a.account_id)}
             {@const summary = metaSummary(a.kind, full?.metadata)}
             {@const inst = showsInstitution(a.kind) ? full?.institution : null}
+            {@const remaining = remainingBorrowing(a.kind, full?.metadata, a.value_minor)}
+            {@const paidOffPct = loanPaidOffPct(a.kind, full?.metadata, a.value_minor)}
             <div class="acct">
-              <div class="col" style="min-width:0;gap:2px;flex:1 1 150px">
+              <button
+                class="acct-link"
+                onclick={() => goToAccount(a.account_id)}
+                aria-label="View transactions for {a.name}"
+              >
                 <div class="row" style="gap:8px;min-width:0">
                   <span class="ell">{a.name}</span>
                   <span class="badge">{kindLabel(a.kind)}</span>
@@ -118,9 +137,15 @@
                     {[inst, summary].filter(Boolean).join(" · ")}
                   </div>
                 {/if}
-              </div>
+              </button>
               <div class="col" style="align-items:flex-end;gap:6px;flex:0 0 auto;margin-left:auto">
                 <span class="tabular" class:neg={a.value_minor < 0}>{formatMoney(a.value_minor, a.currency_code)}</span>
+                {#if remaining !== null}
+                  <span class="small faint tabular">Remaining: {formatMoney(remaining, a.currency_code)}</span>
+                {/if}
+                {#if paidOffPct !== null}
+                  <span class="small faint tabular">{Math.round(paidOffPct)}% repaid</span>
+                {/if}
                 <div class="row" style="gap:6px">
                   <button class="btn btn-sm" onclick={() => ((editing = editing === a.account_id ? null : a.account_id), (showAdd = false))}>
                     {editing === a.account_id ? "Close" : "Edit"}
@@ -179,6 +204,26 @@
   .col {
     display: flex;
     flex-direction: column;
+  }
+  .acct-link {
+    all: unset;
+    /* `all: unset` resets `display` too (it's not an inherited property), so re-declare
+       the flex-column layout `.col` would otherwise provide — relying on cascade order
+       between two same-specificity classes for this would be fragile. */
+    display: flex;
+    flex-direction: column;
+    cursor: pointer;
+    min-width: 0;
+    gap: 2px;
+    flex: 1 1 150px;
+    border-radius: var(--r);
+  }
+  .acct-link:hover .ell:first-child {
+    text-decoration: underline;
+  }
+  .acct-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .ell {
     overflow: hidden;

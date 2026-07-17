@@ -53,6 +53,50 @@ pub async fn update(db: &Db, id: i64, input: SaveCategory) -> AppResult<Category
     .ok_or(AppError::NotFound("category"))
 }
 
+/// Find an existing category by name (case-insensitive, scoped to the given parent) or
+/// create one. Used by provider imports to reuse a source's own classification (e.g.
+/// Akahu's NZFCC categories) without duplicating a category on every sync. There's no
+/// uniqueness constraint on `(name, parent_id)` — categories are otherwise entirely
+/// user-managed — so this is a plain check-then-insert, not an atomic upsert.
+pub async fn find_or_create(
+    db: &Db,
+    name: &str,
+    parent_id: Option<i64>,
+    kind: &str,
+) -> AppResult<Category> {
+    let name = name.trim();
+    let existing = match parent_id {
+        Some(pid) => {
+            sqlx::query_as::<_, Category>(
+                "SELECT * FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id = ?2",
+            )
+            .bind(name)
+            .bind(pid)
+            .fetch_optional(db)
+            .await?
+        }
+        None => {
+            sqlx::query_as::<_, Category>(
+                "SELECT * FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id IS NULL",
+            )
+            .bind(name)
+            .fetch_optional(db)
+            .await?
+        }
+    };
+    if let Some(existing) = existing {
+        return Ok(existing);
+    }
+    Ok(sqlx::query_as::<_, Category>(
+        "INSERT INTO categories (name, parent_id, kind) VALUES (?1, ?2, ?3) RETURNING *",
+    )
+    .bind(name)
+    .bind(parent_id)
+    .bind(kind)
+    .fetch_one(db)
+    .await?)
+}
+
 /// Delete a category. Child categories and transaction links cascade per schema
 /// (`ON DELETE CASCADE` for children, `SET NULL` for transactions).
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {

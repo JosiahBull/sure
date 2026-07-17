@@ -20,7 +20,7 @@ pub use currencies::{Currency, NewCurrency};
 pub use equity::{AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus};
 pub use error::{AppError, AppResult, ErrorBody, ErrorDetail};
 pub use merchants::{Merchant, SaveMerchant};
-pub use providers::{Provider, ProviderSync, SaveProvider, SyncRequest};
+pub use providers::{LinkProviderAccount, Provider, ProviderSync, SaveProvider, SyncRequest};
 pub use rules::{
     PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RunResult,
     SaveRule,

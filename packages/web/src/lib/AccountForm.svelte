@@ -7,6 +7,7 @@
     kindToProfile,
     isLiabilityKind,
     showsInstitution,
+    showsCreditLimit,
     buildMetadata,
     metadataToRaw,
     type MetaField,
@@ -39,7 +40,9 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
 
-  const fields = $derived(FIELDS[kindToProfile(kind)]);
+  const fields = $derived(
+    FIELDS[kindToProfile(kind)].filter((f) => f.key !== "credit_limit_minor" || showsCreditLimit(kind)),
+  );
   const showSecured = $derived(isLiabilityKind(kind));
   const showInstitution = $derived(showsInstitution(kind));
   // Assets this liability could be secured against (never itself).

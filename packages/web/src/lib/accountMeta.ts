@@ -71,6 +71,43 @@ export const isLiabilityKind = (k: string) => LIABILITY_KINDS.has(k);
  */
 export const showsInstitution = (k: string) => kindToProfile(k) === "depository" && k !== "cash";
 
+/** Only credit_card/revolving_credit accounts track a credit limit. */
+export const showsCreditLimit = (k: string) => k === "credit_card" || k === "revolving_credit";
+
+/**
+ * Remaining borrowing power (credit limit minus what's currently owed), if this account
+ * tracks a credit limit and one is known — `null` otherwise (a different kind, or a
+ * limit that hasn't been set/synced yet). `valueMinor` is the account's current balance
+ * (negative when money is owed, per this app's sign convention).
+ */
+export function remainingBorrowing(
+  kind: string,
+  metadata: Schemas["AccountMetadata"] | null | undefined,
+  valueMinor: number,
+): number | null {
+  if (!showsCreditLimit(kind)) return null;
+  const limit = (metadata as Record<string, unknown> | null | undefined)?.credit_limit_minor;
+  return typeof limit === "number" ? limit + valueMinor : null;
+}
+
+/**
+ * Percentage of a mortgage/loan's original borrowed amount that's been paid down so far
+ * — `null` if this isn't a loan-shaped kind, or the original amount isn't known yet
+ * (nothing synced/entered). `valueMinor` is the account's current balance (negative when
+ * money is owed); the amount paid down is `original − |valueMinor|`.
+ */
+export function loanPaidOffPct(
+  kind: string,
+  metadata: Schemas["AccountMetadata"] | null | undefined,
+  valueMinor: number,
+): number | null {
+  if (kindToProfile(kind) !== "mortgage" && kindToProfile(kind) !== "loan") return null;
+  const original = (metadata as Record<string, unknown> | null | undefined)?.original_amount_minor;
+  if (typeof original !== "number" || original <= 0) return null;
+  const paid = original - Math.abs(valueMinor);
+  return Math.max(0, Math.min(100, (paid / original) * 100));
+}
+
 /** Map an account kind to its metadata profile (mirrors the backend). */
 export function kindToProfile(kind: string): MetaProfile {
   switch (kind) {
@@ -113,6 +150,10 @@ const RATE_TYPE_FIELD: MetaField = {
 export const FIELDS: Record<MetaProfile, MetaField[]> = {
   depository: [
     { key: "account_number", label: "Account number", type: "text" },
+    // Only rendered for credit_card/revolving_credit — see `showsCreditLimit` — but kept
+    // in the generic depository field list so `buildMetadata`/`metadataToRaw` round-trip
+    // it for free like every other field here.
+    { key: "credit_limit_minor", label: "Credit limit", type: "money" },
     URL_FIELD,
     NOTES_FIELD,
   ],
@@ -125,6 +166,7 @@ export const FIELDS: Record<MetaProfile, MetaField[]> = {
   ],
   mortgage: [
     { key: "lender", label: "Lender", type: "text" },
+    { key: "original_amount_minor", label: "Original amount borrowed", type: "money" },
     { key: "interest_rate_bps", label: "Interest rate (%)", type: "percent", placeholder: "5.49" },
     RATE_TYPE_FIELD,
     { key: "fixed_until", label: "Fixed until", type: "date" },
@@ -138,6 +180,7 @@ export const FIELDS: Record<MetaProfile, MetaField[]> = {
   ],
   loan: [
     { key: "lender", label: "Lender", type: "text" },
+    { key: "original_amount_minor", label: "Original amount borrowed", type: "money" },
     { key: "interest_rate_bps", label: "Interest rate (%)", type: "percent", placeholder: "8.90" },
     { key: "term_months", label: "Term (months)", type: "int" },
     { key: "start_date", label: "Start date", type: "date" },

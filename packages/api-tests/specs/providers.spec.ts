@@ -52,6 +52,29 @@ test("CSV sync imports then dedupes on re-sync", async ({ api }) => {
   expect(syncs.data?.length).toBe(2);
 });
 
+test("CSV sync resolves a merchant column to a reusable Merchant", async ({ api }) => {
+  const acc = await createAccount(api, "Everyday", "bank");
+  const provider = await csvProvider(api, acc.id);
+  const csv = `date,amount,description,merchant,external_id
+2026-01-05,-4.50,Flat white,The Roastery,m1
+2026-01-06,-5.00,Long black,The Roastery,m2
+`;
+  const res = await api.POST("/api/providers/{id}/sync", {
+    params: { path: { id: provider.id } },
+    body: { payload: csv },
+  });
+  expect(res.data?.imported).toBe(2);
+
+  const merchants = await api.GET("/api/merchants", {});
+  const matches = merchants.data?.filter((m) => m.name === "The Roastery") ?? [];
+  expect(matches.length).toBe(1); // reused across both rows, not duplicated
+
+  const txns = await api.GET("/api/transactions", { params: { query: { account_id: acc.id } } });
+  const roasteryTxns = txns.data?.filter((t) => t.merchant === "The Roastery") ?? [];
+  expect(roasteryTxns.length).toBe(2);
+  expect(roasteryTxns.every((t) => t.merchant_id === matches[0]?.id)).toBe(true);
+});
+
 test("CSV sync without a payload errors and is recorded", async ({ api }) => {
   const acc = await createAccount(api, "Everyday", "bank");
   const provider = await csvProvider(api, acc.id);

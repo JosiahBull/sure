@@ -92,6 +92,12 @@ pub struct DepositoryMeta {
     /// Account or card number (store a masked value if you like, e.g. `••4321`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_number: Option<String>,
+    /// Credit limit in minor units, for a `credit_card`/`revolving_credit` account —
+    /// lets "remaining borrowing" (limit minus what's owed) be shown. Meaningless for
+    /// other depository kinds, so left unset there. Auto-populated on sync for
+    /// providers that report a live limit (e.g. Akahu); editable manually otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_limit_minor: Option<i64>,
     /// A link to online banking or the statement portal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -122,6 +128,12 @@ pub struct PropertyMeta {
 pub struct MortgageMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lender: Option<String>,
+    /// The original amount borrowed, in minor units — lets a paid-down percentage be
+    /// derived from the current balance. Auto-populated on sync for providers that
+    /// report it (e.g. Akahu's `loan_details.initial_principal`); editable manually
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_amount_minor: Option<i64>,
     /// Annual interest rate in basis points (e.g. 5.49% = 549).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interest_rate_bps: Option<i64>,
@@ -156,6 +168,12 @@ pub struct MortgageMeta {
 pub struct LoanMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lender: Option<String>,
+    /// The original amount borrowed, in minor units — lets a paid-down percentage be
+    /// derived from the current balance. Auto-populated on sync for providers that
+    /// report it (e.g. Akahu's `loan_details.initial_principal`); editable manually
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_amount_minor: Option<i64>,
     /// Annual interest rate in basis points (e.g. 8.90% = 890).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interest_rate_bps: Option<i64>,
