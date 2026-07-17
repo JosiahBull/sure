@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "packages/core",
+    "packages/scheduler",
     "packages/dal",
     "packages/providers",
     "packages/api",
@@ -35,6 +36,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # Postgres/MySQL and is intentionally not wired into the SQLite pool.
 rust_decimal = { version = "1", features = ["serde"] }
 rust_decimal_macros = "1"
+# rustls (not the default native-tls/OpenSSL backend) so cross-compiling the release
+# binary doesn't need OpenSSL headers; the runtime image installs ca-certificates for it.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "decimal", "preserve_order"] }
 thiserror = "2"
 anyhow = "1"
@@ -47,6 +51,7 @@ zen-expression = "0.55"
 
 # Internal crates
 sure-core = { path = "packages/core" }
+sure-scheduler = { path = "packages/scheduler" }
 sure-dal = { path = "packages/dal" }
 sure-providers = { path = "packages/providers" }
 

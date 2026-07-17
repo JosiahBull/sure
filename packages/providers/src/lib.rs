@@ -9,6 +9,11 @@ use serde_json::Value;
 use utoipa::ToSchema;
 
 pub mod csv;
+pub mod exchange_rate;
+pub mod frankfurter;
+
+pub use exchange_rate::{ExchangeRateProvider, ExchangeRateQuote};
+pub use frankfurter::FrankfurterProvider;
 
 /// A normalized transaction pulled from an external source.
 #[derive(Debug, Clone)]

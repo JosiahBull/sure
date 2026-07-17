@@ -20,6 +20,7 @@ path = "src/bin/gen_openapi.rs"
 sure-core = { workspace = true, features = ["axum"] }
 sure-dal = { workspace = true }
 sure-providers = { workspace = true }
+sure-scheduler = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
@@ -32,6 +33,7 @@ rust_decimal_macros = { workspace = true }
 utoipa = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }

@@ -22,6 +22,7 @@ WORKDIR /build
 # Only the Cargo workspace members are needed here (web/client are not Cargo crates).
 COPY Cargo.toml Cargo.lock ./
 COPY packages/core ./packages/core
+COPY packages/scheduler ./packages/scheduler
 COPY packages/dal ./packages/dal
 COPY packages/providers ./packages/providers
 COPY packages/api ./packages/api
@@ -54,6 +55,7 @@ FROM rust:${RUST_VERSION}-bookworm AS bin
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY packages/core ./packages/core
+COPY packages/scheduler ./packages/scheduler
 COPY packages/dal ./packages/dal
 COPY packages/providers ./packages/providers
 COPY packages/api ./packages/api

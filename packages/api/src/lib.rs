@@ -1,4 +1,5 @@
 pub mod config;
+pub mod exchange_rates;
 pub mod openapi;
 pub mod routes;
 pub mod state;
@@ -53,6 +54,17 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
 pub async fn serve(config: Config) -> anyhow::Result<()> {
     let pool = db::connect(&config.database_url).await?;
     db::migrate(&pool).await?;
+
+    let task_state =
+        std::sync::Arc::new(db::scheduled_tasks::SqliteTaskStateStore::new(pool.clone()));
+    let mut scheduler =
+        sure_scheduler::Scheduler::new(task_state, std::time::Duration::from_secs(60));
+    scheduler.register(Box::new(exchange_rates::ExchangeRateTask::new(
+        pool.clone(),
+        std::sync::Arc::new(providers::FrankfurterProvider::new()),
+    )));
+    scheduler.spawn();
+
     let state = AppState::new(pool);
     let app = build_app(state, config.web_dir.as_deref());
 

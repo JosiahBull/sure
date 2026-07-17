@@ -12,8 +12,15 @@ path = "src/lib.rs"
 # sqlx integration (the `From<sqlx::Error>` conversion + enum `Type` mapping, and
 # `FromRow` on sure-core's request/response structs).
 sure-core = { workspace = true, features = ["sqlx"] }
+# Implements the generic scheduler's storage port (`TaskStateStore`) against SQLite —
+# the DAL is the only crate that talks to the database.
+sure-scheduler = { workspace = true }
 sqlx = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
