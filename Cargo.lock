@@ -2050,6 +2050,7 @@ dependencies = [
  "anyhow",
  "axum",
  "serde",
+ "serde_json",
  "sqlx",
  "thiserror 2.0.18",
  "tracing",
@@ -2066,7 +2067,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "sure-core",
- "utoipa",
 ]
 
 [[package]]

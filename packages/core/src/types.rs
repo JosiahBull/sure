@@ -282,3 +282,51 @@ impl AccountMetadata {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Account wire/domain shape. The DAL owns `AccountRow` (the raw SQLite row) and
+// converts it into `Account` below; the API crate uses `Account`/`SaveAccount`
+// directly as its request/response bodies.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, ToSchema)]
+pub struct Account {
+    pub id: i64,
+    pub name: String,
+    pub kind: AccountKind,
+    /// Derived grouping (cash / asset / investment / liability).
+    pub class: AccountClass,
+    pub currency_code: String,
+    pub institution: Option<String>,
+    /// Typed, kind-specific configuration (discriminated by `profile`).
+    pub metadata: AccountMetadata,
+    pub archived: bool,
+    pub sort_order: i64,
+    /// For a liability, the asset account it is secured against (e.g. a mortgage's home).
+    pub secured_by_account_id: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct SaveAccount {
+    pub name: String,
+    pub kind: AccountKind,
+    pub currency_code: String,
+    #[serde(default)]
+    pub institution: Option<String>,
+    /// Typed, kind-specific config. Its `profile` must match the account `kind`; when
+    /// omitted, an empty value for the kind is stored.
+    #[serde(default)]
+    pub metadata: Option<AccountMetadata>,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub sort_order: i64,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct SetSecuredBy {
+    /// The asset account this (liability) account is secured against; `null` to unlink.
+    pub secured_by_account_id: Option<i64>,
+}

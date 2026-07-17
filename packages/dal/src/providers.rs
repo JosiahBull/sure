@@ -1,8 +1,7 @@
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
-use utoipa::ToSchema;
+pub use sure_core::{Provider, ProviderSync, SaveProvider, SyncRequest};
 
 use crate::Db;
 
@@ -13,19 +12,6 @@ pub struct ProviderRow {
     pub kind: String,
     pub account_id: i64,
     pub config: String,
-    pub enabled: bool,
-    pub last_synced_at: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Serialize, ToSchema)]
-pub struct Provider {
-    pub id: i64,
-    pub name: String,
-    pub kind: String,
-    pub account_id: i64,
-    pub config: Value,
     pub enabled: bool,
     pub last_synced_at: Option<String>,
     pub created_at: String,
@@ -46,38 +32,6 @@ impl From<ProviderRow> for Provider {
             updated_at: r.updated_at,
         }
     }
-}
-
-#[derive(Deserialize, ToSchema)]
-pub struct SaveProvider {
-    pub name: String,
-    pub kind: String,
-    pub account_id: i64,
-    #[serde(default)]
-    pub config: Option<Value>,
-    #[serde(default = "yes")]
-    pub enabled: bool,
-}
-fn yes() -> bool {
-    true
-}
-
-#[derive(Deserialize, ToSchema)]
-pub struct SyncRequest {
-    /// Inline data for payload-based providers (e.g. CSV text).
-    #[serde(default)]
-    pub payload: Option<String>,
-}
-
-#[derive(Serialize, FromRow, ToSchema)]
-pub struct ProviderSync {
-    pub id: i64,
-    pub provider_id: i64,
-    pub imported: i64,
-    pub skipped: i64,
-    pub status: String,
-    pub detail: Option<String>,
-    pub created_at: String,
 }
 
 /// A normalised transaction handed from a provider to be imported (dedupe on external id).

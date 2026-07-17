@@ -1,30 +1,7 @@
-use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
-use utoipa::ToSchema;
+pub use sure_core::{Merchant, SaveMerchant};
 
 use crate::Db;
-
-/// A reusable payee. Custom merchants are unique by name (case-insensitive) and can
-/// carry a suggested default category.
-#[derive(Serialize, FromRow, ToSchema)]
-pub struct Merchant {
-    pub id: i64,
-    pub name: String,
-    pub category_id: Option<i64>,
-    pub note: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Deserialize, ToSchema)]
-pub struct SaveMerchant {
-    pub name: String,
-    #[serde(default)]
-    pub category_id: Option<i64>,
-    #[serde(default)]
-    pub note: Option<String>,
-}
 
 pub async fn list(db: &Db) -> AppResult<Vec<Merchant>> {
     Ok(

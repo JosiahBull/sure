@@ -1,33 +1,7 @@
-use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
-use utoipa::ToSchema;
+pub use sure_core::{Currency, NewCurrency};
 
 use crate::Db;
-
-#[derive(Serialize, FromRow, ToSchema)]
-pub struct Currency {
-    /// ISO 4217 code (or a user code for private assets), e.g. `NZD`.
-    pub code: String,
-    pub name: String,
-    pub symbol: String,
-    /// Number of minor units per major unit (2 => cents).
-    pub decimal_places: i64,
-    pub created_at: String,
-}
-
-#[derive(Deserialize, ToSchema)]
-pub struct NewCurrency {
-    pub code: String,
-    pub name: String,
-    pub symbol: String,
-    #[serde(default = "default_decimals")]
-    pub decimal_places: i64,
-}
-
-fn default_decimals() -> i64 {
-    2
-}
 
 pub async fn list(db: &Db) -> AppResult<Vec<Currency>> {
     Ok(sqlx::query_as::<_, Currency>("SELECT * FROM currencies ORDER BY code")

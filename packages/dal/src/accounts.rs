@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::FromRow;
-use sure_core::{AccountClass, AccountKind, AccountMetadata, AppError, AppResult};
-use utoipa::ToSchema;
+use sure_core::{AccountKind, AccountMetadata, AppError, AppResult};
+pub use sure_core::{Account, SaveAccount, SetSecuredBy};
 
 use crate::Db;
 
@@ -37,25 +37,6 @@ pub struct AccountRow {
     pub updated_at: String,
 }
 
-#[derive(Serialize, ToSchema)]
-pub struct Account {
-    pub id: i64,
-    pub name: String,
-    pub kind: AccountKind,
-    /// Derived grouping (cash / asset / investment / liability).
-    pub class: AccountClass,
-    pub currency_code: String,
-    pub institution: Option<String>,
-    /// Typed, kind-specific configuration (discriminated by `profile`).
-    pub metadata: AccountMetadata,
-    pub archived: bool,
-    pub sort_order: i64,
-    /// For a liability, the asset account it is secured against (e.g. a mortgage's home).
-    pub secured_by_account_id: Option<i64>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
 impl From<AccountRow> for Account {
     fn from(r: AccountRow) -> Self {
         Account {
@@ -75,32 +56,9 @@ impl From<AccountRow> for Account {
     }
 }
 
-#[derive(Deserialize, ToSchema)]
-pub struct SaveAccount {
-    pub name: String,
-    pub kind: AccountKind,
-    pub currency_code: String,
-    #[serde(default)]
-    pub institution: Option<String>,
-    /// Typed, kind-specific config. Its `profile` must match the account `kind`; when
-    /// omitted, an empty value for the kind is stored.
-    #[serde(default)]
-    pub metadata: Option<AccountMetadata>,
-    #[serde(default)]
-    pub archived: bool,
-    #[serde(default)]
-    pub sort_order: i64,
-}
-
 #[derive(Deserialize)]
 pub struct ListQuery {
     pub include_archived: Option<bool>,
-}
-
-#[derive(Deserialize, ToSchema)]
-pub struct SetSecuredBy {
-    /// The asset account this (liability) account is secured against; `null` to unlink.
-    pub secured_by_account_id: Option<i64>,
 }
 
 pub async fn list(db: &Db, include_archived: bool) -> AppResult<Vec<Account>> {

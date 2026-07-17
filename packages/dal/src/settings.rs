@@ -1,21 +1,7 @@
-use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
-use utoipa::ToSchema;
+pub use sure_core::{Settings, UpdateSettings};
 
 use crate::Db;
-
-#[derive(Serialize, FromRow, ToSchema)]
-pub struct Settings {
-    /// Currency all reports are normalised into.
-    pub base_currency_code: String,
-    pub updated_at: String,
-}
-
-#[derive(Deserialize, ToSchema)]
-pub struct UpdateSettings {
-    pub base_currency_code: String,
-}
 
 pub async fn get(db: &Db) -> AppResult<Settings> {
     Ok(sqlx::query_as::<_, Settings>(

@@ -9,11 +9,11 @@ path = "src/lib.rs"
 
 [dependencies]
 # The DAL is the only layer that talks to the database, so it enables sure-core's
-# sqlx integration (the `From<sqlx::Error>` conversion + enum `Type` mapping).
+# sqlx integration (the `From<sqlx::Error>` conversion + enum `Type` mapping, and
+# `FromRow` on sure-core's request/response structs).
 sure-core = { workspace = true, features = ["sqlx"] }
 sqlx = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-utoipa = { workspace = true }
 chrono = { workspace = true }
