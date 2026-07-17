@@ -25,6 +25,9 @@ function monthsAgo(n, day = 1) {
   d.setDate(day);
   return iso(d);
 }
+function monthsAhead(n, day = 1) {
+  return monthsAgo(-n, day);
+}
 
 async function main() {
   await put("/api/settings", { base_currency_code: "NZD" });
@@ -41,24 +44,87 @@ async function main() {
   const lifestyle = (await post("/api/categories", { name: "Lifestyle", kind: "expense" })).id;
   const fun = (await post("/api/categories", { name: "Entertainment", kind: "expense", parent_id: lifestyle })).id;
 
-  // Accounts.
-  const everyday = (await post("/api/accounts", { name: "Everyday", kind: "bank", currency_code: "NZD" })).id;
-  const savings = (await post("/api/accounts", { name: "Savings", kind: "savings", currency_code: "NZD" })).id;
-  const card = (await post("/api/accounts", { name: "Credit Card", kind: "credit_card", currency_code: "NZD" })).id;
-  const home = (await post("/api/accounts", { name: "Family Home", kind: "real_estate", currency_code: "NZD" })).id;
-  const loan = (await post("/api/accounts", { name: "Home Loan", kind: "mortgage", currency_code: "NZD" })).id;
-  const greenLoan = (await post("/api/accounts", { name: "Green Home Loan", kind: "revolving_credit", currency_code: "NZD" })).id;
-  const shares = (await post("/api/accounts", { name: "Sharesies (US)", kind: "shares_us", currency_code: "USD" })).id;
-  const options = (await post("/api/accounts", { name: "Startco Options", kind: "shares_private", currency_code: "USD" })).id;
+  // Accounts, each with typed, per-kind metadata (see AccountMetadata in the backend).
+  const everyday = (await post("/api/accounts", {
+    name: "Everyday", kind: "bank", currency_code: "NZD", institution: "ANZ",
+    metadata: { profile: "depository", account_number: "••4821", url: "https://www.anz.co.nz" },
+  })).id;
+  const savings = (await post("/api/accounts", {
+    name: "Savings", kind: "savings", currency_code: "NZD", institution: "ANZ",
+    metadata: { profile: "depository", account_number: "••5502" },
+  })).id;
+  const card = (await post("/api/accounts", {
+    name: "Credit Card", kind: "credit_card", currency_code: "NZD", institution: "American Express",
+    metadata: { profile: "depository", account_number: "••1009" },
+  })).id;
+  const home = (await post("/api/accounts", {
+    name: "Family Home", kind: "real_estate", currency_code: "NZD",
+    metadata: {
+      profile: "property",
+      address: "14 Kōwhai Street, Wellington",
+      purchase_date: monthsAgo(38, 15),
+      purchase_price_minor: 74_000_000, // $740,000
+      url: "https://www.qv.co.nz",
+    },
+  })).id;
+  const loan = (await post("/api/accounts", {
+    name: "Home Loan", kind: "mortgage", currency_code: "NZD",
+    metadata: {
+      profile: "mortgage",
+      lender: "ANZ",
+      interest_rate_bps: 649, // 6.49%
+      rate_type: "fixed",
+      fixed_until: monthsAhead(14, 1),
+      fixed_term_months: 24,
+      term_months: 360,
+      start_date: monthsAgo(38, 15),
+      interest_paid_minor: 9_800_000, // $98,000
+      capital_paid_minor: 6_500_000, // $65,000
+    },
+  })).id;
+  const greenLoan = (await post("/api/accounts", {
+    name: "Green Home Loan", kind: "revolving_credit", currency_code: "NZD", institution: "ANZ",
+    metadata: { profile: "depository", notes: "Interest-free green-energy top-up (solar + insulation)." },
+  })).id;
+  const shares = (await post("/api/accounts", {
+    name: "Sharesies (US)", kind: "shares_us", currency_code: "USD",
+    metadata: { profile: "shares", broker: "Sharesies", ticker: "VOO", exchange: "NYSE Arca" },
+  })).id;
+  const options = (await post("/api/accounts", {
+    name: "Startco Options", kind: "shares_private", currency_code: "USD",
+    metadata: { profile: "shares", broker: "Carta", ticker: "STARTCO" },
+  })).id;
+  const car = (await post("/api/accounts", {
+    name: "Family Car", kind: "vehicle", currency_code: "NZD",
+    metadata: {
+      profile: "vehicle",
+      make: "Toyota", model: "RAV4", year: 2021, plate: "MEP123", nickname: "the wagon",
+      purchase_date: monthsAgo(20, 10),
+    },
+  })).id;
+  const carLoan = (await post("/api/accounts", {
+    name: "Car Loan", kind: "loan", currency_code: "NZD",
+    metadata: {
+      profile: "loan",
+      lender: "MTF Finance",
+      interest_rate_bps: 890, // 8.90%
+      term_months: 60,
+      start_date: monthsAgo(20, 10),
+    },
+  })).id;
 
   // Valuations (in minor units).
   await val(home, monthsAgo(6), 82_000_000);
   await val(loan, monthsAgo(6), -52_000_000);
   await val(greenLoan, monthsAgo(6), -3_500_000); // $35k green-energy loan
+  await val(car, monthsAgo(20), 4_200_000); // bought at $42,000
+  await val(car, monthsAgo(1), 3_450_000); // now ~$34,500
+  await val(carLoan, monthsAgo(6), -1_500_000); // owe $15,000
 
-  // Link the home loans to the house as secured debt (drives the paid-off %).
+  // Link the home loans to the house, and the car loan to the car (drives paid-off %).
   await put(`/api/accounts/${loan}/secured-by`, { secured_by_account_id: home });
   await put(`/api/accounts/${greenLoan}/secured-by`, { secured_by_account_id: home });
+  await put(`/api/accounts/${carLoan}/secured-by`, { secured_by_account_id: car });
   await val(shares, monthsAgo(6), 1_150_000); // $11,500 USD
   await val(shares, monthsAgo(1), 1_320_000); // $13,200 USD
 
@@ -156,6 +222,17 @@ async function main() {
     enabled: true,
   });
   await post(`/api/crons/${cron.id}/run`, {});
+
+  // The car depreciates 12%/yr, applied monthly.
+  const carCron = await post("/api/crons", {
+    name: "Car depreciation",
+    account_id: car,
+    kind: "depreciation",
+    rate_bps: 1200,
+    start_date: monthsAgo(6, 1),
+    enabled: true,
+  });
+  await post(`/api/crons/${carCron.id}/run`, {});
 
   console.log("Seed complete.");
 

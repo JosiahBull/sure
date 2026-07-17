@@ -6,9 +6,12 @@ use axum::{Json, Router};
 use crate::error::AppResult;
 use crate::state::AppState;
 
-// Account kinds/classes come from sure-core; the data model + queries from the DAL.
-// Re-export both so the OpenAPI registration paths (`crate::routes::accounts::*`) resolve.
-pub use sure_core::{AccountClass, AccountKind};
+// Account kinds/classes + typed metadata come from sure-core; the data model + queries
+// from the DAL. Re-export both so the OpenAPI paths (`crate::routes::accounts::*`) resolve.
+pub use sure_core::{
+    AccountClass, AccountKind, AccountMetadata, DepositoryMeta, GenericMeta, LoanMeta,
+    MortgageMeta, PropertyMeta, RateType, SharesMeta, VehicleMeta,
+};
 pub use sure_dal::accounts::{Account, ListQuery, SaveAccount, SetSecuredBy};
 
 /// List accounts (optionally including archived).
@@ -59,10 +62,12 @@ pub async fn update(
     Ok(Json(sure_dal::accounts::update(&st.db, id, input).await?))
 }
 
-/// Delete an account and its transactions/valuations (cascade).
+/// Delete an account and its transactions/valuations (cascade). Refused with 409 while
+/// debts are secured against it (an asset acts as their parent).
 #[utoipa::path(delete, path = "/api/accounts/{id}", tag = "accounts",
     params(("id" = i64, Path,)),
-    responses((status = 204), (status = 404, body = crate::error::ErrorBody)))]
+    responses((status = 204), (status = 404, body = crate::error::ErrorBody),
+              (status = 409, body = crate::error::ErrorBody)))]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     sure_dal::accounts::delete(&st.db, id).await?;
     Ok(StatusCode::NO_CONTENT)

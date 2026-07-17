@@ -1,10 +1,26 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::FromRow;
-use sure_core::{AccountClass, AccountKind, AppError, AppResult};
+use sure_core::{AccountClass, AccountKind, AccountMetadata, AppError, AppResult};
 use utoipa::ToSchema;
 
 use crate::Db;
+
+/// Decode stored account metadata for a `kind`, coercing the `profile` discriminant to
+/// the one the kind requires. This lets legacy `{}` rows, a hand-edited blob, or a
+/// changed account kind still decode as the correct variant; anything unrecognised
+/// falls back to an empty value for the kind.
+fn metadata_from_stored(kind: AccountKind, stored: &str) -> AccountMetadata {
+    let expected = AccountMetadata::profile_for(kind);
+    let mut value: Value = serde_json::from_str(stored).unwrap_or_else(|_| json!({}));
+    match value {
+        Value::Object(ref mut map) => {
+            map.insert("profile".into(), Value::String(expected.to_string()));
+        }
+        _ => value = json!({ "profile": expected }),
+    }
+    serde_json::from_value(value).unwrap_or_else(|_| AccountMetadata::default_for(kind))
+}
 
 #[derive(FromRow)]
 pub struct AccountRow {
@@ -30,8 +46,8 @@ pub struct Account {
     pub class: AccountClass,
     pub currency_code: String,
     pub institution: Option<String>,
-    /// Kind-specific configuration as a JSON object.
-    pub metadata: Value,
+    /// Typed, kind-specific configuration (discriminated by `profile`).
+    pub metadata: AccountMetadata,
     pub archived: bool,
     pub sort_order: i64,
     /// For a liability, the asset account it is secured against (e.g. a mortgage's home).
@@ -44,7 +60,7 @@ impl From<AccountRow> for Account {
     fn from(r: AccountRow) -> Self {
         Account {
             class: r.kind.class(),
-            metadata: serde_json::from_str(&r.metadata).unwrap_or_else(|_| json!({})),
+            metadata: metadata_from_stored(r.kind, &r.metadata),
             id: r.id,
             name: r.name,
             kind: r.kind,
@@ -66,9 +82,10 @@ pub struct SaveAccount {
     pub currency_code: String,
     #[serde(default)]
     pub institution: Option<String>,
-    /// Kind-specific JSON config; defaults to `{}`.
+    /// Typed, kind-specific config. Its `profile` must match the account `kind`; when
+    /// omitted, an empty value for the kind is stored.
     #[serde(default)]
-    pub metadata: Option<Value>,
+    pub metadata: Option<AccountMetadata>,
     #[serde(default)]
     pub archived: bool,
     #[serde(default)]
@@ -114,11 +131,18 @@ async fn validate(db: &Db, input: &SaveAccount) -> AppResult<String> {
     if !crate::currencies::exists(db, &currency).await? {
         return Err(AppError::validation(format!("unknown currency '{currency}'")));
     }
-    let metadata = input.metadata.clone().unwrap_or_else(|| json!({}));
-    if !metadata.is_object() {
-        return Err(AppError::validation("metadata must be a JSON object"));
-    }
-    Ok(metadata.to_string())
+    let expected = AccountMetadata::profile_for(input.kind);
+    let metadata = match &input.metadata {
+        Some(m) if m.profile() != expected => {
+            return Err(AppError::validation(format!(
+                "metadata profile '{}' does not match account kind (expected '{expected}')",
+                m.profile()
+            )));
+        }
+        Some(m) => m.clone(),
+        None => AccountMetadata::default_for(input.kind),
+    };
+    serde_json::to_string(&metadata).map_err(|e| AppError::Internal(e.into()))
 }
 
 pub async fn create(db: &Db, input: SaveAccount) -> AppResult<Account> {
@@ -161,6 +185,21 @@ pub async fn update(db: &Db, id: i64, input: SaveAccount) -> AppResult<Account> 
 }
 
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
+    // An asset is a "parent" for the debts secured against it. Refuse to delete it while
+    // any remain, so we never silently orphan them — the caller must unlink or delete
+    // those debts first.
+    let dependents = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM accounts WHERE secured_by_account_id = ?1 ORDER BY sort_order, name",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await?;
+    if !dependents.is_empty() {
+        return Err(AppError::conflict(format!(
+            "Unlink or delete the debt secured against this account first: {}",
+            dependents.join(", ")
+        )));
+    }
     let res = sqlx::query("DELETE FROM accounts WHERE id = ?1")
         .bind(id)
         .execute(db)

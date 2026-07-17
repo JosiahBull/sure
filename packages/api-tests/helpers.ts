@@ -6,10 +6,11 @@ export async function createAccount(
   api: SureClient,
   name: string,
   kind: Schemas["SaveAccount"]["kind"],
-  currency = "NZD"
+  currency = "NZD",
+  extra: { metadata?: Schemas["AccountMetadata"]; institution?: string } = {}
 ) {
   const { data, response } = await api.POST("/api/accounts", {
-    body: { name, kind, currency_code: currency, archived: false, sort_order: 0 },
+    body: { name, kind, currency_code: currency, archived: false, sort_order: 0, ...extra },
   });
   expect(response.status, "create account").toBe(201);
   return data!;

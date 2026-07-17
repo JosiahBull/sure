@@ -72,3 +72,25 @@ test("can add a transaction and see it in the list", async ({ page }) => {
   await page.getByRole("button", { name: "Save transaction" }).click();
   await expect(page.getByText("Playwright test coffee")).toBeVisible();
 });
+
+// Mutates shared state, so it runs after every snapshot assertion above. Drives the
+// real AccountForm: picking a kind reveals that kind's typed fields, and creating
+// persists them (exercising the major→minor / metadata-building conversions).
+test("can create an account with typed metadata via the form", async ({ page }) => {
+  await goto(page, "/accounts");
+  await page.getByRole("button", { name: "+ Add account" }).click();
+
+  await page.getByLabel("Type").selectOption("vehicle");
+  await page.getByLabel("Name", { exact: true }).fill("Test Van");
+  await page.getByLabel("Make", { exact: true }).fill("Ford");
+  await page.getByLabel("Model", { exact: true }).fill("Transit");
+  await page.getByLabel("Nickname", { exact: true }).fill("Vanny");
+  await page.getByLabel("Plate", { exact: true }).fill("VAN999");
+  await page.getByRole("button", { name: "Create" }).click();
+
+  // It appears under Assets with its metadata summary rendered from the stored fields.
+  const row = page.locator(".acct", { hasText: "Test Van" });
+  await expect(row).toBeVisible();
+  await expect(row).toContainText("Vanny");
+  await expect(row).toContainText("VAN999");
+});

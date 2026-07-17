@@ -5,4 +5,7 @@ pub mod error;
 pub mod types;
 
 pub use error::{AppError, AppResult, ErrorBody, ErrorDetail};
-pub use types::{class_of, AccountClass, AccountKind};
+pub use types::{
+    class_of, AccountClass, AccountKind, AccountMetadata, DepositoryMeta, GenericMeta, LoanMeta,
+    MortgageMeta, PropertyMeta, RateType, SharesMeta, VehicleMeta,
+};

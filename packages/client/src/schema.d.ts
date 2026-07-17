@@ -152,7 +152,10 @@ export interface paths {
             };
         };
         post?: never;
-        /** Delete an account and its transactions/valuations (cascade). */
+        /**
+         * Delete an account and its transactions/valuations (cascade). Refused with 409 while
+         *     debts are secured against it (an asset acts as their parent).
+         */
         delete: {
             parameters: {
                 query?: never;
@@ -171,6 +174,14 @@ export interface paths {
                     content?: never;
                 };
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -2955,8 +2966,8 @@ export interface components {
             class: components["schemas"]["AccountClass"];
             currency_code: string;
             institution?: string | null;
-            /** @description Kind-specific configuration as a JSON object. */
-            metadata: unknown;
+            /** @description Typed, kind-specific configuration (discriminated by `profile`). */
+            metadata: components["schemas"]["AccountMetadata"];
             archived: boolean;
             /** Format: int64 */
             sort_order: number;
@@ -3000,6 +3011,32 @@ export interface components {
          * @enum {string}
          */
         AccountKind: "cash" | "bank" | "savings" | "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan" | "vehicle" | "real_estate" | "shares_nz" | "shares_us" | "shares_private" | "asset" | "liability";
+        /**
+         * @description Typed configuration for an account. The variant (`profile`) is determined by the
+         *     account's `kind`; see [`AccountMetadata::profile_for`].
+         */
+        AccountMetadata: (components["schemas"]["DepositoryMeta"] & {
+            /** @enum {string} */
+            profile: "depository";
+        }) | (components["schemas"]["PropertyMeta"] & {
+            /** @enum {string} */
+            profile: "property";
+        }) | (components["schemas"]["MortgageMeta"] & {
+            /** @enum {string} */
+            profile: "mortgage";
+        }) | (components["schemas"]["LoanMeta"] & {
+            /** @enum {string} */
+            profile: "loan";
+        }) | (components["schemas"]["VehicleMeta"] & {
+            /** @enum {string} */
+            profile: "vehicle";
+        }) | (components["schemas"]["SharesMeta"] & {
+            /** @enum {string} */
+            profile: "shares";
+        }) | (components["schemas"]["GenericMeta"] & {
+            /** @enum {string} */
+            profile: "generic";
+        });
         BalancesReport: {
             currency: string;
             as_of: string;
@@ -3107,6 +3144,14 @@ export interface components {
             decimal_places: number;
             created_at: string;
         };
+        /** @description Bank / cash / savings / card accounts. */
+        DepositoryMeta: {
+            /** @description Account or card number (store a masked value if you like, e.g. `••4321`). */
+            account_number?: string | null;
+            /** @description A link to online banking or the statement portal. */
+            url?: string | null;
+            notes?: string | null;
+        };
         EquityExercise: {
             /** Format: int64 */
             id: number;
@@ -3180,6 +3225,11 @@ export interface components {
             /** @description Human-readable description. */
             message: string;
         };
+        /** @description Any other asset or liability. */
+        GenericMeta: {
+            url?: string | null;
+            notes?: string | null;
+        };
         Health: {
             /** @description Always `"ok"` when the service is up. */
             status: string;
@@ -3189,6 +3239,24 @@ export interface components {
         LinkRequest: {
             /** Format: int64 */
             linked_transaction_id: number;
+        };
+        /** @description A generic loan (personal loan, student loan, vehicle financing, ...). */
+        LoanMeta: {
+            lender?: string | null;
+            /**
+             * Format: int64
+             * @description Annual interest rate in basis points (e.g. 8.90% = 890).
+             */
+            interest_rate_bps?: number | null;
+            /**
+             * Format: int64
+             * @description Overall loan term, in months.
+             */
+            term_months?: number | null;
+            /** @description ISO-8601 date the loan started. */
+            start_date?: string | null;
+            url?: string | null;
+            notes?: string | null;
         };
         /**
          * @description A reusable payee. Custom merchants are unique by name (case-insensitive) and can
@@ -3203,6 +3271,42 @@ export interface components {
             note?: string | null;
             created_at: string;
             updated_at: string;
+        };
+        /** @description A mortgage secured against a property (link it with `secured_by_account_id`). */
+        MortgageMeta: {
+            lender?: string | null;
+            /**
+             * Format: int64
+             * @description Annual interest rate in basis points (e.g. 5.49% = 549).
+             */
+            interest_rate_bps?: number | null;
+            rate_type?: null | components["schemas"]["RateType"];
+            /** @description ISO-8601 date the current fixed rate expires. */
+            fixed_until?: string | null;
+            /**
+             * Format: int64
+             * @description Length of the current fixed-rate period, in months.
+             */
+            fixed_term_months?: number | null;
+            /**
+             * Format: int64
+             * @description Overall loan term, in months.
+             */
+            term_months?: number | null;
+            /** @description ISO-8601 date the loan started (used to derive time remaining). */
+            start_date?: string | null;
+            /**
+             * Format: int64
+             * @description Interest paid so far, in minor units.
+             */
+            interest_paid_minor?: number | null;
+            /**
+             * Format: int64
+             * @description Capital (principal) paid so far, in minor units.
+             */
+            capital_paid_minor?: number | null;
+            url?: string | null;
+            notes?: string | null;
         };
         NetWorthPoint: {
             as_of: string;
@@ -3248,6 +3352,20 @@ export interface components {
             /** Format: int64 */
             limit?: number | null;
         };
+        /** @description Real estate. */
+        PropertyMeta: {
+            address?: string | null;
+            /** @description ISO-8601 date the property was purchased. */
+            purchase_date?: string | null;
+            /**
+             * Format: int64
+             * @description Purchase price in minor units of the account currency.
+             */
+            purchase_price_minor?: number | null;
+            /** @description A link to the listing, council valuation, etc. */
+            url?: string | null;
+            notes?: string | null;
+        };
         Provider: {
             /** Format: int64 */
             id: number;
@@ -3280,6 +3398,11 @@ export interface components {
             detail?: string | null;
             created_at: string;
         };
+        /**
+         * @description How a mortgage's interest rate is structured.
+         * @enum {string}
+         */
+        RateType: "fixed" | "floating" | "split";
         Rule: {
             /** Format: int64 */
             id: number;
@@ -3390,8 +3513,7 @@ export interface components {
             kind: components["schemas"]["AccountKind"];
             currency_code: string;
             institution?: string | null;
-            /** @description Kind-specific JSON config; defaults to `{}`. */
-            metadata?: unknown;
+            metadata?: null | components["schemas"]["AccountMetadata"];
             archived?: boolean;
             /** Format: int64 */
             sort_order?: number;
@@ -3515,6 +3637,16 @@ export interface components {
             base_currency_code: string;
             updated_at: string;
         };
+        /** @description Share / equity holdings (NZ, US, or private). */
+        SharesMeta: {
+            /** @description Broker or platform (e.g. Sharesies, Hatch, IBKR). */
+            broker?: string | null;
+            ticker?: string | null;
+            /** @description Exchange the holding trades on (e.g. NZX, NASDAQ). */
+            exchange?: string | null;
+            url?: string | null;
+            notes?: string | null;
+        };
         SyncRequest: {
             /** @description Inline data for payload-based providers (e.g. CSV text). */
             payload?: string | null;
@@ -3602,6 +3734,22 @@ export interface components {
             source: string;
             note?: string | null;
             created_at: string;
+        };
+        /** @description A vehicle. Attach financing as a separate loan account secured against it. */
+        VehicleMeta: {
+            make?: string | null;
+            model?: string | null;
+            /** Format: int64 */
+            year?: number | null;
+            /** @description Registration / licence plate. */
+            plate?: string | null;
+            /** @description A friendly name, e.g. "the wagon". */
+            nickname?: string | null;
+            vin?: string | null;
+            purchase_date?: string | null;
+            sale_date?: string | null;
+            url?: string | null;
+            notes?: string | null;
         };
         /** @description Vesting/exercise status of a grant as of a date. */
         VestingStatus: {
