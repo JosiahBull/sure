@@ -31,6 +31,18 @@
   let categoryId = $state<number | "">(paramCategory ?? "");
   let search = $state("");
   let includeOneOff = $state(true);
+
+  type SortKey = "date" | "description" | "account" | "category" | "merchant" | "amount";
+  let sortKey = $state<SortKey>("date");
+  let sortDir = $state<"asc" | "desc">("desc");
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) sortDir = sortDir === "asc" ? "desc" : "asc";
+    else {
+      sortKey = key;
+      sortDir = key === "date" || key === "amount" ? "desc" : "asc";
+    }
+  }
+  const sortArrow = (key: SortKey) => (sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : "");
   // A range from the link wins; otherwise a deep-linked transaction can be any date, so
   // widen to "all" to be sure it's loaded.
   let range = $state<RangeKey>(
@@ -50,6 +62,25 @@
 
   const accountName = $derived(new Map(accounts.map((a) => [a.id, a.name])));
   const currencyOf = $derived(new Map(accounts.map((a) => [a.id, a.currency_code])));
+  const categoryName = $derived(new Map(categories.map((c) => [c.id, c.name])));
+  const merchantName = $derived(new Map(merchants.map((m) => [m.id, m.name])));
+
+  function sortValue(t: Tx, key: SortKey) {
+    switch (key) {
+      case "date":
+        return t.posted_at;
+      case "description":
+        return (t.description ?? "").toLowerCase();
+      case "account":
+        return (accountName.get(t.account_id) ?? "").toLowerCase();
+      case "category":
+        return (categoryName.get(t.category_id ?? -1) ?? "").toLowerCase();
+      case "merchant":
+        return (merchantName.get(t.merchant_id ?? -1) ?? t.merchant ?? "").toLowerCase();
+      case "amount":
+        return t.amount_minor;
+    }
+  }
 
   const childrenOf = $derived.by(() => {
     const m = new Map<number, number[]>();
@@ -79,14 +110,22 @@
     return out;
   });
 
-  const visible = $derived(
-    txns.filter((t) => {
+  const visible = $derived.by(() => {
+    const filtered = txns.filter((t) => {
       if (categorySubtree && !(t.category_id != null && categorySubtree.has(t.category_id))) return false;
       if (search && !`${t.description} ${t.merchant ?? ""}`.toLowerCase().includes(search.toLowerCase()))
         return false;
       return true;
-    })
-  );
+    });
+    const dir = sortDir === "asc" ? 1 : -1;
+    return filtered.sort((a, b) => {
+      const va = sortValue(a, sortKey);
+      const vb = sortValue(b, sortKey);
+      if (va < vb) return -dir;
+      if (va > vb) return dir;
+      return 0;
+    });
+  });
 
   async function loadRefs() {
     const [a, c, m] = await Promise.all([
@@ -270,8 +309,15 @@
     <div style="overflow-x:auto">
       <table class="table">
         <thead>
-          <tr><th>Date</th><th>Description</th><th>Account</th><th>Category</th><th>Merchant</th>
-            <th style="text-align:right">Amount</th><th></th></tr>
+          <tr>
+            <th><button class="sort-btn" onclick={() => toggleSort("date")}>Date{sortArrow("date")}</button></th>
+            <th><button class="sort-btn" onclick={() => toggleSort("description")}>Description{sortArrow("description")}</button></th>
+            <th><button class="sort-btn" onclick={() => toggleSort("account")}>Account{sortArrow("account")}</button></th>
+            <th><button class="sort-btn" onclick={() => toggleSort("category")}>Category{sortArrow("category")}</button></th>
+            <th><button class="sort-btn" onclick={() => toggleSort("merchant")}>Merchant{sortArrow("merchant")}</button></th>
+            <th style="text-align:right"><button class="sort-btn" onclick={() => toggleSort("amount")}>Amount{sortArrow("amount")}</button></th>
+            <th></th>
+          </tr>
         </thead>
         <tbody>
           {#each visible as t (t.id)}
@@ -326,6 +372,12 @@
 </section>
 
 <style>
+  .sort-btn {
+    all: unset;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
   /* Deep-linked transaction (e.g. from the rules audit log): a brief flash that settles
      into a subtle persistent tint so the row stays identifiable. */
   tr.highlight td {
