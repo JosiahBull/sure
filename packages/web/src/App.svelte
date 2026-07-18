@@ -30,7 +30,10 @@
         return Dashboard;
     }
   });
-  const showFilters = $derived(activePath === "/");
+  // Shared header filters apply wherever they actually affect the data shown — Overview's
+  // charts and Transactions' list. Accounts/Rules/Settings have no time-range concept, so
+  // showing them there would just be confusing, inert chrome.
+  const showFilters = $derived(activePath === "/" || activePath === "/transactions");
 </script>
 
 <div class="app">

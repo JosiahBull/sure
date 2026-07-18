@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, type Schemas } from "../lib/api";
-  import { RANGES, rangeDates, type RangeKey } from "../lib/state.svelte";
+  import { RANGES, activeRange, filters, type RangeKey } from "../lib/state.svelte";
   import { router } from "../lib/router.svelte";
 
   // Deep links via the hash query, read once at mount:
@@ -34,7 +34,6 @@
   let accountId = $state<number | "">(paramAccount ?? "");
   let categoryId = $state<number | "">(paramCategory ?? "");
   let search = $state("");
-  let includeOneOff = $state(true);
 
   type SortKey = "date" | "description" | "account" | "category" | "merchant" | "amount";
   let sortKey = $state<SortKey>("date");
@@ -47,16 +46,20 @@
     }
   }
   const sortArrow = (key: SortKey) => (sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : "");
-  // A range from the link wins; otherwise a deep-linked transaction (or a "show me this
-  // account's transactions" link, which implies the whole history, not just a recent
-  // slice) can be any date, so widen to "all" to be sure it's loaded.
-  let range = $state<RangeKey>(
-    isRangeKey(paramRange)
-      ? paramRange
-      : highlightId != null || paramAccount != null
-        ? "all"
-        : "last_90",
-  );
+  // Time range / one-off are the header's shared filters (App.svelte), not page-local —
+  // deep links still get to steer them, though: an explicit `?range=` wins, and a
+  // deep-linked transaction/account (which implies "show me everything relevant", not
+  // just whatever slice happens to be selected) widens to "all" if no range was given.
+  // Runs once per navigation here (this page remounts fresh on every route change), so
+  // it behaves like the one-time default the local state used to be, without fighting
+  // the user's choice on every subsequent render.
+  if (isRangeKey(paramRange)) {
+    filters.range = paramRange;
+    filters.custom = null;
+  } else if (highlightId != null || paramAccount != null) {
+    filters.range = "all";
+    filters.custom = null;
+  }
 
   let showAdd = $state(false);
   let form = $state({
@@ -215,7 +218,7 @@
   // change here, so the scroll position survives it.)
   let prevFilterSig: string | null = null;
   $effect(() => {
-    const sig = `${accountId}|${categoryId}|${search}|${includeOneOff}|${range}|${sortKey}|${sortDir}`;
+    const sig = `${accountId}|${categoryId}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}`;
     if (prevFilterSig != null && sig !== prevFilterSig && anchorId != null) {
       anchorId = null;
       writeAnchorToUrl(null);
@@ -239,8 +242,8 @@
   async function loadTx() {
     loading = true;
     error = null;
-    const { from, to } = rangeDates(range);
-    const query: Record<string, unknown> = { from, to, include_one_off: includeOneOff, limit: 2000 };
+    const { from, to } = activeRange();
+    const query: Record<string, unknown> = { from, to, include_one_off: filters.includeOneOff, limit: 2000 };
     if (accountId !== "") query.account_id = accountId;
     // Category is filtered client-side (subtree-aware) in `sortedFiltered`, not on the server.
     const { data, error: e } = await api.GET("/api/transactions", { params: { query } });
@@ -253,8 +256,9 @@
   $effect(() => {
     // Category is filtered client-side, so it isn't a reload trigger.
     accountId;
-    includeOneOff;
-    range;
+    filters.includeOneOff;
+    filters.range;
+    filters.custom;
     loadTx();
   });
 
@@ -386,9 +390,6 @@
 
 <section class="card">
   <div class="row wrap" style="gap:10px;margin-bottom:12px">
-    <select class="select" style="width:auto" bind:value={range}>
-      {#each RANGES as r}<option value={r.key}>{r.label}</option>{/each}
-    </select>
     <select class="select" style="width:auto" aria-label="Filter by account" bind:value={accountId}>
       <option value="">All accounts</option>
       {#each accounts as a}<option value={a.id}>{a.name}</option>{/each}
@@ -398,10 +399,6 @@
       {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
     </select>
     <input class="input grow" style="min-width:140px" placeholder="Search…" bind:value={search} />
-    <label class="switch">
-      <input type="checkbox" bind:checked={includeOneOff} /><span class="track"></span>
-      <span>One-off</span>
-    </label>
   </div>
 
   {#if loading && txns.length === 0}
