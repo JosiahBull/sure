@@ -10,6 +10,7 @@ pub mod merchants;
 pub mod providers;
 pub mod rules;
 pub mod settings;
+pub mod stock_prices;
 pub mod transactions;
 pub mod types;
 pub mod valuations;
@@ -26,6 +27,7 @@ pub use rules::{
     SaveRule,
 };
 pub use settings::{Settings, UpdateSettings};
+pub use stock_prices::StockPrice;
 pub use transactions::{LinkRequest, SaveTransaction, Transaction, TransferRequest, TxQuery};
 pub use types::{
     class_of, Account, AccountClass, AccountKind, AccountMetadata, DepositoryMeta, GenericMeta,

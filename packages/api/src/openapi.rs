@@ -89,6 +89,7 @@ use utoipa::OpenApi;
         crate::routes::providers::list_syncs,
         crate::routes::snapshot::export,
         crate::routes::snapshot::import,
+        crate::routes::stock_prices::get_price,
     ),
     components(schemas(
         crate::error::ErrorBody,
@@ -159,6 +160,7 @@ use utoipa::OpenApi;
         crate::routes::providers::ProviderSync,
         crate::providers::ProviderKind,
         crate::providers::ProviderAccount,
+        crate::routes::stock_prices::StockPrice,
     )),
     tags(
         (name = "meta", description = "Service metadata"),

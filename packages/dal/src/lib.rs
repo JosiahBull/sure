@@ -21,6 +21,7 @@ pub mod rules;
 pub mod scheduled_tasks;
 pub mod settings;
 pub mod snapshot;
+pub mod stock_prices;
 pub mod transactions;
 pub mod valuations;
 

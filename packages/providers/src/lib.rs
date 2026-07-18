@@ -13,10 +13,14 @@ pub mod akahu;
 pub mod csv;
 pub mod exchange_rate;
 pub mod frankfurter;
+pub mod stock_price;
+pub mod yahoo_finance;
 
 pub use akahu::AkahuProvider;
 pub use exchange_rate::{ExchangeRateProvider, ExchangeRateQuote};
 pub use frankfurter::FrankfurterProvider;
+pub use stock_price::{StockPriceProvider, StockPriceQuote};
+pub use yahoo_finance::YahooFinanceProvider;
 
 /// A normalized transaction pulled from an external source.
 #[derive(Debug, Clone)]

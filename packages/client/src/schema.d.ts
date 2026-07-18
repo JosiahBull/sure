@@ -462,6 +462,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/{id}/stock-price": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A shares account's closing price as of a given date (defaults to today),
+         *     backfilling the historical cache from the configured provider on a miss.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /**
+                     * @description ISO-8601 date (`YYYY-MM-DD`); defaults to today. An unparseable value also
+                     *     falls back to today, same as the equity endpoints' `as_of`.
+                     */
+                    as_of?: string;
+                };
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["StockPrice"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}/valuations": {
         parameters: {
             query?: never;
@@ -3818,6 +3872,22 @@ export interface components {
             exchange?: string | null;
             url?: string | null;
             notes?: string | null;
+        };
+        /**
+         * @description A single day's cached closing price for a ticker (see
+         *     `sure_providers::StockPriceProvider`), keyed by `(ticker, exchange, as_of)`.
+         */
+        StockPrice: {
+            ticker: string;
+            /** @description Free-text exchange hint (e.g. `"NZX"`), or `""` if none was set. */
+            exchange: string;
+            /** @description ISO-8601 date this close is for. */
+            as_of: string;
+            /** @description Decimal text (exact), e.g. `"5.60"`. */
+            close: string;
+            currency_code: string;
+            /** @description When this row was fetched (ISO-8601 timestamp, UTC). */
+            fetched_at: string;
         };
         SyncRequest: {
             /** @description Inline data for payload-based providers (e.g. CSV text). */

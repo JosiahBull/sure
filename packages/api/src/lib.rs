@@ -4,6 +4,7 @@ pub mod openapi;
 pub mod provider_poll;
 pub mod routes;
 pub mod state;
+pub mod stock_prices;
 
 // The lower layers now live in their own crates. Re-export them under the historical
 // module paths so handler/OpenAPI code keeps compiling against `crate::error`,
@@ -65,6 +66,10 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         std::sync::Arc::new(providers::FrankfurterProvider::new()),
     )));
     scheduler.register(Box::new(provider_poll::ProviderPollTask::new(pool.clone())));
+    scheduler.register(Box::new(stock_prices::StockPriceTask::new(
+        pool.clone(),
+        std::sync::Arc::new(providers::YahooFinanceProvider::new()),
+    )));
     scheduler.spawn();
 
     let state = AppState::new(pool);

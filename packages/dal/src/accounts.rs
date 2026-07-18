@@ -71,6 +71,38 @@ pub async fn list(db: &Db, include_archived: bool) -> AppResult<Vec<Account>> {
     Ok(rows.into_iter().map(Account::from).collect())
 }
 
+/// A distinct ticker/exchange pair in use by a `shares_nz`/`shares_us` account, for
+/// keeping the stock price cache warm (see `sure_api::stock_prices::StockPriceTask`).
+/// `shares_private` holdings are excluded — there's no market ticker to fetch a price
+/// for.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SharesTicker {
+    pub ticker: String,
+    pub exchange: String,
+}
+
+pub async fn list_shares_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
+    let accounts = list(db, false).await?;
+    let tickers: std::collections::HashSet<SharesTicker> = accounts
+        .into_iter()
+        .filter(|a| matches!(a.kind, AccountKind::SharesNz | AccountKind::SharesUs))
+        .filter_map(|a| {
+            let AccountMetadata::Shares(meta) = a.metadata else {
+                return None;
+            };
+            let ticker = meta.ticker?.trim().to_uppercase();
+            if ticker.is_empty() {
+                return None;
+            }
+            Some(SharesTicker {
+                ticker,
+                exchange: meta.exchange.unwrap_or_default().trim().to_string(),
+            })
+        })
+        .collect();
+    Ok(tickers.into_iter().collect())
+}
+
 pub async fn get(db: &Db, id: i64) -> AppResult<Account> {
     let row = sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE id = ?1")
         .bind(id)
@@ -287,7 +319,7 @@ async fn write_metadata(db: &Db, account_id: i64, metadata: &AccountMetadata) ->
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
-    use sure_core::DepositoryMeta;
+    use sure_core::{DepositoryMeta, SharesMeta};
 
     async fn test_db() -> Db {
         let pool = SqlitePoolOptions::new()
@@ -542,5 +574,86 @@ mod tests {
         .unwrap();
 
         assert!(crate::valuations::list_for_account(&db, account.id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn lists_distinct_tickers_from_market_shares_accounts_only() {
+        let db = test_db().await;
+        let shares = |ticker: &str, exchange: &str| {
+            Some(AccountMetadata::Shares(SharesMeta {
+                broker: None,
+                ticker: Some(ticker.to_string()),
+                exchange: Some(exchange.to_string()),
+                url: None,
+                notes: None,
+            }))
+        };
+        create(&db, SaveAccount {
+            name: "Meridian".to_string(),
+            kind: AccountKind::SharesNz,
+            currency_code: "NZD".to_string(),
+            institution: None,
+            metadata: shares("mel", "nzx"),
+            archived: false,
+            sort_order: 0,
+        })
+        .await
+        .unwrap();
+        // A second account holding the same ticker shouldn't produce a duplicate entry.
+        create(&db, SaveAccount {
+            name: "Meridian (also)".to_string(),
+            kind: AccountKind::SharesNz,
+            currency_code: "NZD".to_string(),
+            institution: None,
+            metadata: shares("mel", "nzx"),
+            archived: false,
+            sort_order: 0,
+        })
+        .await
+        .unwrap();
+        create(&db, SaveAccount {
+            name: "Apple".to_string(),
+            kind: AccountKind::SharesUs,
+            currency_code: "USD".to_string(),
+            institution: None,
+            metadata: shares("aapl", "nasdaq"),
+            archived: false,
+            sort_order: 0,
+        })
+        .await
+        .unwrap();
+        // Private holdings have no market ticker to fetch a price for.
+        create(&db, SaveAccount {
+            name: "Startup equity".to_string(),
+            kind: AccountKind::SharesPrivate,
+            currency_code: "NZD".to_string(),
+            institution: None,
+            metadata: shares("n/a", ""),
+            archived: false,
+            sort_order: 0,
+        })
+        .await
+        .unwrap();
+        // No ticker set — excluded.
+        create(&db, SaveAccount {
+            name: "Undecided holding".to_string(),
+            kind: AccountKind::SharesUs,
+            currency_code: "USD".to_string(),
+            institution: None,
+            metadata: None,
+            archived: false,
+            sort_order: 0,
+        })
+        .await
+        .unwrap();
+
+        let mut tickers = list_shares_tickers(&db).await.unwrap();
+        tickers.sort_by(|a, b| a.ticker.cmp(&b.ticker));
+
+        assert_eq!(tickers.len(), 2);
+        assert_eq!(tickers[0].ticker, "AAPL");
+        assert_eq!(tickers[0].exchange, "nasdaq");
+        assert_eq!(tickers[1].ticker, "MEL");
+        assert_eq!(tickers[1].exchange, "nzx");
     }
 }

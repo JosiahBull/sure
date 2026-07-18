@@ -19,6 +19,7 @@ rust_decimal = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true }
 akahu-client = "0.2"
 # akahu-client depends on reqwest 0.13, one major ahead of the workspace's 0.12 (used by
 # the other providers above) — renamed so both can coexist without touching the rest of
