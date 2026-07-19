@@ -26,7 +26,14 @@ dist-ssr
 /packages/web/blob-report
 /packages/web/.playwright
 /packages/web/tests/.server.pid
+/packages/api-tests/test-results
 /.playwright-mcp
+
+# Personal Sharesies data exports (see scripts/fetch-sharesies-data.sh) — real portfolio data,
+# never publish this
+/sharesies-export/
+/sharesies-export-*/
+/sharesies-instruments-*/
 
 # Env / editor
 .env

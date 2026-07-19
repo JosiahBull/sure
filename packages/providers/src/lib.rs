@@ -13,6 +13,7 @@ pub mod akahu;
 pub mod csv;
 pub mod exchange_rate;
 pub mod frankfurter;
+pub mod sharesies;
 pub mod stock_price;
 pub mod yahoo_finance;
 
@@ -48,6 +49,11 @@ pub struct ProviderCategory {
     /// Broader grouping (e.g. "Lifestyle"), if the source has one — becomes that
     /// category's parent.
     pub group: Option<String>,
+    /// Flow direction hint (`"income"` | `"expense"` | `"transfer"`) applied when the
+    /// category is first created. Most enrichment is spending, so `None` defaults to
+    /// expense on the DAL side; a broker's dividend row sets `"income"`, an internal
+    /// wallet ↔ bank movement sets `"transfer"` so it's excluded from spend/income reports.
+    pub kind: Option<String>,
 }
 
 /// An upstream account surfaced by a provider that supports account discovery

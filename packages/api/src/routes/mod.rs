@@ -3,6 +3,7 @@ use axum::Router;
 use crate::state::AppState;
 
 pub mod accounts;
+pub mod brokerage;
 pub mod categories;
 pub mod crons;
 pub mod currencies;
@@ -31,6 +32,7 @@ pub fn router() -> Router<AppState> {
         .merge(rules::router())
         .merge(crons::router())
         .merge(equity::router())
+        .merge(brokerage::router())
         .merge(providers::router())
         .merge(snapshot::router())
         .merge(reports::router())

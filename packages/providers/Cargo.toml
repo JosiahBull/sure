@@ -28,3 +28,4 @@ reqwest-akahu = { package = "reqwest", version = "0.13", default-features = fals
     "json",
     "rustls",
 ] }
+zip = { version = "2", default-features = false, features = ["deflate"] }

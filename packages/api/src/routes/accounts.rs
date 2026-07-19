@@ -9,8 +9,8 @@ use crate::state::AppState;
 // Account kinds/classes + typed metadata come from sure-core; the data model + queries
 // from the DAL. Re-export both so the OpenAPI paths (`crate::routes::accounts::*`) resolve.
 pub use sure_core::{
-    AccountClass, AccountKind, AccountMetadata, DepositoryMeta, GenericMeta, LoanMeta,
-    MortgageMeta, PropertyMeta, RateType, SharesMeta, VehicleMeta,
+    AccountClass, AccountKind, AccountMetadata, BrokerageMeta, DepositoryMeta, GenericMeta,
+    LoanMeta, MortgageMeta, PropertyMeta, RateType, SharesMeta, VehicleMeta,
 };
 pub use sure_dal::accounts::{Account, ListQuery, SaveAccount, SetSecuredBy};
 

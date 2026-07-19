@@ -50,6 +50,32 @@
   let linkForms = $state<Record<string, LinkFormState>>({});
   let linking = $state<string | null>(null);
 
+  // A brokerage platform (e.g. Sharesies) surfaces one upstream account per currency
+  // wallet; they're grouped by institution and linked together into a single Brokerage
+  // account. Everything else links one-to-one as before.
+  type GroupFormState = { target: string; name: string; currency: string; institution: string };
+  let groupForms = $state<Record<string, GroupFormState>>({});
+  let linkingGroup = $state<string | null>(null);
+
+  const brokerageGroups = $derived.by(() => {
+    const groups = new Map<
+      string,
+      { key: string; institution: string | null; members: Schemas["ProviderAccount"][] }
+    >();
+    for (const a of discovered) {
+      if (a.kind_hint !== "brokerage") continue;
+      const key = a.institution ?? a.external_id;
+      let g = groups.get(key);
+      if (!g) {
+        g = { key, institution: a.institution ?? null, members: [] };
+        groups.set(key, g);
+      }
+      g.members.push(a);
+    }
+    return [...groups.values()];
+  });
+  const singleAccounts = $derived(discovered.filter((a) => a.kind_hint !== "brokerage"));
+
   // cron form
   let cf = $state({
     name: "",
@@ -158,17 +184,62 @@
       discovered = [];
     } else {
       discovered = data ?? [];
+      const base = settings?.base_currency_code ?? "NZD";
       for (const a of discovered) {
-        linkForms[a.external_id] ??= {
-          target: "new",
-          name: a.name,
-          kind: a.kind_hint,
-          currency: a.currency_code,
-          institution: a.institution ?? "",
-        };
+        if (a.kind_hint === "brokerage") {
+          // One form per group (keyed by institution), seeded once from the first member.
+          const key = a.institution ?? a.external_id;
+          groupForms[key] ??= {
+            target: "new",
+            name: a.institution ?? a.name,
+            currency: base,
+            institution: a.institution ?? "",
+          };
+        } else {
+          linkForms[a.external_id] ??= {
+            target: "new",
+            name: a.name,
+            kind: a.kind_hint,
+            currency: a.currency_code,
+            institution: a.institution ?? "",
+          };
+        }
       }
     }
     discovering = false;
+  }
+
+  async function linkBrokerageGroup(g: { key: string; members: Schemas["ProviderAccount"][] }) {
+    const f = groupForms[g.key];
+    if (!f) return;
+    linkingGroup = g.key;
+    error = null;
+    const members = g.members.map((m) => ({ external_id: m.external_id, name: `Akahu — ${m.name}` }));
+    const body: Schemas["LinkProviderGroup"] =
+      f.target === "new"
+        ? {
+            kind: "akahu",
+            members,
+            new_account: {
+              name: f.name,
+              kind: "brokerage",
+              currency_code: f.currency,
+              institution: f.institution.trim() || null,
+              archived: false,
+              sort_order: 0,
+            },
+          }
+        : { kind: "akahu", members, existing_account_id: Number(f.target) };
+    const { error: e } = await api.POST("/api/providers/link-group", { body });
+    if (e) {
+      error = apiErrorMessage(e, "Failed to link brokerage account.");
+    } else {
+      notice = `Linked ${g.members.length} wallet${g.members.length === 1 ? "" : "s"} into one brokerage account.`;
+      const ids = new Set(g.members.map((m) => m.external_id));
+      discovered = discovered.filter((d) => !ids.has(d.external_id));
+    }
+    linkingGroup = null;
+    load();
   }
 
   async function linkAkahuAccount(a: Schemas["ProviderAccount"]) {
@@ -344,7 +415,45 @@
       </button>
     </div>
     {#if discoverError}<div class="error-banner" style="margin-bottom:12px">{discoverError}</div>{/if}
-    {#each discovered as a (a.external_id)}
+    {#each brokerageGroups as g (g.key)}
+      {@const f = groupForms[g.key]}
+      <div class="line">
+        <div class="row spread">
+          <span>
+            {#if g.institution}<span class="faint small">{g.institution} —</span>{/if}
+            Brokerage account <span class="badge">brokerage</span>
+            <span class="faint small">{g.members.length} wallet{g.members.length === 1 ? "" : "s"}</span>
+          </span>
+        </div>
+        <div class="small faint" style="margin-top:4px">
+          {#each g.members as m (m.external_id)}
+            <span style="margin-right:12px">{m.name} <span class="badge">{m.currency_code}</span> {formatMoney(m.balance_minor, m.currency_code)}</span>
+          {/each}
+        </div>
+        {#if f}
+          <div class="row wrap" style="gap:10px;margin-top:8px">
+            <select class="select" style="width:auto" bind:value={f.target}>
+              <option value="new">Create new brokerage account</option>
+              {#each accounts as acc}<option value={String(acc.id)}>Attach to "{acc.name}"</option>{/each}
+            </select>
+            {#if f.target === "new"}
+              <input class="input" style="min-width:120px" placeholder="Name" bind:value={f.name} />
+              <select class="select" style="width:auto" bind:value={f.currency}>
+                {#each currencies as c}<option value={c.code}>{c.code}</option>{/each}
+              </select>
+            {/if}
+            <button
+              class="btn btn-primary btn-sm"
+              onclick={() => linkBrokerageGroup(g)}
+              disabled={linkingGroup === g.key || (f.target === "new" && !f.name.trim())}
+            >
+              {linkingGroup === g.key ? "Linking…" : "Link as brokerage"}
+            </button>
+          </div>
+        {/if}
+      </div>
+    {/each}
+    {#each singleAccounts as a (a.external_id)}
       {@const f = linkFormFor(a)}
       <div class="line">
         <div class="row spread">

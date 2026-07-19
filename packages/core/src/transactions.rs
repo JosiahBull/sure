@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 #[derive(Serialize, ToSchema, Clone)]
@@ -71,6 +71,47 @@ pub struct TxQuery {
 #[derive(Deserialize, ToSchema)]
 pub struct LinkRequest {
     pub linked_transaction_id: i64,
+}
+
+/// A partial patch applied to every transaction in `ids` at once. Each optional field
+/// that is *present* is written to all of them; absent fields are left untouched. The
+/// nullable id fields use a nested option so a JSON `null` (clear the value) is distinct
+/// from an omitted field (leave as-is) — the same distinction the inline edits rely on.
+#[derive(Deserialize, ToSchema)]
+pub struct BulkUpdate {
+    pub ids: Vec<i64>,
+    /// Present → set the category (or clear it with `null`); absent → leave unchanged.
+    #[serde(default, deserialize_with = "double_option")]
+    pub category_id: Option<Option<i64>>,
+    /// Present → set the merchant (or clear it with `null`); absent → leave unchanged.
+    #[serde(default, deserialize_with = "double_option")]
+    pub merchant_id: Option<Option<i64>>,
+    /// Present → set the one-off flag; absent → leave unchanged.
+    #[serde(default)]
+    pub is_one_off: Option<bool>,
+}
+
+/// The ids to delete in a single bulk request.
+#[derive(Deserialize, ToSchema)]
+pub struct BulkDelete {
+    pub ids: Vec<i64>,
+}
+
+/// Result of a bulk mutation: how many transactions were affected.
+#[derive(Serialize, ToSchema)]
+pub struct BulkResult {
+    pub affected: i64,
+}
+
+/// Deserialize into `Option<Option<T>>` such that a present `null` becomes `Some(None)`
+/// (an explicit clear) while an omitted field — via `#[serde(default)]` — stays `None`
+/// (leave unchanged). Plain `Option<Option<T>>` can't tell the two apart on its own.
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
 }
 
 #[derive(Deserialize, ToSchema)]

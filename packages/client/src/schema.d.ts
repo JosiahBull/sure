@@ -196,6 +196,321 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/{id}/brokerage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The account's computed value snapshot (positions priced + wallet cash) as of a date. */
+        get: {
+            parameters: {
+                query?: {
+                    /**
+                     * @description ISO-8601 date (`YYYY-MM-DD`); defaults to today. An unparseable value also falls
+                     *     back to today, matching the equity/stock-price endpoints.
+                     */
+                    as_of?: string;
+                };
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrokerageSnapshot"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/brokerage/backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rebuild the whole daily valuation history from the price cache/provider. Runs
+         *     synchronously (unlike the post-import background backfill) so the response reports how
+         *     many days were valued — the manual retry escape hatch.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BackfillResult"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/brokerage/dividends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Dividend/distribution history with per-jurisdiction withholding detail. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DividendDetail"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/brokerage/holdings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The raw holdings ledger (every buy/sell/corporate lot) for an audit view. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["HoldingLot"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Manually record a lot (most arrive via import; this is parity with equity's manual grant). */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveHoldingLot"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["HoldingLot"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/brokerage/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bulk-import a Sharesies export zip: wallet transactions, holding lots, and dividends.
+         *     Auto-links unambiguous wallet ↔ bank transfers synchronously, then kicks off a
+         *     background historical valuation backfill so net worth is accurate retroactively.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            /** @description A Sharesies export .zip */
+            requestBody: {
+                content: {
+                    "application/zip": number[];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrokerageImportResult"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/brokerage/revalue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Snapshot the account's current value into a `source='brokerage'` valuation (mirrors
+         *     equity's "Revalue").
+         */
+        post: {
+            parameters: {
+                query?: {
+                    /**
+                     * @description ISO-8601 date (`YYYY-MM-DD`); defaults to today. An unparseable value also falls
+                     *     back to today, matching the equity/stock-price endpoints.
+                     */
+                    as_of?: string;
+                };
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrokerageSnapshot"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}/equity": {
         parameters: {
             query?: never;
@@ -581,6 +896,48 @@ export interface paths {
             };
         };
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/brokerage/holdings/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -1900,6 +2257,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/providers/link-group": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Link several upstream accounts to one local account at once (e.g. every currency wallet
+         *     of a Sharesies brokerage account into a single Brokerage account). Creates the account
+         *     once, links every member, then best-effort syncs each. See [`LinkProviderGroup`].
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["LinkProviderGroup"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Provider"][];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/providers/{id}": {
         parameters: {
             query?: never;
@@ -2814,6 +3222,95 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/transactions/bulk-delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Delete many transactions at once (also clears the other side of any transfer links). */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BulkDelete"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BulkResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/transactions/bulk-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a partial patch (category / merchant / one-off) to many transactions at once.
+         *     Omitted fields are left untouched; an explicit `null` clears a category/merchant.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BulkUpdate"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BulkResult"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/transactions/{id}": {
         parameters: {
             query?: never;
@@ -3163,7 +3660,7 @@ export interface components {
          *     per-kind configuration lives in an account's `metadata`.
          * @enum {string}
          */
-        AccountKind: "cash" | "bank" | "savings" | "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan" | "vehicle" | "real_estate" | "shares_nz" | "shares_us" | "shares_private" | "asset" | "liability";
+        AccountKind: "cash" | "bank" | "savings" | "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan" | "vehicle" | "real_estate" | "shares_nz" | "shares_us" | "shares_private" | "brokerage" | "asset" | "liability";
         /**
          * @description Typed configuration for an account. The variant (`profile`) is determined by the
          *     account's `kind`; see [`AccountMetadata::profile_for`].
@@ -3186,16 +3683,102 @@ export interface components {
         }) | (components["schemas"]["SharesMeta"] & {
             /** @enum {string} */
             profile: "shares";
+        }) | (components["schemas"]["BrokerageMeta"] & {
+            /** @enum {string} */
+            profile: "brokerage";
         }) | (components["schemas"]["GenericMeta"] & {
             /** @enum {string} */
             profile: "generic";
         });
+        BackfillResult: {
+            /**
+             * Format: int64
+             * @description Number of days for which a valuation was (re)computed.
+             */
+            days: number;
+        };
         BalancesReport: {
             currency: string;
             as_of: string;
             /** Format: int64 */
             total_minor: number;
             accounts: components["schemas"]["AccountBalance"][];
+        };
+        /**
+         * @description The outcome of a bulk zip import: counts for each of the three things it can write,
+         *     plus any per-record parse issues that were skipped rather than failing the whole
+         *     import.
+         */
+        BrokerageImportResult: {
+            /** Format: int64 */
+            transactions_imported: number;
+            /** Format: int64 */
+            transactions_skipped: number;
+            /** Format: int64 */
+            holdings_imported: number;
+            /** Format: int64 */
+            holdings_skipped: number;
+            /** Format: int64 */
+            dividends_imported: number;
+            /** Format: int64 */
+            dividends_skipped: number;
+            warnings: string[];
+        };
+        /**
+         * @description A multi-holding brokerage/investment platform account (e.g. Sharesies). Unlike
+         *     [`SharesMeta`], there's no single `ticker`/`exchange` here — positions live in the
+         *     `holdings` ledger (see `crate::brokerage`), keyed per-lot, so one account can hold
+         *     many tickers across many currencies plus cash wallets.
+         */
+        BrokerageMeta: {
+            /** @description Broker or platform (e.g. Sharesies, Hatch, IBKR). */
+            broker?: string | null;
+            url?: string | null;
+            notes?: string | null;
+        };
+        /**
+         * @description A brokerage account's full computed value as of a date: every position plus every
+         *     wallet balance, converted into the account's own currency for `total_value_minor`.
+         */
+        BrokerageSnapshot: {
+            /** Format: int64 */
+            account_id: number;
+            as_of: string;
+            currency_code: string;
+            positions: components["schemas"]["Position"][];
+            wallets: components["schemas"]["WalletBalance"][];
+            /** Format: int64 */
+            total_value_minor: number;
+        };
+        /** @description The ids to delete in a single bulk request. */
+        BulkDelete: {
+            ids: number[];
+        };
+        /** @description Result of a bulk mutation: how many transactions were affected. */
+        BulkResult: {
+            /** Format: int64 */
+            affected: number;
+        };
+        /**
+         * @description A partial patch applied to every transaction in `ids` at once. Each optional field
+         *     that is *present* is written to all of them; absent fields are left untouched. The
+         *     nullable id fields use a nested option so a JSON `null` (clear the value) is distinct
+         *     from an omitted field (leave as-is) — the same distinction the inline edits rely on.
+         */
+        BulkUpdate: {
+            ids: number[];
+            /**
+             * Format: int64
+             * @description Present → set the category (or clear it with `null`); absent → leave unchanged.
+             */
+            category_id?: number | null;
+            /**
+             * Format: int64
+             * @description Present → set the merchant (or clear it with `null`); absent → leave unchanged.
+             */
+            merchant_id?: number | null;
+            /** @description Present → set the one-off flag; absent → leave unchanged. */
+            is_one_off?: boolean | null;
         };
         Category: {
             /** Format: int64 */
@@ -3313,6 +3896,42 @@ export interface components {
             url?: string | null;
             notes?: string | null;
         };
+        Dividend: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            account_id: number;
+            ticker: string;
+            exchange: string;
+            record_date?: string | null;
+            paid_date: string;
+            /** Format: double */
+            shares_held?: number | null;
+            /** Format: int64 */
+            gross_amount_minor: number;
+            /** Format: int64 */
+            net_amount_minor: number;
+            currency_code: string;
+            external_id?: string | null;
+            provider?: string | null;
+            created_at: string;
+        };
+        DividendDetail: {
+            dividend: components["schemas"]["Dividend"];
+            withholdings: components["schemas"]["DividendWithholding"][];
+        };
+        DividendWithholding: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            dividend_id: number;
+            owed_to: string;
+            /** Format: int64 */
+            tax_amount_minor: number;
+            /** Format: int64 */
+            tax_credit_minor?: number | null;
+            currency_code: string;
+        };
         EquityExercise: {
             /** Format: int64 */
             id: number;
@@ -3397,6 +4016,33 @@ export interface components {
             name: string;
             version: string;
         };
+        HoldingLot: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            account_id: number;
+            ticker: string;
+            exchange: string;
+            name?: string | null;
+            currency_code: string;
+            trade_date: string;
+            /** Format: double */
+            quantity: number;
+            /** Format: double */
+            unit_price?: number | null;
+            /** Format: int64 */
+            fee_minor: number;
+            kind: string;
+            external_id?: string | null;
+            provider?: string | null;
+            created_at: string;
+        };
+        LinkGroupMember: {
+            /** @description The upstream's stable identifier (`ProviderAccount::external_id`). */
+            external_id: string;
+            /** @description Name for this member's `providers` row. */
+            name: string;
+        };
         /**
          * @description Link an upstream account (surfaced by `GET /provider-kinds/{kind}/accounts`) to a local
          *     account, creating the `providers` connection in the same step. Exactly one of
@@ -3416,6 +4062,22 @@ export interface components {
              * Format: int64
              * @description Or attach to an already-existing local account instead.
              */
+            existing_account_id?: number | null;
+        };
+        /**
+         * @description Link several upstream accounts to a *single* local account at once — the case where one
+         *     real account is exposed by the source as several sibling accounts (e.g. a Sharesies
+         *     brokerage account surfaces one Akahu account per currency wallet). Each member becomes
+         *     its own `providers` row pointing at the one local account, so their transactions/
+         *     balances all flow into it. Exactly one of `new_account` / `existing_account_id` must be
+         *     set; the account is created once and every member is linked in the same transaction.
+         */
+        LinkProviderGroup: {
+            kind: string;
+            /** @description The upstream accounts to link (must be non-empty). */
+            members: components["schemas"]["LinkGroupMember"][];
+            new_account?: null | components["schemas"]["SaveAccount"];
+            /** Format: int64 */
             existing_account_id?: number | null;
         };
         LinkRequest: {
@@ -3533,6 +4195,30 @@ export interface components {
             /** @description Defaults to the account's currency. */
             currency_code?: string | null;
             note?: string | null;
+        };
+        /**
+         * @description A ticker position as of a date: quantity currently held, its latest known price, and
+         *     the resulting market value in the position's own trading currency.
+         */
+        Position: {
+            ticker: string;
+            exchange: string;
+            name?: string | null;
+            currency_code: string;
+            /** Format: double */
+            quantity: number;
+            /**
+             * @description Unit price as of the snapshot date, if a quote was found (a delisted/unrecognised
+             *     ticker has a quantity but no price).
+             */
+            price?: string | null;
+            price_as_of?: string | null;
+            /**
+             * Format: int64
+             * @description quantity × price, in `currency_code` (the position's own trading currency, not
+             *     necessarily the account's).
+             */
+            market_value_minor?: number | null;
         };
         PreviewMatch: {
             /** Format: int64 */
@@ -3794,6 +4480,24 @@ export interface components {
             unit_value_minor?: number | null;
             note?: string | null;
         };
+        /**
+         * @description Manually record a trade (parity with equity's manual grant entry — most lots come
+         *     from a bulk import instead).
+         */
+        SaveHoldingLot: {
+            ticker: string;
+            exchange?: string;
+            name?: string | null;
+            currency_code: string;
+            trade_date: string;
+            /** Format: double */
+            quantity: number;
+            /** Format: double */
+            unit_price?: number | null;
+            /** Format: int64 */
+            fee_minor?: number;
+            kind?: string;
+        };
         SaveMerchant: {
             name: string;
             /** Format: int64 */
@@ -4022,6 +4726,12 @@ export interface components {
              * @description Intrinsic value of vested-unexercised units: qty × max(0, unit_value − strike).
              */
             intrinsic_value_minor: number;
+        };
+        /** @description A wallet cash balance in one currency, as of a date. */
+        WalletBalance: {
+            currency_code: string;
+            /** Format: int64 */
+            amount_minor: number;
         };
     };
     responses: never;

@@ -57,6 +57,31 @@ pub struct LinkProviderAccount {
     pub existing_account_id: Option<i64>,
 }
 
+/// Link several upstream accounts to a *single* local account at once — the case where one
+/// real account is exposed by the source as several sibling accounts (e.g. a Sharesies
+/// brokerage account surfaces one Akahu account per currency wallet). Each member becomes
+/// its own `providers` row pointing at the one local account, so their transactions/
+/// balances all flow into it. Exactly one of `new_account` / `existing_account_id` must be
+/// set; the account is created once and every member is linked in the same transaction.
+#[derive(Deserialize, ToSchema)]
+pub struct LinkProviderGroup {
+    pub kind: String,
+    /// The upstream accounts to link (must be non-empty).
+    pub members: Vec<LinkGroupMember>,
+    #[serde(default)]
+    pub new_account: Option<SaveAccount>,
+    #[serde(default)]
+    pub existing_account_id: Option<i64>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct LinkGroupMember {
+    /// The upstream's stable identifier (`ProviderAccount::external_id`).
+    pub external_id: String,
+    /// Name for this member's `providers` row.
+    pub name: String,
+}
+
 #[derive(Serialize, ToSchema)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct ProviderSync {

@@ -10,7 +10,10 @@ use crate::providers::{ProviderAccount, ProviderKind, Registry, SyncContext};
 use crate::state::AppState;
 use sure_dal::Db;
 
-pub use sure_dal::providers::{LinkProviderAccount, Provider, ProviderSync, SaveProvider, SyncRequest};
+pub use sure_dal::providers::{
+    LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderSync, SaveProvider,
+    SyncRequest,
+};
 
 /// The provider kinds this server supports.
 #[utoipa::path(get, path = "/api/provider-kinds", tag = "providers",
@@ -110,6 +113,39 @@ pub async fn link(
     Ok((StatusCode::CREATED, Json(provider)))
 }
 
+/// Link several upstream accounts to one local account at once (e.g. every currency wallet
+/// of a Sharesies brokerage account into a single Brokerage account). Creates the account
+/// once, links every member, then best-effort syncs each. See [`LinkProviderGroup`].
+#[utoipa::path(post, path = "/api/providers/link-group", tag = "providers", request_body = LinkProviderGroup,
+    responses((status = 201, body = [Provider]), (status = 422, body = crate::error::ErrorBody)))]
+pub async fn link_group(
+    State(st): State<AppState>,
+    Json(input): Json<LinkProviderGroup>,
+) -> AppResult<(StatusCode, Json<Vec<Provider>>)> {
+    if Registry::new().get(&input.kind).is_none() {
+        return Err(AppError::validation(format!(
+            "unknown provider kind '{}'",
+            input.kind
+        )));
+    }
+    let providers = sure_dal::providers::link_group(&st.db, input).await?;
+
+    // Best-effort initial sync per member, same rationale as `link`.
+    let ids: Vec<i64> = providers.iter().map(|p| p.id).collect();
+    for provider in providers {
+        let id = provider.id;
+        if let Err(e) = sync_provider(&st.db, provider, None).await {
+            tracing::warn!(provider_id = id, error = %e, "initial sync after group-linking failed");
+        }
+    }
+    let mut refreshed = Vec::with_capacity(ids.len());
+    for id in ids {
+        refreshed.push(sure_dal::providers::get(&st.db, id).await?);
+    }
+
+    Ok((StatusCode::CREATED, Json(refreshed)))
+}
+
 #[utoipa::path(put, path = "/api/providers/{id}", tag = "providers", params(("id" = i64, Path,)),
     request_body = SaveProvider,
     responses((status = 200, body = Provider), (status = 404, body = crate::error::ErrorBody)))]
@@ -177,6 +213,7 @@ pub(crate) async fn sync_provider(
             description: t.description,
             merchant: t.merchant,
             category_name: t.category.as_ref().map(|c| c.name.clone()),
+            category_kind: t.category.as_ref().and_then(|c| c.kind.clone()),
             category_group: t.category.and_then(|c| c.group),
         })
         .collect();
@@ -199,17 +236,30 @@ pub(crate) async fn sync_provider(
     // succeeded, which is the part `status`/`imported`/`skipped` below describe.
     match p.current_balance(ctx).await {
         Ok(Some(bal)) => {
+            // A brokerage account's value is computed from its own holdings + wallet
+            // ledger (source='brokerage'); a provider's balance-only figure must not
+            // compete with it on the net-worth line — Akahu can't sync Sharesies
+            // transactions and often reports the balance as $0, which would otherwise
+            // clobber the real computed value on a same-day tie. Skip the provider
+            // valuation for that kind (the limit/principal/institution backfills below are
+            // no-ops for a brokerage account anyway).
+            let is_brokerage = sure_dal::accounts::get(db, provider.account_id)
+                .await
+                .map(|a| a.kind == sure_core::AccountKind::Brokerage)
+                .unwrap_or(false);
             let today = chrono::Utc::now().date_naive().to_string();
-            if let Err(e) = sure_dal::valuations::upsert_from_provider(
-                db,
-                provider.account_id,
-                &today,
-                bal.minor,
-                &bal.currency_code,
-            )
-            .await
-            {
-                tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider balance valuation");
+            if !is_brokerage {
+                if let Err(e) = sure_dal::valuations::upsert_from_provider(
+                    db,
+                    provider.account_id,
+                    &today,
+                    bal.minor,
+                    &bal.currency_code,
+                )
+                .await
+                {
+                    tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider balance valuation");
+                }
             }
             // Also best-effort: lets a credit_card/revolving_credit account show
             // "remaining borrowing" (the web UI computes limit minus what's owed). A
@@ -287,6 +337,7 @@ pub fn router() -> Router<AppState> {
         .route("/provider-kinds/{kind}/accounts", get(discover_accounts))
         .route("/providers", get(list).post(create))
         .route("/providers/link", post(link))
+        .route("/providers/link-group", post(link_group))
         .route("/providers/{id}", axum::routing::put(update).delete(delete))
         .route("/providers/{id}/sync", post(sync))
         .route("/providers/{id}/syncs", get(list_syncs))

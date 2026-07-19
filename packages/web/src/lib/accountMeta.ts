@@ -12,6 +12,7 @@ export type MetaProfile =
   | "loan"
   | "vehicle"
   | "shares"
+  | "brokerage"
   | "generic";
 
 export type MetaFieldType =
@@ -47,6 +48,7 @@ export const KINDS: { value: Schemas["AccountKind"]; label: string }[] = [
   { value: "shares_nz", label: "Shares (NZ)" },
   { value: "shares_us", label: "Shares (US)" },
   { value: "shares_private", label: "Shares (private)" },
+  { value: "brokerage", label: "Brokerage" },
   { value: "asset", label: "Other asset" },
   { value: "liability", label: "Other liability" },
 ];
@@ -124,6 +126,8 @@ export function kindToProfile(kind: string): MetaProfile {
     case "shares_us":
     case "shares_private":
       return "shares";
+    case "brokerage":
+      return "brokerage";
     case "asset":
     case "liability":
       return "generic";
@@ -206,6 +210,13 @@ export const FIELDS: Record<MetaProfile, MetaField[]> = {
     URL_FIELD,
     NOTES_FIELD,
   ],
+  // A brokerage account's individual tickers/currencies live per-holding (see the
+  // holdings ledger), not on the account, so only the platform-level fields are here.
+  brokerage: [
+    { key: "broker", label: "Broker / platform", type: "text" },
+    URL_FIELD,
+    NOTES_FIELD,
+  ],
   generic: [URL_FIELD, NOTES_FIELD],
 };
 
@@ -281,6 +292,10 @@ export function metaSummary(kind: string, metadata: Schemas["AccountMetadata"] |
       // Shares have no top-level institution; the broker/platform stands in for it here.
       if (s("broker")) bits.push(s("broker")!);
       if (s("ticker")) bits.push(s("ticker")!);
+      break;
+    case "brokerage":
+      // Like shares, the broker/platform stands in for an institution.
+      if (s("broker")) bits.push(s("broker")!);
       break;
     case "depository":
       if (s("account_number")) bits.push(s("account_number")!);

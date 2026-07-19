@@ -22,6 +22,11 @@ pub enum AccountKind {
     SharesNz,
     SharesUs,
     SharesPrivate,
+    /// Multi-holding brokerage/investment platform (e.g. Sharesies): many ticker
+    /// positions plus per-currency cash wallets under one account — see
+    /// [`crate::brokerage`] for the lots ledger and computed snapshot. Distinct from
+    /// `Shares*`, which is a single manually-tracked holding.
+    Brokerage,
     Asset,
     Liability,
 }
@@ -49,7 +54,7 @@ impl AccountKind {
                 AccountClass::Liability
             }
             Vehicle | RealEstate | Asset => AccountClass::Asset,
-            SharesNz | SharesUs | SharesPrivate => AccountClass::Investment,
+            SharesNz | SharesUs | SharesPrivate | Brokerage => AccountClass::Investment,
         }
     }
 }
@@ -61,7 +66,7 @@ pub fn class_of(kind: &str) -> &'static str {
         "cash" | "bank" | "savings" => "cash",
         "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan"
         | "liability" => "liability",
-        "shares_nz" | "shares_us" | "shares_private" => "investment",
+        "shares_nz" | "shares_us" | "shares_private" | "brokerage" => "investment",
         _ => "asset",
     }
 }
@@ -233,6 +238,21 @@ pub struct SharesMeta {
     pub notes: Option<String>,
 }
 
+/// A multi-holding brokerage/investment platform account (e.g. Sharesies). Unlike
+/// [`SharesMeta`], there's no single `ticker`/`exchange` here — positions live in the
+/// `holdings` ledger (see `crate::brokerage`), keyed per-lot, so one account can hold
+/// many tickers across many currencies plus cash wallets.
+#[derive(Serialize, Deserialize, ToSchema, Clone, Debug, Default, PartialEq, Eq)]
+pub struct BrokerageMeta {
+    /// Broker or platform (e.g. Sharesies, Hatch, IBKR).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broker: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
 /// Any other asset or liability.
 #[derive(Serialize, Deserialize, ToSchema, Clone, Debug, Default, PartialEq, Eq)]
 pub struct GenericMeta {
@@ -253,6 +273,7 @@ pub enum AccountMetadata {
     Loan(LoanMeta),
     Vehicle(VehicleMeta),
     Shares(SharesMeta),
+    Brokerage(BrokerageMeta),
     Generic(GenericMeta),
 }
 
@@ -267,6 +288,7 @@ impl AccountMetadata {
             Loan | StudentLoan => "loan",
             Vehicle => "vehicle",
             SharesNz | SharesUs | SharesPrivate => "shares",
+            Brokerage => "brokerage",
             Asset | Liability => "generic",
         }
     }
@@ -280,6 +302,7 @@ impl AccountMetadata {
             AccountMetadata::Loan(_) => "loan",
             AccountMetadata::Vehicle(_) => "vehicle",
             AccountMetadata::Shares(_) => "shares",
+            AccountMetadata::Brokerage(_) => "brokerage",
             AccountMetadata::Generic(_) => "generic",
         }
     }
@@ -296,6 +319,7 @@ impl AccountMetadata {
             Loan | StudentLoan => AccountMetadata::Loan(LoanMeta::default()),
             Vehicle => AccountMetadata::Vehicle(VehicleMeta::default()),
             SharesNz | SharesUs | SharesPrivate => AccountMetadata::Shares(SharesMeta::default()),
+            Brokerage => AccountMetadata::Brokerage(BrokerageMeta::default()),
             Asset | Liability => AccountMetadata::Generic(GenericMeta::default()),
         }
     }

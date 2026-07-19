@@ -7,7 +7,8 @@ use crate::error::AppResult;
 use crate::state::AppState;
 
 pub use sure_dal::transactions::{
-    LinkRequest, SaveTransaction, Transaction, TransferRequest, TxQuery,
+    BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,
+    TxQuery,
 };
 
 /// List transactions, most recent first, with optional filters.
@@ -68,6 +69,31 @@ pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResul
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Apply a partial patch (category / merchant / one-off) to many transactions at once.
+/// Omitted fields are left untouched; an explicit `null` clears a category/merchant.
+#[utoipa::path(post, path = "/api/transactions/bulk-update", tag = "transactions",
+    request_body = BulkUpdate,
+    responses((status = 200, body = BulkResult), (status = 422, body = crate::error::ErrorBody)))]
+pub async fn bulk_update(
+    State(st): State<AppState>,
+    Json(input): Json<BulkUpdate>,
+) -> AppResult<Json<BulkResult>> {
+    let affected = sure_dal::transactions::bulk_update(&st.db, input).await?;
+    Ok(Json(BulkResult { affected }))
+}
+
+/// Delete many transactions at once (also clears the other side of any transfer links).
+#[utoipa::path(post, path = "/api/transactions/bulk-delete", tag = "transactions",
+    request_body = BulkDelete,
+    responses((status = 200, body = BulkResult)))]
+pub async fn bulk_delete(
+    State(st): State<AppState>,
+    Json(input): Json<BulkDelete>,
+) -> AppResult<Json<BulkResult>> {
+    let affected = sure_dal::transactions::bulk_delete(&st.db, &input.ids).await?;
+    Ok(Json(BulkResult { affected }))
+}
+
 /// Link two existing transactions as the two sides of a transfer (reciprocal).
 #[utoipa::path(post, path = "/api/transactions/{id}/link", tag = "transactions",
     params(("id" = i64, Path,)), request_body = LinkRequest,
@@ -109,6 +135,8 @@ pub async fn create_transfer(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/transactions", get(list).post(create))
+        .route("/transactions/bulk-update", post(bulk_update))
+        .route("/transactions/bulk-delete", post(bulk_delete))
         .route("/transactions/{id}", get(get_one).put(update).delete(delete))
         .route("/transactions/{id}/link", post(link).delete(unlink))
         .route("/transfers", post(create_transfer))

@@ -1,10 +1,13 @@
+pub mod brokerage;
 pub mod config;
 pub mod exchange_rates;
+pub mod fx;
 pub mod openapi;
 pub mod provider_poll;
 pub mod routes;
 pub mod state;
 pub mod stock_prices;
+pub mod transfer_link;
 
 // The lower layers now live in their own crates. Re-export them under the historical
 // module paths so handler/OpenAPI code keeps compiling against `crate::error`,
@@ -70,6 +73,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         pool.clone(),
         std::sync::Arc::new(providers::YahooFinanceProvider::new()),
     )));
+    scheduler.register(Box::new(transfer_link::TransferLinkTask::new(pool.clone())));
     scheduler.spawn();
 
     let state = AppState::new(pool);

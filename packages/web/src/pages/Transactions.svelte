@@ -219,10 +219,15 @@
   let prevFilterSig: string | null = null;
   $effect(() => {
     const sig = `${accountId}|${categoryId}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}`;
-    if (prevFilterSig != null && sig !== prevFilterSig && anchorId != null) {
-      anchorId = null;
-      writeAnchorToUrl(null);
-      window.scrollTo({ top: 0 });
+    if (prevFilterSig != null && sig !== prevFilterSig) {
+      // The visible set changed, so a lingering selection could act on rows the user can
+      // no longer see — clear it. (A same-filter reload, e.g. after a save, isn't a change.)
+      if (selected.size > 0) clearSelection();
+      if (anchorId != null) {
+        anchorId = null;
+        writeAnchorToUrl(null);
+        window.scrollTo({ top: 0 });
+      }
     }
     prevFilterSig = sig;
   });
@@ -337,6 +342,71 @@
     await api.DELETE("/api/transactions/{id}", { params: { path: { id: t.id } } });
     loadTx();
   }
+
+  // ---- Bulk selection & actions ----
+  // Selected transaction ids. Reassigned (never mutated in place) on every change so
+  // Svelte's reactivity picks it up — a plain Set isn't deeply reactive. Selection is by
+  // id, so it survives scrolling/virtualisation and a post-save reload, and it spans the
+  // whole filtered list rather than just the rendered window — which is what "select all"
+  // has to mean here (only ~60 rows are ever mounted at once).
+  let selected = $state<Set<number>>(new Set());
+  let bulkBusy = $state(false);
+  let confirmingDelete = $state(false);
+
+  const allSelected = $derived(
+    sortedFiltered.length > 0 && sortedFiltered.every((t) => selected.has(t.id)),
+  );
+  const someSelected = $derived(selected.size > 0 && !allSelected);
+
+  function toggleOne(id: number, on: boolean) {
+    const next = new Set(selected);
+    if (on) next.add(id);
+    else next.delete(id);
+    selected = next;
+  }
+  function toggleAll() {
+    selected = allSelected ? new Set() : new Set(sortedFiltered.map((t) => t.id));
+  }
+  function clearSelection() {
+    selected = new Set();
+    confirmingDelete = false;
+  }
+
+  async function runBulk(call: () => Promise<{ error?: unknown }>) {
+    if (selected.size === 0) return;
+    bulkBusy = true;
+    error = null;
+    const { error: e } = await call();
+    bulkBusy = false;
+    if (e) {
+      error = "Bulk action failed.";
+      return;
+    }
+    clearSelection();
+    await loadTx();
+  }
+
+  const bulkPatch = (patch: Partial<Schemas["BulkUpdate"]>) =>
+    runBulk(() =>
+      api.POST("/api/transactions/bulk-update", { body: { ids: [...selected], ...patch } }),
+    );
+  const bulkDelete = () =>
+    runBulk(() => api.POST("/api/transactions/bulk-delete", { body: { ids: [...selected] } }));
+
+  // The category/merchant bulk pickers apply on change, then snap back to their placeholder
+  // (the empty option) so they read as an action, not a persistent selection.
+  function onBulkCategory(e: Event & { currentTarget: HTMLSelectElement }) {
+    const v = e.currentTarget.value;
+    e.currentTarget.value = "";
+    if (v === "") return;
+    bulkPatch({ category_id: v === "__clear__" ? null : Number(v) });
+  }
+  function onBulkMerchant(e: Event & { currentTarget: HTMLSelectElement }) {
+    const v = e.currentTarget.value;
+    e.currentTarget.value = "";
+    if (v === "") return;
+    bulkPatch({ merchant_id: v === "__clear__" ? null : Number(v) });
+  }
 </script>
 
 <div class="row spread wrap" style="margin-bottom:14px;gap:10px">
@@ -410,6 +480,16 @@
       <table class="table" bind:this={tableEl}>
         <thead>
           <tr>
+            <th class="chk-col">
+              <input
+                type="checkbox"
+                aria-label="Select all transactions"
+                title={allSelected ? "Clear selection" : "Select all"}
+                checked={allSelected}
+                indeterminate={someSelected}
+                onchange={toggleAll}
+              />
+            </th>
             <th><button class="sort-btn" onclick={() => toggleSort("date")}>Date{sortArrow("date")}</button></th>
             <th><button class="sort-btn" onclick={() => toggleSort("description")}>Description{sortArrow("description")}</button></th>
             <th><button class="sort-btn" onclick={() => toggleSort("account")}>Account{sortArrow("account")}</button></th>
@@ -421,10 +501,18 @@
         </thead>
         <tbody>
           <tr aria-hidden="true">
-            <td colspan="7" style={`padding:0;border:none;height:${windowStart * ROW_HEIGHT}px`}></td>
+            <td colspan="8" style={`padding:0;border:none;height:${windowStart * ROW_HEIGHT}px`}></td>
           </tr>
           {#each windowed as t (t.id)}
-            <tr id={`tx-${t.id}`} class:highlight={t.id === highlightId}>
+            <tr id={`tx-${t.id}`} class:highlight={t.id === highlightId} class:selected={selected.has(t.id)}>
+              <td class="chk-col">
+                <input
+                  type="checkbox"
+                  aria-label="Select transaction"
+                  checked={selected.has(t.id)}
+                  onchange={(e) => toggleOne(t.id, e.currentTarget.checked)}
+                />
+              </td>
               <td class="faint small" style="white-space:nowrap">{formatDate(t.posted_at)}</td>
               <td>
                 {t.description || "—"}
@@ -468,7 +556,7 @@
             </tr>
           {/each}
           <tr aria-hidden="true">
-            <td colspan="7" style={`padding:0;border:none;height:${(sortedFiltered.length - windowEnd) * ROW_HEIGHT}px`}></td>
+            <td colspan="8" style={`padding:0;border:none;height:${(sortedFiltered.length - windowEnd) * ROW_HEIGHT}px`}></td>
           </tr>
         </tbody>
       </table>
@@ -477,11 +565,91 @@
   {/if}
 </section>
 
+{#if selected.size > 0}
+  <!-- Floating action bar: fixed to the viewport so it stays reachable no matter how far
+       the (virtualised, possibly thousands-of-rows) list is scrolled. -->
+  <div class="bulkbar" role="toolbar" aria-label="Bulk actions">
+    <span class="count">{selected.size} selected</span>
+    <button class="btn btn-sm" onclick={clearSelection} disabled={bulkBusy}>Clear</button>
+    <span class="sep" aria-hidden="true"></span>
+
+    <select class="select btn-sm" aria-label="Set category for selected" onchange={onBulkCategory} disabled={bulkBusy}>
+      <option value="">Set category…</option>
+      <option value="__clear__">— clear —</option>
+      {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+    </select>
+    <select class="select btn-sm" aria-label="Set merchant for selected" onchange={onBulkMerchant} disabled={bulkBusy}>
+      <option value="">Set merchant…</option>
+      <option value="__clear__">— clear —</option>
+      {#each merchants as m}<option value={m.id}>{m.name}</option>{/each}
+    </select>
+    <button class="btn btn-sm" onclick={() => bulkPatch({ is_one_off: true })} disabled={bulkBusy}>Mark one-off</button>
+    <button class="btn btn-sm" onclick={() => bulkPatch({ is_one_off: false })} disabled={bulkBusy}>Clear one-off</button>
+
+    <span class="sep" aria-hidden="true"></span>
+    {#if confirmingDelete}
+      <button class="btn btn-sm btn-danger" onclick={bulkDelete} disabled={bulkBusy}>
+        Delete {selected.size}?
+      </button>
+      <button class="btn btn-sm" onclick={() => (confirmingDelete = false)} disabled={bulkBusy}>Cancel</button>
+    {:else}
+      <button class="btn btn-sm btn-danger" onclick={() => (confirmingDelete = true)} disabled={bulkBusy}>
+        Delete
+      </button>
+    {/if}
+    {#if bulkBusy}<span class="spinner" style="margin-left:4px"></span>{/if}
+  </div>
+{/if}
+
 <style>
   .sort-btn {
     all: unset;
     cursor: pointer;
     white-space: nowrap;
+  }
+
+  /* Checkbox column: keep it tight and centred so the table's own columns stay put. */
+  .chk-col {
+    width: 1%;
+    white-space: nowrap;
+    text-align: center;
+  }
+  .chk-col input {
+    cursor: pointer;
+    vertical-align: middle;
+  }
+
+  tr.selected td {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+
+  /* Floating bulk-action bar, centred near the bottom of the viewport. */
+  .bulkbar {
+    position: fixed;
+    left: 50%;
+    bottom: max(18px, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-width: calc(100vw - 24px);
+    padding: 10px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    background: var(--bg-elev);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  }
+  .bulkbar .count {
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .bulkbar .sep {
+    width: 1px;
+    align-self: stretch;
+    background: var(--border);
+    margin: 2px 2px;
   }
 
   /* Deep-linked transaction (e.g. from the rules audit log): a brief flash that settles

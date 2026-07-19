@@ -11,6 +11,7 @@
   import AccountForm from "../lib/AccountForm.svelte";
   import EquityPanel from "../lib/EquityPanel.svelte";
   import PropertyPanel from "../lib/PropertyPanel.svelte";
+  import BrokeragePanel from "../lib/BrokeragePanel.svelte";
   import { navigate } from "../lib/router.svelte";
 
   let balances = $state<Schemas["BalancesReport"] | null>(null);
@@ -150,9 +151,9 @@
                   <button class="btn btn-sm" onclick={() => ((editing = editing === a.account_id ? null : a.account_id), (showAdd = false))}>
                     {editing === a.account_id ? "Close" : "Edit"}
                   </button>
-                  {#if a.kind === "shares_private" || a.class === "asset"}
+                  {#if a.kind === "shares_private" || a.kind === "brokerage" || a.class === "asset"}
                     <button class="btn btn-sm" onclick={() => (expanded = expanded === a.account_id ? null : a.account_id)}>
-                      {expanded === a.account_id ? "Hide" : "Equity"}
+                      {expanded === a.account_id ? "Hide" : a.kind === "brokerage" ? "Holdings" : "Equity"}
                     </button>
                   {/if}
                   <button class="btn btn-sm btn-danger" aria-label="Delete {a.name}" onclick={() => askDelete(a.account_id)}>✕</button>
@@ -173,7 +174,9 @@
               <AccountForm account={full} {currencies} {accounts} onsave={saved} oncancel={() => (editing = null)} />
             {/if}
             {#if expanded === a.account_id}
-              {#if a.kind === "shares_private"}
+              {#if a.kind === "brokerage"}
+                <BrokeragePanel accountId={a.account_id} onchange={load} />
+              {:else if a.kind === "shares_private"}
                 <EquityPanel accountId={a.account_id} onchange={load} />
               {:else}
                 <PropertyPanel accountId={a.account_id} onchange={load} />

@@ -3,14 +3,18 @@ use std::collections::HashMap;
 use serde_json::json;
 use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
-pub use sure_core::{LinkProviderAccount, Provider, ProviderSync, SaveProvider, SyncRequest};
+pub use sure_core::{
+    LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderSync, SaveProvider,
+    SyncRequest,
+};
 
 use crate::accounts::AccountRow;
 use crate::Db;
 
 /// New categories created from a provider's own classification default to "expense" —
-/// this only ever comes from spend-side merchant enrichment (Akahu's NZFCC categories
-/// have no income group), never from wages/salary-type transactions.
+/// most enrichment is spend-side (Akahu's NZFCC categories have no income group). A row
+/// can override this via `ImportRow::category_kind` (a broker's dividend row → "income",
+/// an internal wallet ↔ bank movement → "transfer").
 const IMPORTED_CATEGORY_KIND: &str = "expense";
 
 async fn resolve_category(
@@ -19,6 +23,7 @@ async fn resolve_category(
     group_cache: &mut HashMap<String, i64>,
     name: &str,
     group: Option<&str>,
+    kind: &str,
 ) -> AppResult<i64> {
     let key = (name.to_string(), group.map(str::to_string));
     if let Some(&id) = category_cache.get(&key) {
@@ -28,18 +33,14 @@ async fn resolve_category(
         Some(g) => Some(match group_cache.get(g) {
             Some(&id) => id,
             None => {
-                let id = crate::categories::find_or_create(db, g, None, IMPORTED_CATEGORY_KIND)
-                    .await?
-                    .id;
+                let id = crate::categories::find_or_create(db, g, None, kind).await?.id;
                 group_cache.insert(g.to_string(), id);
                 id
             }
         }),
         None => None,
     };
-    let id = crate::categories::find_or_create(db, name, parent_id, IMPORTED_CATEGORY_KIND)
-        .await?
-        .id;
+    let id = crate::categories::find_or_create(db, name, parent_id, kind).await?.id;
     category_cache.insert(key, id);
     Ok(id)
 }
@@ -103,6 +104,10 @@ pub struct ImportRow {
     /// left uncategorized. `category_group` becomes that category's parent.
     pub category_name: Option<String>,
     pub category_group: Option<String>,
+    /// Flow direction for a newly-created category (`"income"` | `"expense"` |
+    /// `"transfer"`); `None` defaults to expense. Only affects creation — an existing
+    /// category keeps its kind.
+    pub category_kind: Option<String>,
 }
 
 pub async fn list(db: &Db) -> AppResult<Vec<Provider>> {
@@ -224,6 +229,76 @@ pub async fn link(db: &Db, input: LinkProviderAccount) -> AppResult<Provider> {
     Ok(row.into())
 }
 
+/// Link several upstream accounts to one local account in a single transaction — see
+/// [`LinkProviderGroup`]. Creates (or resolves) the account once, then inserts one
+/// `providers` row per member. Returns the created rows in input order.
+pub async fn link_group(db: &Db, input: LinkProviderGroup) -> AppResult<Vec<Provider>> {
+    if input.new_account.is_some() == input.existing_account_id.is_some() {
+        return Err(AppError::validation(
+            "link requires exactly one of 'new_account' or 'existing_account_id'",
+        ));
+    }
+    if input.members.is_empty() {
+        return Err(AppError::validation("link group requires at least one member"));
+    }
+
+    let new_account_metadata = match &input.new_account {
+        Some(a) => Some(crate::accounts::validate(db, a).await?),
+        None => None,
+    };
+
+    let mut tx = db.begin().await?;
+
+    let account_id = if let (Some(new_account), Some(metadata)) =
+        (&input.new_account, &new_account_metadata)
+    {
+        let row = sqlx::query_as::<_, AccountRow>(
+            "INSERT INTO accounts (name, kind, currency_code, institution, metadata, archived, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING *",
+        )
+        .bind(new_account.name.trim())
+        .bind(new_account.kind)
+        .bind(new_account.currency_code.trim().to_uppercase())
+        .bind(&new_account.institution)
+        .bind(metadata)
+        .bind(new_account.archived)
+        .bind(new_account.sort_order)
+        .fetch_one(&mut *tx)
+        .await?;
+        row.id
+    } else {
+        let id = input.existing_account_id.expect("validated exactly-one above");
+        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE id=?1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if exists == 0 {
+            return Err(AppError::NotFound("account"));
+        }
+        id
+    };
+
+    let mut providers = Vec::with_capacity(input.members.len());
+    for member in &input.members {
+        let config = json!({ "external_account_id": member.external_id }).to_string();
+        let row = sqlx::query_as::<_, ProviderRow>(
+            "INSERT INTO providers (name, kind, account_id, config, enabled)
+             VALUES (?1,?2,?3,?4,1) RETURNING *",
+        )
+        .bind(member.name.trim())
+        .bind(&input.kind)
+        .bind(account_id)
+        .bind(config)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_fk)?;
+        providers.push(Provider::from(row));
+    }
+
+    tx.commit().await?;
+    Ok(providers)
+}
+
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM providers WHERE id=?1")
         .bind(id)
@@ -277,6 +352,7 @@ pub async fn import_transactions(
                     &mut group_cache,
                     name,
                     t.category_group.as_deref(),
+                    t.category_kind.as_deref().unwrap_or(IMPORTED_CATEGORY_KIND),
                 )
                 .await?,
             ),
@@ -490,6 +566,89 @@ mod tests {
         assert!(matches!(result, Err(AppError::NotFound(_))));
     }
 
+    fn brokerage_account_input(name: &str) -> sure_core::SaveAccount {
+        sure_core::SaveAccount {
+            name: name.to_string(),
+            kind: AccountKind::Brokerage,
+            currency_code: "NZD".to_string(),
+            institution: Some("Sharesies".to_string()),
+            metadata: None,
+            archived: false,
+            sort_order: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn link_group_creates_one_account_and_a_provider_per_member() {
+        let db = test_db().await;
+        let providers = link_group(
+            &db,
+            LinkProviderGroup {
+                kind: "akahu".to_string(),
+                members: vec![
+                    LinkGroupMember { external_id: "acc_nzd".to_string(), name: "NZD Wallet".to_string() },
+                    LinkGroupMember { external_id: "acc_usd".to_string(), name: "USD Wallet".to_string() },
+                    LinkGroupMember { external_id: "acc_aud".to_string(), name: "AUD Wallet".to_string() },
+                ],
+                new_account: Some(brokerage_account_input("Sharesies")),
+                existing_account_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(providers.len(), 3);
+        // All three provider rows point at the same, single new account.
+        let account_id = providers[0].account_id;
+        assert!(providers.iter().all(|p| p.account_id == account_id));
+        let accounts = crate::accounts::list(&db, false).await.unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].kind, AccountKind::Brokerage);
+        assert_eq!(
+            providers.iter().map(|p| p.config["external_account_id"].as_str().unwrap().to_string()).collect::<Vec<_>>(),
+            vec!["acc_nzd", "acc_usd", "acc_aud"],
+        );
+    }
+
+    #[tokio::test]
+    async fn link_group_attaches_all_members_to_an_existing_account() {
+        let db = test_db().await;
+        let account = crate::accounts::create(&db, brokerage_account_input("Sharesies")).await.unwrap();
+        let providers = link_group(
+            &db,
+            LinkProviderGroup {
+                kind: "akahu".to_string(),
+                members: vec![
+                    LinkGroupMember { external_id: "acc_nzd".to_string(), name: "NZD Wallet".to_string() },
+                    LinkGroupMember { external_id: "acc_usd".to_string(), name: "USD Wallet".to_string() },
+                ],
+                new_account: None,
+                existing_account_id: Some(account.id),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(providers.len(), 2);
+        assert!(providers.iter().all(|p| p.account_id == account.id));
+        assert_eq!(crate::accounts::list(&db, false).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn link_group_rejects_an_empty_member_list() {
+        let db = test_db().await;
+        let result = link_group(
+            &db,
+            LinkProviderGroup {
+                kind: "akahu".to_string(),
+                members: vec![],
+                new_account: Some(brokerage_account_input("Sharesies")),
+                existing_account_id: None,
+            },
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::Validation(_))));
+    }
+
     async fn imported_row(db: &Db, external_id: &str) -> sure_core::Transaction {
         sqlx::query_as::<_, sure_core::Transaction>(
             "SELECT * FROM transactions WHERE external_id = ?1",
@@ -510,6 +669,7 @@ mod tests {
             merchant: Some(merchant.to_string()),
             category_name: Some(category.to_string()),
             category_group: Some(group.to_string()),
+            category_kind: None,
         }
     }
 
@@ -584,6 +744,7 @@ mod tests {
                 merchant: Some("The Roastery".to_string()),
                 category_name: Some("Cafes And Restaurants".to_string()),
                 category_group: None,
+                category_kind: None,
             }],
         )
         .await

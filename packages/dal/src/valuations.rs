@@ -66,6 +66,34 @@ pub async fn upsert_from_provider(
     .await?)
 }
 
+/// Record (or refresh, if one already exists for this account today) a brokerage-computed
+/// valuation (holdings × price + wallet cash — see `sure_api::brokerage`). Its own
+/// `source='brokerage'` tag and partial unique index (see `0012_brokerage.sql`) keep it
+/// from colliding with an unrelated `source='provider'` sync on the same account (e.g. a
+/// still-attached Akahu balance-only link), so the historical backfill can upsert one row
+/// per day in place.
+pub async fn upsert_from_brokerage(
+    db: &Db,
+    account_id: i64,
+    as_of: &str,
+    value_minor: i64,
+    currency_code: &str,
+) -> AppResult<Valuation> {
+    Ok(sqlx::query_as::<_, Valuation>(
+        "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source)
+         VALUES (?1, ?2, ?3, ?4, 'brokerage')
+         ON CONFLICT(account_id, as_of) WHERE source='brokerage' DO UPDATE SET
+            value_minor = excluded.value_minor, currency_code = excluded.currency_code
+         RETURNING *",
+    )
+    .bind(account_id)
+    .bind(as_of)
+    .bind(value_minor)
+    .bind(currency_code)
+    .fetch_one(db)
+    .await?)
+}
+
 /// Delete a valuation.
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM valuations WHERE id=?1")

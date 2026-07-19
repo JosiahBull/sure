@@ -9,6 +9,7 @@ use std::time::Duration;
 
 // Per-entity repositories: types (request/response/rows) + queries.
 pub mod accounts;
+pub mod brokerage;
 pub mod categories;
 pub mod crons;
 pub mod currencies;

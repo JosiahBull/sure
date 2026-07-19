@@ -103,6 +103,30 @@ pub async fn list_shares_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
     Ok(tickers.into_iter().collect())
 }
 
+/// Distinct `(ticker, exchange)` pairs ever traded on any brokerage account's holdings
+/// ledger — the multi-holding counterpart to [`list_shares_tickers`], used by the
+/// stock-price poller to keep every held ticker's price cache warm.
+pub async fn list_brokerage_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT DISTINCT ticker, exchange FROM holdings",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(ticker, exchange)| {
+            let ticker = ticker.trim().to_uppercase();
+            if ticker.is_empty() {
+                return None;
+            }
+            Some(SharesTicker {
+                ticker,
+                exchange: exchange.trim().to_string(),
+            })
+        })
+        .collect())
+}
+
 pub async fn get(db: &Db, id: i64) -> AppResult<Account> {
     let row = sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE id = ?1")
         .bind(id)

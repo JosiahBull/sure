@@ -98,68 +98,7 @@ pub struct SankeyGraph {
 
 // ---- currency conversion -------------------------------------------------
 
-/// Currency conversion using the latest known rates. For a single-family tracker,
-/// applying current rates across history is a fine approximation and keeps the
-/// net-worth line readable rather than jumping around with historical fx noise.
-struct Fx {
-    base: String,
-    /// (base_code, quote_code) => 1 base = rate quote.
-    rates: HashMap<(String, String), f64>,
-    decimals: HashMap<String, i32>,
-}
-
-impl Fx {
-    async fn load(db: &sure_dal::Db, base: String) -> AppResult<Self> {
-        let decimals = sure_dal::reports::currency_decimals(db)
-            .await?
-            .into_iter()
-            .map(|c| (c.code, c.decimal_places as i32))
-            .collect();
-
-        // Ordered by date so later rows overwrite earlier => the latest rate wins.
-        let mut rates = HashMap::new();
-        for r in sure_dal::reports::exchange_rates(db).await? {
-            if let Ok(v) = r.rate.parse::<f64>() {
-                rates.insert((r.base_code, r.quote_code), v);
-            }
-        }
-        Ok(Self {
-            base,
-            rates,
-            decimals,
-        })
-    }
-
-    fn dp(&self, ccy: &str) -> i32 {
-        self.decimals.get(ccy).copied().unwrap_or(2)
-    }
-
-    /// Multiplier converting 1 unit of `ccy` into the base currency.
-    fn factor(&self, ccy: &str) -> f64 {
-        if ccy == self.base {
-            return 1.0;
-        }
-        if let Some(r) = self.rates.get(&(self.base.clone(), ccy.to_string())) {
-            if *r != 0.0 {
-                return 1.0 / r;
-            }
-        }
-        if let Some(r) = self.rates.get(&(ccy.to_string(), self.base.clone())) {
-            return *r;
-        }
-        1.0 // unknown pair: assume parity rather than dropping the account
-    }
-
-    /// Convert minor units of `ccy` into base-currency major units.
-    fn to_base_major(&self, amount_minor: i64, ccy: &str) -> f64 {
-        let major = amount_minor as f64 / 10f64.powi(self.dp(ccy));
-        major * self.factor(ccy)
-    }
-
-    fn base_minor(&self, base_major: f64) -> i64 {
-        (base_major * 10f64.powi(self.dp(&self.base))).round() as i64
-    }
-}
+use crate::fx::Fx;
 
 async fn base_currency(db: &sure_dal::Db, override_: Option<&str>) -> AppResult<String> {
     if let Some(c) = override_.filter(|s| !s.is_empty()) {
@@ -264,8 +203,21 @@ pub async fn net_worth(
     }))
 }
 
-/// An account's value as of a date: the latest valuation on/before the date if any,
-/// otherwise the running transaction balance.
+/// An account's value as of a date.
+///
+/// Three cases, in order:
+/// 1. A valuation on/before `date` — use the most recent one directly. Covers a brokerage
+///    account (a valuation for every day), and a property/vehicle carrying its manual
+///    valuation forward from the entry date.
+/// 2. No valuation on/before `date`, but a later one exists — reconstruct *backwards* from
+///    that known balance by subtracting the transaction movements that happened after
+///    `date`, rather than summing forward from an assumed-zero opening. This is what keeps
+///    a provider-synced liability like a mortgage correct across history: the provider only
+///    reports *today's* balance, and the account's own transactions don't reconcile to it
+///    from zero (a drawdown's sign, an untracked opening balance, …), so summing forward
+///    would show a spurious positive "asset". Before the account's first transaction it
+///    hadn't been opened/drawn down yet, so it's 0.
+/// 3. No valuations at all — the running transaction balance (a plain cash account).
 fn account_value_at(
     id: i64,
     currency: &str,
@@ -274,6 +226,7 @@ fn account_value_at(
     val_by_acct: &HashMap<i64, Vec<(NaiveDate, i64, String)>>,
 ) -> (i64, String) {
     if let Some(vals) = val_by_acct.get(&id) {
+        // Case 1.
         if let Some((_, value, ccy)) = vals
             .iter()
             .filter(|(d, _, _)| *d <= date)
@@ -281,7 +234,30 @@ fn account_value_at(
         {
             return (*value, ccy.clone());
         }
+        // Case 2: anchor to the earliest known valuation and walk backwards.
+        if let Some((anchor_date, anchor_value, ccy)) = vals.iter().min_by_key(|(d, _, _)| *d) {
+            let first_txn = tx_by_acct
+                .get(&id)
+                .and_then(|txs| txs.iter().map(|(d, _)| *d).min());
+            return match first_txn {
+                Some(first) if date >= first => {
+                    let after_date: i64 = tx_by_acct
+                        .get(&id)
+                        .map(|txs| {
+                            txs.iter()
+                                .filter(|(d, _)| *d > date && *d <= *anchor_date)
+                                .map(|(_, a)| a)
+                                .sum()
+                        })
+                        .unwrap_or(0);
+                    (anchor_value - after_date, ccy.clone())
+                }
+                // Before the account's first transaction (or it has none) → not yet opened.
+                _ => (0, ccy.clone()),
+            };
+        }
     }
+    // Case 3.
     let balance = tx_by_acct
         .get(&id)
         .map(|txs| txs.iter().filter(|(d, _)| *d <= date).map(|(_, a)| a).sum())
@@ -760,4 +736,68 @@ pub fn router() -> Router<AppState> {
         .route("/reports/sankey", get(sankey))
         .route("/reports/balances", get(balances))
         .route("/accounts/{id}/equity-position", get(equity_position))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    /// A provider-synced mortgage: only *today's* balance is known as a valuation, and its
+    /// own transactions (a large drawdown that alone sums to the wrong sign, plus small
+    /// repayments) don't reconcile to that balance from zero. Historically it must still
+    /// read as its true negative liability, not a positive transaction-sum — the bug that
+    /// spiked net worth by ~$1.1M when a house was bought against it.
+    #[test]
+    fn mortgage_reconstructs_its_negative_balance_backwards_from_todays_valuation() {
+        let mut tx = HashMap::new();
+        tx.insert(
+            7i64,
+            vec![
+                (d("2025-12-11"), 485_000_00), // drawdown (Akahu signs it +, unlike the balance)
+                (d("2026-01-12"), 313_81),     // principal repayment (reduces the debt)
+                (d("2026-02-09"), 434_70),
+            ],
+        );
+        // Provider reports today's balance: -$484,251.49 (= -485000 + 313.81 + 434.70).
+        let mut val = HashMap::new();
+        val.insert(7i64, vec![(d("2026-07-19"), -484_251_49, "NZD".to_string())]);
+
+        // Before the drawdown: the mortgage doesn't exist yet.
+        assert_eq!(account_value_at(7, "NZD", d("2025-12-01"), &tx, &val).0, 0);
+        // Right after the drawdown, before any repayments: the full -$485,000.
+        assert_eq!(account_value_at(7, "NZD", d("2025-12-15"), &tx, &val).0, -485_000_00);
+        // After the first repayment: -$484,686.19.
+        assert_eq!(account_value_at(7, "NZD", d("2026-01-20"), &tx, &val).0, -484_686_19);
+        // On/after the valuation date: exactly the provider's figure.
+        assert_eq!(account_value_at(7, "NZD", d("2026-07-19"), &tx, &val).0, -484_251_49);
+    }
+
+    /// A property carries its manual valuation forward from the purchase date, and reads 0
+    /// before it (it wasn't owned yet) rather than being back-projected.
+    #[test]
+    fn property_is_zero_before_purchase_and_valued_after() {
+        let tx = HashMap::new(); // a house has no transactions
+        let mut val = HashMap::new();
+        val.insert(9i64, vec![(d("2025-12-12"), 770_000_00, "NZD".to_string())]);
+
+        assert_eq!(account_value_at(9, "NZD", d("2025-12-01"), &tx, &val).0, 0);
+        assert_eq!(account_value_at(9, "NZD", d("2025-12-12"), &tx, &val).0, 770_000_00);
+        assert_eq!(account_value_at(9, "NZD", d("2026-06-01"), &tx, &val).0, 770_000_00);
+    }
+
+    /// A plain cash account with no valuations still uses the running transaction balance.
+    #[test]
+    fn cash_account_without_valuations_sums_transactions() {
+        let mut tx = HashMap::new();
+        tx.insert(3i64, vec![(d("2026-01-05"), 500_00), (d("2026-01-10"), -120_00)]);
+        let val = HashMap::new();
+
+        assert_eq!(account_value_at(3, "NZD", d("2026-01-01"), &tx, &val).0, 0);
+        assert_eq!(account_value_at(3, "NZD", d("2026-01-07"), &tx, &val).0, 500_00);
+        assert_eq!(account_value_at(3, "NZD", d("2026-01-31"), &tx, &val).0, 380_00);
+    }
 }

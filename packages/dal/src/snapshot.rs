@@ -27,6 +27,14 @@ pub struct Snapshot {
     pub providers: Vec<ProviderRow>,
     pub equity_grants: Vec<GrantRow>,
     pub equity_exercises: Vec<ExerciseRow>,
+    // Brokerage tables — `#[serde(default)]` so snapshots taken before these existed
+    // still import (as empty), rather than failing to deserialize.
+    #[serde(default)]
+    pub holdings: Vec<HoldingRow>,
+    #[serde(default)]
+    pub dividends: Vec<DividendRow>,
+    #[serde(default)]
+    pub dividend_withholdings: Vec<DividendWithholdingRow>,
 }
 
 #[derive(Serialize, Deserialize, FromRow)]
@@ -192,6 +200,51 @@ pub struct ExerciseRow {
     pub created_at: String,
 }
 
+#[derive(Serialize, Deserialize, FromRow)]
+pub struct HoldingRow {
+    pub id: i64,
+    pub account_id: i64,
+    pub ticker: String,
+    pub exchange: String,
+    pub name: Option<String>,
+    pub currency_code: String,
+    pub trade_date: String,
+    pub quantity: f64,
+    pub unit_price: Option<f64>,
+    pub fee_minor: i64,
+    pub kind: String,
+    pub external_id: Option<String>,
+    pub provider: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize, FromRow)]
+pub struct DividendRow {
+    pub id: i64,
+    pub account_id: i64,
+    pub ticker: String,
+    pub exchange: String,
+    pub record_date: Option<String>,
+    pub paid_date: String,
+    pub shares_held: Option<f64>,
+    pub gross_amount_minor: i64,
+    pub net_amount_minor: i64,
+    pub currency_code: String,
+    pub external_id: Option<String>,
+    pub provider: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize, FromRow)]
+pub struct DividendWithholdingRow {
+    pub id: i64,
+    pub dividend_id: i64,
+    pub owed_to: String,
+    pub tax_amount_minor: i64,
+    pub tax_credit_minor: Option<i64>,
+    pub currency_code: String,
+}
+
 pub async fn export(db: &Db) -> AppResult<Snapshot> {
     let base_currency_code =
         sqlx::query_scalar::<_, String>("SELECT base_currency_code FROM settings WHERE id=1")
@@ -213,6 +266,9 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         providers: sqlx::query_as("SELECT * FROM providers ORDER BY id").fetch_all(db).await?,
         equity_grants: sqlx::query_as("SELECT * FROM equity_grants ORDER BY id").fetch_all(db).await?,
         equity_exercises: sqlx::query_as("SELECT * FROM equity_exercises ORDER BY id").fetch_all(db).await?,
+        holdings: sqlx::query_as("SELECT * FROM holdings ORDER BY id").fetch_all(db).await?,
+        dividends: sqlx::query_as("SELECT * FROM dividends ORDER BY id").fetch_all(db).await?,
+        dividend_withholdings: sqlx::query_as("SELECT * FROM dividend_withholdings ORDER BY id").fetch_all(db).await?,
     })
 }
 
@@ -223,6 +279,7 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
 
     for table in [
         "rule_applications", "rule_runs", "cron_runs", "provider_syncs",
+        "dividend_withholdings", "dividends", "holdings",
         "equity_exercises", "equity_grants", "valuations", "transactions",
         "providers", "crons", "rules", "merchants", "accounts", "categories",
         "exchange_rates", "currencies",
@@ -288,6 +345,21 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             .bind(e.id).bind(e.grant_id).bind(&e.exercise_date).bind(e.quantity).bind(e.price_minor).bind(&e.note).bind(&e.created_at)
             .execute(&mut *txn).await?;
     }
+    for h in &snap.holdings {
+        sqlx::query("INSERT INTO holdings (id, account_id, ticker, exchange, name, currency_code, trade_date, quantity, unit_price, fee_minor, kind, external_id, provider, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)")
+            .bind(h.id).bind(h.account_id).bind(&h.ticker).bind(&h.exchange).bind(&h.name).bind(&h.currency_code).bind(&h.trade_date).bind(h.quantity).bind(h.unit_price).bind(h.fee_minor).bind(&h.kind).bind(&h.external_id).bind(&h.provider).bind(&h.created_at)
+            .execute(&mut *txn).await?;
+    }
+    for d in &snap.dividends {
+        sqlx::query("INSERT INTO dividends (id, account_id, ticker, exchange, record_date, paid_date, shares_held, gross_amount_minor, net_amount_minor, currency_code, external_id, provider, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)")
+            .bind(d.id).bind(d.account_id).bind(&d.ticker).bind(&d.exchange).bind(&d.record_date).bind(&d.paid_date).bind(d.shares_held).bind(d.gross_amount_minor).bind(d.net_amount_minor).bind(&d.currency_code).bind(&d.external_id).bind(&d.provider).bind(&d.created_at)
+            .execute(&mut *txn).await?;
+    }
+    for w in &snap.dividend_withholdings {
+        sqlx::query("INSERT INTO dividend_withholdings (id, dividend_id, owed_to, tax_amount_minor, tax_credit_minor, currency_code) VALUES (?1,?2,?3,?4,?5,?6)")
+            .bind(w.id).bind(w.dividend_id).bind(&w.owed_to).bind(w.tax_amount_minor).bind(w.tax_credit_minor).bind(&w.currency_code)
+            .execute(&mut *txn).await?;
+    }
     for r in &snap.exchange_rates {
         sqlx::query("INSERT INTO exchange_rates (base_code, quote_code, as_of, rate) VALUES (?1,?2,?3,?4)")
             .bind(&r.base_code).bind(&r.quote_code).bind(&r.as_of).bind(&r.rate)
@@ -310,6 +382,9 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             "providers": snap.providers.len(),
             "equity_grants": snap.equity_grants.len(),
             "equity_exercises": snap.equity_exercises.len(),
+            "holdings": snap.holdings.len(),
+            "dividends": snap.dividends.len(),
+            "dividend_withholdings": snap.dividend_withholdings.len(),
         }
     }))
 }

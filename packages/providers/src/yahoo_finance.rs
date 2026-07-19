@@ -143,15 +143,25 @@ impl StockPriceProvider for YahooFinanceProvider {
         );
 
         self.throttle().await;
-        let body: ChartResponse = self
+        let response = self
             .client
             .get(&url)
             .header("User-Agent", "Mozilla/5.0")
             .send()
-            .await?
-            .error_for_status()?
-            .json()
             .await?;
+
+        // A delisted stock (e.g. RBD after its 2019 takeover) or an expired instrument
+        // (e.g. a lapsed "…RG" rights issue) comes back as 404 with a "symbol may be
+        // delisted" body. That's legitimately "no prices available", not a failure — an
+        // account's historical holdings routinely include such symbols — so return empty
+        // and let the caller leave those positions unpriced, rather than surfacing a hard
+        // error that the backfill/poller then logs as a warning for every delisted ticker.
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            tracing::debug!(%symbol, "no price data (delisted, expired, or unknown symbol)");
+            return Ok(Vec::new());
+        }
+
+        let body: ChartResponse = response.error_for_status()?.json().await?;
 
         let result = body
             .chart

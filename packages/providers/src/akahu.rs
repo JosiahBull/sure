@@ -155,8 +155,17 @@ fn map_kind_hint(kind: &BankAccountKind, name: &str, has_credit_limit: bool) -> 
                 AccountKind::Loan
             }
         }
-        BankAccountKind::Kiwisaver | BankAccountKind::Investment => AccountKind::SharesNz,
-        BankAccountKind::Foreign | BankAccountKind::Tax | BankAccountKind::Rewards | BankAccountKind::Wallet => {
+        // A brokerage/investment platform (e.g. Sharesies) holds many tickers plus cash
+        // wallets, so it maps to the multi-holding `Brokerage` kind — linking one creates
+        // a Brokerage account ready for a bulk holdings import. `Wallet` is Akahu's
+        // "available cash for investment or withdrawal from an investment provider" — i.e.
+        // the per-currency cash wallet of a brokerage account (Sharesies exposes one per
+        // currency), so it hints Brokerage too and gets grouped with its siblings by
+        // institution into a single account. KiwiSaver is a single managed-fund balance
+        // (no per-ticker lots to import), so it stays a plain valued-holding `shares_nz`.
+        BankAccountKind::Investment | BankAccountKind::Wallet => AccountKind::Brokerage,
+        BankAccountKind::Kiwisaver => AccountKind::SharesNz,
+        BankAccountKind::Foreign | BankAccountKind::Tax | BankAccountKind::Rewards => {
             AccountKind::Cash
         }
     }
@@ -190,6 +199,7 @@ fn map_transaction(t: akahu_client::Transaction) -> ProviderTransaction {
             Some(ProviderCategory {
                 name: e.category.name.to_string(),
                 group: Some(e.category.groups.personal_finance.name.to_string()),
+                kind: None, // bank-feed enrichment is spending — defaults to expense
             }),
         ),
         None => (None, None),
@@ -381,11 +391,11 @@ mod tests {
         assert_eq!(map_kind_hint(&BankAccountKind::CreditCard, n, false), AccountKind::CreditCard);
         assert_eq!(map_kind_hint(&BankAccountKind::Loan, n, false), AccountKind::Loan);
         assert_eq!(map_kind_hint(&BankAccountKind::Kiwisaver, n, false), AccountKind::SharesNz);
-        assert_eq!(map_kind_hint(&BankAccountKind::Investment, n, false), AccountKind::SharesNz);
+        assert_eq!(map_kind_hint(&BankAccountKind::Investment, n, false), AccountKind::Brokerage);
         assert_eq!(map_kind_hint(&BankAccountKind::Foreign, n, false), AccountKind::Cash);
         assert_eq!(map_kind_hint(&BankAccountKind::Tax, n, false), AccountKind::Cash);
         assert_eq!(map_kind_hint(&BankAccountKind::Rewards, n, false), AccountKind::Cash);
-        assert_eq!(map_kind_hint(&BankAccountKind::Wallet, n, false), AccountKind::Cash);
+        assert_eq!(map_kind_hint(&BankAccountKind::Wallet, n, false), AccountKind::Brokerage);
     }
 
     #[test]

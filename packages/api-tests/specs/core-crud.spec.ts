@@ -1,5 +1,11 @@
 import { test, expect } from "../fixtures";
-import { createAccount, createCategory, createTransaction, getTransaction } from "../helpers";
+import {
+  createAccount,
+  createCategory,
+  createMerchant,
+  createTransaction,
+  getTransaction,
+} from "../helpers";
 
 test("currencies are seeded", async ({ api }) => {
   const { data } = await api.GET("/api/currencies", {});
@@ -77,6 +83,74 @@ test("transaction filters and the one-off toggle", async ({ api }) => {
   expect(withoutOneOff.data?.length).toBe(2);
   const all = await api.GET("/api/transactions", {});
   expect(all.data?.length).toBe(3);
+});
+
+test("bulk update patches, clears, and leaves untouched fields alone", async ({ api }) => {
+  const acc = await createAccount(api, "Everyday", "bank");
+  const groceries = await createCategory(api, "Groceries");
+  const merchant = await createMerchant(api, "Countdown");
+
+  const a = await createTransaction(api, { account_id: acc.id, posted_at: "2026-01-01", amount_minor: -100 });
+  const b = await createTransaction(api, { account_id: acc.id, posted_at: "2026-01-02", amount_minor: -200 });
+  const c = await createTransaction(api, { account_id: acc.id, posted_at: "2026-01-03", amount_minor: -300 });
+
+  // Set category + merchant + one-off on a and b; c is left out and must not change.
+  const patch = await api.POST("/api/transactions/bulk-update", {
+    body: { ids: [a.id, b.id], category_id: groceries.id, merchant_id: merchant.id, is_one_off: true },
+  });
+  expect(patch.response.status).toBe(200);
+  expect(patch.data?.affected).toBe(2);
+  for (const id of [a.id, b.id]) {
+    const t = await getTransaction(api, id);
+    expect(t.category_id).toBe(groceries.id);
+    expect(t.merchant_id).toBe(merchant.id);
+    expect(t.is_one_off).toBe(true);
+  }
+  const untouched = await getTransaction(api, c.id);
+  expect(untouched.category_id).toBeNull();
+  expect(untouched.is_one_off).toBe(false);
+
+  // An explicit null clears the category; omitting merchant leaves it as-is.
+  const cleared = await api.POST("/api/transactions/bulk-update", {
+    body: { ids: [a.id], category_id: null },
+  });
+  expect(cleared.data?.affected).toBe(1);
+  const afterClear = await getTransaction(api, a.id);
+  expect(afterClear.category_id).toBeNull();
+  expect(afterClear.merchant_id).toBe(merchant.id);
+
+  // A non-existent category is rejected.
+  const bad = await api.POST("/api/transactions/bulk-update", {
+    body: { ids: [a.id], category_id: 999999 },
+  });
+  expect(bad.response.status).toBe(422);
+});
+
+test("bulk delete removes rows and unlinks the other side of a transfer", async ({ api }) => {
+  const checking = await createAccount(api, "Checking", "bank");
+  const savings = await createAccount(api, "Savings", "savings");
+  const solo = await createTransaction(api, { account_id: checking.id, posted_at: "2026-01-01", amount_minor: -50 });
+
+  const { data: pair } = await api.POST("/api/transfers", {
+    body: {
+      from_account_id: checking.id,
+      to_account_id: savings.id,
+      posted_at: "2026-03-01",
+      from_amount_minor: 25000,
+      description: "Move to savings",
+    },
+  });
+  const [out, inflow] = pair!;
+
+  // Delete the solo row and the outflow side of the transfer in one call.
+  const del = await api.POST("/api/transactions/bulk-delete", { body: { ids: [solo.id, out.id] } });
+  expect(del.response.status).toBe(200);
+  expect(del.data?.affected).toBe(2);
+
+  expect((await api.GET("/api/transactions/{id}", { params: { path: { id: solo.id } } })).response.status).toBe(404);
+  expect((await api.GET("/api/transactions/{id}", { params: { path: { id: out.id } } })).response.status).toBe(404);
+  // The surviving side of the transfer had its link cleared by the FK cascade.
+  expect((await getTransaction(api, inflow.id)).linked_transaction_id).toBeNull();
 });
 
 test("a transfer creates a reciprocally-linked pair", async ({ api }) => {

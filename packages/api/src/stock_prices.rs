@@ -82,7 +82,15 @@ impl ScheduledTask for StockPriceTask {
     }
 
     async fn run(&self) -> anyhow::Result<()> {
-        let tickers = sure_dal::accounts::list_shares_tickers(&self.db).await?;
+        // Single-ticker Shares accounts plus every ticker held across any Brokerage
+        // account — deduped, so a symbol held both ways is only fetched once.
+        let mut seen = std::collections::HashSet::new();
+        let tickers: Vec<_> = sure_dal::accounts::list_shares_tickers(&self.db)
+            .await?
+            .into_iter()
+            .chain(sure_dal::accounts::list_brokerage_tickers(&self.db).await?)
+            .filter(|t| seen.insert((t.ticker.clone(), t.exchange.clone())))
+            .collect();
         let today = Utc::now().date_naive();
         let from = today - chrono::Duration::days(BACKFILL_LOOKBACK_DAYS);
 

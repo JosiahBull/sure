@@ -1,5 +1,6 @@
 <script lang="ts">
   import { sankey, sankeyLinkHorizontal, sankeyJustify } from "d3-sankey";
+  import { colorFor } from "../api";
 
   interface Node {
     id: string;
@@ -29,13 +30,19 @@
 
   const W = 760;
 
-  const KIND_COLOR: Record<string, string> = {
-    income: "#34d399",
-    expense: "#fb7185",
-    center: "#38bdf8",
-    savings: "#2dd4bf",
-  };
-  const color = (kind: string) => KIND_COLOR[kind] ?? "#64748b";
+  const uid = Math.random().toString(36).slice(2, 8);
+
+  // Node colours mirror the previous app: a green spine for the "Cash flow" hub and the
+  // "Savings" surplus, with each income/expense category tinted from the shared category
+  // palette so the Sankey agrees with the dashboard pies. Uncategorised (key 0) stays a
+  // neutral grey. Flows are drawn as a source→target gradient of these colours.
+  const SPINE = "#10a861";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function nodeColor(n: any): string {
+    if (n.kind === "center" || n.kind === "savings") return SPINE;
+    if (isCat(n.id)) return colorFor(catKey(n.id) || null);
+    return "#64748b";
+  }
 
   const graph = $derived.by(() => {
     const usable = links.filter((l) => l.value > 0);
@@ -55,16 +62,61 @@
     if (!g.links.length) return null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const gen = (sankey() as any)
-      .nodeWidth(14)
-      .nodePadding(16)
+      .nodeWidth(15)
+      .nodePadding(20)
       .nodeAlign(sankeyJustify)
       .extent([
-        [2, 10],
-        [W - 2, height - 10],
+        [6, 14],
+        [W - 6, height - 14],
       ]);
     return gen(g) as { nodes: any[]; links: any[] };
   });
   const linkPath = sankeyLinkHorizontal();
+
+  // Node shapes: pure-source (income) nodes round their outer/left edge, pure-target
+  // (expense/savings) nodes round their outer/right edge, and the two-sided hub stays
+  // square — reproducing the previous app's pill-ended leaf nodes.
+  const R = 8;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function nodePath(n: any): string {
+    const x0 = n.x0,
+      y0 = n.y0,
+      x1 = n.x1,
+      y1 = Math.max(n.y0 + 1, n.y1);
+    const r = Math.max(0, Math.min(R, (y1 - y0) / 2));
+    const src = (n.sourceLinks?.length ?? 0) > 0;
+    const tgt = (n.targetLinks?.length ?? 0) > 0;
+    if (y1 - y0 < r * 2 || (src && tgt)) return `M${x0},${y0} H${x1} V${y1} H${x0} Z`;
+    if (src)
+      return `M${x0 + r},${y0} H${x1} V${y1} H${x0 + r} Q${x0},${y1} ${x0},${y1 - r} V${y0 + r} Q${x0},${y0} ${x0 + r},${y0} Z`;
+    return `M${x0},${y0} H${x1 - r} Q${x1},${y0} ${x1},${y0 + r} V${y1 - r} Q${x1},${y1} ${x1 - r},${y1} H${x0} Z`;
+  }
+
+  // Two-line labels need vertical room; in a crowded column they would overlap into an
+  // unreadable stack. Hide any label sitting within MIN_LABEL_GAP of the previous visible
+  // one in its column (keeping the topmost); hover reveals a hidden label via `nodeActive`.
+  const MIN_LABEL_GAP = 24;
+  const hiddenLabels = $derived.by(() => {
+    const hide = new Set<string>();
+    if (!graph) return hide;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const columns = new Map<number, any[]>();
+    for (const n of graph.nodes) {
+      const d = n.depth ?? 0;
+      if (!columns.has(d)) columns.set(d, []);
+      columns.get(d)!.push(n);
+    }
+    for (const col of columns.values()) {
+      col.sort((a, b) => (a.y0 + a.y1) / 2 - (b.y0 + b.y1) / 2);
+      let lastY = -Infinity;
+      for (const n of col) {
+        const y = (n.y0 + n.y1) / 2;
+        if (y - lastY < MIN_LABEL_GAP) hide.add(n.id);
+        else lastY = y;
+      }
+    }
+    return hide;
+  });
 
   // ---- interactivity: hover highlights an element and its connected flows, click on a
   // category node/link opens the matching transactions. ------------------------------
@@ -143,6 +195,19 @@
 {:else}
   <div class="sankey-wrap" bind:this={container}>
     <svg viewBox="0 0 {W} {height}" width="100%">
+      <defs>
+        {#each graph.links as l, i}
+          <linearGradient
+            id="sk-{uid}-{i}"
+            gradientUnits="userSpaceOnUse"
+            x1={l.source.x1}
+            x2={l.target.x0}
+          >
+            <stop offset="0%" stop-color={nodeColor(l.source)} />
+            <stop offset="100%" stop-color={nodeColor(l.target)} />
+          </linearGradient>
+        {/each}
+      </defs>
       {#each graph.links as l, i}
         {@const cat = linkCatNode(l)}
         <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
@@ -150,8 +215,8 @@
           class="link"
           d={linkPath(l) ?? ""}
           fill="none"
-          stroke={color(l.source.kind)}
-          stroke-opacity={hovered ? (linkActive(l, i) ? 0.6 : 0.07) : 0.32}
+          stroke="url(#sk-{uid}-{i})"
+          stroke-opacity={hovered ? (linkActive(l, i) ? 0.62 : 0.06) : 0.3}
           stroke-width={Math.max(1, l.width)}
           style:cursor={cat ? "pointer" : "default"}
           onpointerenter={(e) => enterLink(l, i, e)}
@@ -162,6 +227,8 @@
       {/each}
       {#each graph.nodes as n}
         {@const clickable = isCat(n.id)}
+        {@const lx = n.x0 < W / 2 ? n.x1 + 7 : n.x0 - 7}
+        {@const showLabel = !hiddenLabels.has(n.id) || (!!hovered && nodeActive(n))}
         <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_tabindex -->
         <g
           class="node"
@@ -178,22 +245,18 @@
           onclick={() => clickable && emit(catKey(n.id))}
           onkeydown={(e) => keyNode(e, n)}
         >
-          <rect
-            x={n.x0}
-            y={n.y0}
-            width={n.x1 - n.x0}
-            height={Math.max(1, n.y1 - n.y0)}
-            fill={color(n.kind)}
-            rx="2"
-          />
+          <path d={nodePath(n)} fill={nodeColor(n)} />
           <text
-            x={n.x0 < W / 2 ? n.x1 + 6 : n.x0 - 6}
+            class="label"
+            class:hidden={!showLabel}
+            x={lx}
             y={(n.y0 + n.y1) / 2}
-            dy="0.35em"
+            dy="-0.2em"
             text-anchor={n.x0 < W / 2 ? "start" : "end"}
-            font-size="11.5"
-            fill="var(--text-muted)">{n.label}</text
           >
+            <tspan class="label-name">{n.label}</tspan>
+            <tspan class="label-value" x={lx} dy="1.2em">{fmt(n.value)}</tspan>
+          </text>
         </g>
       {/each}
     </svg>
@@ -213,6 +276,24 @@
   .node,
   .link {
     transition: opacity 0.15s ease, stroke-opacity 0.15s ease;
+  }
+  .label {
+    user-select: none;
+    transition: opacity 0.2s ease;
+  }
+  .label.hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .label-name {
+    fill: var(--text);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .label-value {
+    fill: var(--text-muted);
+    font-family: var(--mono);
+    font-size: 10.5px;
   }
   .tip {
     position: absolute;
