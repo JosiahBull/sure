@@ -12,10 +12,10 @@ test("overview shows net worth, category breakdown and the money-flow sankey", a
   // Seeded expense categories roll up to top-level buckets (appears in the pie legend
   // and the sankey, so scope to the first match).
   await expect(page.getByText("Housing").first()).toBeVisible();
-  // The Sankey (formerly its own tab) is now the last card on the overview. Its paths
-  // use fill:none, so assert DOM presence rather than the visibility heuristic.
+  // The Sankey (formerly its own tab) is now the last card on the overview. Its nodes
+  // and flows are both <path> (nodes have fill, flows use fill:none), so assert DOM
+  // presence rather than the visibility heuristic.
   await expect(page.getByRole("heading", { name: "Money flow" })).toBeVisible();
-  await expect(page.locator("svg rect").first()).toBeVisible();
   await expect(page.locator("svg path")).not.toHaveCount(0);
   await expect(page).toHaveScreenshot("overview.png", { fullPage: true });
 });

@@ -57,8 +57,9 @@ test("clicking an account jumps to its filtered transactions", async ({ page }) 
   const selectedLabel = await accountFilter.locator("option:checked").textContent();
   expect(selectedLabel).toBe("Everyday");
 
-  // Every visible row belongs to the filtered account — not a mix.
-  const accountCells = page.locator("table tbody tr td:nth-child(3)");
+  // Every visible row belongs to the filtered account — not a mix. Columns are
+  // checkbox, date, description, account, … so the account is the 4th cell.
+  const accountCells = page.locator("table tbody tr td:nth-child(4)");
   await expect(accountCells.first()).toBeVisible();
   const distinctAccounts = new Set(await accountCells.allTextContents());
   expect([...distinctAccounts]).toEqual(["Everyday"]);
