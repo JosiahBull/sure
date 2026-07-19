@@ -9,6 +9,7 @@ pub use sure_core::StockPrice;
 use crate::Db;
 
 /// Upsert one day's close for a ticker.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn upsert(
     db: &Db,
     ticker: &str,
@@ -36,6 +37,7 @@ pub async fn upsert(
 
 /// The closest cached close on or before `as_of` (the nearest preceding trading day —
 /// so a weekend/holiday date still resolves to something sensible).
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn get_at(
     db: &Db,
     ticker: &str,
@@ -54,6 +56,7 @@ pub async fn get_at(
 }
 
 /// Every cached close for a ticker, oldest first.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_history(
     db: &Db,
     ticker: &str,

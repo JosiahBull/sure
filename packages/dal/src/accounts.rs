@@ -22,7 +22,7 @@ fn metadata_from_stored(kind: AccountKind, stored: &str) -> AccountMetadata {
     serde_json::from_value(value).unwrap_or_else(|_| AccountMetadata::default_for(kind))
 }
 
-#[derive(FromRow)]
+#[derive(Debug, FromRow)]
 pub struct AccountRow {
     pub id: i64,
     pub name: String,
@@ -56,11 +56,12 @@ impl From<AccountRow> for Account {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ListQuery {
     pub include_archived: Option<bool>,
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db, include_archived: bool) -> AppResult<Vec<Account>> {
     let sql = if include_archived {
         "SELECT * FROM accounts ORDER BY sort_order, name"
@@ -81,6 +82,7 @@ pub struct SharesTicker {
     pub exchange: String,
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_shares_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
     let accounts = list(db, false).await?;
     let tickers: std::collections::HashSet<SharesTicker> = accounts
@@ -106,6 +108,7 @@ pub async fn list_shares_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
 /// Distinct `(ticker, exchange)` pairs ever traded on any brokerage account's holdings
 /// ledger — the multi-holding counterpart to [`list_shares_tickers`], used by the
 /// stock-price poller to keep every held ticker's price cache warm.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_brokerage_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
     let rows = sqlx::query_as::<_, (String, String)>(
         "SELECT DISTINCT ticker, exchange FROM holdings",
@@ -127,6 +130,7 @@ pub async fn list_brokerage_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
         .collect())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn get(db: &Db, id: i64) -> AppResult<Account> {
     let row = sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE id = ?1")
         .bind(id)
@@ -159,6 +163,7 @@ pub(crate) async fn validate(db: &Db, input: &SaveAccount) -> AppResult<String> 
     serde_json::to_string(&metadata).map_err(|e| AppError::Internal(e.into()))
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveAccount) -> AppResult<Account> {
     let metadata = validate(db, &input).await?;
     let mut tx = db.begin().await?;
@@ -201,6 +206,7 @@ pub async fn create(db: &Db, input: SaveAccount) -> AppResult<Account> {
     Ok(account)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveAccount) -> AppResult<Account> {
     let metadata = validate(db, &input).await?;
     let row = sqlx::query_as::<_, AccountRow>(
@@ -222,6 +228,7 @@ pub async fn update(db: &Db, id: i64, input: SaveAccount) -> AppResult<Account> 
     Ok(row.into())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     // An asset is a "parent" for the debts secured against it. Refuse to delete it while
     // any remain, so we never silently orphan them — the caller must unlink or delete
@@ -248,6 +255,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn set_secured_by(db: &Db, id: i64, target: Option<i64>) -> AppResult<Account> {
     if let Some(t) = target {
         if t == id {
@@ -278,6 +286,7 @@ pub async fn set_secured_by(db: &Db, id: i64, target: Option<i64>) -> AppResult<
 /// providers that can report a live limit, e.g. Akahu's `balance.limit` for a credit
 /// card), leaving every other metadata field untouched. A no-op if the account isn't
 /// depository-profiled — a mortgage/loan/etc. has no such concept.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn set_credit_limit(db: &Db, account_id: i64, credit_limit_minor: i64) -> AppResult<()> {
     let account = get(db, account_id).await?;
     let AccountMetadata::Depository(mut meta) = account.metadata else {
@@ -291,6 +300,7 @@ pub async fn set_credit_limit(db: &Db, account_id: i64, credit_limit_minor: i64)
 /// (used by providers that can report it, e.g. Akahu's `loan_details.initial_principal`,
 /// which lets a paid-down percentage be derived from the current balance), leaving every
 /// other metadata field untouched. A no-op for any other account kind.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn set_original_amount(
     db: &Db,
     account_id: i64,
@@ -315,6 +325,7 @@ pub async fn set_original_amount(
 /// have one — a user's own edit (e.g. shortening "ASB Bank Limited" to "ASB") is never
 /// overwritten by a later sync, unlike the numeric provider-sourced fields above which
 /// always refresh to stay in sync with the live source.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn set_institution_if_unset(db: &Db, account_id: i64, institution: &str) -> AppResult<()> {
     sqlx::query(
         "UPDATE accounts SET institution=?2, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -327,6 +338,7 @@ pub async fn set_institution_if_unset(db: &Db, account_id: i64, institution: &st
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn write_metadata(db: &Db, account_id: i64, metadata: &AccountMetadata) -> AppResult<()> {
     let json = serde_json::to_string(metadata).map_err(|e| AppError::Internal(e.into()))?;
     sqlx::query(

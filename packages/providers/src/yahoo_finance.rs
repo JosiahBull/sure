@@ -59,24 +59,24 @@ impl Default for YahooFinanceProvider {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ChartResponse {
     chart: Chart,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Chart {
     result: Option<Vec<ChartResult>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ChartResult {
     meta: ChartMeta,
     timestamp: Option<Vec<i64>>,
     indicators: ChartIndicators,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ChartMeta {
     currency: String,
     /// Seconds offset from UTC for the exchange this symbol trades on — needed to turn
@@ -84,12 +84,12 @@ struct ChartMeta {
     gmtoffset: i64,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ChartIndicators {
     quote: Vec<ChartQuote>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ChartQuote {
     close: Vec<Option<f64>>,
 }

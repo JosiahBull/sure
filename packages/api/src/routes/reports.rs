@@ -17,7 +17,14 @@ use sure_dal::reports::SpendTransaction;
 
 // ---- query params --------------------------------------------------------
 
-#[derive(Deserialize, IntoParams, Default)]
+// OTEL span names for this module's handlers.
+const REPORTS_NET_WORTH: &str = "reports.net_worth";
+const REPORTS_CATEGORY_BREAKDOWN: &str = "reports.category_breakdown";
+const REPORTS_SANKEY: &str = "reports.sankey";
+const REPORTS_BALANCES: &str = "reports.balances";
+const REPORTS_EQUITY_POSITION: &str = "reports.equity_position";
+
+#[derive(Debug, Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
 pub struct ReportQuery {
     /// Inclusive start date (ISO-8601). Defaults to the earliest data.
@@ -30,7 +37,7 @@ pub struct ReportQuery {
     pub currency: Option<String>,
 }
 
-#[derive(Deserialize, IntoParams, Default)]
+#[derive(Debug, Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
 pub struct NetWorthQuery {
     pub from: Option<String>,
@@ -42,7 +49,7 @@ pub struct NetWorthQuery {
 
 // ---- response shapes -----------------------------------------------------
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct NetWorthPoint {
     pub as_of: String,
     pub net_worth_minor: i64,
@@ -50,13 +57,13 @@ pub struct NetWorthPoint {
     pub liabilities_minor: i64,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct NetWorthSeries {
     pub currency: String,
     pub points: Vec<NetWorthPoint>,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CategoryTotal {
     /// `null` for the uncategorised bucket.
     pub category_id: Option<i64>,
@@ -65,7 +72,7 @@ pub struct CategoryTotal {
     pub total_minor: i64,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CategoryBreakdown {
     pub currency: String,
     pub from: String,
@@ -74,7 +81,7 @@ pub struct CategoryBreakdown {
     pub expense: Vec<CategoryTotal>,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SankeyNode {
     pub id: String,
     pub label: String,
@@ -82,14 +89,14 @@ pub struct SankeyNode {
     pub kind: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SankeyLink {
     pub source: String,
     pub target: String,
     pub value_minor: i64,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SankeyGraph {
     pub currency: String,
     pub nodes: Vec<SankeyNode>,
@@ -100,6 +107,7 @@ pub struct SankeyGraph {
 
 use crate::fx::Fx;
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn base_currency(db: &sure_dal::Db, override_: Option<&str>) -> AppResult<String> {
     if let Some(c) = override_.filter(|s| !s.is_empty()) {
         return Ok(c.to_uppercase());
@@ -124,6 +132,14 @@ fn last_day_of_month(y: i32, m: u32) -> NaiveDate {
 /// Net worth over time, sampled at the requested interval.
 #[utoipa::path(get, path = "/api/reports/net-worth", tag = "reports", params(NetWorthQuery),
     responses((status = 200, body = NetWorthSeries)))]
+#[tracing::instrument(
+    name = REPORTS_NET_WORTH,
+    level = "debug",
+    skip_all,
+    fields(query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn net_worth(
     State(st): State<AppState>,
     Query(q): Query<NetWorthQuery>,
@@ -350,6 +366,7 @@ impl Categories {
 
 /// Load transactions in the window, excluding transfers (either linked, or in a
 /// transfer-kind category) and — optionally — one-offs.
+#[tracing::instrument(level = "debug", skip_all)]
 async fn load_spend(
     db: &sure_dal::Db,
     cats: &Categories,
@@ -398,6 +415,14 @@ fn window(from: Option<&str>, to: Option<&str>) -> (NaiveDate, NaiveDate) {
 /// Income/expense totals per top-level category for the period.
 #[utoipa::path(get, path = "/api/reports/category-breakdown", tag = "reports", params(ReportQuery),
     responses((status = 200, body = CategoryBreakdown)))]
+#[tracing::instrument(
+    name = REPORTS_CATEGORY_BREAKDOWN,
+    level = "debug",
+    skip_all,
+    fields(query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn category_breakdown(
     State(st): State<AppState>,
     Query(q): Query<ReportQuery>,
@@ -457,6 +482,14 @@ pub async fn category_breakdown(
 /// Money-flow graph: income categories -> cash flow -> expense categories (+ savings).
 #[utoipa::path(get, path = "/api/reports/sankey", tag = "reports", params(ReportQuery),
     responses((status = 200, body = SankeyGraph)))]
+#[tracing::instrument(
+    name = REPORTS_SANKEY,
+    level = "debug",
+    skip_all,
+    fields(query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn sankey(
     State(st): State<AppState>,
     Query(q): Query<ReportQuery>,
@@ -549,7 +582,7 @@ pub async fn sankey(
 
 // ---- account balances ----------------------------------------------------
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AccountBalance {
     pub account_id: i64,
     pub name: String,
@@ -560,7 +593,7 @@ pub struct AccountBalance {
     pub value_minor: i64,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct BalancesReport {
     pub currency: String,
     pub as_of: String,
@@ -581,6 +614,14 @@ fn class_of(kind: &str) -> &'static str {
 /// Current value of each (non-archived) account plus a base-currency total.
 #[utoipa::path(get, path = "/api/reports/balances", tag = "reports", params(ReportQuery),
     responses((status = 200, body = BalancesReport)))]
+#[tracing::instrument(
+    name = REPORTS_BALANCES,
+    level = "debug",
+    skip_all,
+    fields(query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn balances(
     State(st): State<AppState>,
     Query(q): Query<ReportQuery>,
@@ -618,7 +659,7 @@ pub async fn balances(
 
 // ---- asset equity position (property paid-off %) -------------------------
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SecuredLiability {
     pub account_id: i64,
     pub name: String,
@@ -627,7 +668,7 @@ pub struct SecuredLiability {
     pub balance_minor: i64,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct EquityPosition {
     pub account_id: i64,
     pub name: String,
@@ -650,6 +691,7 @@ type Ledger = (
 );
 
 /// Load transactions + valuations indexed per account, for point-in-time balances.
+#[tracing::instrument(level = "debug", skip_all)]
 async fn load_ledger(db: &sure_dal::Db) -> AppResult<Ledger> {
     let txns = sure_dal::reports::transactions(db).await?;
     let vals = sure_dal::reports::valuations(db).await?;
@@ -676,6 +718,14 @@ async fn load_ledger(db: &sure_dal::Db) -> AppResult<Ledger> {
 #[utoipa::path(get, path = "/api/accounts/{id}/equity-position", tag = "reports",
     params(("id" = i64, Path,), ReportQuery),
     responses((status = 200, body = EquityPosition), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = REPORTS_EQUITY_POSITION,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id, query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn equity_position(
     State(st): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<i64>,

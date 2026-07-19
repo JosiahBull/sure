@@ -18,6 +18,19 @@ pub use sure_dal::rules::{
 };
 use sure_dal::rules::{PlannedApplication, TxCtx};
 
+// OTEL span names for this module's handlers.
+const RULES_LIST: &str = "rules.list";
+const RULES_GET: &str = "rules.get";
+const RULES_CREATE: &str = "rules.create";
+const RULES_UPDATE: &str = "rules.update";
+const RULES_DELETE: &str = "rules.delete";
+const RULES_RUN_ONE: &str = "rules.run_one";
+const RULES_RUN_ALL: &str = "rules.run_all";
+const RULES_PREVIEW: &str = "rules.preview";
+const RULES_LIST_RUNS: &str = "rules.list_runs";
+const RULES_RUN_APPLICATIONS: &str = "rules.run_applications";
+const RULES_UNDO_RUN: &str = "rules.undo_run";
+
 /// Mutable per-transaction state, updated as successive rules apply within a run.
 struct Current {
     category_id: Option<i64>,
@@ -41,6 +54,13 @@ impl Current {
 
 /// List rules in evaluation order.
 #[utoipa::path(get, path = "/api/rules", tag = "rules", responses((status = 200, body = [Rule])))]
+#[tracing::instrument(
+    name = RULES_LIST,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Rule>>> {
     Ok(Json(sure_dal::rules::list(&st.db).await?))
 }
@@ -48,6 +68,14 @@ pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Rule>>> {
 /// Fetch one rule.
 #[utoipa::path(get, path = "/api/rules/{id}", tag = "rules", params(("id" = i64, Path,)),
     responses((status = 200, body = Rule), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = RULES_GET,
+    level = "debug",
+    skip_all,
+    fields(rule_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn get_one(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<Rule>> {
     Ok(Json(sure_dal::rules::get(&st.db, id).await?))
 }
@@ -55,6 +83,13 @@ pub async fn get_one(State(st): State<AppState>, Path(id): Path<i64>) -> AppResu
 /// Create a rule (validates the expression).
 #[utoipa::path(post, path = "/api/rules", tag = "rules", request_body = SaveRule,
     responses((status = 201, body = Rule), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = RULES_CREATE,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveRule>,
@@ -71,6 +106,14 @@ pub async fn create(
     request_body = SaveRule,
     responses((status = 200, body = Rule), (status = 404, body = crate::error::ErrorBody),
               (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = RULES_UPDATE,
+    level = "debug",
+    skip_all,
+    fields(rule_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn update(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -83,6 +126,14 @@ pub async fn update(
 /// Delete a rule (audit history is retained; its rule_id becomes null).
 #[utoipa::path(delete, path = "/api/rules/{id}", tag = "rules", params(("id" = i64, Path,)),
     responses((status = 204), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = RULES_DELETE,
+    level = "debug",
+    skip_all,
+    fields(rule_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     sure_dal::rules::delete(&st.db, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -91,6 +142,14 @@ pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResul
 /// Run a single rule over all transactions.
 #[utoipa::path(post, path = "/api/rules/{id}/run", tag = "rules", params(("id" = i64, Path,)),
     responses((status = 200, body = RunResult), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = RULES_RUN_ONE,
+    level = "debug",
+    skip_all,
+    fields(rule_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn run_one(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<RunResult>> {
     let rule = sure_dal::rules::get(&st.db, id).await?;
     let result = run_rules(&st.db, &[rule], Some(id), "single").await?;
@@ -100,6 +159,13 @@ pub async fn run_one(State(st): State<AppState>, Path(id): Path<i64>) -> AppResu
 /// Run all enabled rules in priority order.
 #[utoipa::path(post, path = "/api/rules/run", tag = "rules",
     responses((status = 200, body = RunResult)))]
+#[tracing::instrument(
+    name = RULES_RUN_ALL,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn run_all(State(st): State<AppState>) -> AppResult<Json<RunResult>> {
     let rules = sure_dal::rules::enabled_rules(&st.db).await?;
     let result = run_rules(&st.db, &rules, None, "all").await?;
@@ -109,6 +175,13 @@ pub async fn run_all(State(st): State<AppState>) -> AppResult<Json<RunResult>> {
 /// Preview which transactions an expression would match, without changing anything.
 #[utoipa::path(post, path = "/api/rules/preview", tag = "rules", request_body = PreviewRequest,
     responses((status = 200, body = RulePreview), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = RULES_PREVIEW,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn preview(
     State(st): State<AppState>,
     Json(req): Json<PreviewRequest>,
@@ -139,6 +212,13 @@ pub async fn preview(
 
 /// List rule runs (most recent first) — the audit trail.
 #[utoipa::path(get, path = "/api/rules/runs", tag = "rules", responses((status = 200, body = [RuleRun])))]
+#[tracing::instrument(
+    name = RULES_LIST_RUNS,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list_runs(State(st): State<AppState>) -> AppResult<Json<Vec<RuleRun>>> {
     Ok(Json(sure_dal::rules::list_runs(&st.db).await?))
 }
@@ -146,6 +226,14 @@ pub async fn list_runs(State(st): State<AppState>) -> AppResult<Json<Vec<RuleRun
 /// List the per-transaction changes made by a run (with transaction detail for display).
 #[utoipa::path(get, path = "/api/rules/runs/{run_id}", tag = "rules", params(("run_id" = i64, Path,)),
     responses((status = 200, body = [RuleApplicationDetail])))]
+#[tracing::instrument(
+    name = RULES_RUN_APPLICATIONS,
+    level = "debug",
+    skip_all,
+    fields(run_id = %run_id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn run_applications(
     State(st): State<AppState>,
     Path(run_id): Path<i64>,
@@ -158,6 +246,14 @@ pub async fn run_applications(
 #[utoipa::path(post, path = "/api/rules/runs/{run_id}/undo", tag = "rules",
     params(("run_id" = i64, Path,)),
     responses((status = 200, body = RunResult), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = RULES_UNDO_RUN,
+    level = "debug",
+    skip_all,
+    fields(run_id = %run_id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn undo_run(
     State(st): State<AppState>,
     Path(run_id): Path<i64>,
@@ -170,6 +266,7 @@ pub async fn undo_run(
 /// Evaluate `rules` over every transaction, then persist the decided changes. The
 /// evaluation (which fields matched, what a rule would set) is done here; the DAL
 /// writes the run, the transaction updates, and the audit rows in one transaction.
+#[tracing::instrument(level = "debug", skip_all)]
 async fn run_rules(
     db: &sure_dal::Db,
     rules: &[Rule],

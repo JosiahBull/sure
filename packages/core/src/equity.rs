@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[derive(Serialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct EquityGrant {
     pub id: i64,
@@ -21,7 +21,7 @@ pub struct EquityGrant {
     pub updated_at: String,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveGrant {
     pub company: String,
     pub grant_date: String,
@@ -46,7 +46,7 @@ fn cliff12() -> i64 {
     12
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct EquityExercise {
     pub id: i64,
@@ -58,7 +58,7 @@ pub struct EquityExercise {
     pub created_at: String,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveExercise {
     pub exercise_date: String,
     pub quantity: i64,
@@ -69,7 +69,7 @@ pub struct SaveExercise {
 }
 
 /// Vesting/exercise status of a grant as of a date.
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct VestingStatus {
     pub grant_id: i64,
     pub company: String,
@@ -87,7 +87,7 @@ pub struct VestingStatus {
     pub intrinsic_value_minor: i64,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AccountEquity {
     pub account_id: i64,
     pub as_of: String,

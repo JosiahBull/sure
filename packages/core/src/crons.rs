@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Cron {
     pub id: i64,
@@ -23,7 +23,7 @@ pub struct Cron {
     pub updated_at: String,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveCron {
     pub name: String,
     pub account_id: i64,
@@ -44,7 +44,7 @@ fn yes() -> bool {
     true
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct CronRun {
     pub id: i64,
@@ -57,7 +57,7 @@ pub struct CronRun {
     pub created_at: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CronRunResult {
     pub applied: i64,
     pub runs: Vec<CronRun>,

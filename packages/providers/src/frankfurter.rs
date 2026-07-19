@@ -33,7 +33,7 @@ impl Default for FrankfurterProvider {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct LatestResponse {
     date: String,
     rates: BTreeMap<String, f64>,

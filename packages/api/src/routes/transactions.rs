@@ -11,9 +11,29 @@ pub use sure_dal::transactions::{
     TxQuery,
 };
 
+// OTEL span names for this module's handlers.
+const TRANSACTIONS_LIST: &str = "transactions.list";
+const TRANSACTIONS_GET: &str = "transactions.get";
+const TRANSACTIONS_CREATE: &str = "transactions.create";
+const TRANSACTIONS_UPDATE: &str = "transactions.update";
+const TRANSACTIONS_DELETE: &str = "transactions.delete";
+const TRANSACTIONS_BULK_UPDATE: &str = "transactions.bulk_update";
+const TRANSACTIONS_BULK_DELETE: &str = "transactions.bulk_delete";
+const TRANSACTIONS_LINK: &str = "transactions.link";
+const TRANSACTIONS_UNLINK: &str = "transactions.unlink";
+const TRANSACTIONS_CREATE_TRANSFER: &str = "transactions.create_transfer";
+
 /// List transactions, most recent first, with optional filters.
 #[utoipa::path(get, path = "/api/transactions", tag = "transactions", params(TxQuery),
     responses((status = 200, body = [Transaction])))]
+#[tracing::instrument(
+    name = TRANSACTIONS_LIST,
+    level = "debug",
+    skip_all,
+    fields(query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list(
     State(st): State<AppState>,
     Query(q): Query<TxQuery>,
@@ -25,6 +45,14 @@ pub async fn list(
 #[utoipa::path(get, path = "/api/transactions/{id}", tag = "transactions",
     params(("id" = i64, Path,)),
     responses((status = 200, body = Transaction), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = TRANSACTIONS_GET,
+    level = "debug",
+    skip_all,
+    fields(transaction_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn get_one(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -36,6 +64,13 @@ pub async fn get_one(
 #[utoipa::path(post, path = "/api/transactions", tag = "transactions",
     request_body = SaveTransaction,
     responses((status = 201, body = Transaction), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = TRANSACTIONS_CREATE,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveTransaction>,
@@ -52,6 +87,14 @@ pub async fn create(
     params(("id" = i64, Path,)), request_body = SaveTransaction,
     responses((status = 200, body = Transaction), (status = 404, body = crate::error::ErrorBody),
               (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = TRANSACTIONS_UPDATE,
+    level = "debug",
+    skip_all,
+    fields(transaction_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn update(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -64,6 +107,14 @@ pub async fn update(
 #[utoipa::path(delete, path = "/api/transactions/{id}", tag = "transactions",
     params(("id" = i64, Path,)),
     responses((status = 204), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = TRANSACTIONS_DELETE,
+    level = "debug",
+    skip_all,
+    fields(transaction_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     sure_dal::transactions::delete(&st.db, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -74,6 +125,13 @@ pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResul
 #[utoipa::path(post, path = "/api/transactions/bulk-update", tag = "transactions",
     request_body = BulkUpdate,
     responses((status = 200, body = BulkResult), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = TRANSACTIONS_BULK_UPDATE,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn bulk_update(
     State(st): State<AppState>,
     Json(input): Json<BulkUpdate>,
@@ -86,6 +144,13 @@ pub async fn bulk_update(
 #[utoipa::path(post, path = "/api/transactions/bulk-delete", tag = "transactions",
     request_body = BulkDelete,
     responses((status = 200, body = BulkResult)))]
+#[tracing::instrument(
+    name = TRANSACTIONS_BULK_DELETE,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn bulk_delete(
     State(st): State<AppState>,
     Json(input): Json<BulkDelete>,
@@ -99,6 +164,14 @@ pub async fn bulk_delete(
     params(("id" = i64, Path,)), request_body = LinkRequest,
     responses((status = 200, body = Transaction), (status = 404, body = crate::error::ErrorBody),
               (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = TRANSACTIONS_LINK,
+    level = "debug",
+    skip_all,
+    fields(transaction_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn link(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -111,6 +184,14 @@ pub async fn link(
 #[utoipa::path(delete, path = "/api/transactions/{id}/link", tag = "transactions",
     params(("id" = i64, Path,)),
     responses((status = 200, body = Transaction), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = TRANSACTIONS_UNLINK,
+    level = "debug",
+    skip_all,
+    fields(transaction_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn unlink(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -122,6 +203,13 @@ pub async fn unlink(
 #[utoipa::path(post, path = "/api/transfers", tag = "transactions",
     request_body = TransferRequest,
     responses((status = 201, body = [Transaction]), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = TRANSACTIONS_CREATE_TRANSFER,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn create_transfer(
     State(st): State<AppState>,
     Json(req): Json<TransferRequest>,

@@ -55,12 +55,12 @@ impl AppError {
 pub type AppResult<T> = Result<T, AppError>;
 
 /// JSON error envelope: `{ "error": { "code": "...", "message": "..." } }`.
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorBody {
     pub error: ErrorDetail,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorDetail {
     /// Stable machine-readable code (e.g. `not_found`, `validation`).
     pub code: String,
@@ -96,13 +96,19 @@ mod http {
     impl IntoResponse for AppError {
         fn into_response(self) -> Response {
             let status = self.status();
-            if status.is_server_error() {
-                tracing::error!(error = %self, "request failed");
-            }
+            // Never surface internal detail (SQL errors, anyhow chains) to clients. The
+            // cause is logged server-side by the handler's `#[instrument(err)]`; the HTTP
+            // layer's `request_context` middleware re-clothes this with a `request_id`.
+            // Client errors (4xx) keep their descriptive, safe messages.
+            let message = if status.is_server_error() {
+                "Internal Error: Something went wrong!".to_string()
+            } else {
+                self.to_string()
+            };
             let body = super::ErrorBody {
                 error: super::ErrorDetail {
                     code: self.code().to_string(),
-                    message: self.to_string(),
+                    message,
                 },
             };
             (status, Json(body)).into_response()

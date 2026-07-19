@@ -79,7 +79,7 @@ pub struct ProviderAccount {
 /// Everything a provider needs to perform a sync. Cheap to copy (just references), so the
 /// sync route can pass it to both [`TransactionProvider::fetch`] and
 /// [`TransactionProvider::current_balance`].
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct SyncContext<'a> {
     pub config: &'a Value,
     pub account_currency: &'a str,
@@ -147,7 +147,7 @@ pub trait TransactionProvider: Send + Sync {
 }
 
 /// Metadata about an available provider kind, surfaced via the API.
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ProviderKind {
     pub kind: String,
     pub description: String,

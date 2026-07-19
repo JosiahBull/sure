@@ -14,10 +14,26 @@ pub use sure_core::{
 };
 pub use sure_dal::accounts::{Account, ListQuery, SaveAccount, SetSecuredBy};
 
+// OTEL span names for this module's handlers.
+const ACCOUNTS_LIST: &str = "accounts.list";
+const ACCOUNTS_GET: &str = "accounts.get";
+const ACCOUNTS_CREATE: &str = "accounts.create";
+const ACCOUNTS_UPDATE: &str = "accounts.update";
+const ACCOUNTS_DELETE: &str = "accounts.delete";
+const ACCOUNTS_SET_SECURED_BY: &str = "accounts.set_secured_by";
+
 /// List accounts (optionally including archived).
 #[utoipa::path(get, path = "/api/accounts", tag = "accounts",
     params(("include_archived" = Option<bool>, Query,)),
     responses((status = 200, body = [Account])))]
+#[tracing::instrument(
+    name = ACCOUNTS_LIST,
+    level = "debug",
+    skip_all,
+    fields(query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list(
     State(st): State<AppState>,
     Query(q): Query<ListQuery>,
@@ -31,6 +47,14 @@ pub async fn list(
 #[utoipa::path(get, path = "/api/accounts/{id}", tag = "accounts",
     params(("id" = i64, Path,)),
     responses((status = 200, body = Account), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = ACCOUNTS_GET,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn get_one(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<Account>> {
     Ok(Json(sure_dal::accounts::get(&st.db, id).await?))
 }
@@ -39,6 +63,13 @@ pub async fn get_one(State(st): State<AppState>, Path(id): Path<i64>) -> AppResu
 #[utoipa::path(post, path = "/api/accounts", tag = "accounts",
     request_body = SaveAccount,
     responses((status = 201, body = Account), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = ACCOUNTS_CREATE,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveAccount>,
@@ -54,6 +85,14 @@ pub async fn create(
     params(("id" = i64, Path,)), request_body = SaveAccount,
     responses((status = 200, body = Account), (status = 404, body = crate::error::ErrorBody),
               (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = ACCOUNTS_UPDATE,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn update(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -68,6 +107,14 @@ pub async fn update(
     params(("id" = i64, Path,)),
     responses((status = 204), (status = 404, body = crate::error::ErrorBody),
               (status = 409, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = ACCOUNTS_DELETE,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     sure_dal::accounts::delete(&st.db, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -79,6 +126,14 @@ pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResul
     params(("id" = i64, Path,)), request_body = SetSecuredBy,
     responses((status = 200, body = Account), (status = 404, body = crate::error::ErrorBody),
               (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = ACCOUNTS_SET_SECURED_BY,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn set_secured_by(
     State(st): State<AppState>,
     Path(id): Path<i64>,

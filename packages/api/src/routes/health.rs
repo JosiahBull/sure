@@ -4,7 +4,10 @@ use utoipa::ToSchema;
 
 use crate::state::AppState;
 
-#[derive(Serialize, ToSchema)]
+// OTEL span names for this module's handlers.
+const META_HEALTH: &str = "meta.health";
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Health {
     /// Always `"ok"` when the service is up.
     pub status: String,
@@ -18,6 +21,12 @@ pub struct Health {
     path = "/api/health",
     tag = "meta",
     responses((status = 200, description = "Service is healthy", body = Health))
+)]
+#[tracing::instrument(
+    name = META_HEALTH,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
 )]
 pub async fn health() -> Json<Health> {
     Json(Health {

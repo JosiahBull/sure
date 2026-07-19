@@ -7,6 +7,7 @@ pub mod provider_poll;
 pub mod routes;
 pub mod state;
 pub mod stock_prices;
+pub mod telemetry;
 pub mod transfer_link;
 
 // The lower layers now live in their own crates. Re-export them under the historical
@@ -46,7 +47,19 @@ pub fn build_app(state: AppState, web_dir: Option<&str>) -> Router {
 
     app.with_state(state)
         .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
+        // One INFO span per request with OTEL fields; handler/DAL spans nest beneath it.
+        // See the `telemetry` module for the logging model.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(telemetry::make_span)
+                .on_request(telemetry::on_request)
+                .on_response(telemetry::on_response)
+                .on_failure(telemetry::on_failure),
+        )
+        // Outermost: establishes the per-request `request_id` scope before the span is
+        // built and scrubs internal detail from 5xx responses on the way out. Must wrap
+        // the trace layer so `make_span` can read the id.
+        .layer(axum::middleware::from_fn(telemetry::request_context))
 }
 
 /// Serialise the live OpenAPI document. Handy for debugging; the build-time client
@@ -86,9 +99,5 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
 }
 
 /// Initialise tracing from `RUST_LOG`, defaulting to something useful in dev.
-pub fn init_tracing() {
-    use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,sure_api=debug,tower_http=info"));
-    let _ = fmt().with_env_filter(filter).try_init();
-}
+/// See the [`telemetry`] module for the request-logging model this sets up.
+pub use telemetry::init_tracing;

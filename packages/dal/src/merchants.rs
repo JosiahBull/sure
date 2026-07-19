@@ -3,6 +3,7 @@ pub use sure_core::{Merchant, SaveMerchant};
 
 use crate::Db;
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Merchant>> {
     Ok(
         sqlx::query_as::<_, Merchant>("SELECT * FROM merchants ORDER BY name COLLATE NOCASE")
@@ -11,6 +12,7 @@ pub async fn list(db: &Db) -> AppResult<Vec<Merchant>> {
     )
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveMerchant) -> AppResult<Merchant> {
     let name = input.name.trim();
     if name.is_empty() {
@@ -27,6 +29,7 @@ pub async fn create(db: &Db, input: SaveMerchant) -> AppResult<Merchant> {
     .map_err(unique_or_fk)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveMerchant) -> AppResult<Merchant> {
     let name = input.name.trim();
     if name.is_empty() {
@@ -52,6 +55,7 @@ pub async fn update(db: &Db, id: i64, input: SaveMerchant) -> AppResult<Merchant
 /// enrichment (e.g. Akahu's) without duplicating a merchant on every sync — an
 /// already-known merchant's `category_id` is left untouched even if a later import
 /// suggests a different one.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn find_or_create(db: &Db, name: &str, category_id: Option<i64>) -> AppResult<Merchant> {
     let name = name.trim();
     if let Some(existing) =
@@ -83,6 +87,7 @@ pub async fn find_or_create(db: &Db, name: &str, category_id: Option<i64>) -> Ap
     }
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM merchants WHERE id=?1")
         .bind(id)

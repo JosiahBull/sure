@@ -9,12 +9,14 @@ use crate::Db;
 
 const KINDS: [&str; 4] = ["appreciation", "depreciation", "interest", "fixed_transaction"];
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Cron>> {
     Ok(sqlx::query_as::<_, Cron>("SELECT * FROM crons ORDER BY id")
         .fetch_all(db)
         .await?)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveCron) -> AppResult<Cron> {
     validate(&input)?;
     sqlx::query_as::<_, Cron>(
@@ -36,6 +38,7 @@ pub async fn create(db: &Db, input: SaveCron) -> AppResult<Cron> {
     .map_err(map_fk)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveCron) -> AppResult<Cron> {
     validate(&input)?;
     sqlx::query_as::<_, Cron>(
@@ -60,6 +63,7 @@ pub async fn update(db: &Db, id: i64, input: SaveCron) -> AppResult<Cron> {
     .ok_or(AppError::NotFound("cron"))
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM crons WHERE id=?1")
         .bind(id)
@@ -71,6 +75,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_runs(db: &Db, cron_id: i64) -> AppResult<Vec<CronRun>> {
     Ok(
         sqlx::query_as::<_, CronRun>("SELECT * FROM cron_runs WHERE cron_id=?1 ORDER BY period DESC")
@@ -80,6 +85,7 @@ pub async fn list_runs(db: &Db, cron_id: i64) -> AppResult<Vec<CronRun>> {
     )
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn run_one(db: &Db, id: i64, to: Option<&str>) -> AppResult<CronRunResult> {
     let cron = fetch(db, id).await?;
     let to = to.and_then(parse_date).unwrap_or_else(|| Utc::now().date_naive());
@@ -91,6 +97,7 @@ pub async fn run_one(db: &Db, id: i64, to: Option<&str>) -> AppResult<CronRunRes
     })
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn run_all(db: &Db, to: Option<&str>) -> AppResult<CronRunResult> {
     let to = to.and_then(parse_date).unwrap_or_else(|| Utc::now().date_naive());
     let crons = sqlx::query_as::<_, Cron>("SELECT * FROM crons WHERE enabled=1 ORDER BY id")
@@ -107,6 +114,7 @@ pub async fn run_all(db: &Db, to: Option<&str>) -> AppResult<CronRunResult> {
     })
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<()> {
     let run = sqlx::query_as::<_, CronRun>("SELECT * FROM cron_runs WHERE id=?1")
         .bind(run_id)
@@ -137,6 +145,7 @@ pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<()> {
 
 // ---- engine --------------------------------------------------------------
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn apply_cron(conn: &mut SqliteConnection, cron: &Cron, to: NaiveDate) -> AppResult<Vec<CronRun>> {
     let start = parse_date(&cron.start_date).ok_or_else(|| AppError::validation("bad start_date"))?;
     let last = cron.last_run_on.as_deref().and_then(parse_date);
@@ -166,6 +175,7 @@ async fn apply_cron(conn: &mut SqliteConnection, cron: &Cron, to: NaiveDate) -> 
     Ok(created)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn apply_period(
     conn: &mut SqliteConnection,
     cron: &Cron,
@@ -232,6 +242,7 @@ async fn apply_period(
     Ok(Some(record_run(conn, cron, &period_s, Some(val_id), None, None).await?))
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn record_run(
     conn: &mut SqliteConnection,
     cron: &Cron,
@@ -273,6 +284,7 @@ fn validate(input: &SaveCron) -> AppResult<()> {
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn fetch(db: &Db, id: i64) -> AppResult<Cron> {
     sqlx::query_as::<_, Cron>("SELECT * FROM crons WHERE id=?1")
         .bind(id)

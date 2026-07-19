@@ -4,7 +4,7 @@ use utoipa::OpenApi;
 /// via an auto-collecting integration) so it stays decoupled from the web framework's
 /// version churn. `paths(...)` and `schemas(...)` are extended as endpoints are added;
 /// the `gen-openapi` binary serialises this to JSON for the TypeScript client.
-#[derive(OpenApi)]
+#[derive(Debug, OpenApi)]
 #[openapi(
     info(
         title = "Sure API",

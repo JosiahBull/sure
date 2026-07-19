@@ -7,6 +7,7 @@ pub use sure_core::{
 
 use crate::Db;
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("SELECT * FROM transactions WHERE 1=1");
     if let Some(account_id) = q.account_id {
@@ -42,10 +43,12 @@ pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
     Ok(qb.build_query_as::<Transaction>().fetch_all(db).await?)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn get(db: &Db, id: i64) -> AppResult<Transaction> {
     fetch(db, id).await
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
     let currency = resolve_currency(db, &input).await?;
     validate_category(db, input.category_id).await?;
@@ -70,6 +73,7 @@ pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
     .map_err(map_fk)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Transaction> {
     let currency = resolve_currency(db, &input).await?;
     validate_category(db, input.category_id).await?;
@@ -96,6 +100,7 @@ pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Trans
     .ok_or(AppError::NotFound("transaction"))
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM transactions WHERE id = ?1")
         .bind(id)
@@ -109,6 +114,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 
 /// Apply a partial patch to every transaction in `ids`. Returns the number of rows
 /// actually changed. A no-op (no ids, or no fields to set) short-circuits to 0.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
     let BulkUpdate { ids, category_id, merchant_id, is_one_off } = input;
     if ids.is_empty() || (category_id.is_none() && merchant_id.is_none() && is_one_off.is_none()) {
@@ -155,6 +161,7 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
 /// Delete every transaction in `ids`. The `linked_transaction_id` FK is `ON DELETE SET
 /// NULL`, so the other side of any transfer is unlinked automatically. Returns the
 /// number of rows deleted.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn bulk_delete(db: &Db, ids: &[i64]) -> AppResult<i64> {
     if ids.is_empty() {
         return Ok(0);
@@ -171,6 +178,7 @@ pub async fn bulk_delete(db: &Db, ids: &[i64]) -> AppResult<i64> {
     Ok(res.rows_affected() as i64)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn link(db: &Db, id: i64, req: LinkRequest) -> AppResult<Transaction> {
     let other = req.linked_transaction_id;
     if other == id {
@@ -200,6 +208,7 @@ pub async fn link(db: &Db, id: i64, req: LinkRequest) -> AppResult<Transaction> 
     fetch(db, id).await
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn unlink(db: &Db, id: i64) -> AppResult<Transaction> {
     let current = fetch(db, id).await?;
     let mut tx = db.begin().await?;
@@ -217,6 +226,7 @@ pub async fn unlink(db: &Db, id: i64) -> AppResult<Transaction> {
     fetch(db, id).await
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Transaction>> {
     if req.from_account_id == req.to_account_id {
         return Err(AppError::validation(
@@ -282,6 +292,7 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
 /// pair links no matter the order its two sides were imported/synced — the case that left
 /// a Sharesies↔bank transfer unlinked when the bank was synced after the brokerage import.
 /// Returns how many pairs were newly linked.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn link_transfers(db: &Db, window_days: i64) -> AppResult<i64> {
     // Snapshot the candidate ids up front; each link mutates both sides, so we re-check
     // each one is still unlinked before pairing it (an earlier iteration may have already
@@ -360,6 +371,7 @@ pub async fn link_transfers(db: &Db, window_days: i64) -> AppResult<i64> {
 
 // ---- helpers -------------------------------------------------------------
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn fetch(db: &Db, id: i64) -> AppResult<Transaction> {
     sqlx::query_as::<_, Transaction>("SELECT * FROM transactions WHERE id = ?1")
         .bind(id)
@@ -368,6 +380,7 @@ async fn fetch(db: &Db, id: i64) -> AppResult<Transaction> {
         .ok_or(AppError::NotFound("transaction"))
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn account_currency(db: &Db, account_id: i64) -> AppResult<Option<String>> {
     Ok(
         sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id = ?1")
@@ -377,6 +390,7 @@ async fn account_currency(db: &Db, account_id: i64) -> AppResult<Option<String>>
     )
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_currency(db: &Db, input: &SaveTransaction) -> AppResult<String> {
     match input.currency_code.as_deref().filter(|s| !s.is_empty()) {
         Some(c) => Ok(c.trim().to_uppercase()),
@@ -386,6 +400,7 @@ async fn resolve_currency(db: &Db, input: &SaveTransaction) -> AppResult<String>
     }
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn validate_category(db: &Db, category_id: Option<i64>) -> AppResult<()> {
     if let Some(cid) = category_id {
         let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM categories WHERE id=?1")

@@ -22,12 +22,22 @@ pub use sure_core::{
     HoldingLot, Position, SaveHoldingLot, WalletBalance,
 };
 
+// OTEL span names for this module's handlers.
+const BROKERAGE_SNAPSHOT: &str = "brokerage.snapshot";
+const BROKERAGE_LIST_HOLDINGS: &str = "brokerage.list_holdings";
+const BROKERAGE_CREATE_HOLDING: &str = "brokerage.create_holding";
+const BROKERAGE_DELETE_HOLDING: &str = "brokerage.delete_holding";
+const BROKERAGE_LIST_DIVIDENDS: &str = "brokerage.list_dividends";
+const BROKERAGE_IMPORT: &str = "brokerage.import";
+const BROKERAGE_REVALUE: &str = "brokerage.revalue";
+const BROKERAGE_BACKFILL: &str = "brokerage.backfill";
+
 /// A generous cap for the zip upload — a personal export with logos is well under this,
 /// but it's scoped to just the import route rather than raised globally (every other
 /// route keeps axum's 2 MB default).
 const IMPORT_BODY_LIMIT: usize = 50 * 1024 * 1024;
 
-#[derive(Deserialize, IntoParams, Default)]
+#[derive(Debug, Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
 pub struct AsOfQuery {
     /// ISO-8601 date (`YYYY-MM-DD`); defaults to today. An unparseable value also falls
@@ -42,6 +52,7 @@ fn parse_as_of(q: &AsOfQuery) -> NaiveDate {
         .unwrap_or_else(|| Utc::now().date_naive())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn ensure_brokerage(st: &AppState, id: i64) -> AppResult<()> {
     let account = sure_dal::accounts::get(&st.db, id).await?;
     if account.kind != AccountKind::Brokerage {
@@ -54,6 +65,14 @@ async fn ensure_brokerage(st: &AppState, id: i64) -> AppResult<()> {
 #[utoipa::path(get, path = "/api/accounts/{id}/brokerage", tag = "brokerage",
     params(("id" = i64, Path,), AsOfQuery),
     responses((status = 200, body = BrokerageSnapshot), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = BROKERAGE_SNAPSHOT,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id, query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn snapshot(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -69,6 +88,14 @@ pub async fn snapshot(
 /// The raw holdings ledger (every buy/sell/corporate lot) for an audit view.
 #[utoipa::path(get, path = "/api/accounts/{id}/brokerage/holdings", tag = "brokerage",
     params(("id" = i64, Path,)), responses((status = 200, body = [HoldingLot])))]
+#[tracing::instrument(
+    name = BROKERAGE_LIST_HOLDINGS,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list_holdings(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -80,6 +107,14 @@ pub async fn list_holdings(
 #[utoipa::path(post, path = "/api/accounts/{id}/brokerage/holdings", tag = "brokerage",
     params(("id" = i64, Path,)), request_body = SaveHoldingLot,
     responses((status = 201, body = HoldingLot), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = BROKERAGE_CREATE_HOLDING,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn create_holding(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -95,6 +130,14 @@ pub async fn create_holding(
 #[utoipa::path(delete, path = "/api/brokerage/holdings/{id}", tag = "brokerage",
     params(("id" = i64, Path,)),
     responses((status = 204), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = BROKERAGE_DELETE_HOLDING,
+    level = "debug",
+    skip_all,
+    fields(holding_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn delete_holding(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     sure_dal::brokerage::delete_holding(&st.db, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -103,6 +146,14 @@ pub async fn delete_holding(State(st): State<AppState>, Path(id): Path<i64>) -> 
 /// Dividend/distribution history with per-jurisdiction withholding detail.
 #[utoipa::path(get, path = "/api/accounts/{id}/brokerage/dividends", tag = "brokerage",
     params(("id" = i64, Path,)), responses((status = 200, body = [DividendDetail])))]
+#[tracing::instrument(
+    name = BROKERAGE_LIST_DIVIDENDS,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list_dividends(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -117,6 +168,14 @@ pub async fn list_dividends(
     params(("id" = i64, Path,)),
     request_body(content = Vec<u8>, description = "A Sharesies export .zip", content_type = "application/zip"),
     responses((status = 200, body = BrokerageImportResult), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = BROKERAGE_IMPORT,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn import(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -234,6 +293,14 @@ pub async fn import(
 #[utoipa::path(post, path = "/api/accounts/{id}/brokerage/revalue", tag = "brokerage",
     params(("id" = i64, Path,), AsOfQuery),
     responses((status = 200, body = BrokerageSnapshot), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = BROKERAGE_REVALUE,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id, query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn revalue(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -246,7 +313,7 @@ pub async fn revalue(
     ))
 }
 
-#[derive(serde::Serialize, utoipa::ToSchema)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct BackfillResult {
     /// Number of days for which a valuation was (re)computed.
     pub days: i64,
@@ -258,6 +325,14 @@ pub struct BackfillResult {
 #[utoipa::path(post, path = "/api/accounts/{id}/brokerage/backfill", tag = "brokerage",
     params(("id" = i64, Path,)),
     responses((status = 200, body = BackfillResult), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = BROKERAGE_BACKFILL,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn backfill(
     State(st): State<AppState>,
     Path(id): Path<i64>,

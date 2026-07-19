@@ -10,9 +10,21 @@ use crate::state::AppState;
 // (`crate::routes::currencies::Currency`, ...) and handler annotations still resolve.
 pub use sure_dal::currencies::{Currency, NewCurrency};
 
+// OTEL span names for this module's handlers.
+const CURRENCIES_LIST: &str = "currencies.list";
+const CURRENCIES_CREATE: &str = "currencies.create";
+const CURRENCIES_DELETE: &str = "currencies.delete";
+
 /// List all currencies.
 #[utoipa::path(get, path = "/api/currencies", tag = "currencies",
     responses((status = 200, body = [Currency])))]
+#[tracing::instrument(
+    name = CURRENCIES_LIST,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Currency>>> {
     Ok(Json(sure_dal::currencies::list(&st.db).await?))
 }
@@ -21,6 +33,13 @@ pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Currency>>> 
 #[utoipa::path(post, path = "/api/currencies", tag = "currencies",
     request_body = NewCurrency,
     responses((status = 201, body = Currency), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = CURRENCIES_CREATE,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<NewCurrency>,
@@ -35,6 +54,14 @@ pub async fn create(
 #[utoipa::path(delete, path = "/api/currencies/{code}", tag = "currencies",
     params(("code" = String, Path,)),
     responses((status = 204), (status = 409, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = CURRENCIES_DELETE,
+    level = "debug",
+    skip_all,
+    fields(currency_code = %code),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn delete(State(st): State<AppState>, Path(code): Path<String>) -> AppResult<StatusCode> {
     sure_dal::currencies::delete(&st.db, &code).await?;
     Ok(StatusCode::NO_CONTENT)

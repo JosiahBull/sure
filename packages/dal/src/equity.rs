@@ -6,6 +6,7 @@ pub use sure_core::{AccountEquity, EquityExercise, EquityGrant, SaveExercise, Sa
 
 use crate::Db;
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_grants(db: &Db, account_id: i64) -> AppResult<Vec<EquityGrant>> {
     Ok(sqlx::query_as::<_, EquityGrant>(
         "SELECT * FROM equity_grants WHERE account_id=?1 ORDER BY grant_date, id",
@@ -15,6 +16,7 @@ pub async fn list_grants(db: &Db, account_id: i64) -> AppResult<Vec<EquityGrant>
     .await?)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create_grant(db: &Db, account_id: i64, input: SaveGrant) -> AppResult<EquityGrant> {
     let account_ccy =
         sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
@@ -49,6 +51,7 @@ pub async fn create_grant(db: &Db, account_id: i64, input: SaveGrant) -> AppResu
     .await?)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn update_grant(db: &Db, id: i64, input: SaveGrant) -> AppResult<EquityGrant> {
     validate_grant(&input)?;
     sqlx::query_as::<_, EquityGrant>(
@@ -71,6 +74,7 @@ pub async fn update_grant(db: &Db, id: i64, input: SaveGrant) -> AppResult<Equit
     .ok_or(AppError::NotFound("grant"))
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete_grant(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM equity_grants WHERE id=?1")
         .bind(id)
@@ -82,6 +86,7 @@ pub async fn delete_grant(db: &Db, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_exercises(db: &Db, grant_id: i64) -> AppResult<Vec<EquityExercise>> {
     Ok(sqlx::query_as::<_, EquityExercise>(
         "SELECT * FROM equity_exercises WHERE grant_id=?1 ORDER BY exercise_date, id",
@@ -91,6 +96,7 @@ pub async fn list_exercises(db: &Db, grant_id: i64) -> AppResult<Vec<EquityExerc
     .await?)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create_exercise(db: &Db, grant_id: i64, input: SaveExercise) -> AppResult<EquityExercise> {
     let grant = fetch_grant(db, grant_id).await?;
     if input.quantity <= 0 {
@@ -117,6 +123,7 @@ pub async fn create_exercise(db: &Db, grant_id: i64, input: SaveExercise) -> App
     .await?)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete_exercise(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM equity_exercises WHERE id=?1")
         .bind(id)
@@ -128,12 +135,14 @@ pub async fn delete_exercise(db: &Db, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn grant_vesting(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<VestingStatus> {
     let grant = fetch_grant(db, id).await?;
     let as_of = as_of.and_then(parse_date).unwrap_or_else(|| Utc::now().date_naive());
     compute_status(db, &grant, as_of).await
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn account_equity(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity> {
     let as_of = as_of.and_then(parse_date).unwrap_or_else(|| Utc::now().date_naive());
     let account_ccy =
@@ -165,6 +174,7 @@ pub async fn account_equity(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<
 }
 
 /// Snapshot the account's current equity intrinsic value into a valuation.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn revalue(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity> {
     let equity = account_equity(db, id, as_of).await?;
     sqlx::query(
@@ -180,6 +190,7 @@ pub async fn revalue(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<Account
     Ok(equity)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn compute_status(db: &Db, grant: &EquityGrant, as_of: NaiveDate) -> AppResult<VestingStatus> {
     let grant_date = parse_date(&grant.grant_date).unwrap_or(as_of);
     let elapsed = months_between(grant_date, as_of);
@@ -248,6 +259,7 @@ fn validate_grant(input: &SaveGrant) -> AppResult<()> {
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn fetch_grant(db: &Db, id: i64) -> AppResult<EquityGrant> {
     sqlx::query_as::<_, EquityGrant>("SELECT * FROM equity_grants WHERE id=?1")
         .bind(id)

@@ -23,7 +23,7 @@ pub const CTX_QUERY: &str = "SELECT t.id, t.account_id, t.posted_at, t.amount_mi
 
 /// A rule application row as stored — internal to `undo_run`'s revert check. Never
 /// serialised: the API-facing view is [`RuleApplicationDetail`].
-#[derive(FromRow)]
+#[derive(Debug, FromRow)]
 pub struct RuleApplication {
     pub id: i64,
     pub rule_run_id: i64,
@@ -42,7 +42,7 @@ pub struct RuleApplication {
 
 /// A transaction row denormalised for rule evaluation. The API crate reads these
 /// fields to build the Zen context; the DAL only loads them.
-#[derive(FromRow, Clone)]
+#[derive(Debug, FromRow, Clone)]
 pub struct TxCtx {
     pub id: i64,
     pub account_id: i64,
@@ -80,6 +80,7 @@ pub struct PlannedApplication {
 // ---- CRUD ----------------------------------------------------------------
 
 /// List rules in evaluation order.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Rule>> {
     Ok(sqlx::query_as::<_, Rule>("SELECT * FROM rules ORDER BY priority, id")
         .fetch_all(db)
@@ -87,6 +88,7 @@ pub async fn list(db: &Db) -> AppResult<Vec<Rule>> {
 }
 
 /// Enabled rules in evaluation order (for a "run all").
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn enabled_rules(db: &Db) -> AppResult<Vec<Rule>> {
     Ok(
         sqlx::query_as::<_, Rule>("SELECT * FROM rules WHERE enabled=1 ORDER BY priority, id")
@@ -95,6 +97,7 @@ pub async fn enabled_rules(db: &Db) -> AppResult<Vec<Rule>> {
     )
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn get(db: &Db, id: i64) -> AppResult<Rule> {
     sqlx::query_as::<_, Rule>("SELECT * FROM rules WHERE id=?1")
         .bind(id)
@@ -103,6 +106,7 @@ pub async fn get(db: &Db, id: i64) -> AppResult<Rule> {
         .ok_or(AppError::NotFound("rule"))
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveRule) -> AppResult<Rule> {
     Ok(sqlx::query_as::<_, Rule>(
         "INSERT INTO rules
@@ -124,6 +128,7 @@ pub async fn create(db: &Db, input: SaveRule) -> AppResult<Rule> {
     .await?)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveRule) -> AppResult<Rule> {
     sqlx::query_as::<_, Rule>(
         "UPDATE rules SET name=?2, description=?3, expression=?4, set_category_id=?5, set_one_off=?6,
@@ -148,6 +153,7 @@ pub async fn update(db: &Db, id: i64, input: SaveRule) -> AppResult<Rule> {
 }
 
 /// Delete a rule (audit history is retained; its rule_id becomes null via ON DELETE SET NULL).
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM rules WHERE id=?1")
         .bind(id)
@@ -162,6 +168,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 // ---- evaluation contexts + persistence -----------------------------------
 
 /// Load every transaction's evaluation context.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn load_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
     Ok(sqlx::query_as::<_, TxCtx>(CTX_QUERY).fetch_all(db).await?)
 }
@@ -170,6 +177,7 @@ pub async fn load_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
 /// transaction and writing the audit row), and record the counts. `matched` is the
 /// number of rule matches the evaluator saw (including no-ops); `changed` is derived
 /// from the applications actually made.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn persist_run(
     db: &Db,
     rule_id: Option<i64>,
@@ -235,6 +243,7 @@ pub async fn persist_run(
 }
 
 /// List rule runs (most recent first) — the audit trail.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_runs(db: &Db) -> AppResult<Vec<RuleRun>> {
     Ok(
         sqlx::query_as::<_, RuleRun>("SELECT * FROM rule_runs ORDER BY id DESC")
@@ -246,6 +255,7 @@ pub async fn list_runs(db: &Db) -> AppResult<Vec<RuleRun>> {
 /// The per-transaction changes made by a run, each joined to its transaction's current
 /// description/date/amount for display. `transaction_id` is `ON DELETE CASCADE`, so an
 /// application row can't outlive its transaction and the inner join always matches.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn run_applications(db: &Db, run_id: i64) -> AppResult<Vec<RuleApplicationDetail>> {
     Ok(sqlx::query_as::<_, RuleApplicationDetail>(
         "SELECT a.id, a.transaction_id, t.posted_at, t.description, t.amount_minor, t.currency_code,
@@ -264,6 +274,7 @@ pub async fn run_applications(db: &Db, run_id: i64) -> AppResult<Vec<RuleApplica
 /// Undo a run, reverting each changed transaction to its prior state (unless it was
 /// changed again since). Returns `matched` = applications considered, `changed` =
 /// transactions actually reverted.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<RunResult> {
     let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM rule_runs WHERE id=?1")
         .bind(run_id)

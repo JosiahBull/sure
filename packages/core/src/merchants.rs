@@ -3,7 +3,7 @@ use utoipa::ToSchema;
 
 /// A reusable payee. Custom merchants are unique by name (case-insensitive) and can
 /// carry a suggested default category.
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Merchant {
     pub id: i64,
@@ -14,7 +14,7 @@ pub struct Merchant {
     pub updated_at: String,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveMerchant {
     pub name: String,
     #[serde(default)]

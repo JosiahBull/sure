@@ -7,17 +7,20 @@ use crate::Db;
 const KINDS: [&str; 3] = ["income", "expense", "transfer"];
 
 /// List all categories (flat).
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Category>> {
     all_categories(db).await
 }
 
 /// The category tree (roots with nested children).
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn tree(db: &Db) -> AppResult<Vec<CategoryNode>> {
     let flat = all_categories(db).await?;
     Ok(build_tree(flat))
 }
 
 /// Create a category.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveCategory) -> AppResult<Category> {
     validate(db, &input, None).await?;
     Ok(sqlx::query_as::<_, Category>(
@@ -35,6 +38,7 @@ pub async fn create(db: &Db, input: SaveCategory) -> AppResult<Category> {
 }
 
 /// Replace a category.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveCategory) -> AppResult<Category> {
     validate(db, &input, Some(id)).await?;
     sqlx::query_as::<_, Category>(
@@ -58,6 +62,7 @@ pub async fn update(db: &Db, id: i64, input: SaveCategory) -> AppResult<Category
 /// Akahu's NZFCC categories) without duplicating a category on every sync. There's no
 /// uniqueness constraint on `(name, parent_id)` — categories are otherwise entirely
 /// user-managed — so this is a plain check-then-insert, not an atomic upsert.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn find_or_create(
     db: &Db,
     name: &str,
@@ -99,6 +104,7 @@ pub async fn find_or_create(
 
 /// Delete a category. Child categories and transaction links cascade per schema
 /// (`ON DELETE CASCADE` for children, `SET NULL` for transactions).
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM categories WHERE id = ?1")
         .bind(id)
@@ -110,6 +116,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn all_categories(db: &SqlitePool) -> AppResult<Vec<Category>> {
     Ok(
         sqlx::query_as::<_, Category>("SELECT * FROM categories ORDER BY sort_order, name")
@@ -118,6 +125,7 @@ async fn all_categories(db: &SqlitePool) -> AppResult<Vec<Category>> {
     )
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn validate(db: &SqlitePool, input: &SaveCategory, id: Option<i64>) -> AppResult<()> {
     if input.name.trim().is_empty() {
         return Err(AppError::validation("category name is required"));
@@ -151,6 +159,7 @@ async fn validate(db: &SqlitePool, input: &SaveCategory, id: Option<i64>) -> App
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn would_cycle(db: &SqlitePool, id: i64, parent: i64) -> AppResult<bool> {
     let mut cursor = Some(parent);
     while let Some(current) = cursor {

@@ -3,12 +3,14 @@ pub use sure_core::{Currency, NewCurrency};
 
 use crate::Db;
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Currency>> {
     Ok(sqlx::query_as::<_, Currency>("SELECT * FROM currencies ORDER BY code")
         .fetch_all(db)
         .await?)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn upsert(db: &Db, input: NewCurrency) -> AppResult<Currency> {
     let code = input.code.trim().to_uppercase();
     if code.is_empty() {
@@ -29,6 +31,7 @@ pub async fn upsert(db: &Db, input: NewCurrency) -> AppResult<Currency> {
     .await?)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, code: &str) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM currencies WHERE code = ?1")
         .bind(code.trim().to_uppercase())
@@ -46,6 +49,7 @@ pub async fn delete(db: &Db, code: &str) -> AppResult<()> {
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn exists(db: &Db, code: &str) -> AppResult<bool> {
     Ok(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM currencies WHERE code = ?1")

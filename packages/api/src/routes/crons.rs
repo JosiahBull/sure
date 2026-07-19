@@ -10,7 +10,17 @@ use crate::state::AppState;
 
 pub use sure_dal::crons::{Cron, CronRun, CronRunResult, SaveCron};
 
-#[derive(Deserialize, IntoParams, Default)]
+// OTEL span names for this module's handlers.
+const CRONS_LIST: &str = "crons.list";
+const CRONS_CREATE: &str = "crons.create";
+const CRONS_UPDATE: &str = "crons.update";
+const CRONS_DELETE: &str = "crons.delete";
+const CRONS_RUN_ONE: &str = "crons.run_one";
+const CRONS_RUN_ALL: &str = "crons.run_all";
+const CRONS_LIST_RUNS: &str = "crons.list_runs";
+const CRONS_UNDO_RUN: &str = "crons.undo_run";
+
+#[derive(Debug, Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
 pub struct RunQuery {
     /// Apply all due periods up to this date (default: today).
@@ -18,12 +28,26 @@ pub struct RunQuery {
 }
 
 #[utoipa::path(get, path = "/api/crons", tag = "crons", responses((status = 200, body = [Cron])))]
+#[tracing::instrument(
+    name = CRONS_LIST,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Cron>>> {
     Ok(Json(sure_dal::crons::list(&st.db).await?))
 }
 
 #[utoipa::path(post, path = "/api/crons", tag = "crons", request_body = SaveCron,
     responses((status = 201, body = Cron), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = CRONS_CREATE,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveCron>,
@@ -34,6 +58,14 @@ pub async fn create(
 #[utoipa::path(put, path = "/api/crons/{id}", tag = "crons", params(("id" = i64, Path,)),
     request_body = SaveCron,
     responses((status = 200, body = Cron), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = CRONS_UPDATE,
+    level = "debug",
+    skip_all,
+    fields(cron_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn update(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -44,6 +76,14 @@ pub async fn update(
 
 #[utoipa::path(delete, path = "/api/crons/{id}", tag = "crons", params(("id" = i64, Path,)),
     responses((status = 204), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = CRONS_DELETE,
+    level = "debug",
+    skip_all,
+    fields(cron_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     sure_dal::crons::delete(&st.db, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -52,6 +92,14 @@ pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResul
 /// Apply all due periods for one cron up to the target date.
 #[utoipa::path(post, path = "/api/crons/{id}/run", tag = "crons", params(("id" = i64, Path,), RunQuery),
     responses((status = 200, body = CronRunResult), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = CRONS_RUN_ONE,
+    level = "debug",
+    skip_all,
+    fields(cron_id = %id, query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn run_one(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -63,6 +111,14 @@ pub async fn run_one(
 /// Apply all due periods for every enabled cron.
 #[utoipa::path(post, path = "/api/crons/run", tag = "crons", params(RunQuery),
     responses((status = 200, body = CronRunResult)))]
+#[tracing::instrument(
+    name = CRONS_RUN_ALL,
+    level = "debug",
+    skip_all,
+    fields(query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn run_all(
     State(st): State<AppState>,
     Query(q): Query<RunQuery>,
@@ -73,6 +129,14 @@ pub async fn run_all(
 /// A cron's run history.
 #[utoipa::path(get, path = "/api/crons/{id}/runs", tag = "crons", params(("id" = i64, Path,)),
     responses((status = 200, body = [CronRun])))]
+#[tracing::instrument(
+    name = CRONS_LIST_RUNS,
+    level = "debug",
+    skip_all,
+    fields(cron_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list_runs(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -84,6 +148,14 @@ pub async fn list_runs(
 /// cron's watermark back to the previous applied period.
 #[utoipa::path(post, path = "/api/crons/runs/{run_id}/undo", tag = "crons", params(("run_id" = i64, Path,)),
     responses((status = 204), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = CRONS_UNDO_RUN,
+    level = "debug",
+    skip_all,
+    fields(run_id = %run_id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn undo_run(State(st): State<AppState>, Path(run_id): Path<i64>) -> AppResult<StatusCode> {
     sure_dal::crons::undo_run(&st.db, run_id).await?;
     Ok(StatusCode::NO_CONTENT)

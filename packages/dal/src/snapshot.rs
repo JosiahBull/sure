@@ -11,7 +11,7 @@ use crate::Db;
 
 pub const SNAPSHOT_VERSION: i64 = 1;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub version: i64,
     pub base_currency_code: String,
@@ -37,7 +37,7 @@ pub struct Snapshot {
     pub dividend_withholdings: Vec<DividendWithholdingRow>,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct CurrencyRow {
     pub code: String,
     pub name: String,
@@ -46,7 +46,7 @@ pub struct CurrencyRow {
     pub created_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct ExchangeRateRow {
     pub base_code: String,
     pub quote_code: String,
@@ -54,7 +54,7 @@ pub struct ExchangeRateRow {
     pub rate: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct CategoryRow {
     pub id: i64,
     pub name: String,
@@ -66,7 +66,7 @@ pub struct CategoryRow {
     pub created_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct MerchantRow {
     pub id: i64,
     pub name: String,
@@ -76,7 +76,7 @@ pub struct MerchantRow {
     pub updated_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct AccountRow {
     pub id: i64,
     pub name: String,
@@ -91,7 +91,7 @@ pub struct AccountRow {
     pub updated_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct TransactionRow {
     pub id: i64,
     pub account_id: i64,
@@ -112,7 +112,7 @@ pub struct TransactionRow {
     pub updated_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct ValuationRow {
     pub id: i64,
     pub account_id: i64,
@@ -124,7 +124,7 @@ pub struct ValuationRow {
     pub created_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct RuleRow {
     pub id: i64,
     pub name: String,
@@ -141,7 +141,7 @@ pub struct RuleRow {
     pub updated_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct CronRow {
     pub id: i64,
     pub name: String,
@@ -159,7 +159,7 @@ pub struct CronRow {
     pub updated_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct ProviderRow {
     pub id: i64,
     pub name: String,
@@ -172,7 +172,7 @@ pub struct ProviderRow {
     pub updated_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct GrantRow {
     pub id: i64,
     pub account_id: i64,
@@ -189,7 +189,7 @@ pub struct GrantRow {
     pub updated_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct ExerciseRow {
     pub id: i64,
     pub grant_id: i64,
@@ -200,7 +200,7 @@ pub struct ExerciseRow {
     pub created_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct HoldingRow {
     pub id: i64,
     pub account_id: i64,
@@ -218,7 +218,7 @@ pub struct HoldingRow {
     pub created_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct DividendRow {
     pub id: i64,
     pub account_id: i64,
@@ -235,7 +235,7 @@ pub struct DividendRow {
     pub created_at: String,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct DividendWithholdingRow {
     pub id: i64,
     pub dividend_id: i64,
@@ -245,6 +245,7 @@ pub struct DividendWithholdingRow {
     pub currency_code: String,
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn export(db: &Db) -> AppResult<Snapshot> {
     let base_currency_code =
         sqlx::query_scalar::<_, String>("SELECT base_currency_code FROM settings WHERE id=1")
@@ -272,6 +273,7 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
     })
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
     let mut txn = db.begin().await?;
     // Defer FK checks so rows can be cleared and re-inserted in any order.

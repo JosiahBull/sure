@@ -21,6 +21,7 @@ pub struct CachedExchangeRate {
 }
 
 /// Upsert the latest rate for one currency pair.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn upsert(
     db: &Db,
     base_code: &str,
@@ -44,6 +45,7 @@ pub async fn upsert(
 }
 
 /// Every cached rate quoted against `base_code`.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_for_base(db: &Db, base_code: &str) -> AppResult<Vec<CachedExchangeRate>> {
     Ok(sqlx::query_as::<_, CachedExchangeRate>(
         "SELECT * FROM exchange_rate_cache WHERE base_code = ?1 ORDER BY quote_code",

@@ -15,9 +15,27 @@ pub use sure_dal::providers::{
     SyncRequest,
 };
 
+// OTEL span names for this module's handlers.
+const PROVIDERS_KINDS: &str = "providers.kinds";
+const PROVIDERS_DISCOVER_ACCOUNTS: &str = "providers.discover_accounts";
+const PROVIDERS_LIST: &str = "providers.list";
+const PROVIDERS_CREATE: &str = "providers.create";
+const PROVIDERS_LINK: &str = "providers.link";
+const PROVIDERS_LINK_GROUP: &str = "providers.link_group";
+const PROVIDERS_UPDATE: &str = "providers.update";
+const PROVIDERS_DELETE: &str = "providers.delete";
+const PROVIDERS_SYNC: &str = "providers.sync";
+const PROVIDERS_LIST_SYNCS: &str = "providers.list_syncs";
+
 /// The provider kinds this server supports.
 #[utoipa::path(get, path = "/api/provider-kinds", tag = "providers",
     responses((status = 200, body = [ProviderKind])))]
+#[tracing::instrument(
+    name = PROVIDERS_KINDS,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+)]
 pub async fn kinds() -> Json<Vec<ProviderKind>> {
     Json(Registry::new().kinds())
 }
@@ -27,6 +45,14 @@ pub async fn kinds() -> Json<Vec<ProviderKind>> {
 #[utoipa::path(get, path = "/api/provider-kinds/{kind}/accounts", tag = "providers",
     params(("kind" = String, Path,)),
     responses((status = 200, body = [ProviderAccount]), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PROVIDERS_DISCOVER_ACCOUNTS,
+    level = "debug",
+    skip_all,
+    fields(provider_kind = %kind),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn discover_accounts(
     State(st): State<AppState>,
     Path(kind): Path<String>,
@@ -62,12 +88,26 @@ pub async fn discover_accounts(
 }
 
 #[utoipa::path(get, path = "/api/providers", tag = "providers", responses((status = 200, body = [Provider])))]
+#[tracing::instrument(
+    name = PROVIDERS_LIST,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Provider>>> {
     Ok(Json(sure_dal::providers::list(&st.db).await?))
 }
 
 #[utoipa::path(post, path = "/api/providers", tag = "providers", request_body = SaveProvider,
     responses((status = 201, body = Provider), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PROVIDERS_CREATE,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveProvider>,
@@ -89,6 +129,13 @@ pub async fn create(
 /// immediate best-effort sync so the account isn't empty until the next scheduled poll.
 #[utoipa::path(post, path = "/api/providers/link", tag = "providers", request_body = LinkProviderAccount,
     responses((status = 201, body = Provider), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PROVIDERS_LINK,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn link(
     State(st): State<AppState>,
     Json(input): Json<LinkProviderAccount>,
@@ -118,6 +165,13 @@ pub async fn link(
 /// once, links every member, then best-effort syncs each. See [`LinkProviderGroup`].
 #[utoipa::path(post, path = "/api/providers/link-group", tag = "providers", request_body = LinkProviderGroup,
     responses((status = 201, body = [Provider]), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PROVIDERS_LINK_GROUP,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn link_group(
     State(st): State<AppState>,
     Json(input): Json<LinkProviderGroup>,
@@ -149,6 +203,14 @@ pub async fn link_group(
 #[utoipa::path(put, path = "/api/providers/{id}", tag = "providers", params(("id" = i64, Path,)),
     request_body = SaveProvider,
     responses((status = 200, body = Provider), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PROVIDERS_UPDATE,
+    level = "debug",
+    skip_all,
+    fields(provider_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn update(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -165,6 +227,14 @@ pub async fn update(
 
 #[utoipa::path(delete, path = "/api/providers/{id}", tag = "providers", params(("id" = i64, Path,)),
     responses((status = 204), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PROVIDERS_DELETE,
+    level = "debug",
+    skip_all,
+    fields(provider_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     sure_dal::providers::delete(&st.db, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -311,6 +381,14 @@ pub(crate) async fn sync_provider(
     request_body = SyncRequest,
     responses((status = 200, body = ProviderSync), (status = 404, body = crate::error::ErrorBody),
               (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PROVIDERS_SYNC,
+    level = "debug",
+    skip_all,
+    fields(provider_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn sync(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -324,6 +402,14 @@ pub async fn sync(
 
 #[utoipa::path(get, path = "/api/providers/{id}/syncs", tag = "providers", params(("id" = i64, Path,)),
     responses((status = 200, body = [ProviderSync])))]
+#[tracing::instrument(
+    name = PROVIDERS_LIST_SYNCS,
+    level = "debug",
+    skip_all,
+    fields(provider_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list_syncs(
     State(st): State<AppState>,
     Path(id): Path<i64>,

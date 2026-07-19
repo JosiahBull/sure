@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[derive(Serialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct HoldingLot {
     pub id: i64,
@@ -27,7 +27,7 @@ pub struct HoldingLot {
 
 /// Manually record a trade (parity with equity's manual grant entry — most lots come
 /// from a bulk import instead).
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveHoldingLot {
     pub ticker: String,
     #[serde(default)]
@@ -50,7 +50,7 @@ fn manual_kind() -> String {
 
 /// A ticker position as of a date: quantity currently held, its latest known price, and
 /// the resulting market value in the position's own trading currency.
-#[derive(Serialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct Position {
     pub ticker: String,
     pub exchange: String,
@@ -67,7 +67,7 @@ pub struct Position {
 }
 
 /// A wallet cash balance in one currency, as of a date.
-#[derive(Serialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct WalletBalance {
     pub currency_code: String,
     pub amount_minor: i64,
@@ -75,7 +75,7 @@ pub struct WalletBalance {
 
 /// A brokerage account's full computed value as of a date: every position plus every
 /// wallet balance, converted into the account's own currency for `total_value_minor`.
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct BrokerageSnapshot {
     pub account_id: i64,
     pub as_of: String,
@@ -85,7 +85,7 @@ pub struct BrokerageSnapshot {
     pub total_value_minor: i64,
 }
 
-#[derive(Serialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct DividendWithholding {
     pub id: i64,
@@ -96,7 +96,7 @@ pub struct DividendWithholding {
     pub currency_code: String,
 }
 
-#[derive(Serialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Dividend {
     pub id: i64,
@@ -114,7 +114,7 @@ pub struct Dividend {
     pub created_at: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct DividendDetail {
     pub dividend: Dividend,
     pub withholdings: Vec<DividendWithholding>,
@@ -123,7 +123,7 @@ pub struct DividendDetail {
 /// The outcome of a bulk zip import: counts for each of the three things it can write,
 /// plus any per-record parse issues that were skipped rather than failing the whole
 /// import.
-#[derive(Serialize, ToSchema, Default)]
+#[derive(Debug, Serialize, ToSchema, Default)]
 pub struct BrokerageImportResult {
     pub transactions_imported: i64,
     pub transactions_skipped: i64,

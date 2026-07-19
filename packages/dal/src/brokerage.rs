@@ -13,6 +13,7 @@ use crate::Db;
 
 // ---- holdings CRUD -------------------------------------------------------
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_holdings(db: &Db, account_id: i64) -> AppResult<Vec<HoldingLot>> {
     Ok(sqlx::query_as::<_, HoldingLot>(
         "SELECT * FROM holdings WHERE account_id=?1 ORDER BY date(trade_date), id",
@@ -22,6 +23,7 @@ pub async fn list_holdings(db: &Db, account_id: i64) -> AppResult<Vec<HoldingLot
     .await?)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create_holding(db: &Db, account_id: i64, input: SaveHoldingLot) -> AppResult<HoldingLot> {
     let ticker = input.ticker.trim().to_uppercase();
     if ticker.is_empty() {
@@ -51,6 +53,7 @@ pub async fn create_holding(db: &Db, account_id: i64, input: SaveHoldingLot) -> 
     .map_err(map_fk)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete_holding(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM holdings WHERE id=?1")
         .bind(id)
@@ -64,6 +67,7 @@ pub async fn delete_holding(db: &Db, id: i64) -> AppResult<()> {
 
 // ---- dividends -----------------------------------------------------------
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_dividends(db: &Db, account_id: i64) -> AppResult<Vec<DividendDetail>> {
     let dividends = sqlx::query_as::<_, Dividend>(
         "SELECT * FROM dividends WHERE account_id=?1 ORDER BY date(paid_date) DESC, id DESC",
@@ -87,7 +91,7 @@ pub async fn list_dividends(db: &Db, account_id: i64) -> AppResult<Vec<DividendD
 // ---- computed positions / wallet balances --------------------------------
 
 /// A ticker's net held quantity as of a date (before pricing — see `sure_api::brokerage`).
-#[derive(FromRow)]
+#[derive(Debug, FromRow)]
 pub struct PositionRow {
     pub ticker: String,
     pub exchange: String,
@@ -98,6 +102,7 @@ pub struct PositionRow {
 
 /// Net quantity held per `(ticker, exchange)` as of `as_of`, dropping fully-exited
 /// positions (and float dust from fractional buy/sell rounding).
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn positions_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<PositionRow>> {
     Ok(sqlx::query_as::<_, PositionRow>(
         "SELECT ticker, exchange, currency_code, MAX(name) AS name, SUM(quantity) AS quantity
@@ -113,7 +118,7 @@ pub async fn positions_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Ve
     .await?)
 }
 
-#[derive(FromRow)]
+#[derive(Debug, FromRow)]
 pub struct WalletRow {
     pub currency_code: String,
     pub amount_minor: i64,
@@ -122,6 +127,7 @@ pub struct WalletRow {
 /// Cash balance per currency as of `as_of` — every transaction on a brokerage account is
 /// a wallet-cash movement (imported or manual), summed per currency (a brokerage account
 /// legitimately holds several currencies at once).
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn wallet_balances_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<WalletRow>> {
     Ok(sqlx::query_as::<_, WalletRow>(
         "SELECT currency_code, CAST(SUM(amount_minor) AS INTEGER) AS amount_minor
@@ -140,6 +146,7 @@ pub async fn wallet_balances_at(db: &Db, account_id: i64, as_of: &str) -> AppRes
 /// Every distinct `(ticker, exchange)` ever traded on this account — the set the
 /// historical backfill bulk-fetches a full price series for (one upstream call each),
 /// including tickers fully sold before today that still held value in the past.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn account_tickers(db: &Db, account_id: i64) -> AppResult<Vec<(String, String)>> {
     Ok(sqlx::query_as::<_, (String, String)>(
         "SELECT DISTINCT ticker, exchange FROM holdings WHERE account_id=?1",
@@ -152,6 +159,7 @@ pub async fn account_tickers(db: &Db, account_id: i64) -> AppResult<Vec<(String,
 /// The earliest date this account has any activity (a trade or a wallet transaction), as
 /// a `YYYY-MM-DD` string — the start point for the historical valuation backfill. `None`
 /// if the account is empty.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn earliest_activity_date(db: &Db, account_id: i64) -> AppResult<Option<String>> {
     Ok(sqlx::query_scalar::<_, Option<String>>(
         "SELECT MIN(d) FROM (
@@ -203,7 +211,7 @@ pub struct DividendImport {
 }
 
 /// Counts from persisting one parsed export (transfers/backfill are handled by the caller).
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ImportCounts {
     pub transactions_imported: i64,
     pub transactions_skipped: i64,
@@ -219,6 +227,7 @@ pub struct ImportCounts {
 /// so re-importing the same (or an overlapping) export is idempotent — a partial run left
 /// by an error is simply completed by re-running, which is why holdings/dividends don't
 /// need to share a transaction with the wallet import.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn import_export(
     db: &Db,
     account_id: i64,

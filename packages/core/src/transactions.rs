@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-#[derive(Serialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Transaction {
     pub id: i64,
@@ -29,7 +29,7 @@ pub struct Transaction {
     pub updated_at: String,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveTransaction {
     pub account_id: i64,
     pub posted_at: String,
@@ -51,7 +51,7 @@ pub struct SaveTransaction {
     pub is_one_off: bool,
 }
 
-#[derive(Deserialize, IntoParams, Default)]
+#[derive(Debug, Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
 pub struct TxQuery {
     pub account_id: Option<i64>,
@@ -68,7 +68,7 @@ pub struct TxQuery {
     pub offset: Option<i64>,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LinkRequest {
     pub linked_transaction_id: i64,
 }
@@ -77,7 +77,7 @@ pub struct LinkRequest {
 /// that is *present* is written to all of them; absent fields are left untouched. The
 /// nullable id fields use a nested option so a JSON `null` (clear the value) is distinct
 /// from an omitted field (leave as-is) — the same distinction the inline edits rely on.
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct BulkUpdate {
     pub ids: Vec<i64>,
     /// Present → set the category (or clear it with `null`); absent → leave unchanged.
@@ -92,13 +92,13 @@ pub struct BulkUpdate {
 }
 
 /// The ids to delete in a single bulk request.
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct BulkDelete {
     pub ids: Vec<i64>,
 }
 
 /// Result of a bulk mutation: how many transactions were affected.
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct BulkResult {
     pub affected: i64,
 }
@@ -114,7 +114,7 @@ where
     Deserialize::deserialize(de).map(Some)
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct TransferRequest {
     pub from_account_id: i64,
     pub to_account_id: i64,

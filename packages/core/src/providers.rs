@@ -4,7 +4,7 @@ use utoipa::ToSchema;
 
 use crate::types::SaveAccount;
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Provider {
     pub id: i64,
     pub name: String,
@@ -17,7 +17,7 @@ pub struct Provider {
     pub updated_at: String,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveProvider {
     pub name: String,
     pub kind: String,
@@ -31,7 +31,7 @@ fn yes() -> bool {
     true
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SyncRequest {
     /// Inline data for payload-based providers (e.g. CSV text).
     #[serde(default)]
@@ -41,7 +41,7 @@ pub struct SyncRequest {
 /// Link an upstream account (surfaced by `GET /provider-kinds/{kind}/accounts`) to a local
 /// account, creating the `providers` connection in the same step. Exactly one of
 /// `new_account` / `existing_account_id` must be set.
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LinkProviderAccount {
     pub kind: String,
     /// The upstream's stable identifier for this account (`ProviderAccount::external_id`);
@@ -63,7 +63,7 @@ pub struct LinkProviderAccount {
 /// its own `providers` row pointing at the one local account, so their transactions/
 /// balances all flow into it. Exactly one of `new_account` / `existing_account_id` must be
 /// set; the account is created once and every member is linked in the same transaction.
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LinkProviderGroup {
     pub kind: String,
     /// The upstream accounts to link (must be non-empty).
@@ -74,7 +74,7 @@ pub struct LinkProviderGroup {
     pub existing_account_id: Option<i64>,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LinkGroupMember {
     /// The upstream's stable identifier (`ProviderAccount::external_id`).
     pub external_id: String,
@@ -82,7 +82,7 @@ pub struct LinkGroupMember {
     pub name: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct ProviderSync {
     pub id: i64,

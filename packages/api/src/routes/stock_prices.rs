@@ -11,7 +11,10 @@ use crate::state::AppState;
 
 pub use sure_core::StockPrice;
 
-#[derive(Deserialize, IntoParams, Default)]
+// OTEL span names for this module's handlers.
+const STOCK_PRICES_GET: &str = "stock_prices.get";
+
+#[derive(Debug, Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
 pub struct AsOfQuery {
     /// ISO-8601 date (`YYYY-MM-DD`); defaults to today. An unparseable value also
@@ -24,6 +27,14 @@ pub struct AsOfQuery {
 #[utoipa::path(get, path = "/api/accounts/{id}/stock-price", tag = "accounts",
     params(("id" = i64, Path,), AsOfQuery),
     responses((status = 200, body = StockPrice), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = STOCK_PRICES_GET,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id, query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn get_price(
     State(st): State<AppState>,
     Path(id): Path<i64>,

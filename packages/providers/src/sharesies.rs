@@ -128,7 +128,7 @@ fn read_entry(
 // lookup.json
 // --------------------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct LookupEntry {
     symbol: String,
     name: String,
@@ -158,13 +158,13 @@ pub fn parse_lookup(bytes: &[u8]) -> anyhow::Result<HashMap<String, InstrumentIn
 // wallet-transactions.json
 // --------------------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Quantum {
     #[serde(rename = "$quantum")]
     quantum: i64,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct WalletDetail {
     #[serde(rename = "type")]
     kind: Option<String>,
@@ -177,7 +177,7 @@ struct WalletDetail {
     source_currency: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct WalletTxRaw {
     amount: String,
     currency: String,
@@ -310,7 +310,7 @@ fn wallet_category(reason: &str, detail_kind: &str) -> Option<ProviderCategory> 
 // activity.json
 // --------------------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Trade {
     contract_note_number: String,
     trade_datetime: Quantum,
@@ -318,7 +318,7 @@ struct Trade {
     volume: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ActivityItem {
     id: String,
     #[serde(rename = "type")]
@@ -340,7 +340,7 @@ struct ActivityItem {
     outcome_records: Vec<OutcomeRecord>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct OutcomeRecord {
     id: String,
     fund_id: Option<String>,
@@ -353,7 +353,7 @@ struct OutcomeRecord {
     tax_records: Vec<TaxRecord>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct TaxRecord {
     owed_to: String,
     tax_amount: String,

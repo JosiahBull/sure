@@ -331,7 +331,7 @@ impl AccountMetadata {
 // directly as its request/response bodies.
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Account {
     pub id: i64,
     pub name: String,
@@ -350,7 +350,7 @@ pub struct Account {
     pub updated_at: String,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveAccount {
     pub name: String,
     pub kind: AccountKind,
@@ -367,7 +367,7 @@ pub struct SaveAccount {
     pub sort_order: i64,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SetSecuredBy {
     /// The asset account this (liability) account is secured against; `null` to unlink.
     pub secured_by_account_id: Option<i64>,

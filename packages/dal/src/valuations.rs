@@ -4,6 +4,7 @@ pub use sure_core::{NewValuation, Valuation};
 use crate::Db;
 
 /// List an account's valuations, newest first.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_for_account(db: &Db, account_id: i64) -> AppResult<Vec<Valuation>> {
     Ok(sqlx::query_as::<_, Valuation>(
         "SELECT * FROM valuations WHERE account_id=?1 ORDER BY as_of DESC, id DESC",
@@ -14,6 +15,7 @@ pub async fn list_for_account(db: &Db, account_id: i64) -> AppResult<Vec<Valuati
 }
 
 /// Record a valuation for an account, defaulting the currency to the account's.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, account_id: i64, input: NewValuation) -> AppResult<Valuation> {
     let account_ccy =
         sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
@@ -44,6 +46,7 @@ pub async fn create(db: &Db, account_id: i64, input: NewValuation) -> AppResult<
 /// balance snapshot. Unlike `create`, the currency is never defaulted — the caller must
 /// pass whatever the upstream reports, since a provider-linked account can legitimately
 /// hold a different currency than expected (e.g. a foreign-currency wallet).
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn upsert_from_provider(
     db: &Db,
     account_id: i64,
@@ -72,6 +75,7 @@ pub async fn upsert_from_provider(
 /// from colliding with an unrelated `source='provider'` sync on the same account (e.g. a
 /// still-attached Akahu balance-only link), so the historical backfill can upsert one row
 /// per day in place.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn upsert_from_brokerage(
     db: &Db,
     account_id: i64,
@@ -95,6 +99,7 @@ pub async fn upsert_from_brokerage(
 }
 
 /// Delete a valuation.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM valuations WHERE id=?1")
         .bind(id)

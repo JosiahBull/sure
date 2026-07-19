@@ -29,6 +29,7 @@ pub mod valuations;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
+use sqlx::ConnectOptions;
 
 /// The handle every layer above passes around. A thin alias today; a natural place to
 /// grow into a wrapper type carrying repositories if the app ever needs it.
@@ -51,7 +52,12 @@ pub async fn connect(database_url: &str) -> anyhow::Result<Db> {
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
         .foreign_keys(true)
-        .busy_timeout(Duration::from_secs(5));
+        .busy_timeout(Duration::from_secs(5))
+        // Log every executed statement at TRACE (sqlx defaults to INFO, which would
+        // drown out the one-line-per-request summary); promote statements slower than a
+        // second to WARN so genuinely slow queries surface without any RUST_LOG tuning.
+        .log_statements(log::LevelFilter::Trace)
+        .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(1));
 
     // Ensure the parent directory exists for file-backed databases.
     if let Some(parent) = options.get_filename().parent() {

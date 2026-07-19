@@ -17,6 +17,7 @@ use crate::Db;
 /// an internal wallet ↔ bank movement → "transfer").
 const IMPORTED_CATEGORY_KIND: &str = "expense";
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_category(
     db: &Db,
     category_cache: &mut HashMap<(String, Option<String>), i64>,
@@ -45,6 +46,7 @@ async fn resolve_category(
     Ok(id)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_merchant(
     db: &Db,
     cache: &mut HashMap<String, i64>,
@@ -62,7 +64,7 @@ async fn resolve_merchant(
     Ok(id)
 }
 
-#[derive(FromRow)]
+#[derive(Debug, FromRow)]
 pub struct ProviderRow {
     pub id: i64,
     pub name: String,
@@ -110,6 +112,7 @@ pub struct ImportRow {
     pub category_kind: Option<String>,
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Provider>> {
     let rows = sqlx::query_as::<_, ProviderRow>("SELECT * FROM providers ORDER BY id")
         .fetch_all(db)
@@ -117,6 +120,7 @@ pub async fn list(db: &Db) -> AppResult<Vec<Provider>> {
     Ok(rows.into_iter().map(Provider::from).collect())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn get(db: &Db, id: i64) -> AppResult<Provider> {
     let row = sqlx::query_as::<_, ProviderRow>("SELECT * FROM providers WHERE id=?1")
         .bind(id)
@@ -126,6 +130,7 @@ pub async fn get(db: &Db, id: i64) -> AppResult<Provider> {
     Ok(row.into())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveProvider) -> AppResult<Provider> {
     let config = input.config.clone().unwrap_or_else(|| json!({}));
     let row = sqlx::query_as::<_, ProviderRow>(
@@ -143,6 +148,7 @@ pub async fn create(db: &Db, input: SaveProvider) -> AppResult<Provider> {
     Ok(row.into())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveProvider) -> AppResult<Provider> {
     let config = input.config.clone().unwrap_or_else(|| json!({}));
     let row = sqlx::query_as::<_, ProviderRow>(
@@ -165,6 +171,7 @@ pub async fn update(db: &Db, id: i64, input: SaveProvider) -> AppResult<Provider
 
 /// Link an upstream account to a local one, creating the local account first if
 /// requested — atomically, so a failed provider insert can't leave an orphaned account.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn link(db: &Db, input: LinkProviderAccount) -> AppResult<Provider> {
     if input.new_account.is_some() == input.existing_account_id.is_some() {
         return Err(AppError::validation(
@@ -232,6 +239,7 @@ pub async fn link(db: &Db, input: LinkProviderAccount) -> AppResult<Provider> {
 /// Link several upstream accounts to one local account in a single transaction — see
 /// [`LinkProviderGroup`]. Creates (or resolves) the account once, then inserts one
 /// `providers` row per member. Returns the created rows in input order.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn link_group(db: &Db, input: LinkProviderGroup) -> AppResult<Vec<Provider>> {
     if input.new_account.is_some() == input.existing_account_id.is_some() {
         return Err(AppError::validation(
@@ -299,6 +307,7 @@ pub async fn link_group(db: &Db, input: LinkProviderGroup) -> AppResult<Vec<Prov
     Ok(providers)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM providers WHERE id=?1")
         .bind(id)
@@ -310,6 +319,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn account_currency(db: &Db, account_id: i64) -> AppResult<String> {
     Ok(
         sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
@@ -323,6 +333,7 @@ pub async fn account_currency(db: &Db, account_id: i64) -> AppResult<String> {
 /// a matching merchant/category per row from any source-supplied classification, so
 /// providers that carry their own enrichment (e.g. Akahu's NZFCC categories) don't leave
 /// every imported transaction uncategorized. Returns (imported, skipped).
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn import_transactions(
     db: &Db,
     account_id: i64,
@@ -392,6 +403,7 @@ pub async fn import_transactions(
     Ok((imported, skipped))
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn update_last_synced(db: &Db, id: i64) -> AppResult<()> {
     sqlx::query(
         "UPDATE providers SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
@@ -402,6 +414,7 @@ pub async fn update_last_synced(db: &Db, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn record_sync(
     db: &Db,
     provider_id: i64,
@@ -423,6 +436,7 @@ pub async fn record_sync(
     .await?)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_syncs(db: &Db, provider_id: i64) -> AppResult<Vec<ProviderSync>> {
     Ok(sqlx::query_as::<_, ProviderSync>(
         "SELECT * FROM provider_syncs WHERE provider_id=?1 ORDER BY id DESC",

@@ -10,8 +10,21 @@ use crate::state::AppState;
 // (`crate::routes::merchants::Merchant`, ...) and handler annotations still resolve.
 pub use sure_dal::merchants::{Merchant, SaveMerchant};
 
+// OTEL span names for this module's handlers.
+const MERCHANTS_LIST: &str = "merchants.list";
+const MERCHANTS_CREATE: &str = "merchants.create";
+const MERCHANTS_UPDATE: &str = "merchants.update";
+const MERCHANTS_DELETE: &str = "merchants.delete";
+
 #[utoipa::path(get, path = "/api/merchants", tag = "merchants",
     responses((status = 200, body = [Merchant])))]
+#[tracing::instrument(
+    name = MERCHANTS_LIST,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Merchant>>> {
     Ok(Json(sure_dal::merchants::list(&st.db).await?))
 }
@@ -19,6 +32,13 @@ pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Merchant>>> 
 #[utoipa::path(post, path = "/api/merchants", tag = "merchants", request_body = SaveMerchant,
     responses((status = 201, body = Merchant), (status = 409, body = crate::error::ErrorBody),
               (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = MERCHANTS_CREATE,
+    level = "debug",
+    skip_all,
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveMerchant>,
@@ -33,6 +53,14 @@ pub async fn create(
     request_body = SaveMerchant,
     responses((status = 200, body = Merchant), (status = 404, body = crate::error::ErrorBody),
               (status = 409, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = MERCHANTS_UPDATE,
+    level = "debug",
+    skip_all,
+    fields(merchant_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn update(
     State(st): State<AppState>,
     Path(id): Path<i64>,
@@ -43,6 +71,14 @@ pub async fn update(
 
 #[utoipa::path(delete, path = "/api/merchants/{id}", tag = "merchants", params(("id" = i64, Path,)),
     responses((status = 204), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = MERCHANTS_DELETE,
+    level = "debug",
+    skip_all,
+    fields(merchant_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     sure_dal::merchants::delete(&st.db, id).await?;
     Ok(StatusCode::NO_CONTENT)

@@ -2687,12 +2687,14 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "log",
  "serde",
  "serde_json",
  "sqlx",
  "sure-core",
  "sure-scheduler",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[derive(Serialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Rule {
     pub id: i64,
@@ -28,7 +28,7 @@ pub struct Rule {
     pub updated_at: String,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveRule {
     pub name: String,
     #[serde(default)]
@@ -54,7 +54,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct RuleRun {
     pub id: i64,
@@ -69,7 +69,7 @@ pub struct RuleRun {
 /// One change from a run, enriched with the transaction it touched, for the audit log's
 /// expandable diff. Category/merchant ids are resolved to names by the client; the
 /// before/after ids are enough to render "Groceries → Dining" style changes.
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct RuleApplicationDetail {
     pub id: i64,
@@ -87,7 +87,7 @@ pub struct RuleApplicationDetail {
     pub reverted: bool,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RunResult {
     pub run_id: i64,
     /// Transactions the rule(s) matched.
@@ -96,20 +96,20 @@ pub struct RunResult {
     pub changed: i64,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct PreviewRequest {
     pub expression: String,
     #[serde(default)]
     pub limit: Option<i64>,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RulePreview {
     pub matched: i64,
     pub sample: Vec<PreviewMatch>,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PreviewMatch {
     pub transaction_id: i64,
     pub posted_at: String,

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[derive(Serialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Category {
     pub id: i64,
@@ -22,14 +22,14 @@ pub struct Category {
 /// `children`, and utoipa 5 eagerly inlines nested schemas by default, so without it
 /// building the OpenAPI document recurses forever and overflows the stack. The
 /// attribute tells utoipa to emit a `$ref` for the recursive field and terminate.
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CategoryNode {
     pub category: Category,
     #[schema(no_recursion)]
     pub children: Vec<CategoryNode>,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveCategory {
     pub name: String,
     #[serde(default)]
