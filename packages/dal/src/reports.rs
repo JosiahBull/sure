@@ -145,7 +145,10 @@ pub async fn account(db: &Db, id: i64) -> AppResult<AssetAccount> {
 
 /// Liabilities secured against `asset_id`, in display order.
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn secured_liabilities(db: &Db, asset_id: i64) -> AppResult<Vec<SecuredLiabilityAccount>> {
+pub async fn secured_liabilities(
+    db: &Db,
+    asset_id: i64,
+) -> AppResult<Vec<SecuredLiabilityAccount>> {
     Ok(sqlx::query_as::<_, SecuredLiabilityAccount>(
         "SELECT id, name, kind, currency_code FROM accounts
          WHERE secured_by_account_id=?1 ORDER BY sort_order, name",
@@ -178,11 +181,11 @@ pub async fn valuations(db: &Db) -> AppResult<Vec<LedgerValuation>> {
 /// Every category's shape.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn categories(db: &Db) -> AppResult<Vec<Category>> {
-    Ok(sqlx::query_as::<_, Category>(
-        "SELECT id, parent_id, name, color, kind FROM categories",
+    Ok(
+        sqlx::query_as::<_, Category>("SELECT id, parent_id, name, color, kind FROM categories")
+            .fetch_all(db)
+            .await?,
     )
-    .fetch_all(db)
-    .await?)
 }
 
 /// All transactions with the fields the spend reports need to filter and roll up.

@@ -10,11 +10,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{NaiveDate, Utc};
+pub use sure_core::AppResult;
 use sure_dal::stock_prices::StockPrice;
 use sure_dal::Db;
 use sure_providers::StockPriceProvider;
 use sure_scheduler::ScheduledTask;
-pub use sure_core::AppResult;
 
 /// How far back to look when backfilling around a target date — comfortably spans
 /// weekends and most public-holiday clusters (e.g. Christmas/New Year) so "nearest
@@ -36,7 +36,9 @@ pub async fn price_at(
     exchange: &str,
     as_of: NaiveDate,
 ) -> AppResult<Option<StockPrice>> {
-    if let Some(cached) = sure_dal::stock_prices::get_at(db, ticker, exchange, &as_of.to_string()).await? {
+    if let Some(cached) =
+        sure_dal::stock_prices::get_at(db, ticker, exchange, &as_of.to_string()).await?
+    {
         return Ok(Some(cached));
     }
 
@@ -157,8 +159,13 @@ mod tests {
     async fn test_db() -> (Db, TempDb) {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("sure-api-stock-prices-test-{}-{n}.db", std::process::id()));
-        let db = sure_dal::connect(&format!("sqlite:{}", path.display())).await.unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "sure-api-stock-prices-test-{}-{n}.db",
+            std::process::id()
+        ));
+        let db = sure_dal::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .unwrap();
         sure_dal::migrate(&db).await.unwrap();
         (db, TempDb { path })
     }
@@ -193,7 +200,13 @@ mod tests {
         }
     }
 
-    fn shares_account(name: &str, kind: AccountKind, currency: &str, ticker: &str, exchange: &str) -> SaveAccount {
+    fn shares_account(
+        name: &str,
+        kind: AccountKind,
+        currency: &str,
+        ticker: &str,
+        exchange: &str,
+    ) -> SaveAccount {
         SaveAccount {
             name: name.to_string(),
             kind,
@@ -228,17 +241,25 @@ mod tests {
         assert_eq!(price.unwrap().close, "5.60");
 
         // The backfill wrote through to the cache, not just returned an ephemeral value.
-        let cached = sure_dal::stock_prices::get_at(&db, "MEL", "NZX", "2026-07-10").await.unwrap();
+        let cached = sure_dal::stock_prices::get_at(&db, "MEL", "NZX", "2026-07-10")
+            .await
+            .unwrap();
         assert_eq!(cached.unwrap().close, "5.60");
     }
 
     #[tokio::test]
     async fn price_at_is_none_when_the_provider_has_nothing_for_the_range() {
         let (db, _tmp) = test_db().await;
-        let provider = FakeProvider { quotes: vec![], fail_ticker: None };
+        let provider = FakeProvider {
+            quotes: vec![],
+            fail_ticker: None,
+        };
         let as_of = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
 
-        assert!(price_at(&db, &provider, "ZZZZ", "", as_of).await.unwrap().is_none());
+        assert!(price_at(&db, &provider, "ZZZZ", "", as_of)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -272,10 +293,15 @@ mod tests {
         // skipped so the rest of the batch still completes.
         task.run().await.unwrap();
 
-        assert!(sure_dal::stock_prices::get_at(&db, "MEL", "NZX", &today.to_string())
+        assert!(
+            sure_dal::stock_prices::get_at(&db, "MEL", "NZX", &today.to_string())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(sure_dal::stock_prices::list_history(&db, "BAD", "")
             .await
             .unwrap()
-            .is_some());
-        assert!(sure_dal::stock_prices::list_history(&db, "BAD", "").await.unwrap().is_empty());
+            .is_empty());
     }
 }

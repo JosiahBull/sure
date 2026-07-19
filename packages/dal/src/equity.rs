@@ -1,8 +1,10 @@
 //! Equity grants, exercises, and computed vesting status.
 
 use chrono::{Datelike, NaiveDate, Utc};
+pub use sure_core::{
+    AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
+};
 use sure_core::{AppError, AppResult};
-pub use sure_core::{AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus};
 
 use crate::Db;
 
@@ -97,7 +99,11 @@ pub async fn list_exercises(db: &Db, grant_id: i64) -> AppResult<Vec<EquityExerc
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn create_exercise(db: &Db, grant_id: i64, input: SaveExercise) -> AppResult<EquityExercise> {
+pub async fn create_exercise(
+    db: &Db,
+    grant_id: i64,
+    input: SaveExercise,
+) -> AppResult<EquityExercise> {
     let grant = fetch_grant(db, grant_id).await?;
     if input.quantity <= 0 {
         return Err(AppError::validation("exercise quantity must be positive"));
@@ -138,13 +144,17 @@ pub async fn delete_exercise(db: &Db, id: i64) -> AppResult<()> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn grant_vesting(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<VestingStatus> {
     let grant = fetch_grant(db, id).await?;
-    let as_of = as_of.and_then(parse_date).unwrap_or_else(|| Utc::now().date_naive());
+    let as_of = as_of
+        .and_then(parse_date)
+        .unwrap_or_else(|| Utc::now().date_naive());
     compute_status(db, &grant, as_of).await
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn account_equity(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity> {
-    let as_of = as_of.and_then(parse_date).unwrap_or_else(|| Utc::now().date_naive());
+    let as_of = as_of
+        .and_then(parse_date)
+        .unwrap_or_else(|| Utc::now().date_naive());
     let account_ccy =
         sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
             .bind(id)
@@ -191,7 +201,11 @@ pub async fn revalue(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<Account
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-async fn compute_status(db: &Db, grant: &EquityGrant, as_of: NaiveDate) -> AppResult<VestingStatus> {
+async fn compute_status(
+    db: &Db,
+    grant: &EquityGrant,
+    as_of: NaiveDate,
+) -> AppResult<VestingStatus> {
     let grant_date = parse_date(&grant.grant_date).unwrap_or(as_of);
     let elapsed = months_between(grant_date, as_of);
     let vested = if elapsed < grant.cliff_months {

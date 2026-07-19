@@ -1,3 +1,8 @@
+// Money is stored in minor units and written with a `dollars_cents` digit grouping
+// (e.g. `485_000_00` == $485,000.00), which reads far better than 3-digit groups for
+// financial values; clippy's grouping lint fights it, so allow it crate-wide.
+#![allow(clippy::inconsistent_digit_grouping)]
+
 pub mod brokerage;
 pub mod config;
 pub mod exchange_rates;
@@ -27,8 +32,8 @@ use crate::config::Config;
 use crate::openapi::ApiDoc;
 use crate::state::AppState;
 
-pub use sure_core::{AppError, AppResult};
 pub use state::AppState as State;
+pub use sure_core::{AppError, AppResult};
 
 /// Build the Axum application: all API routes, the live OpenAPI document, permissive
 /// CORS (the app runs behind a firewall), request tracing, and — in production —

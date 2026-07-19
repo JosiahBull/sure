@@ -47,7 +47,10 @@ pub async fn get_price(
     let AccountMetadata::Shares(meta) = account.metadata else {
         return Err(AppError::NotFound("stock ticker"));
     };
-    let ticker = meta.ticker.filter(|t| !t.trim().is_empty()).ok_or(AppError::NotFound("stock ticker"))?;
+    let ticker = meta
+        .ticker
+        .filter(|t| !t.trim().is_empty())
+        .ok_or(AppError::NotFound("stock ticker"))?;
     let exchange = meta.exchange.unwrap_or_default();
 
     let as_of = q

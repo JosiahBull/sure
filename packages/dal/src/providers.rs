@@ -34,14 +34,18 @@ async fn resolve_category(
         Some(g) => Some(match group_cache.get(g) {
             Some(&id) => id,
             None => {
-                let id = crate::categories::find_or_create(db, g, None, kind).await?.id;
+                let id = crate::categories::find_or_create(db, g, None, kind)
+                    .await?
+                    .id;
                 group_cache.insert(g.to_string(), id);
                 id
             }
         }),
         None => None,
     };
-    let id = crate::categories::find_or_create(db, name, parent_id, kind).await?.id;
+    let id = crate::categories::find_or_create(db, name, parent_id, kind)
+        .await?
+        .id;
     category_cache.insert(key, id);
     Ok(id)
 }
@@ -247,7 +251,9 @@ pub async fn link_group(db: &Db, input: LinkProviderGroup) -> AppResult<Vec<Prov
         ));
     }
     if input.members.is_empty() {
-        return Err(AppError::validation("link group requires at least one member"));
+        return Err(AppError::validation(
+            "link group requires at least one member",
+        ));
     }
 
     let new_account_metadata = match &input.new_account {
@@ -275,7 +281,9 @@ pub async fn link_group(db: &Db, input: LinkProviderGroup) -> AppResult<Vec<Prov
         .await?;
         row.id
     } else {
-        let id = input.existing_account_id.expect("validated exactly-one above");
+        let id = input
+            .existing_account_id
+            .expect("validated exactly-one above");
         let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE id=?1")
             .bind(id)
             .fetch_one(&mut *tx)
@@ -502,14 +510,18 @@ mod tests {
         assert_eq!(provider.kind, "akahu");
         assert_eq!(provider.config["external_account_id"], "acc_123");
 
-        let account = crate::accounts::get(&db, provider.account_id).await.unwrap();
+        let account = crate::accounts::get(&db, provider.account_id)
+            .await
+            .unwrap();
         assert_eq!(account.name, "Everyday");
     }
 
     #[tokio::test]
     async fn links_an_existing_account() {
         let db = test_db().await;
-        let account = crate::accounts::create(&db, new_account_input("Savings")).await.unwrap();
+        let account = crate::accounts::create(&db, new_account_input("Savings"))
+            .await
+            .unwrap();
 
         let provider = link(
             &db,
@@ -600,9 +612,18 @@ mod tests {
             LinkProviderGroup {
                 kind: "akahu".to_string(),
                 members: vec![
-                    LinkGroupMember { external_id: "acc_nzd".to_string(), name: "NZD Wallet".to_string() },
-                    LinkGroupMember { external_id: "acc_usd".to_string(), name: "USD Wallet".to_string() },
-                    LinkGroupMember { external_id: "acc_aud".to_string(), name: "AUD Wallet".to_string() },
+                    LinkGroupMember {
+                        external_id: "acc_nzd".to_string(),
+                        name: "NZD Wallet".to_string(),
+                    },
+                    LinkGroupMember {
+                        external_id: "acc_usd".to_string(),
+                        name: "USD Wallet".to_string(),
+                    },
+                    LinkGroupMember {
+                        external_id: "acc_aud".to_string(),
+                        name: "AUD Wallet".to_string(),
+                    },
                 ],
                 new_account: Some(brokerage_account_input("Sharesies")),
                 existing_account_id: None,
@@ -619,7 +640,13 @@ mod tests {
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].kind, AccountKind::Brokerage);
         assert_eq!(
-            providers.iter().map(|p| p.config["external_account_id"].as_str().unwrap().to_string()).collect::<Vec<_>>(),
+            providers
+                .iter()
+                .map(|p| p.config["external_account_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string())
+                .collect::<Vec<_>>(),
             vec!["acc_nzd", "acc_usd", "acc_aud"],
         );
     }
@@ -627,14 +654,22 @@ mod tests {
     #[tokio::test]
     async fn link_group_attaches_all_members_to_an_existing_account() {
         let db = test_db().await;
-        let account = crate::accounts::create(&db, brokerage_account_input("Sharesies")).await.unwrap();
+        let account = crate::accounts::create(&db, brokerage_account_input("Sharesies"))
+            .await
+            .unwrap();
         let providers = link_group(
             &db,
             LinkProviderGroup {
                 kind: "akahu".to_string(),
                 members: vec![
-                    LinkGroupMember { external_id: "acc_nzd".to_string(), name: "NZD Wallet".to_string() },
-                    LinkGroupMember { external_id: "acc_usd".to_string(), name: "USD Wallet".to_string() },
+                    LinkGroupMember {
+                        external_id: "acc_nzd".to_string(),
+                        name: "NZD Wallet".to_string(),
+                    },
+                    LinkGroupMember {
+                        external_id: "acc_usd".to_string(),
+                        name: "USD Wallet".to_string(),
+                    },
                 ],
                 new_account: None,
                 existing_account_id: Some(account.id),
@@ -690,14 +725,21 @@ mod tests {
     #[tokio::test]
     async fn import_finds_or_creates_a_nested_category_and_merchant() {
         let db = test_db().await;
-        let account = crate::accounts::create(&db, new_account_input("Everyday")).await.unwrap();
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
 
         import_transactions(
             &db,
             account.id,
             "NZD",
             "akahu#1",
-            &[enriched_row("trans_1", "The Roastery", "Cafes and restaurants", "Lifestyle")],
+            &[enriched_row(
+                "trans_1",
+                "The Roastery",
+                "Cafes and restaurants",
+                "Lifestyle",
+            )],
         )
         .await
         .unwrap();
@@ -709,7 +751,9 @@ mod tests {
         let cats = crate::categories::list(&db).await.unwrap();
         let category = cats.iter().find(|c| c.id == category_id).unwrap();
         assert_eq!(category.name, "Cafes and restaurants");
-        let parent_id = category.parent_id.expect("category should be nested under a group");
+        let parent_id = category
+            .parent_id
+            .expect("category should be nested under a group");
         let group = cats.iter().find(|c| c.id == parent_id).unwrap();
         assert_eq!(group.name, "Lifestyle");
 
@@ -727,7 +771,9 @@ mod tests {
     #[tokio::test]
     async fn import_reuses_an_existing_category_case_insensitively() {
         let db = test_db().await;
-        let account = crate::accounts::create(&db, new_account_input("Everyday")).await.unwrap();
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
         let existing = crate::categories::create(
             &db,
             sure_core::SaveCategory {
@@ -779,7 +825,9 @@ mod tests {
     #[tokio::test]
     async fn import_does_not_overwrite_an_existing_merchants_category() {
         let db = test_db().await;
-        let account = crate::accounts::create(&db, new_account_input("Everyday")).await.unwrap();
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
         let user_category = crate::categories::create(
             &db,
             sure_core::SaveCategory {
@@ -809,7 +857,12 @@ mod tests {
             account.id,
             "NZD",
             "akahu#1",
-            &[enriched_row("trans_3", "The Roastery", "Cafes and restaurants", "Lifestyle")],
+            &[enriched_row(
+                "trans_3",
+                "The Roastery",
+                "Cafes and restaurants",
+                "Lifestyle",
+            )],
         )
         .await
         .unwrap();

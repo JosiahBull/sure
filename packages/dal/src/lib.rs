@@ -4,6 +4,10 @@
 //! too (they derive `FromRow`), and are re-exported by the API crate for its handlers
 //! and OpenAPI document.
 
+// Money is stored in minor units and written with a `dollars_cents` digit grouping
+// (e.g. `114_269_63` == $114,269.63); clippy's grouping lint fights that convention.
+#![allow(clippy::inconsistent_digit_grouping)]
+
 use std::str::FromStr;
 use std::time::Duration;
 

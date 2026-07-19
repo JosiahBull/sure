@@ -52,7 +52,10 @@ pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveCron>,
 ) -> AppResult<(StatusCode, Json<Cron>)> {
-    Ok((StatusCode::CREATED, Json(sure_dal::crons::create(&st.db, input).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(sure_dal::crons::create(&st.db, input).await?),
+    ))
 }
 
 #[utoipa::path(put, path = "/api/crons/{id}", tag = "crons", params(("id" = i64, Path,)),
@@ -105,7 +108,9 @@ pub async fn run_one(
     Path(id): Path<i64>,
     Query(q): Query<RunQuery>,
 ) -> AppResult<Json<CronRunResult>> {
-    Ok(Json(sure_dal::crons::run_one(&st.db, id, q.to.as_deref()).await?))
+    Ok(Json(
+        sure_dal::crons::run_one(&st.db, id, q.to.as_deref()).await?,
+    ))
 }
 
 /// Apply all due periods for every enabled cron.
@@ -123,7 +128,9 @@ pub async fn run_all(
     State(st): State<AppState>,
     Query(q): Query<RunQuery>,
 ) -> AppResult<Json<CronRunResult>> {
-    Ok(Json(sure_dal::crons::run_all(&st.db, q.to.as_deref()).await?))
+    Ok(Json(
+        sure_dal::crons::run_all(&st.db, q.to.as_deref()).await?,
+    ))
 }
 
 /// A cron's run history.
@@ -156,7 +163,10 @@ pub async fn list_runs(
     ret(level = tracing::Level::DEBUG),
     err(level = tracing::Level::WARN),
 )]
-pub async fn undo_run(State(st): State<AppState>, Path(run_id): Path<i64>) -> AppResult<StatusCode> {
+pub async fn undo_run(
+    State(st): State<AppState>,
+    Path(run_id): Path<i64>,
+) -> AppResult<StatusCode> {
     sure_dal::crons::undo_run(&st.db, run_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

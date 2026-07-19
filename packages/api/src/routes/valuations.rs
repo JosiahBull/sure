@@ -24,8 +24,13 @@ const VALUATIONS_DELETE: &str = "valuations.delete";
     ret(level = tracing::Level::DEBUG),
     err(level = tracing::Level::WARN),
 )]
-pub async fn list(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<Vec<Valuation>>> {
-    Ok(Json(sure_dal::valuations::list_for_account(&st.db, id).await?))
+pub async fn list(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<Vec<Valuation>>> {
+    Ok(Json(
+        sure_dal::valuations::list_for_account(&st.db, id).await?,
+    ))
 }
 
 /// Record a valuation for an account.

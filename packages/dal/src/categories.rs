@@ -166,11 +166,12 @@ async fn would_cycle(db: &SqlitePool, id: i64, parent: i64) -> AppResult<bool> {
         if current == id {
             return Ok(true);
         }
-        cursor = sqlx::query_scalar::<_, Option<i64>>("SELECT parent_id FROM categories WHERE id=?1")
-            .bind(current)
-            .fetch_optional(db)
-            .await?
-            .flatten();
+        cursor =
+            sqlx::query_scalar::<_, Option<i64>>("SELECT parent_id FROM categories WHERE id=?1")
+                .bind(current)
+                .fetch_optional(db)
+                .await?
+                .flatten();
     }
     Ok(false)
 }
@@ -202,7 +203,10 @@ fn build_tree(flat: Vec<Category>) -> Vec<CategoryNode> {
     ) -> CategoryNode {
         let mut node = nodes.remove(&id).expect("node present");
         if let Some(kids) = children_of.get(&Some(id)) {
-            node.children = kids.iter().map(|&k| assemble(k, nodes, children_of)).collect();
+            node.children = kids
+                .iter()
+                .map(|&k| assemble(k, nodes, children_of))
+                .collect();
         }
         node
     }

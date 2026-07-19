@@ -75,7 +75,10 @@ impl TransactionProvider for AkahuProvider {
         Ok(accounts.items.into_iter().map(map_account).collect())
     }
 
-    async fn current_balance(&self, ctx: SyncContext<'_>) -> anyhow::Result<Option<ProviderBalance>> {
+    async fn current_balance(
+        &self,
+        ctx: SyncContext<'_>,
+    ) -> anyhow::Result<Option<ProviderBalance>> {
         let account_id = external_account_id(ctx.config)?;
         let (client, user_token) = self.client()?;
         let resp = client.get_account(&user_token, &account_id).await?;
@@ -186,7 +189,10 @@ fn map_account(a: akahu_client::Account) -> ProviderAccount {
         institution,
         kind_hint,
         balance_minor: decimal_to_minor(a.balance.current),
-        supports_transactions: a.attributes.iter().any(|attr| matches!(attr, Attribute::Transactions)),
+        supports_transactions: a
+            .attributes
+            .iter()
+            .any(|attr| matches!(attr, Attribute::Transactions)),
     }
 }
 
@@ -357,7 +363,9 @@ mod tests {
         let t: akahu_client::Transaction = serde_json::from_str(json).unwrap();
         let txn = map_transaction(t);
         assert_eq!(txn.merchant, Some("The Roastery".to_string()));
-        let category = txn.category.expect("enriched transaction should carry a category");
+        let category = txn
+            .category
+            .expect("enriched transaction should carry a category");
         assert_eq!(category.name, "Cafes and restaurants");
         assert_eq!(category.group.as_deref(), Some("Lifestyle"));
     }
@@ -385,17 +393,50 @@ mod tests {
         // generic name/no-limit combination that doesn't match any loan-disambiguation
         // signal.
         let n = "Everyday Account";
-        assert_eq!(map_kind_hint(&BankAccountKind::Checking, n, false), AccountKind::Bank);
-        assert_eq!(map_kind_hint(&BankAccountKind::Savings, n, false), AccountKind::Savings);
-        assert_eq!(map_kind_hint(&BankAccountKind::TermDeposit, n, false), AccountKind::Savings);
-        assert_eq!(map_kind_hint(&BankAccountKind::CreditCard, n, false), AccountKind::CreditCard);
-        assert_eq!(map_kind_hint(&BankAccountKind::Loan, n, false), AccountKind::Loan);
-        assert_eq!(map_kind_hint(&BankAccountKind::Kiwisaver, n, false), AccountKind::SharesNz);
-        assert_eq!(map_kind_hint(&BankAccountKind::Investment, n, false), AccountKind::Brokerage);
-        assert_eq!(map_kind_hint(&BankAccountKind::Foreign, n, false), AccountKind::Cash);
-        assert_eq!(map_kind_hint(&BankAccountKind::Tax, n, false), AccountKind::Cash);
-        assert_eq!(map_kind_hint(&BankAccountKind::Rewards, n, false), AccountKind::Cash);
-        assert_eq!(map_kind_hint(&BankAccountKind::Wallet, n, false), AccountKind::Brokerage);
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::Checking, n, false),
+            AccountKind::Bank
+        );
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::Savings, n, false),
+            AccountKind::Savings
+        );
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::TermDeposit, n, false),
+            AccountKind::Savings
+        );
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::CreditCard, n, false),
+            AccountKind::CreditCard
+        );
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::Loan, n, false),
+            AccountKind::Loan
+        );
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::Kiwisaver, n, false),
+            AccountKind::SharesNz
+        );
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::Investment, n, false),
+            AccountKind::Brokerage
+        );
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::Foreign, n, false),
+            AccountKind::Cash
+        );
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::Tax, n, false),
+            AccountKind::Cash
+        );
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::Rewards, n, false),
+            AccountKind::Cash
+        );
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::Wallet, n, false),
+            AccountKind::Brokerage
+        );
     }
 
     #[test]
@@ -466,4 +507,3 @@ mod tests {
         assert_eq!(acc.balance_minor, -47_921_483);
     }
 }
-

@@ -138,7 +138,10 @@ pub async fn create_holding(
     ret(level = tracing::Level::DEBUG),
     err(level = tracing::Level::WARN),
 )]
-pub async fn delete_holding(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
+pub async fn delete_holding(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<StatusCode> {
     sure_dal::brokerage::delete_holding(&st.db, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -187,10 +190,11 @@ pub async fn import(
     }
 
     // Unzip + JSON-parse is CPU-bound: keep it off the async runtime's worker threads.
-    let export = tokio::task::spawn_blocking(move || sure_providers::sharesies::parse_export(&body))
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .map_err(|e| AppError::validation(format!("could not read export: {e}")))?;
+    let export =
+        tokio::task::spawn_blocking(move || sure_providers::sharesies::parse_export(&body))
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .map_err(|e| AppError::validation(format!("could not read export: {e}")))?;
 
     let provider_tag = format!("sharesies#{id}");
     let wallet_rows: Vec<sure_dal::providers::ImportRow> = export
@@ -350,7 +354,10 @@ pub fn router() -> Router<AppState> {
             "/accounts/{id}/brokerage/holdings",
             get(list_holdings).post(create_holding),
         )
-        .route("/brokerage/holdings/{id}", axum::routing::delete(delete_holding))
+        .route(
+            "/brokerage/holdings/{id}",
+            axum::routing::delete(delete_holding),
+        )
         .route("/accounts/{id}/brokerage/dividends", get(list_dividends))
         .route(
             "/accounts/{id}/brokerage/import",

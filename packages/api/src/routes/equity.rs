@@ -85,7 +85,9 @@ pub async fn update_grant(
     Path(id): Path<i64>,
     Json(input): Json<SaveGrant>,
 ) -> AppResult<Json<EquityGrant>> {
-    Ok(Json(sure_dal::equity::update_grant(&st.db, id, input).await?))
+    Ok(Json(
+        sure_dal::equity::update_grant(&st.db, id, input).await?,
+    ))
 }
 
 #[utoipa::path(delete, path = "/api/equity-grants/{id}", tag = "equity", params(("id" = i64, Path,)),
@@ -98,7 +100,10 @@ pub async fn update_grant(
     ret(level = tracing::Level::DEBUG),
     err(level = tracing::Level::WARN),
 )]
-pub async fn delete_grant(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
+pub async fn delete_grant(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<StatusCode> {
     sure_dal::equity::delete_grant(&st.db, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -229,11 +234,23 @@ pub async fn revalue(
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/accounts/{id}/equity-grants", get(list_grants).post(create_grant))
+        .route(
+            "/accounts/{id}/equity-grants",
+            get(list_grants).post(create_grant),
+        )
         .route("/accounts/{id}/equity", get(account_equity))
         .route("/accounts/{id}/equity/revalue", post(revalue))
-        .route("/equity-grants/{id}", axum::routing::put(update_grant).delete(delete_grant))
-        .route("/equity-grants/{id}/exercises", get(list_exercises).post(create_exercise))
+        .route(
+            "/equity-grants/{id}",
+            axum::routing::put(update_grant).delete(delete_grant),
+        )
+        .route(
+            "/equity-grants/{id}/exercises",
+            get(list_exercises).post(create_exercise),
+        )
         .route("/equity-grants/{id}/vesting", get(grant_vesting))
-        .route("/equity-exercises/{id}", axum::routing::delete(delete_exercise))
+        .route(
+            "/equity-exercises/{id}",
+            axum::routing::delete(delete_exercise),
+        )
 }

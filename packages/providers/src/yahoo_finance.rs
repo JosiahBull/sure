@@ -166,7 +166,13 @@ impl StockPriceProvider for YahooFinanceProvider {
         let result = body
             .chart
             .result
-            .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
+            .and_then(|mut r| {
+                if r.is_empty() {
+                    None
+                } else {
+                    Some(r.remove(0))
+                }
+            })
             .ok_or_else(|| anyhow::anyhow!("no chart data returned for '{symbol}'"))?;
 
         Ok(parse_quotes(result))
@@ -238,8 +244,7 @@ mod tests {
 
     #[test]
     fn missing_chart_result_is_empty() {
-        let body: ChartResponse =
-            serde_json::from_str(r#"{"chart":{"result":null}}"#).unwrap();
+        let body: ChartResponse = serde_json::from_str(r#"{"chart":{"result":null}}"#).unwrap();
         assert!(body.chart.result.is_none());
     }
 }

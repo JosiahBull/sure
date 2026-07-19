@@ -64,8 +64,9 @@ impl AccountKind {
 pub fn class_of(kind: &str) -> &'static str {
     match kind {
         "cash" | "bank" | "savings" => "cash",
-        "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan"
-        | "liability" => "liability",
+        "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan" | "liability" => {
+            "liability"
+        }
         "shares_nz" | "shares_us" | "shares_private" | "brokerage" => "investment",
         _ => "asset",
     }

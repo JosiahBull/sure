@@ -57,11 +57,7 @@ pub async fn get_at(
 
 /// Every cached close for a ticker, oldest first.
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn list_history(
-    db: &Db,
-    ticker: &str,
-    exchange: &str,
-) -> AppResult<Vec<StockPrice>> {
+pub async fn list_history(db: &Db, ticker: &str, exchange: &str) -> AppResult<Vec<StockPrice>> {
     Ok(sqlx::query_as::<_, StockPrice>(
         "SELECT * FROM stock_prices WHERE ticker = ?1 AND exchange = ?2 ORDER BY as_of",
     )
@@ -93,8 +89,12 @@ mod tests {
         let db = test_db().await;
         assert!(list_history(&db, "MEL", "NZX").await.unwrap().is_empty());
 
-        upsert(&db, "MEL", "NZX", "2026-07-13", "5.60", "NZD").await.unwrap();
-        upsert(&db, "MEL", "NZX", "2026-07-14", "5.55", "NZD").await.unwrap();
+        upsert(&db, "MEL", "NZX", "2026-07-13", "5.60", "NZD")
+            .await
+            .unwrap();
+        upsert(&db, "MEL", "NZX", "2026-07-14", "5.55", "NZD")
+            .await
+            .unwrap();
 
         let history = list_history(&db, "MEL", "NZX").await.unwrap();
         assert_eq!(history.len(), 2);
@@ -102,7 +102,9 @@ mod tests {
         assert_eq!(history[0].close, "5.60");
 
         // Re-upserting the same day updates in place rather than duplicating the row.
-        let updated = upsert(&db, "MEL", "NZX", "2026-07-14", "5.70", "NZD").await.unwrap();
+        let updated = upsert(&db, "MEL", "NZX", "2026-07-14", "5.70", "NZD")
+            .await
+            .unwrap();
         assert_eq!(updated.close, "5.70");
         assert_eq!(list_history(&db, "MEL", "NZX").await.unwrap().len(), 2);
     }
@@ -110,16 +112,40 @@ mod tests {
     #[tokio::test]
     async fn get_at_resolves_to_the_nearest_preceding_trading_day() {
         let db = test_db().await;
-        upsert(&db, "MEL", "NZX", "2026-07-10", "5.50", "NZD").await.unwrap();
-        upsert(&db, "MEL", "NZX", "2026-07-13", "5.60", "NZD").await.unwrap();
+        upsert(&db, "MEL", "NZX", "2026-07-10", "5.50", "NZD")
+            .await
+            .unwrap();
+        upsert(&db, "MEL", "NZX", "2026-07-13", "5.60", "NZD")
+            .await
+            .unwrap();
 
         // Exact match.
-        assert_eq!(get_at(&db, "MEL", "NZX", "2026-07-13").await.unwrap().unwrap().close, "5.60");
+        assert_eq!(
+            get_at(&db, "MEL", "NZX", "2026-07-13")
+                .await
+                .unwrap()
+                .unwrap()
+                .close,
+            "5.60"
+        );
         // A weekend date (2026-07-11 is a Saturday) falls back to the prior trading day.
-        assert_eq!(get_at(&db, "MEL", "NZX", "2026-07-12").await.unwrap().unwrap().close, "5.50");
+        assert_eq!(
+            get_at(&db, "MEL", "NZX", "2026-07-12")
+                .await
+                .unwrap()
+                .unwrap()
+                .close,
+            "5.50"
+        );
         // Before any cached data.
-        assert!(get_at(&db, "MEL", "NZX", "2026-07-01").await.unwrap().is_none());
+        assert!(get_at(&db, "MEL", "NZX", "2026-07-01")
+            .await
+            .unwrap()
+            .is_none());
         // A different ticker has nothing cached.
-        assert!(get_at(&db, "AAPL", "", "2026-07-13").await.unwrap().is_none());
+        assert!(get_at(&db, "AAPL", "", "2026-07-13")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

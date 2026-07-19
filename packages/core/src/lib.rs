@@ -23,7 +23,9 @@ pub use brokerage::{
 pub use categories::{Category, CategoryNode, SaveCategory};
 pub use crons::{Cron, CronRun, CronRunResult, SaveCron};
 pub use currencies::{Currency, NewCurrency};
-pub use equity::{AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus};
+pub use equity::{
+    AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
+};
 pub use error::{AppError, AppResult, ErrorBody, ErrorDetail};
 pub use merchants::{Merchant, SaveMerchant};
 pub use providers::{

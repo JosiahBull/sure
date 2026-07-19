@@ -12,11 +12,11 @@ use serde_json::{json, Value};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
+use sure_dal::rules::{PlannedApplication, TxCtx};
 pub use sure_dal::rules::{
     PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RunResult,
     SaveRule,
 };
-use sure_dal::rules::{PlannedApplication, TxCtx};
 
 // OTEL span names for this module's handlers.
 const RULES_LIST: &str = "rules.list";
@@ -150,7 +150,10 @@ pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResul
     ret(level = tracing::Level::DEBUG),
     err(level = tracing::Level::WARN),
 )]
-pub async fn run_one(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<RunResult>> {
+pub async fn run_one(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<RunResult>> {
     let rule = sure_dal::rules::get(&st.db, id).await?;
     let result = run_rules(&st.db, &[rule], Some(id), "single").await?;
     Ok(Json(result))
@@ -238,7 +241,9 @@ pub async fn run_applications(
     State(st): State<AppState>,
     Path(run_id): Path<i64>,
 ) -> AppResult<Json<Vec<RuleApplicationDetail>>> {
-    Ok(Json(sure_dal::rules::run_applications(&st.db, run_id).await?))
+    Ok(Json(
+        sure_dal::rules::run_applications(&st.db, run_id).await?,
+    ))
 }
 
 /// Undo a run, reverting each changed transaction to its prior state (unless it was

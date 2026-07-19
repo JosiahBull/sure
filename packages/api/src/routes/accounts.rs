@@ -148,5 +148,8 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/accounts", get(list).post(create))
         .route("/accounts/{id}", get(get_one).put(update).delete(delete))
-        .route("/accounts/{id}/secured-by", axum::routing::put(set_secured_by))
+        .route(
+            "/accounts/{id}/secured-by",
+            axum::routing::put(set_secured_by),
+        )
 }

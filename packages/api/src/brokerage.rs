@@ -67,7 +67,10 @@ pub async fn snapshot(
         if let Some(v) = value_minor {
             // A position's price may be quoted in a different currency than the ticker's
             // listing (rare), so convert from the price's currency where we have it.
-            let value_ccy = price.as_ref().map(|sp| sp.currency_code.as_str()).unwrap_or(&p.currency_code);
+            let value_ccy = price
+                .as_ref()
+                .map(|sp| sp.currency_code.as_str())
+                .unwrap_or(&p.currency_code);
             total_major += fx.to_base_major(v, value_ccy);
         }
         positions.push(Position {
@@ -136,14 +139,19 @@ pub async fn backfill_history(
         return Ok(0); // nothing imported yet
     };
     let Some(from) = NaiveDate::parse_from_str(&earliest, "%Y-%m-%d").ok() else {
-        return Err(AppError::validation("could not parse earliest activity date"));
+        return Err(AppError::validation(
+            "could not parse earliest activity date",
+        ));
     };
     let today = Utc::now().date_naive();
 
     // One upstream call per ticker covering the full window, written through to the cache.
     for (ticker, exchange) in sure_dal::brokerage::account_tickers(db, account_id).await? {
         let exchange_hint = Some(exchange.as_str()).filter(|e| !e.is_empty());
-        match provider.fetch_daily_prices(&ticker, exchange_hint, from, today).await {
+        match provider
+            .fetch_daily_prices(&ticker, exchange_hint, from, today)
+            .await
+        {
             Ok(quotes) => {
                 for q in &quotes {
                     // Exact decimal text, matching `stock_prices::price_at`'s own write.
@@ -199,8 +207,13 @@ mod tests {
     async fn test_db() -> (Db, TempDb) {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("sure-api-brokerage-test-{}-{n}.db", std::process::id()));
-        let db = sure_dal::connect(&format!("sqlite:{}", path.display())).await.unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "sure-api-brokerage-test-{}-{n}.db",
+            std::process::id()
+        ));
+        let db = sure_dal::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .unwrap();
         sure_dal::migrate(&db).await.unwrap();
         (db, TempDb { path })
     }
@@ -250,7 +263,12 @@ mod tests {
         .id
     }
 
-    fn holding(ext: &str, ticker: &str, date: &str, qty: f64) -> sure_dal::brokerage::HoldingImport {
+    fn holding(
+        ext: &str,
+        ticker: &str,
+        date: &str,
+        qty: f64,
+    ) -> sure_dal::brokerage::HoldingImport {
         sure_dal::brokerage::HoldingImport {
             ticker: ticker.to_string(),
             exchange: "NZX".to_string(),
@@ -294,9 +312,14 @@ mod tests {
         .await
         .unwrap();
 
-        let provider = FakeProvider { close: "5.60".parse().unwrap(), currency: "NZD".to_string() };
+        let provider = FakeProvider {
+            close: "5.60".parse().unwrap(),
+            currency: "NZD".to_string(),
+        };
         let as_of = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
-        let snap = snapshot(&db, Some(&provider), account_id, as_of).await.unwrap();
+        let snap = snapshot(&db, Some(&provider), account_id, as_of)
+            .await
+            .unwrap();
 
         assert_eq!(snap.positions.len(), 1);
         assert_eq!(snap.positions[0].ticker, "MEL");
@@ -318,23 +341,35 @@ mod tests {
             "NZD",
             "sharesies#1",
             &[],
-            &[holding("h1", "MEL", &Utc::now().date_naive().to_string(), 10.0)],
+            &[holding(
+                "h1",
+                "MEL",
+                &Utc::now().date_naive().to_string(),
+                10.0,
+            )],
             &[],
         )
         .await
         .unwrap();
 
-        let provider = FakeProvider { close: "2.00".parse().unwrap(), currency: "NZD".to_string() };
+        let provider = FakeProvider {
+            close: "2.00".parse().unwrap(),
+            currency: "NZD".to_string(),
+        };
         let days = backfill_history(&db, &provider, account_id).await.unwrap();
         assert_eq!(days, 1); // earliest == today
-        let vals = sure_dal::valuations::list_for_account(&db, account_id).await.unwrap();
+        let vals = sure_dal::valuations::list_for_account(&db, account_id)
+            .await
+            .unwrap();
         assert_eq!(vals.len(), 1);
         assert_eq!(vals[0].source, "brokerage");
         assert_eq!(vals[0].value_minor, 20_00); // 10 × $2.00
 
         // Re-running upserts the same day rather than accumulating rows.
         backfill_history(&db, &provider, account_id).await.unwrap();
-        let vals = sure_dal::valuations::list_for_account(&db, account_id).await.unwrap();
+        let vals = sure_dal::valuations::list_for_account(&db, account_id)
+            .await
+            .unwrap();
         assert_eq!(vals.len(), 1);
     }
 }

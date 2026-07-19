@@ -7,7 +7,12 @@ pub use sure_core::{Cron, CronRun, CronRunResult, SaveCron};
 
 use crate::Db;
 
-const KINDS: [&str; 4] = ["appreciation", "depreciation", "interest", "fixed_transaction"];
+const KINDS: [&str; 4] = [
+    "appreciation",
+    "depreciation",
+    "interest",
+    "fixed_transaction",
+];
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Cron>> {
@@ -77,18 +82,20 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_runs(db: &Db, cron_id: i64) -> AppResult<Vec<CronRun>> {
-    Ok(
-        sqlx::query_as::<_, CronRun>("SELECT * FROM cron_runs WHERE cron_id=?1 ORDER BY period DESC")
-            .bind(cron_id)
-            .fetch_all(db)
-            .await?,
+    Ok(sqlx::query_as::<_, CronRun>(
+        "SELECT * FROM cron_runs WHERE cron_id=?1 ORDER BY period DESC",
     )
+    .bind(cron_id)
+    .fetch_all(db)
+    .await?)
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn run_one(db: &Db, id: i64, to: Option<&str>) -> AppResult<CronRunResult> {
     let cron = fetch(db, id).await?;
-    let to = to.and_then(parse_date).unwrap_or_else(|| Utc::now().date_naive());
+    let to = to
+        .and_then(parse_date)
+        .unwrap_or_else(|| Utc::now().date_naive());
     let mut conn = db.acquire().await?;
     let runs = apply_cron(&mut conn, &cron, to).await?;
     Ok(CronRunResult {
@@ -99,7 +106,9 @@ pub async fn run_one(db: &Db, id: i64, to: Option<&str>) -> AppResult<CronRunRes
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn run_all(db: &Db, to: Option<&str>) -> AppResult<CronRunResult> {
-    let to = to.and_then(parse_date).unwrap_or_else(|| Utc::now().date_naive());
+    let to = to
+        .and_then(parse_date)
+        .unwrap_or_else(|| Utc::now().date_naive());
     let crons = sqlx::query_as::<_, Cron>("SELECT * FROM crons WHERE enabled=1 ORDER BY id")
         .fetch_all(db)
         .await?;
@@ -123,17 +132,27 @@ pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<()> {
         .ok_or(AppError::NotFound("cron run"))?;
     let mut txn = db.begin().await?;
     if let Some(vid) = run.valuation_id {
-        sqlx::query("DELETE FROM valuations WHERE id=?1").bind(vid).execute(&mut *txn).await?;
+        sqlx::query("DELETE FROM valuations WHERE id=?1")
+            .bind(vid)
+            .execute(&mut *txn)
+            .await?;
     }
     if let Some(tid) = run.transaction_id {
-        sqlx::query("DELETE FROM transactions WHERE id=?1").bind(tid).execute(&mut *txn).await?;
-    }
-    sqlx::query("DELETE FROM cron_runs WHERE id=?1").bind(run_id).execute(&mut *txn).await?;
-    let latest =
-        sqlx::query_scalar::<_, Option<String>>("SELECT MAX(period) FROM cron_runs WHERE cron_id=?1")
-            .bind(run.cron_id)
-            .fetch_one(&mut *txn)
+        sqlx::query("DELETE FROM transactions WHERE id=?1")
+            .bind(tid)
+            .execute(&mut *txn)
             .await?;
+    }
+    sqlx::query("DELETE FROM cron_runs WHERE id=?1")
+        .bind(run_id)
+        .execute(&mut *txn)
+        .await?;
+    let latest = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT MAX(period) FROM cron_runs WHERE cron_id=?1",
+    )
+    .bind(run.cron_id)
+    .fetch_one(&mut *txn)
+    .await?;
     sqlx::query("UPDATE crons SET last_run_on=?2 WHERE id=?1")
         .bind(run.cron_id)
         .bind(latest)
@@ -146,8 +165,13 @@ pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<()> {
 // ---- engine --------------------------------------------------------------
 
 #[tracing::instrument(level = "debug", skip_all)]
-async fn apply_cron(conn: &mut SqliteConnection, cron: &Cron, to: NaiveDate) -> AppResult<Vec<CronRun>> {
-    let start = parse_date(&cron.start_date).ok_or_else(|| AppError::validation("bad start_date"))?;
+async fn apply_cron(
+    conn: &mut SqliteConnection,
+    cron: &Cron,
+    to: NaiveDate,
+) -> AppResult<Vec<CronRun>> {
+    let start =
+        parse_date(&cron.start_date).ok_or_else(|| AppError::validation("bad start_date"))?;
     let last = cron.last_run_on.as_deref().and_then(parse_date);
     let mut created = Vec::new();
 
@@ -200,7 +224,9 @@ async fn apply_period(
         .bind(cron.category_id)
         .fetch_one(&mut *conn)
         .await?;
-        return Ok(Some(record_run(conn, cron, &period_s, None, Some(tx_id), None).await?));
+        return Ok(Some(
+            record_run(conn, cron, &period_s, None, Some(tx_id), None).await?,
+        ));
     }
 
     let latest = sqlx::query_scalar::<_, i64>(
@@ -213,7 +239,15 @@ async fn apply_period(
     .await?;
     let Some(latest) = latest else {
         return Ok(Some(
-            record_run(conn, cron, &period_s, None, None, Some("no base valuation".into())).await?,
+            record_run(
+                conn,
+                cron,
+                &period_s,
+                None,
+                None,
+                Some("no base valuation".into()),
+            )
+            .await?,
         ));
     };
 
@@ -239,7 +273,9 @@ async fn apply_period(
     .bind(cron.name.trim())
     .fetch_one(&mut *conn)
     .await?;
-    Ok(Some(record_run(conn, cron, &period_s, Some(val_id), None, None).await?))
+    Ok(Some(
+        record_run(conn, cron, &period_s, Some(val_id), None, None).await?,
+    ))
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -270,10 +306,14 @@ fn validate(input: &SaveCron) -> AppResult<()> {
         return Err(AppError::validation("cron name is required"));
     }
     if !KINDS.contains(&input.kind.as_str()) {
-        return Err(AppError::validation(format!("kind must be one of {KINDS:?}")));
+        return Err(AppError::validation(format!(
+            "kind must be one of {KINDS:?}"
+        )));
     }
     if input.kind == "fixed_transaction" && input.amount_minor.is_none() {
-        return Err(AppError::validation("fixed_transaction requires amount_minor"));
+        return Err(AppError::validation(
+            "fixed_transaction requires amount_minor",
+        ));
     }
     if input.kind != "fixed_transaction" && input.rate_bps.is_none() {
         return Err(AppError::validation("valuation crons require rate_bps"));
@@ -298,7 +338,11 @@ fn parse_date(s: &str) -> Option<NaiveDate> {
 }
 
 fn period_date(year: i32, month: u32, day_of_month: u32) -> NaiveDate {
-    let (ny, nm) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let (ny, nm) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
     let last_day = NaiveDate::from_ymd_opt(ny, nm, 1)
         .unwrap()
         .pred_opt()

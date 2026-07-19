@@ -17,10 +17,14 @@ pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
         qb.push(" AND category_id = ").push_bind(category_id);
     }
     if let Some(from) = q.from.as_deref() {
-        qb.push(" AND date(posted_at) >= date(").push_bind(from.to_string()).push(")");
+        qb.push(" AND date(posted_at) >= date(")
+            .push_bind(from.to_string())
+            .push(")");
     }
     if let Some(to) = q.to.as_deref() {
-        qb.push(" AND date(posted_at) <= date(").push_bind(to.to_string()).push(")");
+        qb.push(" AND date(posted_at) <= date(")
+            .push_bind(to.to_string())
+            .push(")");
     }
     if !q.include_one_off.unwrap_or(true) {
         qb.push(" AND is_one_off = 0");
@@ -116,7 +120,12 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 /// actually changed. A no-op (no ids, or no fields to set) short-circuits to 0.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
-    let BulkUpdate { ids, category_id, merchant_id, is_one_off } = input;
+    let BulkUpdate {
+        ids,
+        category_id,
+        merchant_id,
+        is_one_off,
+    } = input;
     if ids.is_empty() || (category_id.is_none() && merchant_id.is_none() && is_one_off.is_none()) {
         return Ok(0);
     }
@@ -362,7 +371,14 @@ pub async fn link_transfers(db: &Db, window_days: i64) -> AppResult<i64> {
         .await?;
 
         if counterpart_matches == 1 {
-            link(db, id, LinkRequest { linked_transaction_id: *other }).await?;
+            link(
+                db,
+                id,
+                LinkRequest {
+                    linked_transaction_id: *other,
+                },
+            )
+            .await?;
             linked += 1;
         }
     }
@@ -492,8 +508,14 @@ mod tests {
         let linked = link_transfers(&db, 5).await.unwrap();
         assert_eq!(linked, 1);
 
-        assert_eq!(fetch(&db, deposit).await.unwrap().linked_transaction_id, Some(withdrawal));
-        assert_eq!(fetch(&db, withdrawal).await.unwrap().linked_transaction_id, Some(deposit));
+        assert_eq!(
+            fetch(&db, deposit).await.unwrap().linked_transaction_id,
+            Some(withdrawal)
+        );
+        assert_eq!(
+            fetch(&db, withdrawal).await.unwrap().linked_transaction_id,
+            Some(deposit)
+        );
     }
 
     #[tokio::test]
@@ -570,7 +592,12 @@ mod tests {
         let a = tx(&db, acc, "2026-01-01", -100).await;
         bulk_update(
             &db,
-            BulkUpdate { ids: vec![a], category_id: Some(Some(groceries)), merchant_id: None, is_one_off: None },
+            BulkUpdate {
+                ids: vec![a],
+                category_id: Some(Some(groceries)),
+                merchant_id: None,
+                is_one_off: None,
+            },
         )
         .await
         .unwrap();
@@ -579,7 +606,12 @@ mod tests {
         // `Some(None)` (JSON `null`) clears it; `None` (omitted) would have left it.
         bulk_update(
             &db,
-            BulkUpdate { ids: vec![a], category_id: Some(None), merchant_id: None, is_one_off: None },
+            BulkUpdate {
+                ids: vec![a],
+                category_id: Some(None),
+                merchant_id: None,
+                is_one_off: None,
+            },
         )
         .await
         .unwrap();
@@ -593,16 +625,32 @@ mod tests {
         let a = tx(&db, acc, "2026-01-01", -100).await;
         // No ids.
         assert_eq!(
-            bulk_update(&db, BulkUpdate { ids: vec![], category_id: Some(None), merchant_id: None, is_one_off: None })
-                .await
-                .unwrap(),
+            bulk_update(
+                &db,
+                BulkUpdate {
+                    ids: vec![],
+                    category_id: Some(None),
+                    merchant_id: None,
+                    is_one_off: None
+                }
+            )
+            .await
+            .unwrap(),
             0
         );
         // Ids, but nothing to set.
         assert_eq!(
-            bulk_update(&db, BulkUpdate { ids: vec![a], category_id: None, merchant_id: None, is_one_off: None })
-                .await
-                .unwrap(),
+            bulk_update(
+                &db,
+                BulkUpdate {
+                    ids: vec![a],
+                    category_id: None,
+                    merchant_id: None,
+                    is_one_off: None
+                }
+            )
+            .await
+            .unwrap(),
             0
         );
     }
@@ -652,7 +700,10 @@ mod tests {
         // The bank deposit is synced later; the next pass links the pair.
         let deposit = tx(&db, bank, "2025-11-02", 114_269_63).await;
         assert_eq!(link_transfers(&db, 5).await.unwrap(), 1);
-        assert_eq!(fetch(&db, withdrawal).await.unwrap().linked_transaction_id, Some(deposit));
+        assert_eq!(
+            fetch(&db, withdrawal).await.unwrap().linked_transaction_id,
+            Some(deposit)
+        );
 
         // Idempotent: a further pass finds nothing new.
         assert_eq!(link_transfers(&db, 5).await.unwrap(), 0);

@@ -207,7 +207,10 @@ pub fn parse_wallet_transactions(bytes: &[u8]) -> anyhow::Result<Vec<ProviderTra
             continue;
         }
         let detail = r.detail;
-        let detail_kind = detail.as_ref().and_then(|d| d.kind.as_deref()).unwrap_or("");
+        let detail_kind = detail
+            .as_ref()
+            .and_then(|d| d.kind.as_deref())
+            .unwrap_or("");
 
         // A currency conversion records only its *target* (credit) side as the row's
         // amount/currency; the matching *source* (debit) leg is buried in `detail` and is
@@ -375,9 +378,17 @@ pub fn parse_activity(
     Ok(())
 }
 
-fn instrument(lookup: &HashMap<String, InstrumentInfo>, fund_id: &str) -> (String, String, Option<String>, String) {
+fn instrument(
+    lookup: &HashMap<String, InstrumentInfo>,
+    fund_id: &str,
+) -> (String, String, Option<String>, String) {
     match lookup.get(fund_id) {
-        Some(i) => (i.symbol.clone(), i.exchange.clone(), Some(i.name.clone()), i.currency.clone()),
+        Some(i) => (
+            i.symbol.clone(),
+            i.exchange.clone(),
+            Some(i.name.clone()),
+            i.currency.clone(),
+        ),
         None => (fund_id.to_string(), String::new(), None, "NZD".to_string()),
     }
 }
@@ -452,7 +463,10 @@ fn parse_activity_item(
             if item.action_type.as_deref() == Some("VOTE") {
                 return Ok(()); // no cash/share impact
             }
-            let paid_date = item.settlement_date.clone().or_else(|| item.record_date.clone());
+            let paid_date = item
+                .settlement_date
+                .clone()
+                .or_else(|| item.record_date.clone());
             for record in item.outcome_records {
                 match &record.currency {
                     Some(currency) => {
@@ -460,11 +474,16 @@ fn parse_activity_item(
                             .fund_id
                             .as_deref()
                             .or(item.fund_id.as_deref())
-                            .ok_or_else(|| anyhow::anyhow!("activity {} outcome record missing fund_id", item.id))?;
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "activity {} outcome record missing fund_id",
+                                    item.id
+                                )
+                            })?;
                         let (ticker, exchange, _name, _ccy) = instrument(lookup, fund_id);
-                        let paid_date = paid_date
-                            .clone()
-                            .ok_or_else(|| anyhow::anyhow!("activity {} missing settlement/record date", item.id))?;
+                        let paid_date = paid_date.clone().ok_or_else(|| {
+                            anyhow::anyhow!("activity {} missing settlement/record date", item.id)
+                        })?;
                         let gross_amount_minor = decimal_to_minor(&record.gross_amount)?;
                         let net_amount_minor = record
                             .net_amount
@@ -508,9 +527,9 @@ fn parse_activity_item(
                             continue; // nothing to attribute the units to
                         };
                         let (ticker, exchange, name, currency_code) = instrument(lookup, fund_id);
-                        let trade_date = paid_date
-                            .clone()
-                            .ok_or_else(|| anyhow::anyhow!("activity {} missing settlement/record date", item.id))?;
+                        let trade_date = paid_date.clone().ok_or_else(|| {
+                            anyhow::anyhow!("activity {} missing settlement/record date", item.id)
+                        })?;
                         export.holdings.push(ParsedHolding {
                             ticker,
                             exchange,
@@ -518,13 +537,20 @@ fn parse_activity_item(
                             currency_code,
                             trade_date,
                             quantity: parse_f64(&record.gross_amount)?,
-                            unit_price: record.cost_basis_per_share.as_deref().map(parse_f64).transpose()?,
+                            unit_price: record
+                                .cost_basis_per_share
+                                .as_deref()
+                                .map(parse_f64)
+                                .transpose()?,
                             fee_minor: 0,
                             kind: "corporate",
                             external_id: format!(
                                 "corp-unit:{}:{}",
                                 item.id,
-                                record.eligibility_record_id.as_deref().unwrap_or(&record.id)
+                                record
+                                    .eligibility_record_id
+                                    .as_deref()
+                                    .unwrap_or(&record.id)
                             ),
                         });
                     }
@@ -547,7 +573,10 @@ fn millis_to_rfc3339(millis: i64) -> anyhow::Result<String> {
 }
 
 fn decimal_to_minor(s: &str) -> anyhow::Result<i64> {
-    let d: Decimal = s.trim().parse().map_err(|_| anyhow::anyhow!("invalid amount '{s}'"))?;
+    let d: Decimal = s
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid amount '{s}'"))?;
     (d * Decimal::from(100))
         .round()
         .to_i64()
@@ -555,7 +584,9 @@ fn decimal_to_minor(s: &str) -> anyhow::Result<i64> {
 }
 
 fn parse_f64(s: &str) -> anyhow::Result<f64> {
-    s.trim().parse::<f64>().map_err(|_| anyhow::anyhow!("invalid number '{s}'"))
+    s.trim()
+        .parse::<f64>()
+        .map_err(|_| anyhow::anyhow!("invalid number '{s}'"))
 }
 
 #[cfg(test)]
@@ -734,8 +765,14 @@ mod tests {
         assert_eq!(txns[1].amount_minor, 4_182_735);
         assert_eq!(txns[1].currency_code.as_deref(), Some("NZD"));
         // Both legs are internal transfers, excluded from spend/income reports.
-        assert_eq!(txns[0].category.as_ref().unwrap().kind.as_deref(), Some("transfer"));
-        assert_eq!(txns[1].category.as_ref().unwrap().kind.as_deref(), Some("transfer"));
+        assert_eq!(
+            txns[0].category.as_ref().unwrap().kind.as_deref(),
+            Some("transfer")
+        );
+        assert_eq!(
+            txns[1].category.as_ref().unwrap().kind.as_deref(),
+            Some("transfer")
+        );
     }
 
     #[test]
@@ -744,11 +781,14 @@ mod tests {
         {
             let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
             let opts = zip::write::SimpleFileOptions::default();
-            zip.start_file("sharesies-export/lookup.json", opts).unwrap();
+            zip.start_file("sharesies-export/lookup.json", opts)
+                .unwrap();
             zip.write_all(br#"{"fund-aapl":{"symbol":"AAPL","name":"Apple Inc","exchange":"NASDAQ","currency":"USD"}}"#).unwrap();
-            zip.start_file("sharesies-export/wallet-transactions.json", opts).unwrap();
+            zip.start_file("sharesies-export/wallet-transactions.json", opts)
+                .unwrap();
             zip.write_all(br#"[{"amount":"10.00","currency":"nzd","description":"Test","reason":"corporate credit","key":"k1","timestamp":{"$quantum":1700000000000}}]"#).unwrap();
-            zip.start_file("sharesies-export/activity.json", opts).unwrap();
+            zip.start_file("sharesies-export/activity.json", opts)
+                .unwrap();
             zip.write_all(br#"[]"#).unwrap();
             zip.finish().unwrap();
         }

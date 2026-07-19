@@ -5,9 +5,7 @@
 
 use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
-pub use sure_core::{
-    Dividend, DividendDetail, DividendWithholding, HoldingLot, SaveHoldingLot,
-};
+pub use sure_core::{Dividend, DividendDetail, DividendWithholding, HoldingLot, SaveHoldingLot};
 
 use crate::Db;
 
@@ -24,7 +22,11 @@ pub async fn list_holdings(db: &Db, account_id: i64) -> AppResult<Vec<HoldingLot
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn create_holding(db: &Db, account_id: i64, input: SaveHoldingLot) -> AppResult<HoldingLot> {
+pub async fn create_holding(
+    db: &Db,
+    account_id: i64,
+    input: SaveHoldingLot,
+) -> AppResult<HoldingLot> {
     let ticker = input.ticker.trim().to_uppercase();
     if ticker.is_empty() {
         return Err(AppError::validation("ticker is required"));
@@ -83,7 +85,10 @@ pub async fn list_dividends(db: &Db, account_id: i64) -> AppResult<Vec<DividendD
         .bind(dividend.id)
         .fetch_all(db)
         .await?;
-        out.push(DividendDetail { dividend, withholdings });
+        out.push(DividendDetail {
+            dividend,
+            withholdings,
+        });
     }
     Ok(out)
 }
@@ -128,7 +133,11 @@ pub struct WalletRow {
 /// a wallet-cash movement (imported or manual), summed per currency (a brokerage account
 /// legitimately holds several currencies at once).
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn wallet_balances_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<WalletRow>> {
+pub async fn wallet_balances_at(
+    db: &Db,
+    account_id: i64,
+    as_of: &str,
+) -> AppResult<Vec<WalletRow>> {
     Ok(sqlx::query_as::<_, WalletRow>(
         "SELECT currency_code, CAST(SUM(amount_minor) AS INTEGER) AS amount_minor
          FROM transactions
@@ -384,7 +393,12 @@ mod tests {
         }
     }
 
-    fn wallet(external_id: &str, posted_at: &str, amount_minor: i64, ccy: &str) -> crate::providers::ImportRow {
+    fn wallet(
+        external_id: &str,
+        posted_at: &str,
+        amount_minor: i64,
+        ccy: &str,
+    ) -> crate::providers::ImportRow {
         crate::providers::ImportRow {
             external_id: external_id.to_string(),
             posted_at: posted_at.to_string(),
@@ -436,7 +450,9 @@ mod tests {
         assert_eq!(mel.quantity, 150.0);
 
         // Wallet balances split by currency.
-        let wallets = wallet_balances_at(&db, account_id, "2026-12-31").await.unwrap();
+        let wallets = wallet_balances_at(&db, account_id, "2026-12-31")
+            .await
+            .unwrap();
         let nzd = wallets.iter().find(|w| w.currency_code == "NZD").unwrap();
         assert_eq!(nzd.amount_minor, 70_000);
         let usd = wallets.iter().find(|w| w.currency_code == "USD").unwrap();
@@ -507,7 +523,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            earliest_activity_date(&db, account_id).await.unwrap().as_deref(),
+            earliest_activity_date(&db, account_id)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("2026-01-15")
         );
     }

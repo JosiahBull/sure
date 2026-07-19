@@ -1,8 +1,8 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::FromRow;
-use sure_core::{AccountKind, AccountMetadata, AppError, AppResult};
 pub use sure_core::{Account, SaveAccount, SetSecuredBy};
+use sure_core::{AccountKind, AccountMetadata, AppError, AppResult};
 
 use crate::Db;
 
@@ -110,11 +110,10 @@ pub async fn list_shares_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
 /// stock-price poller to keep every held ticker's price cache warm.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_brokerage_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
-    let rows = sqlx::query_as::<_, (String, String)>(
-        "SELECT DISTINCT ticker, exchange FROM holdings",
-    )
-    .fetch_all(db)
-    .await?;
+    let rows =
+        sqlx::query_as::<_, (String, String)>("SELECT DISTINCT ticker, exchange FROM holdings")
+            .fetch_all(db)
+            .await?;
     Ok(rows
         .into_iter()
         .filter_map(|(ticker, exchange)| {
@@ -147,7 +146,9 @@ pub(crate) async fn validate(db: &Db, input: &SaveAccount) -> AppResult<String> 
     }
     let currency = input.currency_code.trim().to_uppercase();
     if !crate::currencies::exists(db, &currency).await? {
-        return Err(AppError::validation(format!("unknown currency '{currency}'")));
+        return Err(AppError::validation(format!(
+            "unknown currency '{currency}'"
+        )));
     }
     let expected = AccountMetadata::profile_for(input.kind);
     let metadata = match &input.metadata {
@@ -326,7 +327,11 @@ pub async fn set_original_amount(
 /// overwritten by a later sync, unlike the numeric provider-sourced fields above which
 /// always refresh to stay in sync with the live source.
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn set_institution_if_unset(db: &Db, account_id: i64, institution: &str) -> AppResult<()> {
+pub async fn set_institution_if_unset(
+    db: &Db,
+    account_id: i64,
+    institution: &str,
+) -> AppResult<()> {
     sqlx::query(
         "UPDATE accounts SET institution=?2, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id=?1 AND (institution IS NULL OR institution = '')",
@@ -449,7 +454,9 @@ mod tests {
         .await
         .unwrap();
 
-        set_original_amount(&db, account.id, 48_500_000).await.unwrap();
+        set_original_amount(&db, account.id, 48_500_000)
+            .await
+            .unwrap();
 
         let updated = get(&db, account.id).await.unwrap();
         let AccountMetadata::Mortgage(meta) = updated.metadata else {
@@ -477,7 +484,9 @@ mod tests {
         .await
         .unwrap();
 
-        set_original_amount(&db, account.id, 3_000_000).await.unwrap();
+        set_original_amount(&db, account.id, 3_000_000)
+            .await
+            .unwrap();
 
         let updated = get(&db, account.id).await.unwrap();
         let AccountMetadata::Loan(meta) = updated.metadata else {
@@ -489,19 +498,24 @@ mod tests {
     #[tokio::test]
     async fn original_amount_is_a_no_op_for_a_non_loan_account() {
         let db = test_db().await;
-        let account = create(&db, SaveAccount {
-            name: "Everyday".to_string(),
-            kind: AccountKind::Bank,
-            currency_code: "NZD".to_string(),
-            institution: None,
-            metadata: None,
-            archived: false,
-            sort_order: 0,
-        })
+        let account = create(
+            &db,
+            SaveAccount {
+                name: "Everyday".to_string(),
+                kind: AccountKind::Bank,
+                currency_code: "NZD".to_string(),
+                institution: None,
+                metadata: None,
+                archived: false,
+                sort_order: 0,
+            },
+        )
         .await
         .unwrap();
 
-        set_original_amount(&db, account.id, 1_000_000).await.unwrap();
+        set_original_amount(&db, account.id, 1_000_000)
+            .await
+            .unwrap();
         let updated = get(&db, account.id).await.unwrap();
         assert!(matches!(updated.metadata, AccountMetadata::Depository(_)));
     }
@@ -509,33 +523,46 @@ mod tests {
     #[tokio::test]
     async fn backfills_institution_only_when_unset() {
         let db = test_db().await;
-        let no_institution = create(&db, SaveAccount {
-            name: "Everyday".to_string(),
-            kind: AccountKind::Bank,
-            currency_code: "NZD".to_string(),
-            institution: None,
-            metadata: None,
-            archived: false,
-            sort_order: 0,
-        })
+        let no_institution = create(
+            &db,
+            SaveAccount {
+                name: "Everyday".to_string(),
+                kind: AccountKind::Bank,
+                currency_code: "NZD".to_string(),
+                institution: None,
+                metadata: None,
+                archived: false,
+                sort_order: 0,
+            },
+        )
         .await
         .unwrap();
-        let has_institution = create(&db, SaveAccount {
-            name: "Savings".to_string(),
-            kind: AccountKind::Savings,
-            currency_code: "NZD".to_string(),
-            institution: Some("My Custom Label".to_string()),
-            metadata: None,
-            archived: false,
-            sort_order: 0,
-        })
+        let has_institution = create(
+            &db,
+            SaveAccount {
+                name: "Savings".to_string(),
+                kind: AccountKind::Savings,
+                currency_code: "NZD".to_string(),
+                institution: Some("My Custom Label".to_string()),
+                metadata: None,
+                archived: false,
+                sort_order: 0,
+            },
+        )
         .await
         .unwrap();
 
-        set_institution_if_unset(&db, no_institution.id, "ASB").await.unwrap();
-        set_institution_if_unset(&db, has_institution.id, "ASB").await.unwrap();
+        set_institution_if_unset(&db, no_institution.id, "ASB")
+            .await
+            .unwrap();
+        set_institution_if_unset(&db, has_institution.id, "ASB")
+            .await
+            .unwrap();
 
-        assert_eq!(get(&db, no_institution.id).await.unwrap().institution, Some("ASB".to_string()));
+        assert_eq!(
+            get(&db, no_institution.id).await.unwrap().institution,
+            Some("ASB".to_string())
+        );
         // The user's own label is never overwritten.
         assert_eq!(
             get(&db, has_institution.id).await.unwrap().institution,
@@ -566,7 +593,9 @@ mod tests {
         .await
         .unwrap();
 
-        let vals = crate::valuations::list_for_account(&db, house.id).await.unwrap();
+        let vals = crate::valuations::list_for_account(&db, house.id)
+            .await
+            .unwrap();
         assert_eq!(vals.len(), 1);
         assert_eq!(vals[0].as_of, "2025-12-12");
         assert_eq!(vals[0].value_minor, 77_000_000);
@@ -591,25 +620,34 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(crate::valuations::list_for_account(&db, house.id).await.unwrap().is_empty());
+        assert!(crate::valuations::list_for_account(&db, house.id)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
     async fn a_non_property_account_never_gets_an_auto_seeded_valuation() {
         let db = test_db().await;
-        let account = create(&db, SaveAccount {
-            name: "Everyday".to_string(),
-            kind: AccountKind::Bank,
-            currency_code: "NZD".to_string(),
-            institution: None,
-            metadata: None,
-            archived: false,
-            sort_order: 0,
-        })
+        let account = create(
+            &db,
+            SaveAccount {
+                name: "Everyday".to_string(),
+                kind: AccountKind::Bank,
+                currency_code: "NZD".to_string(),
+                institution: None,
+                metadata: None,
+                archived: false,
+                sort_order: 0,
+            },
+        )
         .await
         .unwrap();
 
-        assert!(crate::valuations::list_for_account(&db, account.id).await.unwrap().is_empty());
+        assert!(crate::valuations::list_for_account(&db, account.id)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -624,62 +662,77 @@ mod tests {
                 notes: None,
             }))
         };
-        create(&db, SaveAccount {
-            name: "Meridian".to_string(),
-            kind: AccountKind::SharesNz,
-            currency_code: "NZD".to_string(),
-            institution: None,
-            metadata: shares("mel", "nzx"),
-            archived: false,
-            sort_order: 0,
-        })
+        create(
+            &db,
+            SaveAccount {
+                name: "Meridian".to_string(),
+                kind: AccountKind::SharesNz,
+                currency_code: "NZD".to_string(),
+                institution: None,
+                metadata: shares("mel", "nzx"),
+                archived: false,
+                sort_order: 0,
+            },
+        )
         .await
         .unwrap();
         // A second account holding the same ticker shouldn't produce a duplicate entry.
-        create(&db, SaveAccount {
-            name: "Meridian (also)".to_string(),
-            kind: AccountKind::SharesNz,
-            currency_code: "NZD".to_string(),
-            institution: None,
-            metadata: shares("mel", "nzx"),
-            archived: false,
-            sort_order: 0,
-        })
+        create(
+            &db,
+            SaveAccount {
+                name: "Meridian (also)".to_string(),
+                kind: AccountKind::SharesNz,
+                currency_code: "NZD".to_string(),
+                institution: None,
+                metadata: shares("mel", "nzx"),
+                archived: false,
+                sort_order: 0,
+            },
+        )
         .await
         .unwrap();
-        create(&db, SaveAccount {
-            name: "Apple".to_string(),
-            kind: AccountKind::SharesUs,
-            currency_code: "USD".to_string(),
-            institution: None,
-            metadata: shares("aapl", "nasdaq"),
-            archived: false,
-            sort_order: 0,
-        })
+        create(
+            &db,
+            SaveAccount {
+                name: "Apple".to_string(),
+                kind: AccountKind::SharesUs,
+                currency_code: "USD".to_string(),
+                institution: None,
+                metadata: shares("aapl", "nasdaq"),
+                archived: false,
+                sort_order: 0,
+            },
+        )
         .await
         .unwrap();
         // Private holdings have no market ticker to fetch a price for.
-        create(&db, SaveAccount {
-            name: "Startup equity".to_string(),
-            kind: AccountKind::SharesPrivate,
-            currency_code: "NZD".to_string(),
-            institution: None,
-            metadata: shares("n/a", ""),
-            archived: false,
-            sort_order: 0,
-        })
+        create(
+            &db,
+            SaveAccount {
+                name: "Startup equity".to_string(),
+                kind: AccountKind::SharesPrivate,
+                currency_code: "NZD".to_string(),
+                institution: None,
+                metadata: shares("n/a", ""),
+                archived: false,
+                sort_order: 0,
+            },
+        )
         .await
         .unwrap();
         // No ticker set — excluded.
-        create(&db, SaveAccount {
-            name: "Undecided holding".to_string(),
-            kind: AccountKind::SharesUs,
-            currency_code: "USD".to_string(),
-            institution: None,
-            metadata: None,
-            archived: false,
-            sort_order: 0,
-        })
+        create(
+            &db,
+            SaveAccount {
+                name: "Undecided holding".to_string(),
+                kind: AccountKind::SharesUs,
+                currency_code: "USD".to_string(),
+                institution: None,
+                metadata: None,
+                archived: false,
+                sort_order: 0,
+            },
+        )
         .await
         .unwrap();
 

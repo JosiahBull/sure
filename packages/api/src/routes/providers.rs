@@ -357,9 +357,12 @@ pub(crate) async fn sync_provider(
             // Backfill the institution name too, but only if unset — see
             // `set_institution_if_unset`'s doc comment for why this one never overwrites.
             if let Some(institution) = bal.institution {
-                if let Err(e) =
-                    sure_dal::accounts::set_institution_if_unset(db, provider.account_id, &institution)
-                        .await
+                if let Err(e) = sure_dal::accounts::set_institution_if_unset(
+                    db,
+                    provider.account_id,
+                    &institution,
+                )
+                .await
                 {
                     tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider institution");
                 }

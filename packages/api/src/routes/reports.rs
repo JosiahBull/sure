@@ -155,16 +155,20 @@ pub async fn net_worth(
     let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
     for t in &txns {
         if let Some(d) = parse_date(&t.posted_at) {
-            tx_by_acct.entry(t.account_id).or_default().push((d, t.amount_minor));
+            tx_by_acct
+                .entry(t.account_id)
+                .or_default()
+                .push((d, t.amount_minor));
         }
     }
     let mut val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>> = HashMap::new();
     for v in &vals {
         if let Some(d) = parse_date(&v.as_of) {
-            val_by_acct
-                .entry(v.account_id)
-                .or_default()
-                .push((d, v.value_minor, v.currency_code.clone()));
+            val_by_acct.entry(v.account_id).or_default().push((
+                d,
+                v.value_minor,
+                v.currency_code.clone(),
+            ));
         }
     }
 
@@ -191,13 +195,8 @@ pub async fn net_worth(
         let mut assets = 0.0f64;
         let mut liabilities = 0.0f64;
         for a in &accounts {
-            let (value_minor, ccy) = account_value_at(
-                a.id,
-                &a.currency_code,
-                date,
-                &tx_by_acct,
-                &val_by_acct,
-            );
+            let (value_minor, ccy) =
+                account_value_at(a.id, &a.currency_code, date, &tx_by_acct, &val_by_acct);
             let base_major = fx.to_base_major(value_minor, &ccy);
             if base_major >= 0.0 {
                 assets += base_major;
@@ -360,7 +359,10 @@ impl Categories {
     }
 
     fn is_transfer(&self, id: i64) -> bool {
-        self.kinds.get(&id).map(|k| k == "transfer").unwrap_or(false)
+        self.kinds
+            .get(&id)
+            .map(|k| k == "transfer")
+            .unwrap_or(false)
     }
 }
 
@@ -604,8 +606,9 @@ pub struct BalancesReport {
 fn class_of(kind: &str) -> &'static str {
     match kind {
         "cash" | "bank" | "savings" => "cash",
-        "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan"
-        | "liability" => "liability",
+        "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan" | "liability" => {
+            "liability"
+        }
         "shares_nz" | "shares_us" | "shares_private" => "investment",
         _ => "asset",
     }
@@ -628,7 +631,10 @@ pub async fn balances(
 ) -> AppResult<Json<BalancesReport>> {
     let base = base_currency(&st.db, q.currency.as_deref()).await?;
     let fx = Fx::load(&st.db, base.clone()).await?;
-    let as_of = q.to.as_deref().and_then(parse_date).unwrap_or_else(|| Utc::now().date_naive());
+    let as_of =
+        q.to.as_deref()
+            .and_then(parse_date)
+            .unwrap_or_else(|| Utc::now().date_naive());
 
     let accounts = sure_dal::reports::active_accounts(&st.db).await?;
     let (tx_by_acct, val_by_acct) = load_ledger(&st.db).await?;
@@ -698,16 +704,20 @@ async fn load_ledger(db: &sure_dal::Db) -> AppResult<Ledger> {
     let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
     for t in &txns {
         if let Some(d) = parse_date(&t.posted_at) {
-            tx_by_acct.entry(t.account_id).or_default().push((d, t.amount_minor));
+            tx_by_acct
+                .entry(t.account_id)
+                .or_default()
+                .push((d, t.amount_minor));
         }
     }
     let mut val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>> = HashMap::new();
     for v in &vals {
         if let Some(d) = parse_date(&v.as_of) {
-            val_by_acct
-                .entry(v.account_id)
-                .or_default()
-                .push((d, v.value_minor, v.currency_code.clone()));
+            val_by_acct.entry(v.account_id).or_default().push((
+                d,
+                v.value_minor,
+                v.currency_code.clone(),
+            ));
         }
     }
     Ok((tx_by_acct, val_by_acct))
@@ -733,14 +743,23 @@ pub async fn equity_position(
 ) -> AppResult<Json<EquityPosition>> {
     let base = base_currency(&st.db, q.currency.as_deref()).await?;
     let fx = Fx::load(&st.db, base.clone()).await?;
-    let as_of = q.to.as_deref().and_then(parse_date).unwrap_or_else(|| Utc::now().date_naive());
+    let as_of =
+        q.to.as_deref()
+            .and_then(parse_date)
+            .unwrap_or_else(|| Utc::now().date_naive());
 
     let asset = sure_dal::reports::account(&st.db, id).await?;
     let liabs = sure_dal::reports::secured_liabilities(&st.db, id).await?;
 
     let (tx_by_acct, val_by_acct) = load_ledger(&st.db).await?;
 
-    let (v_minor, v_ccy) = account_value_at(asset.id, &asset.currency_code, as_of, &tx_by_acct, &val_by_acct);
+    let (v_minor, v_ccy) = account_value_at(
+        asset.id,
+        &asset.currency_code,
+        as_of,
+        &tx_by_acct,
+        &val_by_acct,
+    );
     let value_base = fx.to_base_major(v_minor, &v_ccy).max(0.0);
 
     let mut total_debt = 0.0;
@@ -814,16 +833,28 @@ mod tests {
         );
         // Provider reports today's balance: -$484,251.49 (= -485000 + 313.81 + 434.70).
         let mut val = HashMap::new();
-        val.insert(7i64, vec![(d("2026-07-19"), -484_251_49, "NZD".to_string())]);
+        val.insert(
+            7i64,
+            vec![(d("2026-07-19"), -484_251_49, "NZD".to_string())],
+        );
 
         // Before the drawdown: the mortgage doesn't exist yet.
         assert_eq!(account_value_at(7, "NZD", d("2025-12-01"), &tx, &val).0, 0);
         // Right after the drawdown, before any repayments: the full -$485,000.
-        assert_eq!(account_value_at(7, "NZD", d("2025-12-15"), &tx, &val).0, -485_000_00);
+        assert_eq!(
+            account_value_at(7, "NZD", d("2025-12-15"), &tx, &val).0,
+            -485_000_00
+        );
         // After the first repayment: -$484,686.19.
-        assert_eq!(account_value_at(7, "NZD", d("2026-01-20"), &tx, &val).0, -484_686_19);
+        assert_eq!(
+            account_value_at(7, "NZD", d("2026-01-20"), &tx, &val).0,
+            -484_686_19
+        );
         // On/after the valuation date: exactly the provider's figure.
-        assert_eq!(account_value_at(7, "NZD", d("2026-07-19"), &tx, &val).0, -484_251_49);
+        assert_eq!(
+            account_value_at(7, "NZD", d("2026-07-19"), &tx, &val).0,
+            -484_251_49
+        );
     }
 
     /// A property carries its manual valuation forward from the purchase date, and reads 0
@@ -835,19 +866,34 @@ mod tests {
         val.insert(9i64, vec![(d("2025-12-12"), 770_000_00, "NZD".to_string())]);
 
         assert_eq!(account_value_at(9, "NZD", d("2025-12-01"), &tx, &val).0, 0);
-        assert_eq!(account_value_at(9, "NZD", d("2025-12-12"), &tx, &val).0, 770_000_00);
-        assert_eq!(account_value_at(9, "NZD", d("2026-06-01"), &tx, &val).0, 770_000_00);
+        assert_eq!(
+            account_value_at(9, "NZD", d("2025-12-12"), &tx, &val).0,
+            770_000_00
+        );
+        assert_eq!(
+            account_value_at(9, "NZD", d("2026-06-01"), &tx, &val).0,
+            770_000_00
+        );
     }
 
     /// A plain cash account with no valuations still uses the running transaction balance.
     #[test]
     fn cash_account_without_valuations_sums_transactions() {
         let mut tx = HashMap::new();
-        tx.insert(3i64, vec![(d("2026-01-05"), 500_00), (d("2026-01-10"), -120_00)]);
+        tx.insert(
+            3i64,
+            vec![(d("2026-01-05"), 500_00), (d("2026-01-10"), -120_00)],
+        );
         let val = HashMap::new();
 
         assert_eq!(account_value_at(3, "NZD", d("2026-01-01"), &tx, &val).0, 0);
-        assert_eq!(account_value_at(3, "NZD", d("2026-01-07"), &tx, &val).0, 500_00);
-        assert_eq!(account_value_at(3, "NZD", d("2026-01-31"), &tx, &val).0, 380_00);
+        assert_eq!(
+            account_value_at(3, "NZD", d("2026-01-07"), &tx, &val).0,
+            500_00
+        );
+        assert_eq!(
+            account_value_at(3, "NZD", d("2026-01-31"), &tx, &val).0,
+            380_00
+        );
     }
 }

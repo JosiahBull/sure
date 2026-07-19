@@ -255,21 +255,51 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
     Ok(Snapshot {
         version: SNAPSHOT_VERSION,
         base_currency_code,
-        currencies: sqlx::query_as("SELECT * FROM currencies ORDER BY code").fetch_all(db).await?,
-        exchange_rates: sqlx::query_as("SELECT * FROM exchange_rates").fetch_all(db).await?,
-        categories: sqlx::query_as("SELECT * FROM categories ORDER BY id").fetch_all(db).await?,
-        merchants: sqlx::query_as("SELECT * FROM merchants ORDER BY id").fetch_all(db).await?,
-        accounts: sqlx::query_as("SELECT * FROM accounts ORDER BY id").fetch_all(db).await?,
-        transactions: sqlx::query_as("SELECT * FROM transactions ORDER BY id").fetch_all(db).await?,
-        valuations: sqlx::query_as("SELECT * FROM valuations ORDER BY id").fetch_all(db).await?,
-        rules: sqlx::query_as("SELECT * FROM rules ORDER BY id").fetch_all(db).await?,
-        crons: sqlx::query_as("SELECT * FROM crons ORDER BY id").fetch_all(db).await?,
-        providers: sqlx::query_as("SELECT * FROM providers ORDER BY id").fetch_all(db).await?,
-        equity_grants: sqlx::query_as("SELECT * FROM equity_grants ORDER BY id").fetch_all(db).await?,
-        equity_exercises: sqlx::query_as("SELECT * FROM equity_exercises ORDER BY id").fetch_all(db).await?,
-        holdings: sqlx::query_as("SELECT * FROM holdings ORDER BY id").fetch_all(db).await?,
-        dividends: sqlx::query_as("SELECT * FROM dividends ORDER BY id").fetch_all(db).await?,
-        dividend_withholdings: sqlx::query_as("SELECT * FROM dividend_withholdings ORDER BY id").fetch_all(db).await?,
+        currencies: sqlx::query_as("SELECT * FROM currencies ORDER BY code")
+            .fetch_all(db)
+            .await?,
+        exchange_rates: sqlx::query_as("SELECT * FROM exchange_rates")
+            .fetch_all(db)
+            .await?,
+        categories: sqlx::query_as("SELECT * FROM categories ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        merchants: sqlx::query_as("SELECT * FROM merchants ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        accounts: sqlx::query_as("SELECT * FROM accounts ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        transactions: sqlx::query_as("SELECT * FROM transactions ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        valuations: sqlx::query_as("SELECT * FROM valuations ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        rules: sqlx::query_as("SELECT * FROM rules ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        crons: sqlx::query_as("SELECT * FROM crons ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        providers: sqlx::query_as("SELECT * FROM providers ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        equity_grants: sqlx::query_as("SELECT * FROM equity_grants ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        equity_exercises: sqlx::query_as("SELECT * FROM equity_exercises ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        holdings: sqlx::query_as("SELECT * FROM holdings ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        dividends: sqlx::query_as("SELECT * FROM dividends ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        dividend_withholdings: sqlx::query_as("SELECT * FROM dividend_withholdings ORDER BY id")
+            .fetch_all(db)
+            .await?,
     })
 }
 
@@ -277,16 +307,34 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
 pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
     let mut txn = db.begin().await?;
     // Defer FK checks so rows can be cleared and re-inserted in any order.
-    sqlx::query("PRAGMA defer_foreign_keys = ON").execute(&mut *txn).await?;
+    sqlx::query("PRAGMA defer_foreign_keys = ON")
+        .execute(&mut *txn)
+        .await?;
 
     for table in [
-        "rule_applications", "rule_runs", "cron_runs", "provider_syncs",
-        "dividend_withholdings", "dividends", "holdings",
-        "equity_exercises", "equity_grants", "valuations", "transactions",
-        "providers", "crons", "rules", "merchants", "accounts", "categories",
-        "exchange_rates", "currencies",
+        "rule_applications",
+        "rule_runs",
+        "cron_runs",
+        "provider_syncs",
+        "dividend_withholdings",
+        "dividends",
+        "holdings",
+        "equity_exercises",
+        "equity_grants",
+        "valuations",
+        "transactions",
+        "providers",
+        "crons",
+        "rules",
+        "merchants",
+        "accounts",
+        "categories",
+        "exchange_rates",
+        "currencies",
     ] {
-        sqlx::query(&format!("DELETE FROM {table}")).execute(&mut *txn).await?;
+        sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(&mut *txn)
+            .await?;
     }
 
     for c in &snap.currencies {
@@ -363,9 +411,15 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             .execute(&mut *txn).await?;
     }
     for r in &snap.exchange_rates {
-        sqlx::query("INSERT INTO exchange_rates (base_code, quote_code, as_of, rate) VALUES (?1,?2,?3,?4)")
-            .bind(&r.base_code).bind(&r.quote_code).bind(&r.as_of).bind(&r.rate)
-            .execute(&mut *txn).await?;
+        sqlx::query(
+            "INSERT INTO exchange_rates (base_code, quote_code, as_of, rate) VALUES (?1,?2,?3,?4)",
+        )
+        .bind(&r.base_code)
+        .bind(&r.quote_code)
+        .bind(&r.as_of)
+        .bind(&r.rate)
+        .execute(&mut *txn)
+        .await?;
     }
 
     txn.commit().await?;

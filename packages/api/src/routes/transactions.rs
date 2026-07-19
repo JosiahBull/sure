@@ -100,7 +100,9 @@ pub async fn update(
     Path(id): Path<i64>,
     Json(input): Json<SaveTransaction>,
 ) -> AppResult<Json<Transaction>> {
-    Ok(Json(sure_dal::transactions::update(&st.db, id, input).await?))
+    Ok(Json(
+        sure_dal::transactions::update(&st.db, id, input).await?,
+    ))
 }
 
 /// Delete a transaction (also clears the other side of any transfer link).
@@ -225,7 +227,10 @@ pub fn router() -> Router<AppState> {
         .route("/transactions", get(list).post(create))
         .route("/transactions/bulk-update", post(bulk_update))
         .route("/transactions/bulk-delete", post(bulk_delete))
-        .route("/transactions/{id}", get(get_one).put(update).delete(delete))
+        .route(
+            "/transactions/{id}",
+            get(get_one).put(update).delete(delete),
+        )
         .route("/transactions/{id}/link", post(link).delete(unlink))
         .route("/transfers", post(create_transfer))
 }

@@ -58,8 +58,8 @@ impl TransactionProvider for CsvProvider {
             let amount_str = record.get(i_amount).unwrap_or("0");
             let amount_minor = parse_amount(amount_str)?;
             let description = get(&record, i_desc).unwrap_or_default();
-            let external_id = get(&record, i_ext)
-                .unwrap_or_else(|| format!("{date}|{amount_str}|{description}"));
+            let external_id =
+                get(&record, i_ext).unwrap_or_else(|| format!("{date}|{amount_str}|{description}"));
             out.push(ProviderTransaction {
                 external_id,
                 posted_at: date,
@@ -76,7 +76,10 @@ impl TransactionProvider for CsvProvider {
 
 /// Parse a human-written amount (`-1,234.56`, `$5.00`) into 2-dp minor units.
 fn parse_amount(s: &str) -> anyhow::Result<i64> {
-    let cleaned: String = s.chars().filter(|c| !matches!(c, '$' | ',' | ' ' | '£' | '€')).collect();
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !matches!(c, '$' | ',' | ' ' | '£' | '€'))
+        .collect();
     let value: f64 = cleaned
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid amount '{s}'"))?;

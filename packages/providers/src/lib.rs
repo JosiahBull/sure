@@ -141,7 +141,10 @@ pub trait TransactionProvider: Send + Sync {
     /// transaction history alone doesn't reach back to when the account was opened (a
     /// mortgage's full term, say) — see `sync_provider`'s post-fetch valuation upsert.
     /// Defaulting to `None` costs nothing for providers (like CSV) with no such concept.
-    async fn current_balance(&self, _ctx: SyncContext<'_>) -> anyhow::Result<Option<ProviderBalance>> {
+    async fn current_balance(
+        &self,
+        _ctx: SyncContext<'_>,
+    ) -> anyhow::Result<Option<ProviderBalance>> {
         Ok(None)
     }
 }

@@ -13,7 +13,8 @@ pub use sure_core::{
 use crate::Db;
 
 /// Columns needed to evaluate a rule against a transaction, denormalised for speed.
-pub const CTX_QUERY: &str = "SELECT t.id, t.account_id, t.posted_at, t.amount_minor, t.currency_code,
+pub const CTX_QUERY: &str =
+    "SELECT t.id, t.account_id, t.posted_at, t.amount_minor, t.currency_code,
         cur.decimal_places AS decimal_places, t.description, t.merchant, t.merchant_id, t.notes,
         t.category_id, t.is_one_off, t.categorized_by_rule_id,
         a.name AS account_name, a.kind AS account_kind
@@ -82,9 +83,11 @@ pub struct PlannedApplication {
 /// List rules in evaluation order.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Rule>> {
-    Ok(sqlx::query_as::<_, Rule>("SELECT * FROM rules ORDER BY priority, id")
-        .fetch_all(db)
-        .await?)
+    Ok(
+        sqlx::query_as::<_, Rule>("SELECT * FROM rules ORDER BY priority, id")
+            .fetch_all(db)
+            .await?,
+    )
 }
 
 /// Enabled rules in evaluation order (for a "run all").

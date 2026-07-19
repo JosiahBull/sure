@@ -5,9 +5,11 @@ use crate::Db;
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Currency>> {
-    Ok(sqlx::query_as::<_, Currency>("SELECT * FROM currencies ORDER BY code")
-        .fetch_all(db)
-        .await?)
+    Ok(
+        sqlx::query_as::<_, Currency>("SELECT * FROM currencies ORDER BY code")
+            .fetch_all(db)
+            .await?,
+    )
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
