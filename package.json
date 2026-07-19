@@ -22,7 +22,8 @@
     "test:web:install": "pnpm --filter @sure/web exec playwright install chromium",
     "seed": "node scripts/seed.mjs",
     "lint:rust": "cargo clippy --all-targets -- -D warnings",
-    "fmt:rust": "cargo fmt --all"
+    "fmt:rust": "cargo fmt --all",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
