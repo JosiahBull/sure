@@ -2650,9 +2650,7 @@ dependencies = [
  "serde_json",
  "sure-app",
  "sure-core",
- "sure-dal",
  "sure-providers",
- "sure-scheduler",
  "thiserror 2.0.18",
  "tokio",
  "tower",
@@ -2740,6 +2738,21 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "sure-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "sure-api",
+ "sure-app",
+ "sure-dal",
+ "sure-providers",
+ "sure-scheduler",
  "tokio",
  "tracing",
 ]

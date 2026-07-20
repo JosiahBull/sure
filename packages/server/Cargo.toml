@@ -1,0 +1,20 @@
+[package]
+name = "sure-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sure-api"
+path = "src/main.rs"
+
+[dependencies]
+sure-app = { workspace = true }
+sure-dal = { workspace = true }
+sure-providers = { workspace = true }
+sure-scheduler = { workspace = true }
+sure-api = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

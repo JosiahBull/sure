@@ -25,7 +25,9 @@ COPY packages/core ./packages/core
 COPY packages/scheduler ./packages/scheduler
 COPY packages/dal ./packages/dal
 COPY packages/providers ./packages/providers
+COPY packages/app ./packages/app
 COPY packages/api ./packages/api
+COPY packages/server ./packages/server
 # gen-openapi writes the spec the TypeScript client is generated from (it creates the
 # parent directory itself). This is the same artifact `pnpm gen:openapi` produces.
 RUN cargo run --locked -p sure-api --bin gen-openapi -- packages/client/openapi.json
@@ -58,9 +60,13 @@ COPY packages/core ./packages/core
 COPY packages/scheduler ./packages/scheduler
 COPY packages/dal ./packages/dal
 COPY packages/providers ./packages/providers
+COPY packages/app ./packages/app
 COPY packages/api ./packages/api
-# The release profile (Cargo.toml) already strips symbols and enables LTO.
-RUN cargo build --release --locked -p sure-api --bin sure-api
+COPY packages/server ./packages/server
+# The release profile (Cargo.toml) already strips symbols and enables LTO. The `sure-api`
+# binary is produced by the `sure-server` crate (the composition root); `sure-api` itself
+# is now a routes/handlers library with no `main`.
+RUN cargo build --release --locked -p sure-server --bin sure-api
 
 # ---- Runtime ------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime

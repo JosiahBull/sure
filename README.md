@@ -53,16 +53,20 @@ on old devices.
 
 ## Architecture
 
-Flat pnpm + Cargo workspace under `packages/`. The backend is split into layered crates
-with a one-way dependency graph (`core ← dal, providers ← api`) — see
+Flat pnpm + Cargo workspace under `packages/`. The backend follows a ports-and-adapters
+(hexagonal) shape — an application core depending only on trait ports, with the web
+framework and the database wired in as adapters at the edges — see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning and the interface choices.
 
 ```
 packages/
-  core/         Rust: shared domain types + AppError, feature-gated for HTTP (sure-core).
-  dal/          Rust: SQLite pool, pragmas, and embedded migrations (sure-dal).
-  providers/    Rust: TransactionProvider trait + registry + CSV/Akahu implementations (sure-providers).
-  api/          Rust: Axum HTTP layer + report/rules engines; `sure-api` + `gen-openapi` bins.
+  core/         Rust: domain types + AppError, no persistence/web deps (sure-core).
+  scheduler/    Rust: generic recurring-task scheduler, storage-agnostic (sure-scheduler).
+  dal/          Rust: SQLite pool, migrations, every SQL query (sure-dal).
+  providers/    Rust: TransactionProvider trait + registry + CSV/Akahu/Yahoo/FX clients (sure-providers).
+  app/          Rust: the application core — use-case services + repo ports, no SQL/HTTP (sure-app).
+  api/          Rust: Axum routes/handlers + OpenAPI, depends only on sure-app; `gen-openapi` bin (sure-api).
+  server/       Rust: the composition root — wires sure-dal/sure-providers into sure-app/sure-api; owns `main` (sure-server).
   api-tests/    TypeScript: Playwright e2e — spawns the real binary per test, driven through @sure/client.
   client/       Generated TypeScript client (openapi-typescript + openapi-fetch).
   web/          Svelte 5 SPA (Vite, vite-plugin-pwa) + Playwright tests.

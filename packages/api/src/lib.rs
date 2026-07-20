@@ -3,17 +3,17 @@
 // financial values; clippy's grouping lint fights it, so allow it crate-wide.
 #![allow(clippy::inconsistent_digit_grouping)]
 
-pub mod config;
 pub mod openapi;
 pub mod routes;
 pub mod state;
 pub mod telemetry;
 
 // The lower layers now live in their own crates. Re-export them under the historical
-// module paths so handler/OpenAPI code keeps compiling against `crate::error`,
-// `crate::db`, and `crate::providers` unchanged.
+// module paths so handler/OpenAPI code keeps compiling against `crate::error` and
+// `crate::providers` unchanged. `sure-api` names neither `sure_dal` nor `sqlx` anywhere
+// in this crate — the composition root (`sure-server`) is the only place that connects
+// to the database and builds `AppState`.
 pub use sure_core::error; // crate::error::{AppError, AppResult, ErrorBody, ErrorDetail}
-pub use sure_dal as db; // crate::db::{connect, migrate, MIGRATOR, Db}
 pub use sure_providers as providers; // crate::providers::{Registry, SyncContext, ProviderKind, ...}
 
 use axum::{routing::get, Json, Router};
@@ -22,7 +22,6 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
 
-use crate::config::Config;
 use crate::openapi::ApiDoc;
 use crate::state::AppState;
 
@@ -65,57 +64,6 @@ pub fn build_app(state: AppState, web_dir: Option<&str>) -> Router {
 /// generation uses the `gen-openapi` binary instead.
 async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
-}
-
-/// Connect, migrate, and serve until shutdown. Used by the `sure-api` binary.
-pub async fn serve(config: Config) -> anyhow::Result<()> {
-    let pool = db::connect(&config.database_url).await?;
-    db::migrate(&pool).await?;
-
-    let task_state =
-        std::sync::Arc::new(db::scheduled_tasks::SqliteTaskStateStore::new(pool.clone()));
-    let mut scheduler =
-        sure_scheduler::Scheduler::new(task_state, std::time::Duration::from_secs(60));
-
-    // One store + clock for the scheduled tasks' ports (a separate instance from the one
-    // `AppState::new` builds for the HTTP handlers — both are stateless wrappers around
-    // clones of the same pool, so there's nothing to share).
-    let store = std::sync::Arc::new(sure_dal::store::SqliteStore::new(pool.clone()));
-    let clock = std::sync::Arc::new(sure_app::SystemClock);
-    let sync = std::sync::Arc::new(sure_app::sync::SyncService::new(
-        store.clone(),
-        store.clone(),
-        store.clone(),
-        clock.clone(),
-    ));
-
-    scheduler.register(Box::new(
-        sure_app::tasks::exchange_rates::ExchangeRateTask::new(
-            store.clone(),
-            std::sync::Arc::new(providers::FrankfurterProvider::new()),
-        ),
-    ));
-    scheduler.register(Box::new(
-        sure_app::tasks::provider_poll::ProviderPollTask::new(store.clone(), sync),
-    ));
-    scheduler.register(Box::new(sure_app::stock_prices::StockPriceTask::new(
-        store.clone(),
-        store.clone(),
-        clock,
-        std::sync::Arc::new(providers::YahooFinanceProvider::new()),
-    )));
-    scheduler.register(Box::new(
-        sure_app::tasks::transfer_link::TransferLinkTask::new(store),
-    ));
-    scheduler.spawn();
-
-    let state = AppState::new(pool);
-    let app = build_app(state, config.web_dir.as_deref());
-
-    let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
-    tracing::info!(addr = %config.bind_addr, "sure-api listening");
-    axum::serve(listener, app.into_make_service()).await?;
-    Ok(())
 }
 
 /// Initialise tracing from `RUST_LOG`, defaulting to something useful in dev.

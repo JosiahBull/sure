@@ -9,19 +9,13 @@ name = "sure_api"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sure-api"
-path = "src/main.rs"
-
-[[bin]]
 name = "gen-openapi"
 path = "src/bin/gen_openapi.rs"
 
 [dependencies]
 sure-core = { workspace = true, features = ["axum"] }
 sure-app = { workspace = true }
-sure-dal = { workspace = true }
 sure-providers = { workspace = true }
-sure-scheduler = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }

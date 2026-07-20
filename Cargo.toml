@@ -7,6 +7,7 @@ members = [
     "packages/providers",
     "packages/app",
     "packages/api",
+    "packages/server",
 ]
 
 [workspace.package]
@@ -59,6 +60,7 @@ sure-scheduler = { path = "packages/scheduler" }
 sure-dal = { path = "packages/dal" }
 sure-providers = { path = "packages/providers" }
 sure-app = { path = "packages/app" }
+sure-api = { path = "packages/api" }
 
 [profile.release]
 opt-level = 3
