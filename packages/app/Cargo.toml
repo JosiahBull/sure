@@ -1,0 +1,25 @@
+[package]
+name = "sure-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "sure_app"
+path = "src/lib.rs"
+
+[dependencies]
+sure-core = { workspace = true }
+sure-dal = { workspace = true }
+sure-providers = { workspace = true }
+sure-scheduler = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+zen-expression = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -5,6 +5,7 @@ members = [
     "packages/scheduler",
     "packages/dal",
     "packages/providers",
+    "packages/app",
     "packages/api",
 ]
 
@@ -57,6 +58,7 @@ sure-core = { path = "packages/core" }
 sure-scheduler = { path = "packages/scheduler" }
 sure-dal = { path = "packages/dal" }
 sure-providers = { path = "packages/providers" }
+sure-app = { path = "packages/app" }
 
 [profile.release]
 opt-level = 3

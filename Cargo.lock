@@ -2644,13 +2644,11 @@ name = "sure-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "axum",
  "chrono",
- "rust_decimal",
- "rust_decimal_macros",
  "serde",
  "serde_json",
+ "sure-app",
  "sure-core",
  "sure-dal",
  "sure-providers",
@@ -2663,6 +2661,23 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "sure-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "rust_decimal",
+ "serde_json",
+ "sure-core",
+ "sure-dal",
+ "sure-providers",
+ "sure-scheduler",
+ "tokio",
+ "tracing",
  "zen-expression",
 ]
 

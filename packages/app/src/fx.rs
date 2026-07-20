@@ -1,13 +1,13 @@
 //! Currency conversion using the latest known rates, shared by the report aggregation
-//! (`routes::reports`) and the brokerage snapshot (`crate::brokerage`). For a
+//! (`crate::reports`) and the brokerage snapshot (`crate::brokerage`). For a
 //! single-family tracker, applying current rates across history is a fine approximation
 //! and keeps figures readable rather than jumping around with historical fx noise.
 
 use std::collections::HashMap;
 
-use crate::error::AppResult;
+use sure_core::AppResult;
 
-pub(crate) struct Fx {
+pub struct Fx {
     base: String,
     /// (base_code, quote_code) => 1 base = rate quote.
     rates: HashMap<(String, String), f64>,
@@ -15,7 +15,7 @@ pub(crate) struct Fx {
 }
 
 impl Fx {
-    pub(crate) async fn load(db: &sure_dal::Db, base: String) -> AppResult<Self> {
+    pub async fn load(db: &sure_dal::Db, base: String) -> AppResult<Self> {
         let decimals = sure_dal::reports::currency_decimals(db)
             .await?
             .into_iter()
@@ -36,12 +36,12 @@ impl Fx {
         })
     }
 
-    pub(crate) fn dp(&self, ccy: &str) -> i32 {
+    pub fn dp(&self, ccy: &str) -> i32 {
         self.decimals.get(ccy).copied().unwrap_or(2)
     }
 
     /// Multiplier converting 1 unit of `ccy` into the base currency.
-    pub(crate) fn factor(&self, ccy: &str) -> f64 {
+    pub fn factor(&self, ccy: &str) -> f64 {
         if ccy == self.base {
             return 1.0;
         }
@@ -57,12 +57,12 @@ impl Fx {
     }
 
     /// Convert minor units of `ccy` into base-currency major units.
-    pub(crate) fn to_base_major(&self, amount_minor: i64, ccy: &str) -> f64 {
+    pub fn to_base_major(&self, amount_minor: i64, ccy: &str) -> f64 {
         let major = amount_minor as f64 / 10f64.powi(self.dp(ccy));
         major * self.factor(ccy)
     }
 
-    pub(crate) fn base_minor(&self, base_major: f64) -> i64 {
+    pub fn base_minor(&self, base_major: f64) -> i64 {
         (base_major * 10f64.powi(self.dp(&self.base))).round() as i64
     }
 }

@@ -1,7 +1,7 @@
 //! Brokerage account endpoints: the computed value snapshot, the raw holdings/dividends
 //! ledgers, manual lot entry, a bulk zip import of a Sharesies export, and manual
 //! revalue/backfill triggers. The heavy lifting (parsing, persistence, pricing) lives in
-//! `sure_providers::sharesies`, `sure_dal::brokerage`, and `crate::brokerage`; these
+//! `sure_providers::sharesies`, `sure_dal::brokerage`, and `sure_app::brokerage`; these
 //! handlers are thin glue.
 
 use axum::body::Bytes;
@@ -81,7 +81,7 @@ pub async fn snapshot(
     ensure_brokerage(&st, id).await?;
     let provider = sure_providers::YahooFinanceProvider::new();
     Ok(Json(
-        crate::brokerage::snapshot(&st.db, Some(&provider), id, parse_as_of(&q)).await?,
+        sure_app::brokerage::snapshot(&st.db, Some(&provider), id, parse_as_of(&q)).await?,
     ))
 }
 
@@ -268,7 +268,7 @@ pub async fn import(
     // Transfer auto-linking (wallet deposit/withdrawal ↔ the matching bank transaction) is
     // not done here: the bank side is often synced *after* this import, so it wouldn't
     // exist to match yet. The scheduled `TransferLinkTask` reconciles both sides regardless
-    // of import order — see `crate::transfer_link`.
+    // of import order — see `sure_app::tasks::transfer_link`.
 
     // Backfill the daily valuation history in the background: it makes one upstream price
     // call per ticker then loops every day since inception, which is too slow to block the
@@ -276,7 +276,7 @@ pub async fn import(
     let db = st.db.clone();
     tokio::spawn(async move {
         let provider = sure_providers::YahooFinanceProvider::new();
-        if let Err(e) = crate::brokerage::backfill_history(&db, &provider, id).await {
+        if let Err(e) = sure_app::brokerage::backfill_history(&db, &provider, id).await {
             tracing::warn!(account_id = id, error = %e, "brokerage history backfill failed");
         }
     });
@@ -313,7 +313,7 @@ pub async fn revalue(
     ensure_brokerage(&st, id).await?;
     let provider = sure_providers::YahooFinanceProvider::new();
     Ok(Json(
-        crate::brokerage::revalue(&st.db, Some(&provider), id, parse_as_of(&q)).await?,
+        sure_app::brokerage::revalue(&st.db, Some(&provider), id, parse_as_of(&q)).await?,
     ))
 }
 
@@ -343,7 +343,7 @@ pub async fn backfill(
 ) -> AppResult<Json<BackfillResult>> {
     ensure_brokerage(&st, id).await?;
     let provider = sure_providers::YahooFinanceProvider::new();
-    let days = crate::brokerage::backfill_history(&st.db, &provider, id).await? as i64;
+    let days = sure_app::brokerage::backfill_history(&st.db, &provider, id).await? as i64;
     Ok(Json(BackfillResult { days }))
 }
 

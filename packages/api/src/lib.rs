@@ -3,17 +3,11 @@
 // financial values; clippy's grouping lint fights it, so allow it crate-wide.
 #![allow(clippy::inconsistent_digit_grouping)]
 
-pub mod brokerage;
 pub mod config;
-pub mod exchange_rates;
-pub mod fx;
 pub mod openapi;
-pub mod provider_poll;
 pub mod routes;
 pub mod state;
-pub mod stock_prices;
 pub mod telemetry;
-pub mod transfer_link;
 
 // The lower layers now live in their own crates. Re-export them under the historical
 // module paths so handler/OpenAPI code keeps compiling against `crate::error`,
@@ -82,16 +76,22 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         std::sync::Arc::new(db::scheduled_tasks::SqliteTaskStateStore::new(pool.clone()));
     let mut scheduler =
         sure_scheduler::Scheduler::new(task_state, std::time::Duration::from_secs(60));
-    scheduler.register(Box::new(exchange_rates::ExchangeRateTask::new(
-        pool.clone(),
-        std::sync::Arc::new(providers::FrankfurterProvider::new()),
-    )));
-    scheduler.register(Box::new(provider_poll::ProviderPollTask::new(pool.clone())));
-    scheduler.register(Box::new(stock_prices::StockPriceTask::new(
+    scheduler.register(Box::new(
+        sure_app::tasks::exchange_rates::ExchangeRateTask::new(
+            pool.clone(),
+            std::sync::Arc::new(providers::FrankfurterProvider::new()),
+        ),
+    ));
+    scheduler.register(Box::new(
+        sure_app::tasks::provider_poll::ProviderPollTask::new(pool.clone()),
+    ));
+    scheduler.register(Box::new(sure_app::stock_prices::StockPriceTask::new(
         pool.clone(),
         std::sync::Arc::new(providers::YahooFinanceProvider::new()),
     )));
-    scheduler.register(Box::new(transfer_link::TransferLinkTask::new(pool.clone())));
+    scheduler.register(Box::new(
+        sure_app::tasks::transfer_link::TransferLinkTask::new(pool.clone()),
+    ));
     scheduler.spawn();
 
     let state = AppState::new(pool);

@@ -2,17 +2,17 @@
 //! human-supplied payload (e.g. CSV import) — anything credential/API-based, today just
 //! `akahu`, gets this for free as new such kinds are added, with no per-kind wiring here.
 //! Persistence/audit reuses the same [`sync_provider`] path the manual sync route
-//! (`routes::providers::sync`) drives; scheduling (surviving restarts without early
-//! re-runs) is handled generically by `sure_scheduler`.
+//! (`sure-api`'s `routes::providers::sync`) drives; scheduling (surviving restarts
+//! without early re-runs) is handled generically by `sure_scheduler`.
 
 use std::time::Duration;
 
 use async_trait::async_trait;
 use sure_dal::Db;
+use sure_providers::Registry;
 use sure_scheduler::ScheduledTask;
 
-use crate::providers::Registry;
-use crate::routes::providers::sync_provider;
+use crate::sync::sync_provider;
 
 /// Bank data itself only refreshes a few times a day upstream, so there's no value in
 /// polling more often than this (mirrors the reasoning behind `exchange_rates::POLL_INTERVAL`).

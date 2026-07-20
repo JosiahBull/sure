@@ -2,8 +2,9 @@
 //! that backfills the historical cache from the configured [`StockPriceProvider`] on a
 //! miss, plus a [`ScheduledTask`] that keeps every ticker currently held by a shares
 //! account warm on a daily cadence. Persistence is handled here, not in
-//! `sure-providers` — matching the split used for exchange rates (`exchange_rates.rs`)
-//! and transaction providers: the provider only fetches and normalizes.
+//! `sure-providers` — matching the split used for exchange rates
+//! (`tasks::exchange_rates`) and transaction providers: the provider only fetches and
+//! normalizes.
 
 use std::sync::Arc;
 use std::time::Duration;

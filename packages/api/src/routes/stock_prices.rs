@@ -60,7 +60,7 @@ pub async fn get_price(
         .unwrap_or_else(|| Utc::now().date_naive());
 
     let provider = sure_providers::YahooFinanceProvider::new();
-    crate::stock_prices::price_at(&st.db, &provider, &ticker, &exchange, as_of)
+    sure_app::stock_prices::price_at(&st.db, &provider, &ticker, &exchange, as_of)
         .await?
         .map(Json)
         .ok_or(AppError::NotFound("stock price"))
