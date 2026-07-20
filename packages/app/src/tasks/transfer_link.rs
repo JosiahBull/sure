@@ -2,14 +2,17 @@
 //! one-shot at import time (which misses a pair whose two sides are imported/synced at
 //! different times — e.g. a Sharesies withdrawal imported before its bank deposit is
 //! synced), this scheduled task periodically scans every account and links any newly
-//! matchable pair. The matching itself lives in `sure_dal::transactions::link_transfers`;
-//! scheduling (surviving restarts without early re-runs) is handled by `sure_scheduler`.
+//! matchable pair. The matching itself lives behind the [`TransferRepo`] port
+//! (`sure_dal::transactions::link_transfers` is the real implementation); scheduling
+//! (surviving restarts without early re-runs) is handled by `sure_scheduler`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sure_dal::Db;
 use sure_scheduler::ScheduledTask;
+
+use crate::ports::TransferRepo;
 
 /// How far apart (days) a transfer's two sides may be posted and still be paired — a
 /// bank/broker settlement lag of a few days is normal, so allow a small window.
@@ -21,12 +24,12 @@ const WINDOW_DAYS: i64 = 5;
 const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 pub struct TransferLinkTask {
-    db: Db,
+    transfers: Arc<dyn TransferRepo>,
 }
 
 impl TransferLinkTask {
-    pub fn new(db: Db) -> Self {
-        Self { db }
+    pub fn new(transfers: Arc<dyn TransferRepo>) -> Self {
+        Self { transfers }
     }
 }
 
@@ -41,7 +44,7 @@ impl ScheduledTask for TransferLinkTask {
     }
 
     async fn run(&self) -> anyhow::Result<()> {
-        let linked = sure_dal::transactions::link_transfers(&self.db, WINDOW_DAYS).await?;
+        let linked = self.transfers.link_transfers(WINDOW_DAYS).await?;
         if linked > 0 {
             tracing::info!(linked, "auto-linked transfer pairs");
         }

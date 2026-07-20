@@ -1,20 +1,21 @@
 //! Backend-computed report data. All heavy aggregation (running balances, currency
 //! normalisation, category roll-ups, flow graphs) happens here so callers only ever
-//! handle ready-made numbers. Row loading is delegated to `sure_dal::reports`; this
-//! module never touches `sqlx` directly. The wire-facing response DTOs (`ToSchema`) and
-//! query-param extractors live in `sure-api`'s `routes::reports` — genuinely computed/
-//! flattened shapes that are built from these plain result types — and the query structs
-//! here mirror their fields so a handler is a single call plus a field-copy.
+//! handle ready-made numbers. Row loading goes through the [`ReportRepo`]/[`FxRatesRepo`]
+//! ports; this module never touches `sqlx` directly. The wire-facing response DTOs
+//! (`ToSchema`) and query-param extractors live in `sure-api`'s `routes::reports` —
+//! genuinely computed/flattened shapes that are built from these plain result types —
+//! and the query structs here mirror their fields so a handler is a single call plus a
+//! field-copy.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate};
 
 use sure_core::AppResult;
-use sure_dal::reports::SpendTransaction;
-use sure_dal::Db;
 
 use crate::fx::Fx;
+use crate::ports::{Clock, FxRatesRepo, ReportRepo, SpendTransaction};
 
 // ---- query params --------------------------------------------------------
 
@@ -140,15 +141,7 @@ pub struct EquityPosition {
     pub liabilities: Vec<SecuredLiability>,
 }
 
-// ---- currency conversion -------------------------------------------------
-
-#[tracing::instrument(level = "debug", skip_all)]
-async fn base_currency(db: &Db, override_: Option<&str>) -> AppResult<String> {
-    if let Some(c) = override_.filter(|s| !s.is_empty()) {
-        return Ok(c.to_uppercase());
-    }
-    sure_dal::settings::base_currency(db).await
-}
+// ---- helpers (pure, no repo access) ---------------------------------------
 
 fn parse_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s.get(0..10).unwrap_or(s), "%Y-%m-%d").ok()
@@ -160,85 +153,6 @@ fn last_day_of_month(y: i32, m: u32) -> NaiveDate {
         .unwrap()
         .pred_opt()
         .unwrap()
-}
-
-// ---- net worth -----------------------------------------------------------
-
-/// Net worth over time, sampled at the requested interval.
-#[tracing::instrument(level = "debug", skip_all, fields(query = ?q))]
-pub async fn net_worth(db: &Db, q: &NetWorthQuery) -> AppResult<NetWorthSeries> {
-    let base = base_currency(db, q.currency.as_deref()).await?;
-    let fx = Fx::load(db, base.clone()).await?;
-
-    let accounts = sure_dal::reports::account_currencies(db).await?;
-    let txns = sure_dal::reports::transactions(db).await?;
-    let vals = sure_dal::reports::valuations(db).await?;
-
-    // Index transactions/valuations per account, with parsed dates.
-    let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
-    for t in &txns {
-        if let Some(d) = parse_date(&t.posted_at) {
-            tx_by_acct
-                .entry(t.account_id)
-                .or_default()
-                .push((d, t.amount_minor));
-        }
-    }
-    let mut val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>> = HashMap::new();
-    for v in &vals {
-        if let Some(d) = parse_date(&v.as_of) {
-            val_by_acct.entry(v.account_id).or_default().push((
-                d,
-                v.value_minor,
-                v.currency_code.clone(),
-            ));
-        }
-    }
-
-    // Resolve the reporting window.
-    let today = Utc::now().date_naive();
-    let to = q.to.as_deref().and_then(parse_date).unwrap_or(today);
-    let earliest = tx_by_acct
-        .values()
-        .flatten()
-        .map(|(d, _)| *d)
-        .chain(val_by_acct.values().flatten().map(|(d, _, _)| *d))
-        .min();
-    let from = q
-        .from
-        .as_deref()
-        .and_then(parse_date)
-        .or(earliest)
-        .unwrap_or_else(|| to - chrono::Duration::days(365));
-
-    let sample_dates = sample_dates(from, to, q.interval.as_deref().unwrap_or("month"));
-
-    let mut points = Vec::with_capacity(sample_dates.len());
-    for date in sample_dates {
-        let mut assets = 0.0f64;
-        let mut liabilities = 0.0f64;
-        for a in &accounts {
-            let (value_minor, ccy) =
-                account_value_at(a.id, &a.currency_code, date, &tx_by_acct, &val_by_acct);
-            let base_major = fx.to_base_major(value_minor, &ccy);
-            if base_major >= 0.0 {
-                assets += base_major;
-            } else {
-                liabilities += base_major;
-            }
-        }
-        points.push(NetWorthPoint {
-            as_of: date.to_string(),
-            net_worth_minor: fx.base_minor(assets + liabilities),
-            assets_minor: fx.base_minor(assets),
-            liabilities_minor: fx.base_minor(liabilities),
-        });
-    }
-
-    Ok(NetWorthSeries {
-        currency: base,
-        points,
-    })
 }
 
 /// An account's value as of a date.
@@ -343,7 +257,18 @@ fn sample_dates(from: NaiveDate, to: NaiveDate, interval: &str) -> Vec<NaiveDate
     out
 }
 
-// ---- spend loading (shared by pie + sankey) ------------------------------
+fn class_of(kind: &str) -> &'static str {
+    match kind {
+        "cash" | "bank" | "savings" => "cash",
+        "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan" | "liability" => {
+            "liability"
+        }
+        "shares_nz" | "shares_us" | "shares_private" => "investment",
+        _ => "asset",
+    }
+}
+
+// ---- category lookups (shared by pie + sankey) ----------------------------
 
 struct Categories {
     parents: HashMap<i64, Option<i64>>,
@@ -353,8 +278,8 @@ struct Categories {
 }
 
 impl Categories {
-    async fn load(db: &Db) -> AppResult<Self> {
-        let cats = sure_dal::reports::categories(db).await?;
+    async fn load(reports: &dyn ReportRepo) -> AppResult<Self> {
+        let cats = reports.categories().await?;
         let mut c = Categories {
             parents: HashMap::new(),
             names: HashMap::new(),
@@ -389,17 +314,47 @@ impl Categories {
     }
 }
 
+/// Load transactions + valuations indexed per account, for point-in-time balances.
+type Ledger = (
+    HashMap<i64, Vec<(NaiveDate, i64)>>,
+    HashMap<i64, Vec<(NaiveDate, i64, String)>>,
+);
+
+async fn load_ledger(reports: &dyn ReportRepo) -> AppResult<Ledger> {
+    let txns = reports.transactions().await?;
+    let vals = reports.valuations().await?;
+    let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
+    for t in &txns {
+        if let Some(d) = parse_date(&t.posted_at) {
+            tx_by_acct
+                .entry(t.account_id)
+                .or_default()
+                .push((d, t.amount_minor));
+        }
+    }
+    let mut val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>> = HashMap::new();
+    for v in &vals {
+        if let Some(d) = parse_date(&v.as_of) {
+            val_by_acct.entry(v.account_id).or_default().push((
+                d,
+                v.value_minor,
+                v.currency_code.clone(),
+            ));
+        }
+    }
+    Ok((tx_by_acct, val_by_acct))
+}
+
 /// Load transactions in the window, excluding transfers (either linked, or in a
 /// transfer-kind category) and — optionally — one-offs.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn load_spend(
-    db: &Db,
+    reports: &dyn ReportRepo,
     cats: &Categories,
     from: NaiveDate,
     to: NaiveDate,
     include_one_off: bool,
 ) -> AppResult<Vec<SpendTransaction>> {
-    let rows = sure_dal::reports::spend_transactions(db).await?;
+    let rows = reports.spend_transactions().await?;
     Ok(rows
         .into_iter()
         .filter(|t| {
@@ -423,306 +378,367 @@ async fn load_spend(
         .collect())
 }
 
-/// Resolve the report window with data-driven defaults.
-fn window(from: Option<&str>, to: Option<&str>) -> (NaiveDate, NaiveDate) {
-    let today = Utc::now().date_naive();
-    let to = to.and_then(parse_date).unwrap_or(today);
-    let from = from.and_then(parse_date).unwrap_or_else(|| {
-        // default to the start of the month 12 months back
-        let d = to - chrono::Duration::days(365);
-        NaiveDate::from_ymd_opt(d.year(), d.month(), 1).unwrap_or(d)
-    });
-    (from, to)
+// ---- service ---------------------------------------------------------------
+
+pub struct ReportService {
+    reports: Arc<dyn ReportRepo>,
+    fx: Arc<dyn FxRatesRepo>,
+    clock: Arc<dyn Clock>,
 }
 
-// ---- category breakdown (pie) --------------------------------------------
+impl ReportService {
+    pub fn new(
+        reports: Arc<dyn ReportRepo>,
+        fx: Arc<dyn FxRatesRepo>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self { reports, fx, clock }
+    }
 
-/// Income/expense totals per top-level category for the period.
-#[tracing::instrument(level = "debug", skip_all, fields(query = ?q))]
-pub async fn category_breakdown(db: &Db, q: &ReportQuery) -> AppResult<CategoryBreakdown> {
-    let base = base_currency(db, q.currency.as_deref()).await?;
-    let fx = Fx::load(db, base.clone()).await?;
-    let cats = Categories::load(db).await?;
-    let (from, to) = window(q.from.as_deref(), q.to.as_deref());
-    let spend = load_spend(db, &cats, from, to, q.include_one_off.unwrap_or(false)).await?;
-
-    // key 0 => uncategorised.
-    let mut income: HashMap<i64, f64> = HashMap::new();
-    let mut expense: HashMap<i64, f64> = HashMap::new();
-    for t in &spend {
-        let key = t.category_id.map(|c| cats.top_ancestor(c)).unwrap_or(0);
-        let base_major = fx.to_base_major(t.amount_minor.abs(), &t.currency_code);
-        if t.amount_minor >= 0 {
-            *income.entry(key).or_default() += base_major;
-        } else {
-            *expense.entry(key).or_default() += base_major;
+    async fn base_currency(&self, override_: Option<&str>) -> AppResult<String> {
+        if let Some(c) = override_.filter(|s| !s.is_empty()) {
+            return Ok(c.to_uppercase());
         }
+        self.reports.base_currency().await
     }
 
-    let to_totals = |m: HashMap<i64, f64>| -> Vec<CategoryTotal> {
-        let mut v: Vec<CategoryTotal> = m
-            .into_iter()
-            .map(|(key, total)| CategoryTotal {
-                category_id: (key != 0).then_some(key),
-                name: if key == 0 {
-                    "Uncategorised".to_string()
-                } else {
-                    cats.names.get(&key).cloned().unwrap_or_else(|| "?".into())
-                },
-                color: if key == 0 {
-                    None
-                } else {
-                    cats.colors.get(&key).cloned().flatten()
-                },
-                total_minor: fx.base_minor(total),
-            })
-            .collect();
-        v.sort_by_key(|t| std::cmp::Reverse(t.total_minor));
-        v
-    };
+    /// Resolve the report window with data-driven defaults.
+    fn window(&self, from: Option<&str>, to: Option<&str>) -> (NaiveDate, NaiveDate) {
+        let today = self.clock.today();
+        let to = to.and_then(parse_date).unwrap_or(today);
+        let from = from.and_then(parse_date).unwrap_or_else(|| {
+            // default to the start of the month 12 months back
+            let d = to - chrono::Duration::days(365);
+            NaiveDate::from_ymd_opt(d.year(), d.month(), 1).unwrap_or(d)
+        });
+        (from, to)
+    }
 
-    Ok(CategoryBreakdown {
-        currency: base,
-        from: from.to_string(),
-        to: to.to_string(),
-        income: to_totals(income),
-        expense: to_totals(expense),
-    })
-}
+    /// Net worth over time, sampled at the requested interval.
+    pub async fn net_worth(&self, q: &NetWorthQuery) -> AppResult<NetWorthSeries> {
+        let base = self.base_currency(q.currency.as_deref()).await?;
+        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
 
-// ---- sankey --------------------------------------------------------------
+        let accounts = self.reports.account_currencies().await?;
+        let txns = self.reports.transactions().await?;
+        let vals = self.reports.valuations().await?;
 
-/// Money-flow graph: income categories -> cash flow -> expense categories (+ savings).
-#[tracing::instrument(level = "debug", skip_all, fields(query = ?q))]
-pub async fn sankey(db: &Db, q: &ReportQuery) -> AppResult<SankeyGraph> {
-    let base = base_currency(db, q.currency.as_deref()).await?;
-    let fx = Fx::load(db, base.clone()).await?;
-    let cats = Categories::load(db).await?;
-    let (from, to) = window(q.from.as_deref(), q.to.as_deref());
-    let spend = load_spend(db, &cats, from, to, q.include_one_off.unwrap_or(false)).await?;
-
-    let mut income: HashMap<i64, f64> = HashMap::new();
-    let mut expense: HashMap<i64, f64> = HashMap::new();
-    for t in &spend {
-        let key = t.category_id.map(|c| cats.top_ancestor(c)).unwrap_or(0);
-        let base_major = fx.to_base_major(t.amount_minor.abs(), &t.currency_code);
-        if t.amount_minor >= 0 {
-            *income.entry(key).or_default() += base_major;
-        } else {
-            *expense.entry(key).or_default() += base_major;
+        // Index transactions/valuations per account, with parsed dates.
+        let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
+        for t in &txns {
+            if let Some(d) = parse_date(&t.posted_at) {
+                tx_by_acct
+                    .entry(t.account_id)
+                    .or_default()
+                    .push((d, t.amount_minor));
+            }
         }
-    }
-
-    let label = |key: i64| -> String {
-        if key == 0 {
-            "Uncategorised".to_string()
-        } else {
-            cats.names.get(&key).cloned().unwrap_or_else(|| "?".into())
+        let mut val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>> = HashMap::new();
+        for v in &vals {
+            if let Some(d) = parse_date(&v.as_of) {
+                val_by_acct.entry(v.account_id).or_default().push((
+                    d,
+                    v.value_minor,
+                    v.currency_code.clone(),
+                ));
+            }
         }
-    };
 
-    let mut nodes = vec![SankeyNode {
-        id: "center".into(),
-        label: "Cash flow".into(),
-        kind: "center".into(),
-    }];
-    let mut links = Vec::new();
-
-    let mut total_income = 0.0;
-    for (key, total) in &income {
-        total_income += *total;
-        let id = format!("in:{key}");
-        nodes.push(SankeyNode {
-            id: id.clone(),
-            label: label(*key),
-            kind: "income".into(),
-        });
-        links.push(SankeyLink {
-            source: id,
-            target: "center".into(),
-            value_minor: fx.base_minor(*total),
-        });
-    }
-
-    let mut total_expense = 0.0;
-    for (key, total) in &expense {
-        total_expense += *total;
-        let id = format!("out:{key}");
-        nodes.push(SankeyNode {
-            id: id.clone(),
-            label: label(*key),
-            kind: "expense".into(),
-        });
-        links.push(SankeyLink {
-            source: "center".into(),
-            target: id,
-            value_minor: fx.base_minor(*total),
-        });
-    }
-
-    // Surplus flows to savings.
-    if total_income > total_expense {
-        nodes.push(SankeyNode {
-            id: "savings".into(),
-            label: "Savings".into(),
-            kind: "savings".into(),
-        });
-        links.push(SankeyLink {
-            source: "center".into(),
-            target: "savings".into(),
-            value_minor: fx.base_minor(total_income - total_expense),
-        });
-    }
-
-    Ok(SankeyGraph {
-        currency: base,
-        nodes,
-        links,
-    })
-}
-
-// ---- account balances ----------------------------------------------------
-
-fn class_of(kind: &str) -> &'static str {
-    match kind {
-        "cash" | "bank" | "savings" => "cash",
-        "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan" | "liability" => {
-            "liability"
-        }
-        "shares_nz" | "shares_us" | "shares_private" => "investment",
-        _ => "asset",
-    }
-}
-
-/// Current value of each (non-archived) account plus a base-currency total.
-#[tracing::instrument(level = "debug", skip_all, fields(query = ?q))]
-pub async fn balances(db: &Db, q: &ReportQuery) -> AppResult<BalancesReport> {
-    let base = base_currency(db, q.currency.as_deref()).await?;
-    let fx = Fx::load(db, base.clone()).await?;
-    let as_of =
-        q.to.as_deref()
+        // Resolve the reporting window.
+        let today = self.clock.today();
+        let to = q.to.as_deref().and_then(parse_date).unwrap_or(today);
+        let earliest = tx_by_acct
+            .values()
+            .flatten()
+            .map(|(d, _)| *d)
+            .chain(val_by_acct.values().flatten().map(|(d, _, _)| *d))
+            .min();
+        let from = q
+            .from
+            .as_deref()
             .and_then(parse_date)
-            .unwrap_or_else(|| Utc::now().date_naive());
+            .or(earliest)
+            .unwrap_or_else(|| to - chrono::Duration::days(365));
 
-    let accounts = sure_dal::reports::active_accounts(db).await?;
-    let (tx_by_acct, val_by_acct) = load_ledger(db).await?;
+        let sample_dates = sample_dates(from, to, q.interval.as_deref().unwrap_or("month"));
 
-    let mut out = Vec::new();
-    let mut total = 0.0;
-    for a in &accounts {
-        let (value_minor, ccy) =
-            account_value_at(a.id, &a.currency_code, as_of, &tx_by_acct, &val_by_acct);
-        total += fx.to_base_major(value_minor, &ccy);
-        out.push(AccountBalance {
-            account_id: a.id,
-            name: a.name.clone(),
-            kind: a.kind.clone(),
-            class: class_of(&a.kind).to_string(),
-            currency_code: ccy,
-            value_minor,
-        });
-    }
-
-    Ok(BalancesReport {
-        currency: base,
-        as_of: as_of.to_string(),
-        total_minor: fx.base_minor(total),
-        accounts: out,
-    })
-}
-
-// ---- asset equity position (property paid-off %) -------------------------
-
-type Ledger = (
-    HashMap<i64, Vec<(NaiveDate, i64)>>,
-    HashMap<i64, Vec<(NaiveDate, i64, String)>>,
-);
-
-/// Load transactions + valuations indexed per account, for point-in-time balances.
-#[tracing::instrument(level = "debug", skip_all)]
-async fn load_ledger(db: &Db) -> AppResult<Ledger> {
-    let txns = sure_dal::reports::transactions(db).await?;
-    let vals = sure_dal::reports::valuations(db).await?;
-    let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
-    for t in &txns {
-        if let Some(d) = parse_date(&t.posted_at) {
-            tx_by_acct
-                .entry(t.account_id)
-                .or_default()
-                .push((d, t.amount_minor));
+        let mut points = Vec::with_capacity(sample_dates.len());
+        for date in sample_dates {
+            let mut assets = 0.0f64;
+            let mut liabilities = 0.0f64;
+            for a in &accounts {
+                let (value_minor, ccy) =
+                    account_value_at(a.id, &a.currency_code, date, &tx_by_acct, &val_by_acct);
+                let base_major = fx.to_base_major(value_minor, &ccy);
+                if base_major >= 0.0 {
+                    assets += base_major;
+                } else {
+                    liabilities += base_major;
+                }
+            }
+            points.push(NetWorthPoint {
+                as_of: date.to_string(),
+                net_worth_minor: fx.base_minor(assets + liabilities),
+                assets_minor: fx.base_minor(assets),
+                liabilities_minor: fx.base_minor(liabilities),
+            });
         }
+
+        Ok(NetWorthSeries {
+            currency: base,
+            points,
+        })
     }
-    let mut val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>> = HashMap::new();
-    for v in &vals {
-        if let Some(d) = parse_date(&v.as_of) {
-            val_by_acct.entry(v.account_id).or_default().push((
-                d,
-                v.value_minor,
-                v.currency_code.clone(),
-            ));
+
+    /// Income/expense totals per top-level category for the period.
+    pub async fn category_breakdown(&self, q: &ReportQuery) -> AppResult<CategoryBreakdown> {
+        let base = self.base_currency(q.currency.as_deref()).await?;
+        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        let cats = Categories::load(self.reports.as_ref()).await?;
+        let (from, to) = self.window(q.from.as_deref(), q.to.as_deref());
+        let spend = load_spend(
+            self.reports.as_ref(),
+            &cats,
+            from,
+            to,
+            q.include_one_off.unwrap_or(false),
+        )
+        .await?;
+
+        // key 0 => uncategorised.
+        let mut income: HashMap<i64, f64> = HashMap::new();
+        let mut expense: HashMap<i64, f64> = HashMap::new();
+        for t in &spend {
+            let key = t.category_id.map(|c| cats.top_ancestor(c)).unwrap_or(0);
+            let base_major = fx.to_base_major(t.amount_minor.abs(), &t.currency_code);
+            if t.amount_minor >= 0 {
+                *income.entry(key).or_default() += base_major;
+            } else {
+                *expense.entry(key).or_default() += base_major;
+            }
         }
-    }
-    Ok((tx_by_acct, val_by_acct))
-}
 
-/// The equity position of an asset: its value, the liabilities secured against it,
-/// total debt, equity, and the paid-off percentage.
-#[tracing::instrument(level = "debug", skip_all, fields(account_id = %id, query = ?q))]
-pub async fn equity_position(db: &Db, id: i64, q: &ReportQuery) -> AppResult<EquityPosition> {
-    let base = base_currency(db, q.currency.as_deref()).await?;
-    let fx = Fx::load(db, base.clone()).await?;
-    let as_of =
-        q.to.as_deref()
-            .and_then(parse_date)
-            .unwrap_or_else(|| Utc::now().date_naive());
+        let to_totals = |m: HashMap<i64, f64>| -> Vec<CategoryTotal> {
+            let mut v: Vec<CategoryTotal> = m
+                .into_iter()
+                .map(|(key, total)| CategoryTotal {
+                    category_id: (key != 0).then_some(key),
+                    name: if key == 0 {
+                        "Uncategorised".to_string()
+                    } else {
+                        cats.names.get(&key).cloned().unwrap_or_else(|| "?".into())
+                    },
+                    color: if key == 0 {
+                        None
+                    } else {
+                        cats.colors.get(&key).cloned().flatten()
+                    },
+                    total_minor: fx.base_minor(total),
+                })
+                .collect();
+            v.sort_by_key(|t| std::cmp::Reverse(t.total_minor));
+            v
+        };
 
-    let asset = sure_dal::reports::account(db, id).await?;
-    let liabs = sure_dal::reports::secured_liabilities(db, id).await?;
-
-    let (tx_by_acct, val_by_acct) = load_ledger(db).await?;
-
-    let (v_minor, v_ccy) = account_value_at(
-        asset.id,
-        &asset.currency_code,
-        as_of,
-        &tx_by_acct,
-        &val_by_acct,
-    );
-    let value_base = fx.to_base_major(v_minor, &v_ccy).max(0.0);
-
-    let mut total_debt = 0.0;
-    let mut liabilities = Vec::new();
-    for l in &liabs {
-        let (lm, lccy) = account_value_at(l.id, &l.currency_code, as_of, &tx_by_acct, &val_by_acct);
-        // Liabilities carry a negative balance; the debt is its magnitude.
-        let debt = fx.to_base_major(lm, &lccy).min(0.0).abs();
-        total_debt += debt;
-        liabilities.push(SecuredLiability {
-            account_id: l.id,
-            name: l.name.clone(),
-            kind: l.kind.clone(),
-            balance_minor: fx.base_minor(debt),
-        });
+        Ok(CategoryBreakdown {
+            currency: base,
+            from: from.to_string(),
+            to: to.to_string(),
+            income: to_totals(income),
+            expense: to_totals(expense),
+        })
     }
 
-    let equity = value_base - total_debt;
-    let paid_off_pct = if value_base > 0.0 {
-        ((equity / value_base) * 100.0).clamp(0.0, 100.0)
-    } else {
-        0.0
-    };
+    /// Money-flow graph: income categories -> cash flow -> expense categories (+ savings).
+    pub async fn sankey(&self, q: &ReportQuery) -> AppResult<SankeyGraph> {
+        let base = self.base_currency(q.currency.as_deref()).await?;
+        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        let cats = Categories::load(self.reports.as_ref()).await?;
+        let (from, to) = self.window(q.from.as_deref(), q.to.as_deref());
+        let spend = load_spend(
+            self.reports.as_ref(),
+            &cats,
+            from,
+            to,
+            q.include_one_off.unwrap_or(false),
+        )
+        .await?;
 
-    Ok(EquityPosition {
-        account_id: asset.id,
-        name: asset.name,
-        currency: base,
-        as_of: as_of.to_string(),
-        value_minor: fx.base_minor(value_base),
-        total_debt_minor: fx.base_minor(total_debt),
-        equity_minor: fx.base_minor(equity),
-        paid_off_pct,
-        liabilities,
-    })
+        let mut income: HashMap<i64, f64> = HashMap::new();
+        let mut expense: HashMap<i64, f64> = HashMap::new();
+        for t in &spend {
+            let key = t.category_id.map(|c| cats.top_ancestor(c)).unwrap_or(0);
+            let base_major = fx.to_base_major(t.amount_minor.abs(), &t.currency_code);
+            if t.amount_minor >= 0 {
+                *income.entry(key).or_default() += base_major;
+            } else {
+                *expense.entry(key).or_default() += base_major;
+            }
+        }
+
+        let label = |key: i64| -> String {
+            if key == 0 {
+                "Uncategorised".to_string()
+            } else {
+                cats.names.get(&key).cloned().unwrap_or_else(|| "?".into())
+            }
+        };
+
+        let mut nodes = vec![SankeyNode {
+            id: "center".into(),
+            label: "Cash flow".into(),
+            kind: "center".into(),
+        }];
+        let mut links = Vec::new();
+
+        let mut total_income = 0.0;
+        for (key, total) in &income {
+            total_income += *total;
+            let id = format!("in:{key}");
+            nodes.push(SankeyNode {
+                id: id.clone(),
+                label: label(*key),
+                kind: "income".into(),
+            });
+            links.push(SankeyLink {
+                source: id,
+                target: "center".into(),
+                value_minor: fx.base_minor(*total),
+            });
+        }
+
+        let mut total_expense = 0.0;
+        for (key, total) in &expense {
+            total_expense += *total;
+            let id = format!("out:{key}");
+            nodes.push(SankeyNode {
+                id: id.clone(),
+                label: label(*key),
+                kind: "expense".into(),
+            });
+            links.push(SankeyLink {
+                source: "center".into(),
+                target: id,
+                value_minor: fx.base_minor(*total),
+            });
+        }
+
+        // Surplus flows to savings.
+        if total_income > total_expense {
+            nodes.push(SankeyNode {
+                id: "savings".into(),
+                label: "Savings".into(),
+                kind: "savings".into(),
+            });
+            links.push(SankeyLink {
+                source: "center".into(),
+                target: "savings".into(),
+                value_minor: fx.base_minor(total_income - total_expense),
+            });
+        }
+
+        Ok(SankeyGraph {
+            currency: base,
+            nodes,
+            links,
+        })
+    }
+
+    /// Current value of each (non-archived) account plus a base-currency total.
+    pub async fn balances(&self, q: &ReportQuery) -> AppResult<BalancesReport> {
+        let base = self.base_currency(q.currency.as_deref()).await?;
+        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        let as_of =
+            q.to.as_deref()
+                .and_then(parse_date)
+                .unwrap_or_else(|| self.clock.today());
+
+        let accounts = self.reports.active_accounts().await?;
+        let (tx_by_acct, val_by_acct) = load_ledger(self.reports.as_ref()).await?;
+
+        let mut out = Vec::new();
+        let mut total = 0.0;
+        for a in &accounts {
+            let (value_minor, ccy) =
+                account_value_at(a.id, &a.currency_code, as_of, &tx_by_acct, &val_by_acct);
+            total += fx.to_base_major(value_minor, &ccy);
+            out.push(AccountBalance {
+                account_id: a.id,
+                name: a.name.clone(),
+                kind: a.kind.clone(),
+                class: class_of(&a.kind).to_string(),
+                currency_code: ccy,
+                value_minor,
+            });
+        }
+
+        Ok(BalancesReport {
+            currency: base,
+            as_of: as_of.to_string(),
+            total_minor: fx.base_minor(total),
+            accounts: out,
+        })
+    }
+
+    /// The equity position of an asset: its value, the liabilities secured against it,
+    /// total debt, equity, and the paid-off percentage.
+    pub async fn equity_position(&self, id: i64, q: &ReportQuery) -> AppResult<EquityPosition> {
+        let base = self.base_currency(q.currency.as_deref()).await?;
+        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        let as_of =
+            q.to.as_deref()
+                .and_then(parse_date)
+                .unwrap_or_else(|| self.clock.today());
+
+        let asset = self.reports.account(id).await?;
+        let liabs = self.reports.secured_liabilities(id).await?;
+
+        let (tx_by_acct, val_by_acct) = load_ledger(self.reports.as_ref()).await?;
+
+        let (v_minor, v_ccy) = account_value_at(
+            asset.id,
+            &asset.currency_code,
+            as_of,
+            &tx_by_acct,
+            &val_by_acct,
+        );
+        let value_base = fx.to_base_major(v_minor, &v_ccy).max(0.0);
+
+        let mut total_debt = 0.0;
+        let mut liabilities = Vec::new();
+        for l in &liabs {
+            let (lm, lccy) =
+                account_value_at(l.id, &l.currency_code, as_of, &tx_by_acct, &val_by_acct);
+            // Liabilities carry a negative balance; the debt is its magnitude.
+            let debt = fx.to_base_major(lm, &lccy).min(0.0).abs();
+            total_debt += debt;
+            liabilities.push(SecuredLiability {
+                account_id: l.id,
+                name: l.name.clone(),
+                kind: l.kind.clone(),
+                balance_minor: fx.base_minor(debt),
+            });
+        }
+
+        let equity = value_base - total_debt;
+        let paid_off_pct = if value_base > 0.0 {
+            ((equity / value_base) * 100.0).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+
+        Ok(EquityPosition {
+            account_id: asset.id,
+            name: asset.name,
+            currency: base,
+            as_of: as_of.to_string(),
+            value_minor: fx.base_minor(value_base),
+            total_debt_minor: fx.base_minor(total_debt),
+            equity_minor: fx.base_minor(equity),
+            paid_off_pct,
+            liabilities,
+        })
+    }
 }
 
 #[cfg(test)]

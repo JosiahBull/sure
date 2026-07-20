@@ -15,6 +15,9 @@ sure-core = { workspace = true, features = ["sqlx"] }
 # Implements the generic scheduler's storage port (`TaskStateStore`) against SQLite —
 # the DAL is the only crate that talks to the database.
 sure-scheduler = { workspace = true }
+# Implements sure-app's repo ports (`SqliteStore`) against SQLite — the SQL itself stays
+# in this crate's existing per-entity modules; `store.rs` only maps row shapes.
+sure-app = { workspace = true }
 sqlx = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

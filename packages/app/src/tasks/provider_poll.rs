@@ -1,30 +1,32 @@
 //! Generalized background poller: syncs every enabled provider that doesn't need a
 //! human-supplied payload (e.g. CSV import) — anything credential/API-based, today just
 //! `akahu`, gets this for free as new such kinds are added, with no per-kind wiring here.
-//! Persistence/audit reuses the same [`sync_provider`] path the manual sync route
-//! (`sure-api`'s `routes::providers::sync`) drives; scheduling (surviving restarts
+//! Persistence/audit reuses the same [`SyncService::sync_provider`] path the manual sync
+//! route (`sure-api`'s `routes::providers::sync`) drives; scheduling (surviving restarts
 //! without early re-runs) is handled generically by `sure_scheduler`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sure_dal::Db;
 use sure_providers::Registry;
 use sure_scheduler::ScheduledTask;
 
-use crate::sync::sync_provider;
+use crate::ports::ProviderRepo;
+use crate::sync::SyncService;
 
 /// Bank data itself only refreshes a few times a day upstream, so there's no value in
 /// polling more often than this (mirrors the reasoning behind `exchange_rates::POLL_INTERVAL`).
 const POLL_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 pub struct ProviderPollTask {
-    db: Db,
+    providers: Arc<dyn ProviderRepo>,
+    sync: Arc<SyncService>,
 }
 
 impl ProviderPollTask {
-    pub fn new(db: Db) -> Self {
-        Self { db }
+    pub fn new(providers: Arc<dyn ProviderRepo>, sync: Arc<SyncService>) -> Self {
+        Self { providers, sync }
     }
 }
 
@@ -40,7 +42,7 @@ impl ScheduledTask for ProviderPollTask {
 
     async fn run(&self) -> anyhow::Result<()> {
         let registry = Registry::new();
-        let providers = sure_dal::providers::list(&self.db).await?;
+        let providers = self.providers.list().await?;
 
         for provider in providers {
             if !provider.enabled {
@@ -60,7 +62,7 @@ impl ScheduledTask for ProviderPollTask {
             // Each provider's failure is already durably recorded (as an "error" sync
             // row) inside `sync_provider`, so one failing provider doesn't need to abort
             // the rest of the batch — just log and move on.
-            if let Err(e) = sync_provider(&self.db, provider, None).await {
+            if let Err(e) = self.sync.sync_provider(provider, None).await {
                 tracing::warn!(provider = %name, error = %e, "scheduled provider sync failed");
             }
         }

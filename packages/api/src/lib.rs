@@ -76,21 +76,36 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         std::sync::Arc::new(db::scheduled_tasks::SqliteTaskStateStore::new(pool.clone()));
     let mut scheduler =
         sure_scheduler::Scheduler::new(task_state, std::time::Duration::from_secs(60));
+
+    // One store + clock for the scheduled tasks' ports (a separate instance from the one
+    // `AppState::new` builds for the HTTP handlers — both are stateless wrappers around
+    // clones of the same pool, so there's nothing to share).
+    let store = std::sync::Arc::new(sure_dal::store::SqliteStore::new(pool.clone()));
+    let clock = std::sync::Arc::new(sure_app::SystemClock);
+    let sync = std::sync::Arc::new(sure_app::sync::SyncService::new(
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        clock.clone(),
+    ));
+
     scheduler.register(Box::new(
         sure_app::tasks::exchange_rates::ExchangeRateTask::new(
-            pool.clone(),
+            store.clone(),
             std::sync::Arc::new(providers::FrankfurterProvider::new()),
         ),
     ));
     scheduler.register(Box::new(
-        sure_app::tasks::provider_poll::ProviderPollTask::new(pool.clone()),
+        sure_app::tasks::provider_poll::ProviderPollTask::new(store.clone(), sync),
     ));
     scheduler.register(Box::new(sure_app::stock_prices::StockPriceTask::new(
-        pool.clone(),
+        store.clone(),
+        store.clone(),
+        clock,
         std::sync::Arc::new(providers::YahooFinanceProvider::new()),
     )));
     scheduler.register(Box::new(
-        sure_app::tasks::transfer_link::TransferLinkTask::new(pool.clone()),
+        sure_app::tasks::transfer_link::TransferLinkTask::new(store),
     ));
     scheduler.spawn();
 

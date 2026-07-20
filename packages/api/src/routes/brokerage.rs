@@ -81,7 +81,9 @@ pub async fn snapshot(
     ensure_brokerage(&st, id).await?;
     let provider = sure_providers::YahooFinanceProvider::new();
     Ok(Json(
-        sure_app::brokerage::snapshot(&st.db, Some(&provider), id, parse_as_of(&q)).await?,
+        st.brokerage
+            .snapshot(Some(&provider), id, parse_as_of(&q))
+            .await?,
     ))
 }
 
@@ -273,10 +275,10 @@ pub async fn import(
     // Backfill the daily valuation history in the background: it makes one upstream price
     // call per ticker then loops every day since inception, which is too slow to block the
     // upload response on. Idempotent, so the panel's "Backfill" button is the retry path.
-    let db = st.db.clone();
+    let brokerage = st.brokerage.clone();
     tokio::spawn(async move {
         let provider = sure_providers::YahooFinanceProvider::new();
-        if let Err(e) = sure_app::brokerage::backfill_history(&db, &provider, id).await {
+        if let Err(e) = brokerage.backfill_history(&provider, id).await {
             tracing::warn!(account_id = id, error = %e, "brokerage history backfill failed");
         }
     });
@@ -313,7 +315,9 @@ pub async fn revalue(
     ensure_brokerage(&st, id).await?;
     let provider = sure_providers::YahooFinanceProvider::new();
     Ok(Json(
-        sure_app::brokerage::revalue(&st.db, Some(&provider), id, parse_as_of(&q)).await?,
+        st.brokerage
+            .revalue(Some(&provider), id, parse_as_of(&q))
+            .await?,
     ))
 }
 
@@ -343,7 +347,7 @@ pub async fn backfill(
 ) -> AppResult<Json<BackfillResult>> {
     ensure_brokerage(&st, id).await?;
     let provider = sure_providers::YahooFinanceProvider::new();
-    let days = sure_app::brokerage::backfill_history(&st.db, &provider, id).await? as i64;
+    let days = st.brokerage.backfill_history(&provider, id).await? as i64;
     Ok(Json(BackfillResult { days }))
 }
 

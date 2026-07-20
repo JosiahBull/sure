@@ -1,14 +1,12 @@
 use std::collections::HashSet;
 
+use crate::error::{AppError, AppResult};
+use crate::providers::{ProviderAccount, ProviderKind, Registry};
+use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use sure_app::sync::sync_provider;
-
-use crate::error::{AppError, AppResult};
-use crate::providers::{ProviderAccount, ProviderKind, Registry};
-use crate::state::AppState;
 
 pub use sure_dal::providers::{
     LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderSync, SaveProvider,
@@ -152,7 +150,7 @@ pub async fn link(
     // durably recorded as an "error" sync row and doesn't undo the link — the user can
     // retry via "Sync now" once fixed.
     let id = provider.id;
-    if let Err(e) = sync_provider(&st.db, provider, None).await {
+    if let Err(e) = st.sync.sync_provider(provider, None).await {
         tracing::warn!(provider_id = id, error = %e, "initial sync after linking failed");
     }
     let provider = sure_dal::providers::get(&st.db, id).await?;
@@ -188,7 +186,7 @@ pub async fn link_group(
     let ids: Vec<i64> = providers.iter().map(|p| p.id).collect();
     for provider in providers {
         let id = provider.id;
-        if let Err(e) = sync_provider(&st.db, provider, None).await {
+        if let Err(e) = st.sync.sync_provider(provider, None).await {
             tracing::warn!(provider_id = id, error = %e, "initial sync after group-linking failed");
         }
     }
@@ -261,7 +259,9 @@ pub async fn sync(
 ) -> AppResult<Json<ProviderSync>> {
     let provider = sure_dal::providers::get(&st.db, id).await?;
     Ok(Json(
-        sync_provider(&st.db, provider, req.payload.as_deref()).await?,
+        st.sync
+            .sync_provider(provider, req.payload.as_deref())
+            .await?,
     ))
 }
 

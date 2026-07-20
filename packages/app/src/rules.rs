@@ -1,17 +1,20 @@
 //! Auto-classification rule engine: the `zen-expression` evaluation loop that decides,
 //! for each transaction, whether a rule matches and what it would change, plus the
 //! validation of a rule's expression. Persistence — rule CRUD, loading evaluation
-//! contexts, and writing/undoing a run's audit trail — lives in `sure_dal::rules`; this
-//! module owns only the evaluation and the orchestration that turns matches into the
-//! changes the DAL then persists.
+//! contexts, and writing/undoing a run's audit trail — lives behind the [`RuleRepo`]
+//! port (`sure_dal::rules` is the real implementation); this module owns only the
+//! evaluation and the orchestration that turns matches into the changes the DAL then
+//! persists.
+
+use std::sync::Arc;
 
 use serde_json::{json, Value};
 
 use sure_core::{
     AppError, AppResult, PreviewMatch, PreviewRequest, Rule, RulePreview, RunResult, SaveRule,
 };
-use sure_dal::rules::{PlannedApplication, TxCtx};
-use sure_dal::Db;
+
+use crate::ports::{PlannedApplication, RuleRepo, TxCtx};
 
 /// Mutable per-transaction state, updated as successive rules apply within a run.
 struct Current {
@@ -32,116 +35,126 @@ impl Current {
     }
 }
 
-/// Evaluate `rules` over every transaction, then persist the decided changes. The
-/// evaluation (which fields matched, what a rule would set) is done here; the DAL
-/// writes the run, the transaction updates, and the audit rows in one transaction.
-#[tracing::instrument(level = "debug", skip_all)]
-pub async fn run(
-    db: &Db,
-    rules: &[Rule],
-    rule_id: Option<i64>,
-    kind: &str,
-) -> AppResult<RunResult> {
-    let rows = sure_dal::rules::load_contexts(db).await?;
-    let mut matched = 0i64;
-    let mut applications = Vec::new();
-
-    for row in &rows {
-        let mut cur = Current::of(row);
-        for rule in rules {
-            if !rule.enabled {
-                continue;
-            }
-            if !expr_matches(&rule.expression, &build_context(row, &cur)) {
-                continue;
-            }
-            matched += 1;
-
-            // A category is "manual" when it's set but not by a rule.
-            let manual = cur.categorized_by_rule_id.is_none() && cur.category_id.is_some();
-            let mut new_category = cur.category_id;
-            let mut cat_changed = false;
-            if let Some(target) = rule.set_category_id {
-                if (!manual || rule.overwrite_manual) && cur.category_id != Some(target) {
-                    new_category = Some(target);
-                    cat_changed = true;
-                }
-            }
-            let mut new_one_off = cur.is_one_off;
-            let mut one_off_changed = false;
-            if let Some(v) = rule.set_one_off {
-                if cur.is_one_off != v {
-                    new_one_off = v;
-                    one_off_changed = true;
-                }
-            }
-            let mut new_merchant = cur.merchant_id;
-            let mut merchant_changed = false;
-            if let Some(m) = rule.set_merchant_id {
-                if cur.merchant_id != Some(m) {
-                    new_merchant = Some(m);
-                    merchant_changed = true;
-                }
-            }
-
-            if cat_changed || one_off_changed || merchant_changed {
-                let new_cat_by_rule = if cat_changed {
-                    Some(rule.id)
-                } else {
-                    cur.categorized_by_rule_id
-                };
-                applications.push(PlannedApplication {
-                    rule_id: rule.id,
-                    transaction_id: row.id,
-                    prev_category_id: cur.category_id,
-                    new_category_id: new_category,
-                    prev_categorized_by_rule_id: cur.categorized_by_rule_id,
-                    new_categorized_by_rule_id: new_cat_by_rule,
-                    prev_one_off: cur.is_one_off,
-                    new_one_off,
-                    prev_merchant_id: cur.merchant_id,
-                    new_merchant_id: new_merchant,
-                });
-                cur.category_id = new_category;
-                cur.categorized_by_rule_id = new_cat_by_rule;
-                cur.is_one_off = new_one_off;
-                cur.merchant_id = new_merchant;
-            }
-
-            if rule.stop_on_match {
-                break;
-            }
-        }
-    }
-
-    sure_dal::rules::persist_run(db, rule_id, kind, matched, applications).await
+pub struct RuleService {
+    rules: Arc<dyn RuleRepo>,
 }
 
-/// Preview which transactions an expression would match, without changing anything.
-#[tracing::instrument(level = "debug", skip_all)]
-pub async fn preview(db: &Db, req: &PreviewRequest) -> AppResult<RulePreview> {
-    validate_expression(&req.expression)?;
-    let limit = req.limit.unwrap_or(25).clamp(1, 500) as usize;
-    let rows = sure_dal::rules::load_contexts(db).await?;
-    let mut matched = 0i64;
-    let mut sample = Vec::new();
-    for row in &rows {
-        let cur = Current::of(row);
-        if expr_matches(&req.expression, &build_context(row, &cur)) {
-            matched += 1;
-            if sample.len() < limit {
-                sample.push(PreviewMatch {
-                    transaction_id: row.id,
-                    posted_at: row.posted_at.clone(),
-                    description: row.description.clone(),
-                    amount_minor: row.amount_minor,
-                    currency_code: row.currency_code.clone(),
-                    category_id: row.category_id,
-                });
+impl RuleService {
+    pub fn new(rules: Arc<dyn RuleRepo>) -> Self {
+        Self { rules }
+    }
+
+    /// Evaluate `rules` over every transaction, then persist the decided changes. The
+    /// evaluation (which fields matched, what a rule would set) is done here; the repo
+    /// writes the run, the transaction updates, and the audit rows in one transaction.
+    pub async fn run(
+        &self,
+        rules: &[Rule],
+        rule_id: Option<i64>,
+        kind: &str,
+    ) -> AppResult<RunResult> {
+        let rows = self.rules.load_contexts().await?;
+        let mut matched = 0i64;
+        let mut applications = Vec::new();
+
+        for row in &rows {
+            let mut cur = Current::of(row);
+            for rule in rules {
+                if !rule.enabled {
+                    continue;
+                }
+                if !expr_matches(&rule.expression, &build_context(row, &cur)) {
+                    continue;
+                }
+                matched += 1;
+
+                // A category is "manual" when it's set but not by a rule.
+                let manual = cur.categorized_by_rule_id.is_none() && cur.category_id.is_some();
+                let mut new_category = cur.category_id;
+                let mut cat_changed = false;
+                if let Some(target) = rule.set_category_id {
+                    if (!manual || rule.overwrite_manual) && cur.category_id != Some(target) {
+                        new_category = Some(target);
+                        cat_changed = true;
+                    }
+                }
+                let mut new_one_off = cur.is_one_off;
+                let mut one_off_changed = false;
+                if let Some(v) = rule.set_one_off {
+                    if cur.is_one_off != v {
+                        new_one_off = v;
+                        one_off_changed = true;
+                    }
+                }
+                let mut new_merchant = cur.merchant_id;
+                let mut merchant_changed = false;
+                if let Some(m) = rule.set_merchant_id {
+                    if cur.merchant_id != Some(m) {
+                        new_merchant = Some(m);
+                        merchant_changed = true;
+                    }
+                }
+
+                if cat_changed || one_off_changed || merchant_changed {
+                    let new_cat_by_rule = if cat_changed {
+                        Some(rule.id)
+                    } else {
+                        cur.categorized_by_rule_id
+                    };
+                    applications.push(PlannedApplication {
+                        rule_id: rule.id,
+                        transaction_id: row.id,
+                        prev_category_id: cur.category_id,
+                        new_category_id: new_category,
+                        prev_categorized_by_rule_id: cur.categorized_by_rule_id,
+                        new_categorized_by_rule_id: new_cat_by_rule,
+                        prev_one_off: cur.is_one_off,
+                        new_one_off,
+                        prev_merchant_id: cur.merchant_id,
+                        new_merchant_id: new_merchant,
+                    });
+                    cur.category_id = new_category;
+                    cur.categorized_by_rule_id = new_cat_by_rule;
+                    cur.is_one_off = new_one_off;
+                    cur.merchant_id = new_merchant;
+                }
+
+                if rule.stop_on_match {
+                    break;
+                }
             }
         }
+
+        self.rules
+            .persist_run(rule_id, kind, matched, applications)
+            .await
     }
-    Ok(RulePreview { matched, sample })
+
+    /// Preview which transactions an expression would match, without changing anything.
+    pub async fn preview(&self, req: &PreviewRequest) -> AppResult<RulePreview> {
+        validate_expression(&req.expression)?;
+        let limit = req.limit.unwrap_or(25).clamp(1, 500) as usize;
+        let rows = self.rules.load_contexts().await?;
+        let mut matched = 0i64;
+        let mut sample = Vec::new();
+        for row in &rows {
+            let cur = Current::of(row);
+            if expr_matches(&req.expression, &build_context(row, &cur)) {
+                matched += 1;
+                if sample.len() < limit {
+                    sample.push(PreviewMatch {
+                        transaction_id: row.id,
+                        posted_at: row.posted_at.clone(),
+                        description: row.description.clone(),
+                        amount_minor: row.amount_minor,
+                        currency_code: row.currency_code.clone(),
+                        category_id: row.category_id,
+                    });
+                }
+            }
+        }
+        Ok(RulePreview { matched, sample })
+    }
 }
 
 fn build_context(row: &TxCtx, cur: &Current) -> Value {
@@ -216,4 +229,113 @@ pub fn validate_expression(expression: &str) -> AppResult<()> {
     zen_expression::evaluate_expression(expression.trim(), sample.into())
         .map_err(|e| AppError::validation(format!("invalid expression: {e}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+
+    use super::*;
+
+    fn ctx(id: i64, amount_minor: i64, category_id: Option<i64>) -> TxCtx {
+        TxCtx {
+            id,
+            account_id: 1,
+            posted_at: "2026-01-05".to_string(),
+            amount_minor,
+            currency_code: "NZD".to_string(),
+            decimal_places: 2,
+            description: "Flat White".to_string(),
+            merchant: Some("The Roastery".to_string()),
+            merchant_id: None,
+            notes: None,
+            category_id,
+            is_one_off: false,
+            categorized_by_rule_id: None,
+            account_name: "Everyday".to_string(),
+            account_kind: "bank".to_string(),
+        }
+    }
+
+    fn rule(id: i64, expression: &str, set_category_id: i64) -> Rule {
+        Rule {
+            id,
+            name: "categorize coffee".to_string(),
+            description: None,
+            expression: expression.to_string(),
+            set_category_id: Some(set_category_id),
+            set_one_off: None,
+            set_merchant_id: None,
+            overwrite_manual: false,
+            stop_on_match: true,
+            priority: 0,
+            enabled: true,
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+        }
+    }
+
+    /// Records exactly what `RuleService::run` decided to persist, without a database.
+    #[derive(Default)]
+    struct FakeRules {
+        contexts: Vec<TxCtx>,
+    }
+    #[async_trait]
+    impl RuleRepo for FakeRules {
+        async fn load_contexts(&self) -> AppResult<Vec<TxCtx>> {
+            Ok(self.contexts.clone())
+        }
+        async fn persist_run(
+            &self,
+            rule_id: Option<i64>,
+            _kind: &str,
+            matched: i64,
+            applications: Vec<PlannedApplication>,
+        ) -> AppResult<RunResult> {
+            Ok(RunResult {
+                run_id: rule_id.unwrap_or(0),
+                matched,
+                changed: applications.len() as i64,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_matching_rule_categorizes_an_uncategorized_transaction() {
+        let repo = Arc::new(FakeRules {
+            contexts: vec![ctx(1, -450, None), ctx(2, 500, None)],
+        });
+        let svc = RuleService::new(repo);
+        let r = rule(1, "merchant == \"The Roastery\"", 42);
+
+        let result = svc.run(&[r], Some(1), "single").await.unwrap();
+
+        assert_eq!(result.matched, 2); // both rows share the same merchant
+        assert_eq!(result.changed, 2); // both were uncategorized, so both changed
+    }
+
+    #[tokio::test]
+    async fn a_manual_category_is_protected_unless_overwrite_is_set() {
+        let repo = Arc::new(FakeRules {
+            contexts: vec![ctx(1, -450, Some(7))], // manually categorized already
+        });
+        let svc = RuleService::new(repo);
+        let mut r = rule(1, "merchant == \"The Roastery\"", 42);
+        r.overwrite_manual = false;
+
+        let result = svc.run(&[r], Some(1), "single").await.unwrap();
+
+        assert_eq!(result.matched, 1);
+        assert_eq!(result.changed, 0); // manual category left untouched
+    }
+
+    #[test]
+    fn an_empty_expression_is_rejected() {
+        assert!(validate_expression("").is_err());
+    }
+
+    #[test]
+    fn a_syntactically_invalid_expression_is_rejected() {
+        assert!(validate_expression("this is not zen-expression syntax +++").is_err());
+    }
 }

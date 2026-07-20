@@ -134,7 +134,7 @@ pub async fn run_one(
     Path(id): Path<i64>,
 ) -> AppResult<Json<RunResult>> {
     let rule = sure_dal::rules::get(&st.db, id).await?;
-    let result = sure_app::rules::run(&st.db, &[rule], Some(id), "single").await?;
+    let result = st.rules.run(&[rule], Some(id), "single").await?;
     Ok(Json(result))
 }
 
@@ -150,7 +150,7 @@ pub async fn run_one(
 )]
 pub async fn run_all(State(st): State<AppState>) -> AppResult<Json<RunResult>> {
     let rules = sure_dal::rules::enabled_rules(&st.db).await?;
-    let result = sure_app::rules::run(&st.db, &rules, None, "all").await?;
+    let result = st.rules.run(&rules, None, "all").await?;
     Ok(Json(result))
 }
 
@@ -168,7 +168,7 @@ pub async fn preview(
     State(st): State<AppState>,
     Json(req): Json<PreviewRequest>,
 ) -> AppResult<Json<RulePreview>> {
-    Ok(Json(sure_app::rules::preview(&st.db, &req).await?))
+    Ok(Json(st.rules.preview(&req).await?))
 }
 
 /// List rule runs (most recent first) — the audit trail.

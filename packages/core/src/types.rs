@@ -332,7 +332,7 @@ impl AccountMetadata {
 // directly as its request/response bodies.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Account {
     pub id: i64,
     pub name: String,

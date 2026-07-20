@@ -10,7 +10,6 @@ path = "src/lib.rs"
 
 [dependencies]
 sure-core = { workspace = true }
-sure-dal = { workspace = true }
 sure-providers = { workspace = true }
 sure-scheduler = { workspace = true }
 chrono = { workspace = true }

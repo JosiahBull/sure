@@ -7,6 +7,8 @@ use std::collections::HashMap;
 
 use sure_core::AppResult;
 
+use crate::ports::FxRatesRepo;
+
 pub struct Fx {
     base: String,
     /// (base_code, quote_code) => 1 base = rate quote.
@@ -15,16 +17,17 @@ pub struct Fx {
 }
 
 impl Fx {
-    pub async fn load(db: &sure_dal::Db, base: String) -> AppResult<Self> {
-        let decimals = sure_dal::reports::currency_decimals(db)
+    pub async fn load(repo: &dyn FxRatesRepo, base: String) -> AppResult<Self> {
+        let decimals = repo
+            .currency_decimals()
             .await?
             .into_iter()
-            .map(|c| (c.code, c.decimal_places as i32))
+            .map(|c| (c.code, c.decimal_places))
             .collect();
 
         // Ordered by date so later rows overwrite earlier => the latest rate wins.
         let mut rates = HashMap::new();
-        for r in sure_dal::reports::exchange_rates(db).await? {
+        for r in repo.exchange_rates().await? {
             if let Ok(v) = r.rate.parse::<f64>() {
                 rates.insert((r.base_code, r.quote_code), v);
             }

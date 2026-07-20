@@ -309,11 +309,7 @@ pub async fn net_worth(
     State(st): State<AppState>,
     Query(q): Query<NetWorthQuery>,
 ) -> AppResult<Json<NetWorthSeries>> {
-    Ok(Json(
-        sure_app::reports::net_worth(&st.db, &(&q).into())
-            .await?
-            .into(),
-    ))
+    Ok(Json(st.reports.net_worth(&(&q).into()).await?.into()))
 }
 
 /// Income/expense totals per top-level category for the period.
@@ -332,9 +328,7 @@ pub async fn category_breakdown(
     Query(q): Query<ReportQuery>,
 ) -> AppResult<Json<CategoryBreakdown>> {
     Ok(Json(
-        sure_app::reports::category_breakdown(&st.db, &(&q).into())
-            .await?
-            .into(),
+        st.reports.category_breakdown(&(&q).into()).await?.into(),
     ))
 }
 
@@ -353,11 +347,7 @@ pub async fn sankey(
     State(st): State<AppState>,
     Query(q): Query<ReportQuery>,
 ) -> AppResult<Json<SankeyGraph>> {
-    Ok(Json(
-        sure_app::reports::sankey(&st.db, &(&q).into())
-            .await?
-            .into(),
-    ))
+    Ok(Json(st.reports.sankey(&(&q).into()).await?.into()))
 }
 
 /// Current value of each (non-archived) account plus a base-currency total.
@@ -375,11 +365,7 @@ pub async fn balances(
     State(st): State<AppState>,
     Query(q): Query<ReportQuery>,
 ) -> AppResult<Json<BalancesReport>> {
-    Ok(Json(
-        sure_app::reports::balances(&st.db, &(&q).into())
-            .await?
-            .into(),
-    ))
+    Ok(Json(st.reports.balances(&(&q).into()).await?.into()))
 }
 
 /// The equity position of an asset: its value, the liabilities secured against it,
@@ -401,9 +387,7 @@ pub async fn equity_position(
     Query(q): Query<ReportQuery>,
 ) -> AppResult<Json<EquityPosition>> {
     Ok(Json(
-        sure_app::reports::equity_position(&st.db, id, &(&q).into())
-            .await?
-            .into(),
+        st.reports.equity_position(id, &(&q).into()).await?.into(),
     ))
 }
 

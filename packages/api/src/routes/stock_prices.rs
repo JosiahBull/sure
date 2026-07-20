@@ -60,10 +60,16 @@ pub async fn get_price(
         .unwrap_or_else(|| Utc::now().date_naive());
 
     let provider = sure_providers::YahooFinanceProvider::new();
-    sure_app::stock_prices::price_at(&st.db, &provider, &ticker, &exchange, as_of)
-        .await?
-        .map(Json)
-        .ok_or(AppError::NotFound("stock price"))
+    sure_app::stock_prices::price_at(
+        st.stock_prices.as_ref(),
+        &provider,
+        &ticker,
+        &exchange,
+        as_of,
+    )
+    .await?
+    .map(Json)
+    .ok_or(AppError::NotFound("stock price"))
 }
 
 pub fn router() -> Router<AppState> {
