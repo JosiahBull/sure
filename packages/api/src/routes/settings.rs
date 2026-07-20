@@ -5,7 +5,7 @@ use axum::{Json, Router};
 use crate::error::AppResult;
 use crate::state::AppState;
 
-pub use sure_dal::settings::{Settings, UpdateSettings};
+pub use sure_core::{Settings, UpdateSettings};
 
 // OTEL span names for this module's handlers.
 const SETTINGS_GET: &str = "settings.get";
@@ -22,7 +22,7 @@ const SETTINGS_UPDATE: &str = "settings.update";
     err(level = tracing::Level::WARN),
 )]
 pub async fn get_settings(State(st): State<AppState>) -> AppResult<Json<Settings>> {
-    Ok(Json(sure_dal::settings::get(&st.db).await?))
+    Ok(Json(st.settings.get().await?))
 }
 
 /// Update global settings (currently just the base reporting currency).
@@ -40,7 +40,7 @@ pub async fn update_settings(
     State(st): State<AppState>,
     Json(input): Json<UpdateSettings>,
 ) -> AppResult<Json<Settings>> {
-    Ok(Json(sure_dal::settings::update(&st.db, input).await?))
+    Ok(Json(st.settings.update(input).await?))
 }
 
 pub fn router() -> Router<AppState> {

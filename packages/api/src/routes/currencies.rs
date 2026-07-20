@@ -8,7 +8,7 @@ use crate::state::AppState;
 
 // Types + queries live in the DAL; re-export so the OpenAPI registration
 // (`crate::routes::currencies::Currency`, ...) and handler annotations still resolve.
-pub use sure_dal::currencies::{Currency, NewCurrency};
+pub use sure_core::{Currency, NewCurrency};
 
 // OTEL span names for this module's handlers.
 const CURRENCIES_LIST: &str = "currencies.list";
@@ -26,7 +26,7 @@ const CURRENCIES_DELETE: &str = "currencies.delete";
     err(level = tracing::Level::WARN),
 )]
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Currency>>> {
-    Ok(Json(sure_dal::currencies::list(&st.db).await?))
+    Ok(Json(st.currencies.list().await?))
 }
 
 /// Create or replace a currency (upsert on `code`).
@@ -46,7 +46,7 @@ pub async fn create(
 ) -> AppResult<(StatusCode, Json<Currency>)> {
     Ok((
         StatusCode::CREATED,
-        Json(sure_dal::currencies::upsert(&st.db, input).await?),
+        Json(st.currencies.upsert(input).await?),
     ))
 }
 
@@ -63,7 +63,7 @@ pub async fn create(
     err(level = tracing::Level::WARN),
 )]
 pub async fn delete(State(st): State<AppState>, Path(code): Path<String>) -> AppResult<StatusCode> {
-    sure_dal::currencies::delete(&st.db, &code).await?;
+    st.currencies.delete(&code).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -6,7 +6,7 @@ use axum::{Json, Router};
 use crate::error::AppResult;
 use crate::state::AppState;
 
-pub use sure_dal::transactions::{
+pub use sure_core::{
     BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,
     TxQuery,
 };
@@ -38,7 +38,7 @@ pub async fn list(
     State(st): State<AppState>,
     Query(q): Query<TxQuery>,
 ) -> AppResult<Json<Vec<Transaction>>> {
-    Ok(Json(sure_dal::transactions::list(&st.db, q).await?))
+    Ok(Json(st.transactions.list(q).await?))
 }
 
 /// Fetch one transaction.
@@ -57,7 +57,7 @@ pub async fn get_one(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Transaction>> {
-    Ok(Json(sure_dal::transactions::get(&st.db, id).await?))
+    Ok(Json(st.transactions.get(id).await?))
 }
 
 /// Create a transaction.
@@ -77,7 +77,7 @@ pub async fn create(
 ) -> AppResult<(StatusCode, Json<Transaction>)> {
     Ok((
         StatusCode::CREATED,
-        Json(sure_dal::transactions::create(&st.db, input).await?),
+        Json(st.transactions.create(input).await?),
     ))
 }
 
@@ -100,9 +100,7 @@ pub async fn update(
     Path(id): Path<i64>,
     Json(input): Json<SaveTransaction>,
 ) -> AppResult<Json<Transaction>> {
-    Ok(Json(
-        sure_dal::transactions::update(&st.db, id, input).await?,
-    ))
+    Ok(Json(st.transactions.update(id, input).await?))
 }
 
 /// Delete a transaction (also clears the other side of any transfer link).
@@ -118,7 +116,7 @@ pub async fn update(
     err(level = tracing::Level::WARN),
 )]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
-    sure_dal::transactions::delete(&st.db, id).await?;
+    st.transactions.delete(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -138,7 +136,7 @@ pub async fn bulk_update(
     State(st): State<AppState>,
     Json(input): Json<BulkUpdate>,
 ) -> AppResult<Json<BulkResult>> {
-    let affected = sure_dal::transactions::bulk_update(&st.db, input).await?;
+    let affected = st.transactions.bulk_update(input).await?;
     Ok(Json(BulkResult { affected }))
 }
 
@@ -157,7 +155,7 @@ pub async fn bulk_delete(
     State(st): State<AppState>,
     Json(input): Json<BulkDelete>,
 ) -> AppResult<Json<BulkResult>> {
-    let affected = sure_dal::transactions::bulk_delete(&st.db, &input.ids).await?;
+    let affected = st.transactions.bulk_delete(&input.ids).await?;
     Ok(Json(BulkResult { affected }))
 }
 
@@ -179,7 +177,7 @@ pub async fn link(
     Path(id): Path<i64>,
     Json(req): Json<LinkRequest>,
 ) -> AppResult<Json<Transaction>> {
-    Ok(Json(sure_dal::transactions::link(&st.db, id, req).await?))
+    Ok(Json(st.transactions.link(id, req).await?))
 }
 
 /// Remove a transfer link from both sides.
@@ -198,7 +196,7 @@ pub async fn unlink(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Transaction>> {
-    Ok(Json(sure_dal::transactions::unlink(&st.db, id).await?))
+    Ok(Json(st.transactions.unlink(id).await?))
 }
 
 /// Create a transfer: two reciprocally-linked transactions (outflow + inflow).
@@ -218,7 +216,7 @@ pub async fn create_transfer(
 ) -> AppResult<(StatusCode, Json<Vec<Transaction>>)> {
     Ok((
         StatusCode::CREATED,
-        Json(sure_dal::transactions::create_transfer(&st.db, req).await?),
+        Json(st.transactions.create_transfer(req).await?),
     ))
 }
 

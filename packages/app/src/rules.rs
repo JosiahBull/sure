@@ -44,6 +44,49 @@ impl RuleService {
         Self { rules }
     }
 
+    // ---- thin CRUD passthrough — no orchestration, so it lives directly on the repo
+    // port rather than duplicating logic here; kept on RuleService so routes/rules.rs
+    // has one handle for everything rule-related. ----
+
+    pub async fn list(&self) -> AppResult<Vec<Rule>> {
+        self.rules.list().await
+    }
+
+    pub async fn enabled_rules(&self) -> AppResult<Vec<Rule>> {
+        self.rules.enabled_rules().await
+    }
+
+    pub async fn get(&self, id: i64) -> AppResult<Rule> {
+        self.rules.get(id).await
+    }
+
+    pub async fn create(&self, input: SaveRule) -> AppResult<Rule> {
+        self.rules.create(input).await
+    }
+
+    pub async fn update(&self, id: i64, input: SaveRule) -> AppResult<Rule> {
+        self.rules.update(id, input).await
+    }
+
+    pub async fn delete(&self, id: i64) -> AppResult<()> {
+        self.rules.delete(id).await
+    }
+
+    pub async fn list_runs(&self) -> AppResult<Vec<sure_core::RuleRun>> {
+        self.rules.list_runs().await
+    }
+
+    pub async fn run_applications(
+        &self,
+        run_id: i64,
+    ) -> AppResult<Vec<sure_core::RuleApplicationDetail>> {
+        self.rules.run_applications(run_id).await
+    }
+
+    pub async fn undo_run(&self, run_id: i64) -> AppResult<RunResult> {
+        self.rules.undo_run(run_id).await
+    }
+
     /// Evaluate `rules` over every transaction, then persist the decided changes. The
     /// evaluation (which fields matched, what a rule would set) is done here; the repo
     /// writes the run, the transaction updates, and the audit rows in one transaction.
@@ -234,6 +277,7 @@ pub fn validate_expression(expression: &str) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
+    use sure_core::{RuleApplicationDetail, RuleRun};
 
     use super::*;
 
@@ -297,6 +341,33 @@ mod tests {
                 matched,
                 changed: applications.len() as i64,
             })
+        }
+        async fn list(&self) -> AppResult<Vec<Rule>> {
+            unreachable!("RuleService.run/preview never list rules")
+        }
+        async fn enabled_rules(&self) -> AppResult<Vec<Rule>> {
+            unreachable!("RuleService.run/preview never list rules")
+        }
+        async fn get(&self, _id: i64) -> AppResult<Rule> {
+            unreachable!("RuleService.run/preview never fetch a rule by id")
+        }
+        async fn create(&self, _input: SaveRule) -> AppResult<Rule> {
+            unreachable!("RuleService.run/preview never create a rule")
+        }
+        async fn update(&self, _id: i64, _input: SaveRule) -> AppResult<Rule> {
+            unreachable!("RuleService.run/preview never update a rule")
+        }
+        async fn delete(&self, _id: i64) -> AppResult<()> {
+            unreachable!("RuleService.run/preview never delete a rule")
+        }
+        async fn list_runs(&self) -> AppResult<Vec<RuleRun>> {
+            unreachable!("RuleService.run/preview never list runs")
+        }
+        async fn run_applications(&self, _run_id: i64) -> AppResult<Vec<RuleApplicationDetail>> {
+            unreachable!("RuleService.run/preview never list run applications")
+        }
+        async fn undo_run(&self, _run_id: i64) -> AppResult<RunResult> {
+            unreachable!("RuleService.run/preview never undo a run")
         }
     }
 

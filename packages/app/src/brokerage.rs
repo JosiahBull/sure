@@ -225,6 +225,55 @@ impl BrokerageService {
         tracing::info!(account_id, days = valued, "brokerage history backfilled");
         Ok(valued)
     }
+
+    /// The raw holdings ledger (every buy/sell/corporate lot) for an audit view.
+    pub async fn list_holdings(&self, account_id: i64) -> AppResult<Vec<sure_core::HoldingLot>> {
+        self.brokerage.list_holdings(account_id).await
+    }
+
+    /// Manually record a lot (most arrive via import).
+    pub async fn create_holding(
+        &self,
+        account_id: i64,
+        input: sure_core::SaveHoldingLot,
+    ) -> AppResult<sure_core::HoldingLot> {
+        self.brokerage.create_holding(account_id, input).await
+    }
+
+    pub async fn delete_holding(&self, id: i64) -> AppResult<()> {
+        self.brokerage.delete_holding(id).await
+    }
+
+    /// Dividend/distribution history with per-jurisdiction withholding detail.
+    pub async fn list_dividends(
+        &self,
+        account_id: i64,
+    ) -> AppResult<Vec<sure_core::DividendDetail>> {
+        self.brokerage.list_dividends(account_id).await
+    }
+
+    /// Persist a parsed bulk export (wallet transactions, holding lots, dividends).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn import_export(
+        &self,
+        account_id: i64,
+        account_currency: &str,
+        provider_tag: &str,
+        wallet_rows: &[crate::ports::ImportRow],
+        holdings: &[crate::ports::HoldingImport],
+        dividends: &[crate::ports::DividendImport],
+    ) -> AppResult<crate::ports::ImportCounts> {
+        self.brokerage
+            .import_export(
+                account_id,
+                account_currency,
+                provider_tag,
+                wallet_rows,
+                holdings,
+                dividends,
+            )
+            .await
+    }
 }
 
 /// Value in minor units of holding `quantity` units at `close` (decimal text), in the
@@ -241,7 +290,10 @@ mod tests {
 
     use async_trait::async_trait;
     use rust_decimal::Decimal;
-    use sure_core::{Account, AccountClass, AccountKind, AccountMetadata, BrokerageMeta};
+    use sure_core::{
+        Account, AccountClass, AccountKind, AccountMetadata, BrokerageMeta, NewValuation,
+        SaveAccount, Valuation,
+    };
     use sure_providers::StockPriceQuote;
 
     use super::*;
@@ -270,8 +322,23 @@ mod tests {
     }
     #[async_trait]
     impl AccountRepo for FakeAccounts {
+        async fn list(&self, _include_archived: bool) -> AppResult<Vec<Account>> {
+            unreachable!("BrokerageService never lists accounts")
+        }
         async fn get(&self, _id: i64) -> AppResult<Account> {
             Ok(self.account.clone())
+        }
+        async fn create(&self, _input: SaveAccount) -> AppResult<Account> {
+            unreachable!("BrokerageService never creates an account")
+        }
+        async fn update(&self, _id: i64, _input: SaveAccount) -> AppResult<Account> {
+            unreachable!("BrokerageService never updates an account")
+        }
+        async fn delete(&self, _id: i64) -> AppResult<()> {
+            unreachable!("BrokerageService never deletes an account")
+        }
+        async fn set_secured_by(&self, _id: i64, _target: Option<i64>) -> AppResult<Account> {
+            unreachable!("BrokerageService never mutates account metadata")
         }
         async fn list_shares_tickers(&self) -> AppResult<Vec<SharesTicker>> {
             unreachable!("BrokerageService never lists global tickers")
@@ -326,6 +393,36 @@ mod tests {
         }
         async fn earliest_activity_date(&self, _account_id: i64) -> AppResult<Option<String>> {
             Ok(self.earliest.clone())
+        }
+        async fn list_holdings(&self, _account_id: i64) -> AppResult<Vec<sure_core::HoldingLot>> {
+            unreachable!("BrokerageService never lists the raw holdings ledger")
+        }
+        async fn create_holding(
+            &self,
+            _account_id: i64,
+            _input: sure_core::SaveHoldingLot,
+        ) -> AppResult<sure_core::HoldingLot> {
+            unreachable!("BrokerageService never creates a holding lot")
+        }
+        async fn delete_holding(&self, _id: i64) -> AppResult<()> {
+            unreachable!("BrokerageService never deletes a holding lot")
+        }
+        async fn list_dividends(
+            &self,
+            _account_id: i64,
+        ) -> AppResult<Vec<sure_core::DividendDetail>> {
+            unreachable!("BrokerageService never lists dividends")
+        }
+        async fn import_export(
+            &self,
+            _account_id: i64,
+            _account_currency: &str,
+            _provider_tag: &str,
+            _wallet_rows: &[crate::ports::ImportRow],
+            _holdings: &[crate::ports::HoldingImport],
+            _dividends: &[crate::ports::DividendImport],
+        ) -> AppResult<crate::ports::ImportCounts> {
+            unreachable!("BrokerageService never imports a bulk export")
         }
     }
 
@@ -386,6 +483,15 @@ mod tests {
     }
     #[async_trait]
     impl ValuationRepo for FakeValuations {
+        async fn list_for_account(&self, _account_id: i64) -> AppResult<Vec<Valuation>> {
+            unreachable!("BrokerageService never lists valuations")
+        }
+        async fn create(&self, _account_id: i64, _input: NewValuation) -> AppResult<Valuation> {
+            unreachable!("BrokerageService never creates a manual valuation")
+        }
+        async fn delete(&self, _id: i64) -> AppResult<()> {
+            unreachable!("BrokerageService never deletes a valuation")
+        }
         async fn upsert_from_brokerage(
             &self,
             account_id: i64,

@@ -1,8 +1,8 @@
 //! Brokerage account endpoints: the computed value snapshot, the raw holdings/dividends
 //! ledgers, manual lot entry, a bulk zip import of a Sharesies export, and manual
 //! revalue/backfill triggers. The heavy lifting (parsing, persistence, pricing) lives in
-//! `sure_providers::sharesies`, `sure_dal::brokerage`, and `sure_app::brokerage`; these
-//! handlers are thin glue.
+//! `sure_providers::sharesies` and `sure_app::brokerage`'s `BrokerageService` (behind the
+//! `BrokerageRepo`/`AccountRepo` ports); these handlers are thin glue.
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -54,7 +54,7 @@ fn parse_as_of(q: &AsOfQuery) -> NaiveDate {
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn ensure_brokerage(st: &AppState, id: i64) -> AppResult<()> {
-    let account = sure_dal::accounts::get(&st.db, id).await?;
+    let account = st.accounts.get(id).await?;
     if account.kind != AccountKind::Brokerage {
         return Err(AppError::validation("account is not a brokerage account"));
     }
@@ -102,7 +102,7 @@ pub async fn list_holdings(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Vec<HoldingLot>>> {
-    Ok(Json(sure_dal::brokerage::list_holdings(&st.db, id).await?))
+    Ok(Json(st.brokerage.list_holdings(id).await?))
 }
 
 /// Manually record a lot (most arrive via import; this is parity with equity's manual grant).
@@ -125,7 +125,7 @@ pub async fn create_holding(
     ensure_brokerage(&st, id).await?;
     Ok((
         StatusCode::CREATED,
-        Json(sure_dal::brokerage::create_holding(&st.db, id, input).await?),
+        Json(st.brokerage.create_holding(id, input).await?),
     ))
 }
 
@@ -144,7 +144,7 @@ pub async fn delete_holding(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
-    sure_dal::brokerage::delete_holding(&st.db, id).await?;
+    st.brokerage.delete_holding(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -163,7 +163,7 @@ pub async fn list_dividends(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Vec<DividendDetail>>> {
-    Ok(Json(sure_dal::brokerage::list_dividends(&st.db, id).await?))
+    Ok(Json(st.brokerage.list_dividends(id).await?))
 }
 
 /// Bulk-import a Sharesies export zip: wallet transactions, holding lots, and dividends.
@@ -186,7 +186,7 @@ pub async fn import(
     Path(id): Path<i64>,
     body: Bytes,
 ) -> AppResult<Json<BrokerageImportResult>> {
-    let account = sure_dal::accounts::get(&st.db, id).await?;
+    let account = st.accounts.get(id).await?;
     if account.kind != AccountKind::Brokerage {
         return Err(AppError::validation("account is not a brokerage account"));
     }
@@ -199,10 +199,10 @@ pub async fn import(
             .map_err(|e| AppError::validation(format!("could not read export: {e}")))?;
 
     let provider_tag = format!("sharesies#{id}");
-    let wallet_rows: Vec<sure_dal::providers::ImportRow> = export
+    let wallet_rows: Vec<sure_app::ports::ImportRow> = export
         .wallet_transactions
         .into_iter()
-        .map(|t| sure_dal::providers::ImportRow {
+        .map(|t| sure_app::ports::ImportRow {
             external_id: t.external_id,
             posted_at: t.posted_at,
             amount_minor: t.amount_minor,
@@ -214,10 +214,10 @@ pub async fn import(
             category_group: t.category.and_then(|c| c.group),
         })
         .collect();
-    let holdings: Vec<sure_dal::brokerage::HoldingImport> = export
+    let holdings: Vec<sure_app::ports::HoldingImport> = export
         .holdings
         .into_iter()
-        .map(|h| sure_dal::brokerage::HoldingImport {
+        .map(|h| sure_app::ports::HoldingImport {
             ticker: h.ticker,
             exchange: h.exchange,
             name: h.name,
@@ -230,10 +230,10 @@ pub async fn import(
             external_id: h.external_id,
         })
         .collect();
-    let dividends: Vec<sure_dal::brokerage::DividendImport> = export
+    let dividends: Vec<sure_app::ports::DividendImport> = export
         .dividends
         .into_iter()
-        .map(|d| sure_dal::brokerage::DividendImport {
+        .map(|d| sure_app::ports::DividendImport {
             ticker: d.ticker,
             exchange: d.exchange,
             record_date: d.record_date,
@@ -246,7 +246,7 @@ pub async fn import(
             withholdings: d
                 .withholdings
                 .into_iter()
-                .map(|w| sure_dal::brokerage::WithholdingImport {
+                .map(|w| sure_app::ports::WithholdingImport {
                     owed_to: w.owed_to,
                     tax_amount_minor: w.tax_amount_minor,
                     tax_credit_minor: w.tax_credit_minor,
@@ -256,16 +256,17 @@ pub async fn import(
         })
         .collect();
 
-    let counts = sure_dal::brokerage::import_export(
-        &st.db,
-        id,
-        &account.currency_code,
-        &provider_tag,
-        &wallet_rows,
-        &holdings,
-        &dividends,
-    )
-    .await?;
+    let counts = st
+        .brokerage
+        .import_export(
+            id,
+            &account.currency_code,
+            &provider_tag,
+            &wallet_rows,
+            &holdings,
+            &dividends,
+        )
+        .await?;
 
     // Transfer auto-linking (wallet deposit/withdrawal ↔ the matching bank transaction) is
     // not done here: the bank side is often synced *after* this import, so it wouldn't

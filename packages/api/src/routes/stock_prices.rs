@@ -40,7 +40,7 @@ pub async fn get_price(
     Path(id): Path<i64>,
     Query(q): Query<AsOfQuery>,
 ) -> AppResult<Json<StockPrice>> {
-    let account = sure_dal::accounts::get(&st.db, id).await?;
+    let account = st.accounts.get(id).await?;
     if !matches!(account.kind, AccountKind::SharesNz | AccountKind::SharesUs) {
         return Err(AppError::NotFound("stock ticker"));
     }

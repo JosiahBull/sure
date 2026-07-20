@@ -1,7 +1,6 @@
-//! Rule HTTP handlers. The `zen-expression` evaluation engine and orchestration live in
-//! `sure_app::rules`; persistence — rule CRUD, loading evaluation contexts, and
-//! writing/undoing a run's audit trail — lives in `sure_dal::rules`. These handlers are
-//! thin glue between the two.
+//! Rule HTTP handlers. The `zen-expression` evaluation engine, orchestration, and CRUD
+//! all go through `sure_app::rules::RuleService` (`st.rules`) now, backed by the
+//! `RuleRepo` port. These handlers are thin glue.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -11,7 +10,7 @@ use axum::{Json, Router};
 use crate::error::AppResult;
 use crate::state::AppState;
 
-pub use sure_dal::rules::{
+pub use sure_core::{
     PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RunResult,
     SaveRule,
 };
@@ -41,7 +40,7 @@ const RULES_UNDO_RUN: &str = "rules.undo_run";
     err(level = tracing::Level::WARN),
 )]
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Rule>>> {
-    Ok(Json(sure_dal::rules::list(&st.db).await?))
+    Ok(Json(st.rules.list().await?))
 }
 
 /// Fetch one rule.
@@ -56,7 +55,7 @@ pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Rule>>> {
     err(level = tracing::Level::WARN),
 )]
 pub async fn get_one(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<Rule>> {
-    Ok(Json(sure_dal::rules::get(&st.db, id).await?))
+    Ok(Json(st.rules.get(id).await?))
 }
 
 /// Create a rule (validates the expression).
@@ -74,10 +73,7 @@ pub async fn create(
     Json(input): Json<SaveRule>,
 ) -> AppResult<(StatusCode, Json<Rule>)> {
     sure_app::rules::validate_rule(&input)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(sure_dal::rules::create(&st.db, input).await?),
-    ))
+    Ok((StatusCode::CREATED, Json(st.rules.create(input).await?)))
 }
 
 /// Replace a rule.
@@ -99,7 +95,7 @@ pub async fn update(
     Json(input): Json<SaveRule>,
 ) -> AppResult<Json<Rule>> {
     sure_app::rules::validate_rule(&input)?;
-    Ok(Json(sure_dal::rules::update(&st.db, id, input).await?))
+    Ok(Json(st.rules.update(id, input).await?))
 }
 
 /// Delete a rule (audit history is retained; its rule_id becomes null).
@@ -114,7 +110,7 @@ pub async fn update(
     err(level = tracing::Level::WARN),
 )]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
-    sure_dal::rules::delete(&st.db, id).await?;
+    st.rules.delete(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -133,7 +129,7 @@ pub async fn run_one(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<RunResult>> {
-    let rule = sure_dal::rules::get(&st.db, id).await?;
+    let rule = st.rules.get(id).await?;
     let result = st.rules.run(&[rule], Some(id), "single").await?;
     Ok(Json(result))
 }
@@ -149,7 +145,7 @@ pub async fn run_one(
     err(level = tracing::Level::WARN),
 )]
 pub async fn run_all(State(st): State<AppState>) -> AppResult<Json<RunResult>> {
-    let rules = sure_dal::rules::enabled_rules(&st.db).await?;
+    let rules = st.rules.enabled_rules().await?;
     let result = st.rules.run(&rules, None, "all").await?;
     Ok(Json(result))
 }
@@ -181,7 +177,7 @@ pub async fn preview(
     err(level = tracing::Level::WARN),
 )]
 pub async fn list_runs(State(st): State<AppState>) -> AppResult<Json<Vec<RuleRun>>> {
-    Ok(Json(sure_dal::rules::list_runs(&st.db).await?))
+    Ok(Json(st.rules.list_runs().await?))
 }
 
 /// List the per-transaction changes made by a run (with transaction detail for display).
@@ -199,9 +195,7 @@ pub async fn run_applications(
     State(st): State<AppState>,
     Path(run_id): Path<i64>,
 ) -> AppResult<Json<Vec<RuleApplicationDetail>>> {
-    Ok(Json(
-        sure_dal::rules::run_applications(&st.db, run_id).await?,
-    ))
+    Ok(Json(st.rules.run_applications(run_id).await?))
 }
 
 /// Undo a run, reverting each changed transaction to its prior state (unless it was
@@ -221,7 +215,7 @@ pub async fn undo_run(
     State(st): State<AppState>,
     Path(run_id): Path<i64>,
 ) -> AppResult<Json<RunResult>> {
-    Ok(Json(sure_dal::rules::undo_run(&st.db, run_id).await?))
+    Ok(Json(st.rules.undo_run(run_id).await?))
 }
 
 pub fn router() -> Router<AppState> {

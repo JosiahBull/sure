@@ -9,13 +9,22 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use sure_app::ports::{
-    AccountCurrency, AccountRepo, ActiveAccount, AssetAccount, BrokerageRepo, CurrencyDecimals,
-    ExchangeRateRepo, ExchangeRateRow, FxRatesRepo, HoldingRow, ImportRow, LedgerTx,
-    LedgerValuation, PlannedApplication, ProviderRepo, ReportCategory, ReportRepo, RuleRepo,
-    SecuredLiabilityAccount, SharesTicker, StockPriceCacheRepo, TransferRepo, TxCtx, ValuationRepo,
-    WalletRow,
+    AccountCurrency, AccountRepo, ActiveAccount, AssetAccount, BrokerageRepo, CategoryRepo,
+    CronRepo, CurrencyDecimals, CurrencyRepo, DividendImport, EquityRepo, ExchangeRateRepo,
+    ExchangeRateRow, FxRatesRepo, HoldingImport, HoldingRow, ImportCounts, ImportRow, LedgerTx,
+    LedgerValuation, MerchantRepo, PlannedApplication, ProviderRepo, ReportCategory, ReportRepo,
+    RuleRepo, SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo,
+    StockPriceCacheRepo, TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
 };
-use sure_core::{Account, AppResult, Provider, ProviderSync, RunResult, StockPrice};
+use sure_core::{
+    Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
+    CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, HoldingLot,
+    LinkProviderAccount, LinkProviderGroup, LinkRequest, Merchant, NewCurrency, NewValuation,
+    Provider, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RunResult, SaveAccount,
+    SaveCategory, SaveCron, SaveExercise, SaveGrant, SaveHoldingLot, SaveMerchant, SaveProvider,
+    SaveRule, SaveTransaction, Settings, StockPrice, Transaction, TransferRequest, TxQuery,
+    UpdateSettings, Valuation, VestingStatus,
+};
 
 use crate::Db;
 
@@ -34,8 +43,28 @@ impl SqliteStore {
 
 #[async_trait]
 impl AccountRepo for SqliteStore {
+    async fn list(&self, include_archived: bool) -> AppResult<Vec<Account>> {
+        crate::accounts::list(&self.db, include_archived).await
+    }
+
     async fn get(&self, id: i64) -> AppResult<Account> {
         crate::accounts::get(&self.db, id).await
+    }
+
+    async fn create(&self, input: SaveAccount) -> AppResult<Account> {
+        crate::accounts::create(&self.db, input).await
+    }
+
+    async fn update(&self, id: i64, input: SaveAccount) -> AppResult<Account> {
+        crate::accounts::update(&self.db, id, input).await
+    }
+
+    async fn delete(&self, id: i64) -> AppResult<()> {
+        crate::accounts::delete(&self.db, id).await
+    }
+
+    async fn set_secured_by(&self, id: i64, target: Option<i64>) -> AppResult<Account> {
+        crate::accounts::set_secured_by(&self.db, id, target).await
     }
 
     async fn list_shares_tickers(&self) -> AppResult<Vec<SharesTicker>> {
@@ -113,6 +142,108 @@ impl BrokerageRepo for SqliteStore {
     async fn earliest_activity_date(&self, account_id: i64) -> AppResult<Option<String>> {
         crate::brokerage::earliest_activity_date(&self.db, account_id).await
     }
+
+    async fn list_holdings(&self, account_id: i64) -> AppResult<Vec<HoldingLot>> {
+        crate::brokerage::list_holdings(&self.db, account_id).await
+    }
+
+    async fn create_holding(
+        &self,
+        account_id: i64,
+        input: SaveHoldingLot,
+    ) -> AppResult<HoldingLot> {
+        crate::brokerage::create_holding(&self.db, account_id, input).await
+    }
+
+    async fn delete_holding(&self, id: i64) -> AppResult<()> {
+        crate::brokerage::delete_holding(&self.db, id).await
+    }
+
+    async fn list_dividends(&self, account_id: i64) -> AppResult<Vec<DividendDetail>> {
+        crate::brokerage::list_dividends(&self.db, account_id).await
+    }
+
+    async fn import_export(
+        &self,
+        account_id: i64,
+        account_currency: &str,
+        provider_tag: &str,
+        wallet_rows: &[ImportRow],
+        holdings: &[HoldingImport],
+        dividends: &[DividendImport],
+    ) -> AppResult<ImportCounts> {
+        let wallet_rows: Vec<crate::providers::ImportRow> = wallet_rows
+            .iter()
+            .map(|r| crate::providers::ImportRow {
+                external_id: r.external_id.clone(),
+                posted_at: r.posted_at.clone(),
+                amount_minor: r.amount_minor,
+                currency_code: r.currency_code.clone(),
+                description: r.description.clone(),
+                merchant: r.merchant.clone(),
+                category_name: r.category_name.clone(),
+                category_group: r.category_group.clone(),
+                category_kind: r.category_kind.clone(),
+            })
+            .collect();
+        let holdings: Vec<crate::brokerage::HoldingImport> = holdings
+            .iter()
+            .map(|h| crate::brokerage::HoldingImport {
+                ticker: h.ticker.clone(),
+                exchange: h.exchange.clone(),
+                name: h.name.clone(),
+                currency_code: h.currency_code.clone(),
+                trade_date: h.trade_date.clone(),
+                quantity: h.quantity,
+                unit_price: h.unit_price,
+                fee_minor: h.fee_minor,
+                kind: h.kind.clone(),
+                external_id: h.external_id.clone(),
+            })
+            .collect();
+        let dividends: Vec<crate::brokerage::DividendImport> = dividends
+            .iter()
+            .map(|d| crate::brokerage::DividendImport {
+                ticker: d.ticker.clone(),
+                exchange: d.exchange.clone(),
+                record_date: d.record_date.clone(),
+                paid_date: d.paid_date.clone(),
+                shares_held: d.shares_held,
+                gross_amount_minor: d.gross_amount_minor,
+                net_amount_minor: d.net_amount_minor,
+                currency_code: d.currency_code.clone(),
+                external_id: d.external_id.clone(),
+                withholdings: d
+                    .withholdings
+                    .iter()
+                    .map(|w| crate::brokerage::WithholdingImport {
+                        owed_to: w.owed_to.clone(),
+                        tax_amount_minor: w.tax_amount_minor,
+                        tax_credit_minor: w.tax_credit_minor,
+                        currency_code: w.currency_code.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let counts = crate::brokerage::import_export(
+            &self.db,
+            account_id,
+            account_currency,
+            provider_tag,
+            &wallet_rows,
+            &holdings,
+            &dividends,
+        )
+        .await?;
+        Ok(ImportCounts {
+            transactions_imported: counts.transactions_imported,
+            transactions_skipped: counts.transactions_skipped,
+            holdings_imported: counts.holdings_imported,
+            holdings_skipped: counts.holdings_skipped,
+            dividends_imported: counts.dividends_imported,
+            dividends_skipped: counts.dividends_skipped,
+        })
+    }
 }
 
 #[async_trait]
@@ -142,6 +273,18 @@ impl StockPriceCacheRepo for SqliteStore {
 
 #[async_trait]
 impl ValuationRepo for SqliteStore {
+    async fn list_for_account(&self, account_id: i64) -> AppResult<Vec<Valuation>> {
+        crate::valuations::list_for_account(&self.db, account_id).await
+    }
+
+    async fn create(&self, account_id: i64, input: NewValuation) -> AppResult<Valuation> {
+        crate::valuations::create(&self.db, account_id, input).await
+    }
+
+    async fn delete(&self, id: i64) -> AppResult<()> {
+        crate::valuations::delete(&self.db, id).await
+    }
+
     async fn upsert_from_brokerage(
         &self,
         account_id: i64,
@@ -242,6 +385,42 @@ impl RuleRepo for SqliteStore {
             })
             .collect();
         crate::rules::persist_run(&self.db, rule_id, kind, matched, applications).await
+    }
+
+    async fn list(&self) -> AppResult<Vec<Rule>> {
+        crate::rules::list(&self.db).await
+    }
+
+    async fn enabled_rules(&self) -> AppResult<Vec<Rule>> {
+        crate::rules::enabled_rules(&self.db).await
+    }
+
+    async fn get(&self, id: i64) -> AppResult<Rule> {
+        crate::rules::get(&self.db, id).await
+    }
+
+    async fn create(&self, input: SaveRule) -> AppResult<Rule> {
+        crate::rules::create(&self.db, input).await
+    }
+
+    async fn update(&self, id: i64, input: SaveRule) -> AppResult<Rule> {
+        crate::rules::update(&self.db, id, input).await
+    }
+
+    async fn delete(&self, id: i64) -> AppResult<()> {
+        crate::rules::delete(&self.db, id).await
+    }
+
+    async fn list_runs(&self) -> AppResult<Vec<RuleRun>> {
+        crate::rules::list_runs(&self.db).await
+    }
+
+    async fn run_applications(&self, run_id: i64) -> AppResult<Vec<RuleApplicationDetail>> {
+        crate::rules::run_applications(&self.db, run_id).await
+    }
+
+    async fn undo_run(&self, run_id: i64) -> AppResult<RunResult> {
+        crate::rules::undo_run(&self.db, run_id).await
     }
 }
 
@@ -358,6 +537,34 @@ impl ProviderRepo for SqliteStore {
         crate::providers::list(&self.db).await
     }
 
+    async fn get(&self, id: i64) -> AppResult<Provider> {
+        crate::providers::get(&self.db, id).await
+    }
+
+    async fn create(&self, input: SaveProvider) -> AppResult<Provider> {
+        crate::providers::create(&self.db, input).await
+    }
+
+    async fn update(&self, id: i64, input: SaveProvider) -> AppResult<Provider> {
+        crate::providers::update(&self.db, id, input).await
+    }
+
+    async fn delete(&self, id: i64) -> AppResult<()> {
+        crate::providers::delete(&self.db, id).await
+    }
+
+    async fn link(&self, input: LinkProviderAccount) -> AppResult<Provider> {
+        crate::providers::link(&self.db, input).await
+    }
+
+    async fn link_group(&self, input: LinkProviderGroup) -> AppResult<Vec<Provider>> {
+        crate::providers::link_group(&self.db, input).await
+    }
+
+    async fn list_syncs(&self, provider_id: i64) -> AppResult<Vec<ProviderSync>> {
+        crate::providers::list_syncs(&self.db, provider_id).await
+    }
+
     async fn account_currency(&self, account_id: i64) -> AppResult<String> {
         crate::providers::account_currency(&self.db, account_id).await
     }
@@ -441,5 +648,212 @@ impl ExchangeRateRepo for SqliteStore {
 impl TransferRepo for SqliteStore {
     async fn link_transfers(&self, window_days: i64) -> AppResult<i64> {
         crate::transactions::link_transfers(&self.db, window_days).await
+    }
+}
+
+#[async_trait]
+impl TransactionRepo for SqliteStore {
+    async fn list(&self, q: TxQuery) -> AppResult<Vec<Transaction>> {
+        crate::transactions::list(&self.db, q).await
+    }
+
+    async fn get(&self, id: i64) -> AppResult<Transaction> {
+        crate::transactions::get(&self.db, id).await
+    }
+
+    async fn create(&self, input: SaveTransaction) -> AppResult<Transaction> {
+        crate::transactions::create(&self.db, input).await
+    }
+
+    async fn update(&self, id: i64, input: SaveTransaction) -> AppResult<Transaction> {
+        crate::transactions::update(&self.db, id, input).await
+    }
+
+    async fn delete(&self, id: i64) -> AppResult<()> {
+        crate::transactions::delete(&self.db, id).await
+    }
+
+    async fn bulk_update(&self, input: BulkUpdate) -> AppResult<i64> {
+        crate::transactions::bulk_update(&self.db, input).await
+    }
+
+    async fn bulk_delete(&self, ids: &[i64]) -> AppResult<i64> {
+        crate::transactions::bulk_delete(&self.db, ids).await
+    }
+
+    async fn link(&self, id: i64, req: LinkRequest) -> AppResult<Transaction> {
+        crate::transactions::link(&self.db, id, req).await
+    }
+
+    async fn unlink(&self, id: i64) -> AppResult<Transaction> {
+        crate::transactions::unlink(&self.db, id).await
+    }
+
+    async fn create_transfer(&self, req: TransferRequest) -> AppResult<Vec<Transaction>> {
+        crate::transactions::create_transfer(&self.db, req).await
+    }
+}
+
+#[async_trait]
+impl CategoryRepo for SqliteStore {
+    async fn list(&self) -> AppResult<Vec<Category>> {
+        crate::categories::list(&self.db).await
+    }
+
+    async fn tree(&self) -> AppResult<Vec<CategoryNode>> {
+        crate::categories::tree(&self.db).await
+    }
+
+    async fn create(&self, input: SaveCategory) -> AppResult<Category> {
+        crate::categories::create(&self.db, input).await
+    }
+
+    async fn update(&self, id: i64, input: SaveCategory) -> AppResult<Category> {
+        crate::categories::update(&self.db, id, input).await
+    }
+
+    async fn delete(&self, id: i64) -> AppResult<()> {
+        crate::categories::delete(&self.db, id).await
+    }
+}
+
+#[async_trait]
+impl MerchantRepo for SqliteStore {
+    async fn list(&self) -> AppResult<Vec<Merchant>> {
+        crate::merchants::list(&self.db).await
+    }
+
+    async fn create(&self, input: SaveMerchant) -> AppResult<Merchant> {
+        crate::merchants::create(&self.db, input).await
+    }
+
+    async fn update(&self, id: i64, input: SaveMerchant) -> AppResult<Merchant> {
+        crate::merchants::update(&self.db, id, input).await
+    }
+
+    async fn delete(&self, id: i64) -> AppResult<()> {
+        crate::merchants::delete(&self.db, id).await
+    }
+}
+
+#[async_trait]
+impl CurrencyRepo for SqliteStore {
+    async fn list(&self) -> AppResult<Vec<Currency>> {
+        crate::currencies::list(&self.db).await
+    }
+
+    async fn upsert(&self, input: NewCurrency) -> AppResult<Currency> {
+        crate::currencies::upsert(&self.db, input).await
+    }
+
+    async fn delete(&self, code: &str) -> AppResult<()> {
+        crate::currencies::delete(&self.db, code).await
+    }
+}
+
+#[async_trait]
+impl SettingsRepo for SqliteStore {
+    async fn get(&self) -> AppResult<Settings> {
+        crate::settings::get(&self.db).await
+    }
+
+    async fn update(&self, input: UpdateSettings) -> AppResult<Settings> {
+        crate::settings::update(&self.db, input).await
+    }
+}
+
+#[async_trait]
+impl EquityRepo for SqliteStore {
+    async fn list_grants(&self, account_id: i64) -> AppResult<Vec<EquityGrant>> {
+        crate::equity::list_grants(&self.db, account_id).await
+    }
+
+    async fn create_grant(&self, account_id: i64, input: SaveGrant) -> AppResult<EquityGrant> {
+        crate::equity::create_grant(&self.db, account_id, input).await
+    }
+
+    async fn update_grant(&self, id: i64, input: SaveGrant) -> AppResult<EquityGrant> {
+        crate::equity::update_grant(&self.db, id, input).await
+    }
+
+    async fn delete_grant(&self, id: i64) -> AppResult<()> {
+        crate::equity::delete_grant(&self.db, id).await
+    }
+
+    async fn list_exercises(&self, grant_id: i64) -> AppResult<Vec<EquityExercise>> {
+        crate::equity::list_exercises(&self.db, grant_id).await
+    }
+
+    async fn create_exercise(
+        &self,
+        grant_id: i64,
+        input: SaveExercise,
+    ) -> AppResult<EquityExercise> {
+        crate::equity::create_exercise(&self.db, grant_id, input).await
+    }
+
+    async fn delete_exercise(&self, id: i64) -> AppResult<()> {
+        crate::equity::delete_exercise(&self.db, id).await
+    }
+
+    async fn grant_vesting(&self, id: i64, as_of: Option<&str>) -> AppResult<VestingStatus> {
+        crate::equity::grant_vesting(&self.db, id, as_of).await
+    }
+
+    async fn account_equity(&self, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity> {
+        crate::equity::account_equity(&self.db, id, as_of).await
+    }
+
+    async fn revalue(&self, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity> {
+        crate::equity::revalue(&self.db, id, as_of).await
+    }
+}
+
+#[async_trait]
+impl CronRepo for SqliteStore {
+    async fn list(&self) -> AppResult<Vec<Cron>> {
+        crate::crons::list(&self.db).await
+    }
+
+    async fn create(&self, input: SaveCron) -> AppResult<Cron> {
+        crate::crons::create(&self.db, input).await
+    }
+
+    async fn update(&self, id: i64, input: SaveCron) -> AppResult<Cron> {
+        crate::crons::update(&self.db, id, input).await
+    }
+
+    async fn delete(&self, id: i64) -> AppResult<()> {
+        crate::crons::delete(&self.db, id).await
+    }
+
+    async fn list_runs(&self, cron_id: i64) -> AppResult<Vec<CronRun>> {
+        crate::crons::list_runs(&self.db, cron_id).await
+    }
+
+    async fn run_one(&self, id: i64, to: Option<&str>) -> AppResult<CronRunResult> {
+        crate::crons::run_one(&self.db, id, to).await
+    }
+
+    async fn run_all(&self, to: Option<&str>) -> AppResult<CronRunResult> {
+        crate::crons::run_all(&self.db, to).await
+    }
+
+    async fn undo_run(&self, run_id: i64) -> AppResult<()> {
+        crate::crons::undo_run(&self.db, run_id).await
+    }
+}
+
+#[async_trait]
+impl SnapshotRepo for SqliteStore {
+    async fn export(&self) -> AppResult<serde_json::Value> {
+        let snap = crate::snapshot::export(&self.db).await?;
+        serde_json::to_value(snap).map_err(|e| AppError::Internal(e.into()))
+    }
+
+    async fn import(&self, snapshot: serde_json::Value) -> AppResult<serde_json::Value> {
+        let snap = serde_json::from_value(snapshot)
+            .map_err(|e| AppError::validation(format!("invalid snapshot: {e}")))?;
+        crate::snapshot::import(&self.db, snap).await
     }
 }

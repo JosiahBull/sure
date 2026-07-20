@@ -2,17 +2,18 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
+use serde::Deserialize;
 
 use crate::error::AppResult;
 use crate::state::AppState;
 
-// Account kinds/classes + typed metadata come from sure-core; the data model + queries
-// from the DAL. Re-export both so the OpenAPI paths (`crate::routes::accounts::*`) resolve.
+// Account kinds/classes + typed metadata come from sure-core; the data model lives there
+// too. Re-export so the OpenAPI paths (`crate::routes::accounts::*`) resolve.
 pub use sure_core::{
-    AccountClass, AccountKind, AccountMetadata, BrokerageMeta, DepositoryMeta, GenericMeta,
-    LoanMeta, MortgageMeta, PropertyMeta, RateType, SharesMeta, VehicleMeta,
+    Account, AccountClass, AccountKind, AccountMetadata, BrokerageMeta, DepositoryMeta,
+    GenericMeta, LoanMeta, MortgageMeta, PropertyMeta, RateType, SaveAccount, SetSecuredBy,
+    SharesMeta, VehicleMeta,
 };
-pub use sure_dal::accounts::{Account, ListQuery, SaveAccount, SetSecuredBy};
 
 // OTEL span names for this module's handlers.
 const ACCOUNTS_LIST: &str = "accounts.list";
@@ -21,6 +22,12 @@ const ACCOUNTS_CREATE: &str = "accounts.create";
 const ACCOUNTS_UPDATE: &str = "accounts.update";
 const ACCOUNTS_DELETE: &str = "accounts.delete";
 const ACCOUNTS_SET_SECURED_BY: &str = "accounts.set_secured_by";
+
+/// Query params for `GET /accounts`.
+#[derive(Debug, Deserialize, Default)]
+pub struct ListQuery {
+    pub include_archived: Option<bool>,
+}
 
 /// List accounts (optionally including archived).
 #[utoipa::path(get, path = "/api/accounts", tag = "accounts",
@@ -39,7 +46,9 @@ pub async fn list(
     Query(q): Query<ListQuery>,
 ) -> AppResult<Json<Vec<Account>>> {
     Ok(Json(
-        sure_dal::accounts::list(&st.db, q.include_archived.unwrap_or(false)).await?,
+        st.accounts
+            .list(q.include_archived.unwrap_or(false))
+            .await?,
     ))
 }
 
@@ -56,7 +65,7 @@ pub async fn list(
     err(level = tracing::Level::WARN),
 )]
 pub async fn get_one(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<Account>> {
-    Ok(Json(sure_dal::accounts::get(&st.db, id).await?))
+    Ok(Json(st.accounts.get(id).await?))
 }
 
 /// Create an account.
@@ -74,10 +83,7 @@ pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveAccount>,
 ) -> AppResult<(StatusCode, Json<Account>)> {
-    Ok((
-        StatusCode::CREATED,
-        Json(sure_dal::accounts::create(&st.db, input).await?),
-    ))
+    Ok((StatusCode::CREATED, Json(st.accounts.create(input).await?)))
 }
 
 /// Replace an account.
@@ -98,7 +104,7 @@ pub async fn update(
     Path(id): Path<i64>,
     Json(input): Json<SaveAccount>,
 ) -> AppResult<Json<Account>> {
-    Ok(Json(sure_dal::accounts::update(&st.db, id, input).await?))
+    Ok(Json(st.accounts.update(id, input).await?))
 }
 
 /// Delete an account and its transactions/valuations (cascade). Refused with 409 while
@@ -116,7 +122,7 @@ pub async fn update(
     err(level = tracing::Level::WARN),
 )]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
-    sure_dal::accounts::delete(&st.db, id).await?;
+    st.accounts.delete(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -140,7 +146,9 @@ pub async fn set_secured_by(
     Json(input): Json<SetSecuredBy>,
 ) -> AppResult<Json<Account>> {
     Ok(Json(
-        sure_dal::accounts::set_secured_by(&st.db, id, input.secured_by_account_id).await?,
+        st.accounts
+            .set_secured_by(id, input.secured_by_account_id)
+            .await?,
     ))
 }
 

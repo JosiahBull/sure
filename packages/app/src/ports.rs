@@ -14,7 +14,15 @@
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 
-use sure_core::{Account, AppResult, Provider, ProviderSync, RunResult, StockPrice};
+use sure_core::{
+    Account, AccountEquity, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
+    CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, HoldingLot,
+    LinkProviderAccount, LinkProviderGroup, LinkRequest, Merchant, NewCurrency, NewValuation,
+    Provider, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RunResult, SaveAccount,
+    SaveCategory, SaveCron, SaveExercise, SaveGrant, SaveHoldingLot, SaveMerchant, SaveProvider,
+    SaveRule, SaveTransaction, Settings, StockPrice, Transaction, TransferRequest, TxQuery,
+    UpdateSettings, Valuation, VestingStatus,
+};
 
 // ---- Clock ------------------------------------------------------------------
 
@@ -201,11 +209,64 @@ pub struct ImportRow {
     pub category_kind: Option<String>,
 }
 
+/// A parsed holding lot ready to persist (e.g. from a Sharesies export).
+#[derive(Debug, Clone)]
+pub struct HoldingImport {
+    pub ticker: String,
+    pub exchange: String,
+    pub name: Option<String>,
+    pub currency_code: String,
+    pub trade_date: String,
+    pub quantity: f64,
+    pub unit_price: Option<f64>,
+    pub fee_minor: i64,
+    pub kind: String,
+    pub external_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WithholdingImport {
+    pub owed_to: String,
+    pub tax_amount_minor: i64,
+    pub tax_credit_minor: Option<i64>,
+    pub currency_code: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DividendImport {
+    pub ticker: String,
+    pub exchange: String,
+    pub record_date: Option<String>,
+    pub paid_date: String,
+    pub shares_held: Option<f64>,
+    pub gross_amount_minor: i64,
+    pub net_amount_minor: i64,
+    pub currency_code: String,
+    pub external_id: String,
+    pub withholdings: Vec<WithholdingImport>,
+}
+
+/// Counts from persisting one parsed brokerage export.
+#[derive(Debug, Clone, Default)]
+pub struct ImportCounts {
+    pub transactions_imported: i64,
+    pub transactions_skipped: i64,
+    pub holdings_imported: i64,
+    pub holdings_skipped: i64,
+    pub dividends_imported: i64,
+    pub dividends_skipped: i64,
+}
+
 // ---- repo ports ---------------------------------------------------------------
 
 #[async_trait]
 pub trait AccountRepo: Send + Sync {
+    async fn list(&self, include_archived: bool) -> AppResult<Vec<Account>>;
     async fn get(&self, id: i64) -> AppResult<Account>;
+    async fn create(&self, input: SaveAccount) -> AppResult<Account>;
+    async fn update(&self, id: i64, input: SaveAccount) -> AppResult<Account>;
+    async fn delete(&self, id: i64) -> AppResult<()>;
+    async fn set_secured_by(&self, id: i64, target: Option<i64>) -> AppResult<Account>;
     /// Single-ticker shares accounts (see `SharesMeta`).
     async fn list_shares_tickers(&self) -> AppResult<Vec<SharesTicker>>;
     /// Distinct tickers ever traded on any brokerage account's holdings ledger.
@@ -225,6 +286,21 @@ pub trait BrokerageRepo: Send + Sync {
     async fn wallet_balances_at(&self, account_id: i64, as_of: &str) -> AppResult<Vec<WalletRow>>;
     async fn account_tickers(&self, account_id: i64) -> AppResult<Vec<(String, String)>>;
     async fn earliest_activity_date(&self, account_id: i64) -> AppResult<Option<String>>;
+    async fn list_holdings(&self, account_id: i64) -> AppResult<Vec<HoldingLot>>;
+    async fn create_holding(&self, account_id: i64, input: SaveHoldingLot)
+        -> AppResult<HoldingLot>;
+    async fn delete_holding(&self, id: i64) -> AppResult<()>;
+    async fn list_dividends(&self, account_id: i64) -> AppResult<Vec<DividendDetail>>;
+    #[allow(clippy::too_many_arguments)]
+    async fn import_export(
+        &self,
+        account_id: i64,
+        account_currency: &str,
+        provider_tag: &str,
+        wallet_rows: &[ImportRow],
+        holdings: &[HoldingImport],
+        dividends: &[DividendImport],
+    ) -> AppResult<ImportCounts>;
 }
 
 #[async_trait]
@@ -247,6 +323,9 @@ pub trait StockPriceCacheRepo: Send + Sync {
 
 #[async_trait]
 pub trait ValuationRepo: Send + Sync {
+    async fn list_for_account(&self, account_id: i64) -> AppResult<Vec<Valuation>>;
+    async fn create(&self, account_id: i64, input: NewValuation) -> AppResult<Valuation>;
+    async fn delete(&self, id: i64) -> AppResult<()>;
     async fn upsert_from_brokerage(
         &self,
         account_id: i64,
@@ -280,6 +359,15 @@ pub trait RuleRepo: Send + Sync {
         matched: i64,
         applications: Vec<PlannedApplication>,
     ) -> AppResult<RunResult>;
+    async fn list(&self) -> AppResult<Vec<Rule>>;
+    async fn enabled_rules(&self) -> AppResult<Vec<Rule>>;
+    async fn get(&self, id: i64) -> AppResult<Rule>;
+    async fn create(&self, input: SaveRule) -> AppResult<Rule>;
+    async fn update(&self, id: i64, input: SaveRule) -> AppResult<Rule>;
+    async fn delete(&self, id: i64) -> AppResult<()>;
+    async fn list_runs(&self) -> AppResult<Vec<RuleRun>>;
+    async fn run_applications(&self, run_id: i64) -> AppResult<Vec<RuleApplicationDetail>>;
+    async fn undo_run(&self, run_id: i64) -> AppResult<RunResult>;
 }
 
 #[async_trait]
@@ -298,6 +386,13 @@ pub trait ReportRepo: Send + Sync {
 #[async_trait]
 pub trait ProviderRepo: Send + Sync {
     async fn list(&self) -> AppResult<Vec<Provider>>;
+    async fn get(&self, id: i64) -> AppResult<Provider>;
+    async fn create(&self, input: SaveProvider) -> AppResult<Provider>;
+    async fn update(&self, id: i64, input: SaveProvider) -> AppResult<Provider>;
+    async fn delete(&self, id: i64) -> AppResult<()>;
+    async fn link(&self, input: LinkProviderAccount) -> AppResult<Provider>;
+    async fn link_group(&self, input: LinkProviderGroup) -> AppResult<Vec<Provider>>;
+    async fn list_syncs(&self, provider_id: i64) -> AppResult<Vec<ProviderSync>>;
     async fn account_currency(&self, account_id: i64) -> AppResult<String>;
     async fn import_transactions(
         &self,
@@ -335,4 +430,93 @@ pub trait ExchangeRateRepo: Send + Sync {
 #[async_trait]
 pub trait TransferRepo: Send + Sync {
     async fn link_transfers(&self, window_days: i64) -> AppResult<i64>;
+}
+
+// ---- thin-CRUD aggregate ports (Phase 3c) --------------------------------------
+//
+// These aggregates have no branching logic worth unit-testing in isolation — a
+// handler calls one repo method and forwards the result — so there's no service
+// struct here, just the port. `sure-api`'s routes hold `Arc<dyn Repo>` directly.
+
+#[async_trait]
+pub trait TransactionRepo: Send + Sync {
+    async fn list(&self, q: TxQuery) -> AppResult<Vec<Transaction>>;
+    async fn get(&self, id: i64) -> AppResult<Transaction>;
+    async fn create(&self, input: SaveTransaction) -> AppResult<Transaction>;
+    async fn update(&self, id: i64, input: SaveTransaction) -> AppResult<Transaction>;
+    async fn delete(&self, id: i64) -> AppResult<()>;
+    async fn bulk_update(&self, input: BulkUpdate) -> AppResult<i64>;
+    async fn bulk_delete(&self, ids: &[i64]) -> AppResult<i64>;
+    async fn link(&self, id: i64, req: LinkRequest) -> AppResult<Transaction>;
+    async fn unlink(&self, id: i64) -> AppResult<Transaction>;
+    async fn create_transfer(&self, req: TransferRequest) -> AppResult<Vec<Transaction>>;
+}
+
+#[async_trait]
+pub trait CategoryRepo: Send + Sync {
+    async fn list(&self) -> AppResult<Vec<Category>>;
+    async fn tree(&self) -> AppResult<Vec<CategoryNode>>;
+    async fn create(&self, input: SaveCategory) -> AppResult<Category>;
+    async fn update(&self, id: i64, input: SaveCategory) -> AppResult<Category>;
+    async fn delete(&self, id: i64) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait MerchantRepo: Send + Sync {
+    async fn list(&self) -> AppResult<Vec<Merchant>>;
+    async fn create(&self, input: SaveMerchant) -> AppResult<Merchant>;
+    async fn update(&self, id: i64, input: SaveMerchant) -> AppResult<Merchant>;
+    async fn delete(&self, id: i64) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait CurrencyRepo: Send + Sync {
+    async fn list(&self) -> AppResult<Vec<Currency>>;
+    async fn upsert(&self, input: NewCurrency) -> AppResult<Currency>;
+    async fn delete(&self, code: &str) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait SettingsRepo: Send + Sync {
+    async fn get(&self) -> AppResult<Settings>;
+    async fn update(&self, input: UpdateSettings) -> AppResult<Settings>;
+}
+
+#[async_trait]
+pub trait EquityRepo: Send + Sync {
+    async fn list_grants(&self, account_id: i64) -> AppResult<Vec<EquityGrant>>;
+    async fn create_grant(&self, account_id: i64, input: SaveGrant) -> AppResult<EquityGrant>;
+    async fn update_grant(&self, id: i64, input: SaveGrant) -> AppResult<EquityGrant>;
+    async fn delete_grant(&self, id: i64) -> AppResult<()>;
+    async fn list_exercises(&self, grant_id: i64) -> AppResult<Vec<EquityExercise>>;
+    async fn create_exercise(
+        &self,
+        grant_id: i64,
+        input: SaveExercise,
+    ) -> AppResult<EquityExercise>;
+    async fn delete_exercise(&self, id: i64) -> AppResult<()>;
+    async fn grant_vesting(&self, id: i64, as_of: Option<&str>) -> AppResult<VestingStatus>;
+    async fn account_equity(&self, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity>;
+    async fn revalue(&self, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity>;
+}
+
+#[async_trait]
+pub trait CronRepo: Send + Sync {
+    async fn list(&self) -> AppResult<Vec<Cron>>;
+    async fn create(&self, input: SaveCron) -> AppResult<Cron>;
+    async fn update(&self, id: i64, input: SaveCron) -> AppResult<Cron>;
+    async fn delete(&self, id: i64) -> AppResult<()>;
+    async fn list_runs(&self, cron_id: i64) -> AppResult<Vec<CronRun>>;
+    async fn run_one(&self, id: i64, to: Option<&str>) -> AppResult<CronRunResult>;
+    async fn run_all(&self, to: Option<&str>) -> AppResult<CronRunResult>;
+    async fn undo_run(&self, run_id: i64) -> AppResult<()>;
+}
+
+/// The config export/import blob is treated as opaque JSON at this boundary — its shape
+/// (`sure_dal::snapshot::Snapshot`) is a DAL-internal persistence detail, not domain
+/// vocabulary, so there's no plain port type to maintain here.
+#[async_trait]
+pub trait SnapshotRepo: Send + Sync {
+    async fn export(&self) -> AppResult<serde_json::Value>;
+    async fn import(&self, snapshot: serde_json::Value) -> AppResult<serde_json::Value>;
 }

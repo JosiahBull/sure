@@ -6,7 +6,7 @@ use axum::{Json, Router};
 use crate::error::AppResult;
 use crate::state::AppState;
 
-pub use sure_dal::valuations::{NewValuation, Valuation};
+pub use sure_core::{NewValuation, Valuation};
 
 // OTEL span names for this module's handlers.
 const VALUATIONS_LIST: &str = "valuations.list";
@@ -28,9 +28,7 @@ pub async fn list(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Vec<Valuation>>> {
-    Ok(Json(
-        sure_dal::valuations::list_for_account(&st.db, id).await?,
-    ))
+    Ok(Json(st.valuations.list_for_account(id).await?))
 }
 
 /// Record a valuation for an account.
@@ -52,7 +50,7 @@ pub async fn create(
 ) -> AppResult<(StatusCode, Json<Valuation>)> {
     Ok((
         StatusCode::CREATED,
-        Json(sure_dal::valuations::create(&st.db, id, input).await?),
+        Json(st.valuations.create(id, input).await?),
     ))
 }
 
@@ -69,7 +67,7 @@ pub async fn create(
     err(level = tracing::Level::WARN),
 )]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
-    sure_dal::valuations::delete(&st.db, id).await?;
+    st.valuations.delete(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -8,7 +8,7 @@ use utoipa::IntoParams;
 use crate::error::AppResult;
 use crate::state::AppState;
 
-pub use sure_dal::equity::{
+pub use sure_core::{
     AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
 };
 
@@ -44,7 +44,7 @@ pub async fn list_grants(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Vec<EquityGrant>>> {
-    Ok(Json(sure_dal::equity::list_grants(&st.db, id).await?))
+    Ok(Json(st.equity.list_grants(id).await?))
 }
 
 #[utoipa::path(post, path = "/api/accounts/{id}/equity-grants", tag = "equity",
@@ -65,7 +65,7 @@ pub async fn create_grant(
 ) -> AppResult<(StatusCode, Json<EquityGrant>)> {
     Ok((
         StatusCode::CREATED,
-        Json(sure_dal::equity::create_grant(&st.db, id, input).await?),
+        Json(st.equity.create_grant(id, input).await?),
     ))
 }
 
@@ -85,9 +85,7 @@ pub async fn update_grant(
     Path(id): Path<i64>,
     Json(input): Json<SaveGrant>,
 ) -> AppResult<Json<EquityGrant>> {
-    Ok(Json(
-        sure_dal::equity::update_grant(&st.db, id, input).await?,
-    ))
+    Ok(Json(st.equity.update_grant(id, input).await?))
 }
 
 #[utoipa::path(delete, path = "/api/equity-grants/{id}", tag = "equity", params(("id" = i64, Path,)),
@@ -104,7 +102,7 @@ pub async fn delete_grant(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
-    sure_dal::equity::delete_grant(&st.db, id).await?;
+    st.equity.delete_grant(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -122,7 +120,7 @@ pub async fn list_exercises(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Vec<EquityExercise>>> {
-    Ok(Json(sure_dal::equity::list_exercises(&st.db, id).await?))
+    Ok(Json(st.equity.list_exercises(id).await?))
 }
 
 #[utoipa::path(post, path = "/api/equity-grants/{id}/exercises", tag = "equity",
@@ -144,7 +142,7 @@ pub async fn create_exercise(
 ) -> AppResult<(StatusCode, Json<EquityExercise>)> {
     Ok((
         StatusCode::CREATED,
-        Json(sure_dal::equity::create_exercise(&st.db, id, input).await?),
+        Json(st.equity.create_exercise(id, input).await?),
     ))
 }
 
@@ -162,7 +160,7 @@ pub async fn delete_exercise(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
-    sure_dal::equity::delete_exercise(&st.db, id).await?;
+    st.equity.delete_exercise(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -182,9 +180,7 @@ pub async fn grant_vesting(
     Path(id): Path<i64>,
     Query(q): Query<AsOfQuery>,
 ) -> AppResult<Json<VestingStatus>> {
-    Ok(Json(
-        sure_dal::equity::grant_vesting(&st.db, id, q.as_of.as_deref()).await?,
-    ))
+    Ok(Json(st.equity.grant_vesting(id, q.as_of.as_deref()).await?))
 }
 
 /// Vesting status of every grant on an account, plus total intrinsic value.
@@ -205,7 +201,7 @@ pub async fn account_equity(
     Query(q): Query<AsOfQuery>,
 ) -> AppResult<Json<AccountEquity>> {
     Ok(Json(
-        sure_dal::equity::account_equity(&st.db, id, q.as_of.as_deref()).await?,
+        st.equity.account_equity(id, q.as_of.as_deref()).await?,
     ))
 }
 
@@ -227,9 +223,7 @@ pub async fn revalue(
     Path(id): Path<i64>,
     Query(q): Query<AsOfQuery>,
 ) -> AppResult<Json<AccountEquity>> {
-    Ok(Json(
-        sure_dal::equity::revalue(&st.db, id, q.as_of.as_deref()).await?,
-    ))
+    Ok(Json(st.equity.revalue(id, q.as_of.as_deref()).await?))
 }
 
 pub fn router() -> Router<AppState> {

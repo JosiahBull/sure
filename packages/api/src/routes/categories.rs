@@ -5,7 +5,7 @@ use axum::{Json, Router};
 
 use crate::error::AppResult;
 use crate::state::AppState;
-pub use sure_dal::categories::{Category, CategoryNode, SaveCategory};
+pub use sure_core::{Category, CategoryNode, SaveCategory};
 
 // OTEL span names for this module's handlers.
 const CATEGORIES_LIST: &str = "categories.list";
@@ -25,7 +25,7 @@ const CATEGORIES_DELETE: &str = "categories.delete";
     err(level = tracing::Level::WARN),
 )]
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Category>>> {
-    Ok(Json(sure_dal::categories::list(&st.db).await?))
+    Ok(Json(st.categories.list().await?))
 }
 
 /// The category tree (roots with nested children).
@@ -39,7 +39,7 @@ pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Category>>> 
     err(level = tracing::Level::WARN),
 )]
 pub async fn tree(State(st): State<AppState>) -> AppResult<Json<Vec<CategoryNode>>> {
-    Ok(Json(sure_dal::categories::tree(&st.db).await?))
+    Ok(Json(st.categories.tree().await?))
 }
 
 /// Create a category.
@@ -57,7 +57,7 @@ pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveCategory>,
 ) -> AppResult<(StatusCode, Json<Category>)> {
-    let cat = sure_dal::categories::create(&st.db, input).await?;
+    let cat = st.categories.create(input).await?;
     Ok((StatusCode::CREATED, Json(cat)))
 }
 
@@ -79,7 +79,7 @@ pub async fn update(
     Path(id): Path<i64>,
     Json(input): Json<SaveCategory>,
 ) -> AppResult<Json<Category>> {
-    Ok(Json(sure_dal::categories::update(&st.db, id, input).await?))
+    Ok(Json(st.categories.update(id, input).await?))
 }
 
 /// Delete a category. Child categories and transaction links cascade per schema
@@ -96,7 +96,7 @@ pub async fn update(
     err(level = tracing::Level::WARN),
 )]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
-    sure_dal::categories::delete(&st.db, id).await?;
+    st.categories.delete(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

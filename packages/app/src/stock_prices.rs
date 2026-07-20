@@ -285,8 +285,23 @@ mod tests {
 
     #[async_trait]
     impl AccountRepo for FakeAccounts {
+        async fn list(&self, _include_archived: bool) -> AppResult<Vec<Account>> {
+            unreachable!("StockPriceTask never lists accounts")
+        }
         async fn get(&self, _id: i64) -> AppResult<Account> {
             unreachable!("StockPriceTask never looks up a single account")
+        }
+        async fn create(&self, _input: sure_core::SaveAccount) -> AppResult<Account> {
+            unreachable!("StockPriceTask never creates an account")
+        }
+        async fn update(&self, _id: i64, _input: sure_core::SaveAccount) -> AppResult<Account> {
+            unreachable!("StockPriceTask never updates an account")
+        }
+        async fn delete(&self, _id: i64) -> AppResult<()> {
+            unreachable!("StockPriceTask never deletes an account")
+        }
+        async fn set_secured_by(&self, _id: i64, _target: Option<i64>) -> AppResult<Account> {
+            unreachable!("StockPriceTask never mutates account metadata")
         }
         async fn list_shares_tickers(&self) -> AppResult<Vec<SharesTicker>> {
             Ok(self.shares.clone())

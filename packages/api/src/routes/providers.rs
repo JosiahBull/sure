@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-pub use sure_dal::providers::{
+pub use sure_core::{
     LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderSync, SaveProvider,
     SyncRequest,
 };
@@ -65,7 +65,9 @@ pub async fn discover_accounts(
         .await
         .map_err(|e| AppError::validation(e.to_string()))?;
 
-    let already_linked: HashSet<String> = sure_dal::providers::list(&st.db)
+    let already_linked: HashSet<String> = st
+        .providers
+        .list()
         .await?
         .into_iter()
         .filter(|p| p.kind == kind)
@@ -94,7 +96,7 @@ pub async fn discover_accounts(
     err(level = tracing::Level::WARN),
 )]
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Provider>>> {
-    Ok(Json(sure_dal::providers::list(&st.db).await?))
+    Ok(Json(st.providers.list().await?))
 }
 
 #[utoipa::path(post, path = "/api/providers", tag = "providers", request_body = SaveProvider,
@@ -116,10 +118,7 @@ pub async fn create(
             input.kind
         )));
     }
-    Ok((
-        StatusCode::CREATED,
-        Json(sure_dal::providers::create(&st.db, input).await?),
-    ))
+    Ok((StatusCode::CREATED, Json(st.providers.create(input).await?)))
 }
 
 /// Link an upstream account (from [`discover_accounts`]) to a local account, creating it
@@ -144,7 +143,7 @@ pub async fn link(
             input.kind
         )));
     }
-    let provider = sure_dal::providers::link(&st.db, input).await?;
+    let provider = st.providers.link(input).await?;
 
     // Best-effort: a failed initial sync (e.g. not-yet-configured credentials) is already
     // durably recorded as an "error" sync row and doesn't undo the link — the user can
@@ -153,7 +152,7 @@ pub async fn link(
     if let Err(e) = st.sync.sync_provider(provider, None).await {
         tracing::warn!(provider_id = id, error = %e, "initial sync after linking failed");
     }
-    let provider = sure_dal::providers::get(&st.db, id).await?;
+    let provider = st.providers.get(id).await?;
 
     Ok((StatusCode::CREATED, Json(provider)))
 }
@@ -180,7 +179,7 @@ pub async fn link_group(
             input.kind
         )));
     }
-    let providers = sure_dal::providers::link_group(&st.db, input).await?;
+    let providers = st.providers.link_group(input).await?;
 
     // Best-effort initial sync per member, same rationale as `link`.
     let ids: Vec<i64> = providers.iter().map(|p| p.id).collect();
@@ -192,7 +191,7 @@ pub async fn link_group(
     }
     let mut refreshed = Vec::with_capacity(ids.len());
     for id in ids {
-        refreshed.push(sure_dal::providers::get(&st.db, id).await?);
+        refreshed.push(st.providers.get(id).await?);
     }
 
     Ok((StatusCode::CREATED, Json(refreshed)))
@@ -220,7 +219,7 @@ pub async fn update(
             input.kind
         )));
     }
-    Ok(Json(sure_dal::providers::update(&st.db, id, input).await?))
+    Ok(Json(st.providers.update(id, input).await?))
 }
 
 #[utoipa::path(delete, path = "/api/providers/{id}", tag = "providers", params(("id" = i64, Path,)),
@@ -234,7 +233,7 @@ pub async fn update(
     err(level = tracing::Level::WARN),
 )]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
-    sure_dal::providers::delete(&st.db, id).await?;
+    st.providers.delete(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -257,7 +256,7 @@ pub async fn sync(
     Path(id): Path<i64>,
     Json(req): Json<SyncRequest>,
 ) -> AppResult<Json<ProviderSync>> {
-    let provider = sure_dal::providers::get(&st.db, id).await?;
+    let provider = st.providers.get(id).await?;
     Ok(Json(
         st.sync
             .sync_provider(provider, req.payload.as_deref())
@@ -279,7 +278,7 @@ pub async fn list_syncs(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Vec<ProviderSync>>> {
-    Ok(Json(sure_dal::providers::list_syncs(&st.db, id).await?))
+    Ok(Json(st.providers.list_syncs(id).await?))
 }
 
 pub fn router() -> Router<AppState> {

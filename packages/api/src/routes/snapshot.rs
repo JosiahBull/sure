@@ -1,12 +1,12 @@
 //! Config snapshot export & import — an opaque JSON blob the UI downloads and re-uploads.
-//! The data model + all SQL live in `sure_dal::snapshot`; these handlers only marshal
-//! the blob to/from the DAL's typed `Snapshot`.
+//! The data model + all SQL live in `sure_dal::snapshot`, behind the `SnapshotRepo` port;
+//! these handlers only marshal the blob through it.
 
 use axum::extract::State;
 use axum::{Json, Router};
 use serde_json::Value;
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::state::AppState;
 
 // OTEL span names for this module's handlers.
@@ -24,10 +24,7 @@ const SNAPSHOT_IMPORT: &str = "snapshot.import";
     err(level = tracing::Level::WARN),
 )]
 pub async fn export(State(st): State<AppState>) -> AppResult<Json<Value>> {
-    let snap = sure_dal::snapshot::export(&st.db).await?;
-    Ok(Json(
-        serde_json::to_value(snap).map_err(|e| AppError::Internal(e.into()))?,
-    ))
+    Ok(Json(st.snapshot.export().await?))
 }
 
 /// Replace the entire database with the given snapshot. Destructive.
@@ -42,9 +39,7 @@ pub async fn export(State(st): State<AppState>) -> AppResult<Json<Value>> {
     err(level = tracing::Level::WARN),
 )]
 pub async fn import(State(st): State<AppState>, Json(body): Json<Value>) -> AppResult<Json<Value>> {
-    let snap = serde_json::from_value(body)
-        .map_err(|e| AppError::validation(format!("invalid snapshot: {e}")))?;
-    Ok(Json(sure_dal::snapshot::import(&st.db, snap).await?))
+    Ok(Json(st.snapshot.import(body).await?))
 }
 
 pub fn router() -> Router<AppState> {

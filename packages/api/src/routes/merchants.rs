@@ -8,7 +8,7 @@ use crate::state::AppState;
 
 // Types + queries live in the DAL; re-export so the OpenAPI registration
 // (`crate::routes::merchants::Merchant`, ...) and handler annotations still resolve.
-pub use sure_dal::merchants::{Merchant, SaveMerchant};
+pub use sure_core::{Merchant, SaveMerchant};
 
 // OTEL span names for this module's handlers.
 const MERCHANTS_LIST: &str = "merchants.list";
@@ -26,7 +26,7 @@ const MERCHANTS_DELETE: &str = "merchants.delete";
     err(level = tracing::Level::WARN),
 )]
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<Merchant>>> {
-    Ok(Json(sure_dal::merchants::list(&st.db).await?))
+    Ok(Json(st.merchants.list().await?))
 }
 
 #[utoipa::path(post, path = "/api/merchants", tag = "merchants", request_body = SaveMerchant,
@@ -43,10 +43,7 @@ pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveMerchant>,
 ) -> AppResult<(StatusCode, Json<Merchant>)> {
-    Ok((
-        StatusCode::CREATED,
-        Json(sure_dal::merchants::create(&st.db, input).await?),
-    ))
+    Ok((StatusCode::CREATED, Json(st.merchants.create(input).await?)))
 }
 
 #[utoipa::path(put, path = "/api/merchants/{id}", tag = "merchants", params(("id" = i64, Path,)),
@@ -66,7 +63,7 @@ pub async fn update(
     Path(id): Path<i64>,
     Json(input): Json<SaveMerchant>,
 ) -> AppResult<Json<Merchant>> {
-    Ok(Json(sure_dal::merchants::update(&st.db, id, input).await?))
+    Ok(Json(st.merchants.update(id, input).await?))
 }
 
 #[utoipa::path(delete, path = "/api/merchants/{id}", tag = "merchants", params(("id" = i64, Path,)),
@@ -80,7 +77,7 @@ pub async fn update(
     err(level = tracing::Level::WARN),
 )]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
-    sure_dal::merchants::delete(&st.db, id).await?;
+    st.merchants.delete(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
