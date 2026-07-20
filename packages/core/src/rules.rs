@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Rule {
     pub id: i64,
     pub name: String,
@@ -55,7 +54,6 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct RuleRun {
     pub id: i64,
     pub rule_id: Option<i64>,
@@ -70,7 +68,6 @@ pub struct RuleRun {
 /// expandable diff. Category/merchant ids are resolved to names by the client; the
 /// before/after ids are enough to render "Groceries → Dining" style changes.
 #[derive(Debug, Serialize, ToSchema)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct RuleApplicationDetail {
     pub id: i64,
     pub transaction_id: i64,

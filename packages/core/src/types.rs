@@ -5,9 +5,7 @@ use utoipa::ToSchema;
 /// behaviour (how balance and net-worth contribution are computed); free-form
 /// per-kind configuration lives in an account's `metadata`.
 #[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "sqlx", sqlx(rename_all = "snake_case"))]
 pub enum AccountKind {
     Cash,
     Bank,
@@ -56,6 +54,58 @@ impl AccountKind {
             Vehicle | RealEstate | Asset => AccountClass::Asset,
             SharesNz | SharesUs | SharesPrivate | Brokerage => AccountClass::Investment,
         }
+    }
+
+    /// The stored/wire representation (snake_case) — matches
+    /// `#[serde(rename_all = "snake_case")]`. Used by the DAL to bind/read this as a
+    /// plain `TEXT` column without `sure-core` needing an `sqlx` dependency.
+    pub fn as_str(self) -> &'static str {
+        use AccountKind::*;
+        match self {
+            Cash => "cash",
+            Bank => "bank",
+            Savings => "savings",
+            CreditCard => "credit_card",
+            RevolvingCredit => "revolving_credit",
+            Mortgage => "mortgage",
+            StudentLoan => "student_loan",
+            Loan => "loan",
+            Vehicle => "vehicle",
+            RealEstate => "real_estate",
+            SharesNz => "shares_nz",
+            SharesUs => "shares_us",
+            SharesPrivate => "shares_private",
+            Brokerage => "brokerage",
+            Asset => "asset",
+            Liability => "liability",
+        }
+    }
+}
+
+impl std::str::FromStr for AccountKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use AccountKind::*;
+        Ok(match s {
+            "cash" => Cash,
+            "bank" => Bank,
+            "savings" => Savings,
+            "credit_card" => CreditCard,
+            "revolving_credit" => RevolvingCredit,
+            "mortgage" => Mortgage,
+            "student_loan" => StudentLoan,
+            "loan" => Loan,
+            "vehicle" => Vehicle,
+            "real_estate" => RealEstate,
+            "shares_nz" => SharesNz,
+            "shares_us" => SharesUs,
+            "shares_private" => SharesPrivate,
+            "brokerage" => Brokerage,
+            "asset" => Asset,
+            "liability" => Liability,
+            other => return Err(format!("unknown account kind '{other}'")),
+        })
     }
 }
 

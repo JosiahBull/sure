@@ -18,6 +18,22 @@ each ship independently.
 > `ARCHITECTURE.md`'s "traits where polymorphism is real, functions where it isn't"
 > section must be updated to match.
 
+## Status
+
+| Phase | State | Landed |
+|---|---|---|
+| **1 — Extract `sure-app`** | ✅ Done | 2026-07-20, `4ca476c` |
+| **2 — Repo ports for logic-heavy services** | ✅ Done | 2026-07-20, `95eccde` |
+| **3a — Row/domain split** | ✅ Done | 2026-07-20 |
+| **3b/3c/3d — DTO audit, full port coverage, `sure-server` split** | ⏳ Pending | — |
+
+Phases 1–2 shipped close to the plan below, with two notable as-built choices: the
+services became **structs** (`BrokerageService`, `ReportService`, `RuleService`,
+`SyncService`) constructed from `Arc<dyn Port>` dependencies rather than free functions;
+and the ports own **their own plain row types** (`HoldingRow`, `WalletRow`, …) that the
+adapter maps into, because `sure-app` can't depend back on `sure-dal`. See the per-phase
+"as built" notes. `docs/ARCHITECTURE.md` has been updated to describe the landed state.
+
 ---
 
 ## Where we are
@@ -89,6 +105,11 @@ scheduler; we extend the pattern to everything.
 
 ## Phase 1 — Extract `sure-app` (highest value, lowest risk)
 
+> **✅ As built (2026-07-20, `4ca476c`).** `packages/app` created (~2,900 LOC) with the
+> modules below plus `ports.rs`; `zen-expression` moved to `sure-app`. `sure-api`'s
+> `lib.rs` no longer declares the compute modules — they're gone from the web crate. The
+> `brokerage.rs` unit tests moved with the code. Everything below is the plan as executed.
+
 Physically move the business logic out of the web crate into a new `sure-app` crate. **No
 trait inversion yet** — the services keep calling `sure_dal::*` free functions directly.
 This alone splits the big crate and establishes the layer; it's a large but mechanical
@@ -150,6 +171,20 @@ Scheduler wiring in `serve()` changes only its import paths
 ---
 
 ## Phase 2 — Introduce ports where testability pays
+
+> **✅ As built (2026-07-20, `95eccde`).** Ports live in `sure_app::ports`: `Clock` /
+> `SystemClock` plus `AccountRepo`, `BrokerageRepo`, `StockPriceCacheRepo`, `ValuationRepo`,
+> `FxRatesRepo`, `RuleRepo`, `ReportRepo`, `ProviderRepo`, `TransferRepo`,
+> `ExchangeRateRepo`. `sure-dal` now depends on `sure-app` and provides
+> `sure_dal::store::SqliteStore`, one struct implementing every port by delegating to the
+> existing per-entity modules and mapping row shapes. Services are structs
+> (`BrokerageService` etc.) holding `Arc<dyn Port>`s; `AppState` holds `db` + the four
+> services + a `stock_prices` port, wired in `AppState::new` (HTTP composition root) and
+> again in `serve()` for the scheduler tasks. A `FixedClock` test seam lives in
+> `sure-app`. **Divergence from the plan:** the ports own plain row types rather than
+> returning `sure-core`/`sure-dal` structs, since `sure-app` can't depend on `sure-dal`
+> (the inversion) — this already decouples the *port surface* from the table shape, which
+> is a down payment on Phase 3a for those shapes.
 
 Invert the dependency for the logic-heavy services so they can be unit-tested against
 in-memory fakes, and abstract the clock. **Scope this deliberately**: add ports for the
@@ -290,12 +325,35 @@ every port a service needs.
 
 ## Phase 3 — Purify the domain and complete port coverage
 
+> **3a ✅ done; 3b/3c/3d ⏳ pending.** Starting point after Phase 2: `sure-core` still
+> carried the `sqlx` and `axum` features and its shared types still derived
+> `sqlx::FromRow` / `sqlx::Type`, so for the *shared vocabulary* (`Transaction`,
+> `Account`, …) the domain type was still also the row type and the wire type. The ports'
+> own row shapes (`HoldingRow`, …) were already decoupled from Phase 2.
+
 Finish the hexagon: make `sure-core` a *pure* domain crate and extend port coverage to the
 remaining aggregates, so persistence and transport shapes are fully decoupled from the
 domain model. Order the work by payoff — the row/domain split is the valuable part; the
 wire-DTO split is optional and only where shapes actually diverge.
 
 ### 3a. Split the persistence row shape from the domain type (valuable)
+
+> **✅ As built (2026-07-20).** Every `sure_core` type that derived `sqlx::FromRow`
+> directly (18 structs across 12 files: `HoldingLot`, `Dividend`, `DividendWithholding`,
+> `Category`, `Currency`, `Merchant`, `Settings`, `Cron`, `CronRun`, `EquityGrant`,
+> `EquityExercise`, `Valuation`, `ProviderSync`, `StockPrice`, `Rule`, `RuleRun`,
+> `RuleApplicationDetail`, `Transaction`) got a `*Row` struct + `From`/`TryFrom` impl in
+> its `sure-dal` module, following the `AccountRow`/`ProviderRow` pattern that already
+> existed. `AccountKind` also lost its `sqlx::Type` derive — it gained a hand-written
+> `as_str()`/`FromStr` pair instead, and `AccountRow.kind`/binds go through that; since a
+> stored value that fails to parse is now a real (if never-expected) failure mode rather
+> than a `sqlx::Type` decode error, `From<AccountRow> for Account` became a fallible
+> `TryFrom`. `sure-core`'s `sqlx` feature now gates *only* `AppError`'s
+> `From<sqlx::Error>` conversion (not a "domain type" concern) — no struct or enum in
+> `sure-core` derives any `sqlx` trait any more, satisfying the acceptance criterion
+> literally. `Account` also gained `#[derive(Clone)]` (needed by Phase 2's test fakes;
+> every field type already derived `Clone`, so this was a trivial, safe addition — noted
+> here since it landed slightly out of order, alongside Phase 2 work).
 
 Today `sure_core::Transaction` derives `sqlx::FromRow`, so the table shape *is* the domain
 type — a column rename ripples into every handler. Separate them:

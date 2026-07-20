@@ -4,7 +4,6 @@ use utoipa::ToSchema;
 /// A single day's cached closing price for a ticker (see
 /// `sure_providers::StockPriceProvider`), keyed by `(ticker, exchange, as_of)`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct StockPrice {
     pub ticker: String,
     /// Free-text exchange hint (e.g. `"NZX"`), or `""` if none was set.

@@ -9,16 +9,58 @@ pub use sure_core::{Dividend, DividendDetail, DividendWithholding, HoldingLot, S
 
 use crate::Db;
 
+#[derive(Debug, FromRow)]
+struct HoldingLotRow {
+    id: i64,
+    account_id: i64,
+    ticker: String,
+    exchange: String,
+    name: Option<String>,
+    currency_code: String,
+    trade_date: String,
+    quantity: f64,
+    unit_price: Option<f64>,
+    fee_minor: i64,
+    kind: String,
+    external_id: Option<String>,
+    provider: Option<String>,
+    created_at: String,
+}
+
+impl From<HoldingLotRow> for HoldingLot {
+    fn from(r: HoldingLotRow) -> Self {
+        HoldingLot {
+            id: r.id,
+            account_id: r.account_id,
+            ticker: r.ticker,
+            exchange: r.exchange,
+            name: r.name,
+            currency_code: r.currency_code,
+            trade_date: r.trade_date,
+            quantity: r.quantity,
+            unit_price: r.unit_price,
+            fee_minor: r.fee_minor,
+            kind: r.kind,
+            external_id: r.external_id,
+            provider: r.provider,
+            created_at: r.created_at,
+        }
+    }
+}
+
 // ---- holdings CRUD -------------------------------------------------------
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_holdings(db: &Db, account_id: i64) -> AppResult<Vec<HoldingLot>> {
-    Ok(sqlx::query_as::<_, HoldingLot>(
+    Ok(sqlx::query_as::<_, HoldingLotRow>(
         "SELECT * FROM holdings WHERE account_id=?1 ORDER BY date(trade_date), id",
     )
     .bind(account_id)
     .fetch_all(db)
-    .await?)
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -34,7 +76,7 @@ pub async fn create_holding(
     if input.quantity == 0.0 {
         return Err(AppError::validation("quantity must be non-zero"));
     }
-    sqlx::query_as::<_, HoldingLot>(
+    Ok(sqlx::query_as::<_, HoldingLotRow>(
         "INSERT INTO holdings
             (account_id, ticker, exchange, name, currency_code, trade_date, quantity,
              unit_price, fee_minor, kind)
@@ -52,7 +94,8 @@ pub async fn create_holding(
     .bind(&input.kind)
     .fetch_one(db)
     .await
-    .map_err(map_fk)
+    .map_err(map_fk)?
+    .into())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -69,22 +112,88 @@ pub async fn delete_holding(db: &Db, id: i64) -> AppResult<()> {
 
 // ---- dividends -----------------------------------------------------------
 
+#[derive(Debug, FromRow)]
+struct DividendRow {
+    id: i64,
+    account_id: i64,
+    ticker: String,
+    exchange: String,
+    record_date: Option<String>,
+    paid_date: String,
+    shares_held: Option<f64>,
+    gross_amount_minor: i64,
+    net_amount_minor: i64,
+    currency_code: String,
+    external_id: Option<String>,
+    provider: Option<String>,
+    created_at: String,
+}
+
+impl From<DividendRow> for Dividend {
+    fn from(r: DividendRow) -> Self {
+        Dividend {
+            id: r.id,
+            account_id: r.account_id,
+            ticker: r.ticker,
+            exchange: r.exchange,
+            record_date: r.record_date,
+            paid_date: r.paid_date,
+            shares_held: r.shares_held,
+            gross_amount_minor: r.gross_amount_minor,
+            net_amount_minor: r.net_amount_minor,
+            currency_code: r.currency_code,
+            external_id: r.external_id,
+            provider: r.provider,
+            created_at: r.created_at,
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct DividendWithholdingRow {
+    id: i64,
+    dividend_id: i64,
+    owed_to: String,
+    tax_amount_minor: i64,
+    tax_credit_minor: Option<i64>,
+    currency_code: String,
+}
+
+impl From<DividendWithholdingRow> for DividendWithholding {
+    fn from(r: DividendWithholdingRow) -> Self {
+        DividendWithholding {
+            id: r.id,
+            dividend_id: r.dividend_id,
+            owed_to: r.owed_to,
+            tax_amount_minor: r.tax_amount_minor,
+            tax_credit_minor: r.tax_credit_minor,
+            currency_code: r.currency_code,
+        }
+    }
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_dividends(db: &Db, account_id: i64) -> AppResult<Vec<DividendDetail>> {
-    let dividends = sqlx::query_as::<_, Dividend>(
+    let dividends: Vec<Dividend> = sqlx::query_as::<_, DividendRow>(
         "SELECT * FROM dividends WHERE account_id=?1 ORDER BY date(paid_date) DESC, id DESC",
     )
     .bind(account_id)
     .fetch_all(db)
-    .await?;
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect();
     let mut out = Vec::with_capacity(dividends.len());
     for dividend in dividends {
-        let withholdings = sqlx::query_as::<_, DividendWithholding>(
+        let withholdings: Vec<DividendWithholding> = sqlx::query_as::<_, DividendWithholdingRow>(
             "SELECT * FROM dividend_withholdings WHERE dividend_id=?1 ORDER BY id",
         )
         .bind(dividend.id)
         .fetch_all(db)
-        .await?;
+        .await?
+        .into_iter()
+        .map(Into::into)
+        .collect();
         out.push(DividendDetail {
             dividend,
             withholdings,

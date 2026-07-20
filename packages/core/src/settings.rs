@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 #[derive(Debug, Serialize, ToSchema)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Settings {
     /// Currency all reports are normalised into.
     pub base_currency_code: String,

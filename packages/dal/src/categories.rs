@@ -1,10 +1,37 @@
-use sqlx::SqlitePool;
+use sqlx::{FromRow, SqlitePool};
 use sure_core::{AppError, AppResult};
 pub use sure_core::{Category, CategoryNode, SaveCategory};
 
 use crate::Db;
 
 const KINDS: [&str; 3] = ["income", "expense", "transfer"];
+
+#[derive(Debug, FromRow)]
+struct CategoryRow {
+    id: i64,
+    name: String,
+    parent_id: Option<i64>,
+    kind: String,
+    color: Option<String>,
+    icon: Option<String>,
+    sort_order: i64,
+    created_at: String,
+}
+
+impl From<CategoryRow> for Category {
+    fn from(r: CategoryRow) -> Self {
+        Category {
+            id: r.id,
+            name: r.name,
+            parent_id: r.parent_id,
+            kind: r.kind,
+            color: r.color,
+            icon: r.icon,
+            sort_order: r.sort_order,
+            created_at: r.created_at,
+        }
+    }
+}
 
 /// List all categories (flat).
 #[tracing::instrument(level = "debug", skip_all)]
@@ -23,7 +50,7 @@ pub async fn tree(db: &Db) -> AppResult<Vec<CategoryNode>> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveCategory) -> AppResult<Category> {
     validate(db, &input, None).await?;
-    Ok(sqlx::query_as::<_, Category>(
+    Ok(sqlx::query_as::<_, CategoryRow>(
         "INSERT INTO categories (name, parent_id, kind, color, icon, sort_order)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING *",
     )
@@ -34,14 +61,15 @@ pub async fn create(db: &Db, input: SaveCategory) -> AppResult<Category> {
     .bind(&input.icon)
     .bind(input.sort_order)
     .fetch_one(db)
-    .await?)
+    .await?
+    .into())
 }
 
 /// Replace a category.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveCategory) -> AppResult<Category> {
     validate(db, &input, Some(id)).await?;
-    sqlx::query_as::<_, Category>(
+    Ok(sqlx::query_as::<_, CategoryRow>(
         "UPDATE categories SET name=?2, parent_id=?3, kind=?4, color=?5, icon=?6, sort_order=?7
          WHERE id=?1 RETURNING *",
     )
@@ -54,7 +82,8 @@ pub async fn update(db: &Db, id: i64, input: SaveCategory) -> AppResult<Category
     .bind(input.sort_order)
     .fetch_optional(db)
     .await?
-    .ok_or(AppError::NotFound("category"))
+    .ok_or(AppError::NotFound("category"))?
+    .into())
 }
 
 /// Find an existing category by name (case-insensitive, scoped to the given parent) or
@@ -70,36 +99,35 @@ pub async fn find_or_create(
     kind: &str,
 ) -> AppResult<Category> {
     let name = name.trim();
-    let existing = match parent_id {
-        Some(pid) => {
-            sqlx::query_as::<_, Category>(
-                "SELECT * FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id = ?2",
-            )
-            .bind(name)
-            .bind(pid)
-            .fetch_optional(db)
-            .await?
-        }
-        None => {
-            sqlx::query_as::<_, Category>(
-                "SELECT * FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id IS NULL",
-            )
-            .bind(name)
-            .fetch_optional(db)
-            .await?
-        }
+    let existing: Option<Category> = match parent_id {
+        Some(pid) => sqlx::query_as::<_, CategoryRow>(
+            "SELECT * FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id = ?2",
+        )
+        .bind(name)
+        .bind(pid)
+        .fetch_optional(db)
+        .await?
+        .map(Into::into),
+        None => sqlx::query_as::<_, CategoryRow>(
+            "SELECT * FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id IS NULL",
+        )
+        .bind(name)
+        .fetch_optional(db)
+        .await?
+        .map(Into::into),
     };
     if let Some(existing) = existing {
         return Ok(existing);
     }
-    Ok(sqlx::query_as::<_, Category>(
+    Ok(sqlx::query_as::<_, CategoryRow>(
         "INSERT INTO categories (name, parent_id, kind) VALUES (?1, ?2, ?3) RETURNING *",
     )
     .bind(name)
     .bind(parent_id)
     .bind(kind)
     .fetch_one(db)
-    .await?)
+    .await?
+    .into())
 }
 
 /// Delete a category. Child categories and transaction links cascade per schema
@@ -119,9 +147,12 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 #[tracing::instrument(level = "debug", skip_all)]
 async fn all_categories(db: &SqlitePool) -> AppResult<Vec<Category>> {
     Ok(
-        sqlx::query_as::<_, Category>("SELECT * FROM categories ORDER BY sort_order, name")
+        sqlx::query_as::<_, CategoryRow>("SELECT * FROM categories ORDER BY sort_order, name")
             .fetch_all(db)
-            .await?,
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect(),
     )
 }
 

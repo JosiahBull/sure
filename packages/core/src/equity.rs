@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct EquityGrant {
     pub id: i64,
     pub account_id: i64,
@@ -47,7 +46,6 @@ fn cliff12() -> i64 {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct EquityExercise {
     pub id: i64,
     pub grant_id: i64,

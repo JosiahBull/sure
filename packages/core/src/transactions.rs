@@ -2,7 +2,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Transaction {
     pub id: i64,
     pub account_id: i64,

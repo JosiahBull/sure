@@ -3,10 +3,34 @@
 //! (ticker, exchange, as_of) — unlike `exchange_rate_cache`, this table itself is the
 //! historical series, since a point-in-time lookup already needs to query by date.
 
+use sqlx::FromRow;
 use sure_core::AppResult;
 pub use sure_core::StockPrice;
 
 use crate::Db;
+
+#[derive(Debug, FromRow)]
+struct StockPriceRow {
+    ticker: String,
+    exchange: String,
+    as_of: String,
+    close: String,
+    currency_code: String,
+    fetched_at: String,
+}
+
+impl From<StockPriceRow> for StockPrice {
+    fn from(r: StockPriceRow) -> Self {
+        StockPrice {
+            ticker: r.ticker,
+            exchange: r.exchange,
+            as_of: r.as_of,
+            close: r.close,
+            currency_code: r.currency_code,
+            fetched_at: r.fetched_at,
+        }
+    }
+}
 
 /// Upsert one day's close for a ticker.
 #[tracing::instrument(level = "debug", skip_all)]
@@ -18,7 +42,7 @@ pub async fn upsert(
     close: &str,
     currency_code: &str,
 ) -> AppResult<StockPrice> {
-    Ok(sqlx::query_as::<_, StockPrice>(
+    Ok(sqlx::query_as::<_, StockPriceRow>(
         "INSERT INTO stock_prices (ticker, exchange, as_of, close, currency_code)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(ticker, exchange, as_of) DO UPDATE SET
@@ -32,7 +56,8 @@ pub async fn upsert(
     .bind(close)
     .bind(currency_code)
     .fetch_one(db)
-    .await?)
+    .await?
+    .into())
 }
 
 /// The closest cached close on or before `as_of` (the nearest preceding trading day —
@@ -44,7 +69,7 @@ pub async fn get_at(
     exchange: &str,
     as_of: &str,
 ) -> AppResult<Option<StockPrice>> {
-    Ok(sqlx::query_as::<_, StockPrice>(
+    Ok(sqlx::query_as::<_, StockPriceRow>(
         "SELECT * FROM stock_prices WHERE ticker = ?1 AND exchange = ?2 AND as_of <= ?3
          ORDER BY as_of DESC LIMIT 1",
     )
@@ -52,19 +77,23 @@ pub async fn get_at(
     .bind(exchange)
     .bind(as_of)
     .fetch_optional(db)
-    .await?)
+    .await?
+    .map(Into::into))
 }
 
 /// Every cached close for a ticker, oldest first.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_history(db: &Db, ticker: &str, exchange: &str) -> AppResult<Vec<StockPrice>> {
-    Ok(sqlx::query_as::<_, StockPrice>(
+    Ok(sqlx::query_as::<_, StockPriceRow>(
         "SELECT * FROM stock_prices WHERE ticker = ?1 AND exchange = ?2 ORDER BY as_of",
     )
     .bind(ticker)
     .bind(exchange)
     .fetch_all(db)
-    .await?)
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect())
 }
 
 #[cfg(test)]

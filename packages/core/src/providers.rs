@@ -83,7 +83,6 @@ pub struct LinkGroupMember {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct ProviderSync {
     pub id: i64,
     pub provider_id: i64,

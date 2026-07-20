@@ -26,7 +26,7 @@ fn metadata_from_stored(kind: AccountKind, stored: &str) -> AccountMetadata {
 pub struct AccountRow {
     pub id: i64,
     pub name: String,
-    pub kind: AccountKind,
+    pub kind: String,
     pub currency_code: String,
     pub institution: Option<String>,
     pub metadata: String,
@@ -37,14 +37,24 @@ pub struct AccountRow {
     pub updated_at: String,
 }
 
-impl From<AccountRow> for Account {
-    fn from(r: AccountRow) -> Self {
-        Account {
-            class: r.kind.class(),
-            metadata: metadata_from_stored(r.kind, &r.metadata),
+impl TryFrom<AccountRow> for Account {
+    type Error = AppError;
+
+    fn try_from(r: AccountRow) -> AppResult<Self> {
+        // The column has no CHECK constraint (sqlite's is limited), but every writer
+        // goes through `AccountKind::as_str`, so a value that doesn't parse means the
+        // row was written by something else entirely — surface it as a real error
+        // rather than panicking the request.
+        let kind: AccountKind = r
+            .kind
+            .parse()
+            .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))?;
+        Ok(Account {
+            class: kind.class(),
+            metadata: metadata_from_stored(kind, &r.metadata),
             id: r.id,
             name: r.name,
-            kind: r.kind,
+            kind,
             currency_code: r.currency_code,
             institution: r.institution,
             archived: r.archived,
@@ -52,7 +62,7 @@ impl From<AccountRow> for Account {
             secured_by_account_id: r.secured_by_account_id,
             created_at: r.created_at,
             updated_at: r.updated_at,
-        }
+        })
     }
 }
 
@@ -69,7 +79,7 @@ pub async fn list(db: &Db, include_archived: bool) -> AppResult<Vec<Account>> {
         "SELECT * FROM accounts WHERE archived = 0 ORDER BY sort_order, name"
     };
     let rows = sqlx::query_as::<_, AccountRow>(sql).fetch_all(db).await?;
-    Ok(rows.into_iter().map(Account::from).collect())
+    rows.into_iter().map(Account::try_from).collect()
 }
 
 /// A distinct ticker/exchange pair in use by a `shares_nz`/`shares_us` account, for
@@ -136,7 +146,7 @@ pub async fn get(db: &Db, id: i64) -> AppResult<Account> {
         .fetch_optional(db)
         .await?
         .ok_or(AppError::NotFound("account"))?;
-    Ok(row.into())
+    row.try_into()
 }
 
 /// Validate input and return the metadata JSON to persist (as a string).
@@ -173,7 +183,7 @@ pub async fn create(db: &Db, input: SaveAccount) -> AppResult<Account> {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING *",
     )
     .bind(input.name.trim())
-    .bind(input.kind)
+    .bind(input.kind.as_str())
     .bind(input.currency_code.trim().to_uppercase())
     .bind(&input.institution)
     .bind(metadata)
@@ -181,7 +191,7 @@ pub async fn create(db: &Db, input: SaveAccount) -> AppResult<Account> {
     .bind(input.sort_order)
     .fetch_one(&mut *tx)
     .await?;
-    let account: Account = row.into();
+    let account: Account = row.try_into()?;
 
     // A property's purchase price/date *is* an initial valuation — seed one so
     // net-worth/equity calculations (which only ever read the `valuations` table, never
@@ -217,7 +227,7 @@ pub async fn update(db: &Db, id: i64, input: SaveAccount) -> AppResult<Account> 
     )
     .bind(id)
     .bind(input.name.trim())
-    .bind(input.kind)
+    .bind(input.kind.as_str())
     .bind(input.currency_code.trim().to_uppercase())
     .bind(&input.institution)
     .bind(metadata)
@@ -226,7 +236,7 @@ pub async fn update(db: &Db, id: i64, input: SaveAccount) -> AppResult<Account> 
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound("account"))?;
-    Ok(row.into())
+    row.try_into()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -280,7 +290,7 @@ pub async fn set_secured_by(db: &Db, id: i64, target: Option<i64>) -> AppResult<
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound("account"))?;
-    Ok(row.into())
+    row.try_into()
 }
 
 /// Update just the credit-limit hint on a depository-profile account's metadata (used by

@@ -4,7 +4,6 @@ use utoipa::ToSchema;
 /// A point-in-time value for an account (property price, share holding value, loan
 /// balance, ...). Net-worth history is built from these plus cash-account flows.
 #[derive(Debug, Serialize, ToSchema)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Valuation {
     pub id: i64,
     pub account_id: i64,

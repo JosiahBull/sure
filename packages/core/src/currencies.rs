@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 #[derive(Debug, Serialize, ToSchema)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Currency {
     /// ISO 4217 code (or a user code for private assets), e.g. `NZD`.
     pub code: String,

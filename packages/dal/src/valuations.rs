@@ -1,17 +1,48 @@
+use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
 pub use sure_core::{NewValuation, Valuation};
 
 use crate::Db;
 
+#[derive(Debug, FromRow)]
+struct ValuationRow {
+    id: i64,
+    account_id: i64,
+    as_of: String,
+    value_minor: i64,
+    currency_code: String,
+    source: String,
+    note: Option<String>,
+    created_at: String,
+}
+
+impl From<ValuationRow> for Valuation {
+    fn from(r: ValuationRow) -> Self {
+        Valuation {
+            id: r.id,
+            account_id: r.account_id,
+            as_of: r.as_of,
+            value_minor: r.value_minor,
+            currency_code: r.currency_code,
+            source: r.source,
+            note: r.note,
+            created_at: r.created_at,
+        }
+    }
+}
+
 /// List an account's valuations, newest first.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_for_account(db: &Db, account_id: i64) -> AppResult<Vec<Valuation>> {
-    Ok(sqlx::query_as::<_, Valuation>(
+    Ok(sqlx::query_as::<_, ValuationRow>(
         "SELECT * FROM valuations WHERE account_id=?1 ORDER BY as_of DESC, id DESC",
     )
     .bind(account_id)
     .fetch_all(db)
-    .await?)
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect())
 }
 
 /// Record a valuation for an account, defaulting the currency to the account's.
@@ -29,7 +60,7 @@ pub async fn create(db: &Db, account_id: i64, input: NewValuation) -> AppResult<
         .filter(|s| !s.is_empty())
         .map(|s| s.to_uppercase())
         .unwrap_or(account_ccy);
-    Ok(sqlx::query_as::<_, Valuation>(
+    Ok(sqlx::query_as::<_, ValuationRow>(
         "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
          VALUES (?1, ?2, ?3, ?4, 'manual', ?5) RETURNING *",
     )
@@ -39,7 +70,8 @@ pub async fn create(db: &Db, account_id: i64, input: NewValuation) -> AppResult<
     .bind(currency)
     .bind(&input.note)
     .fetch_one(db)
-    .await?)
+    .await?
+    .into())
 }
 
 /// Record (or refresh, if one already exists for this account today) a provider-sourced
@@ -54,7 +86,7 @@ pub async fn upsert_from_provider(
     value_minor: i64,
     currency_code: &str,
 ) -> AppResult<Valuation> {
-    Ok(sqlx::query_as::<_, Valuation>(
+    Ok(sqlx::query_as::<_, ValuationRow>(
         "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source)
          VALUES (?1, ?2, ?3, ?4, 'provider')
          ON CONFLICT(account_id, as_of) WHERE source='provider' DO UPDATE SET
@@ -66,7 +98,8 @@ pub async fn upsert_from_provider(
     .bind(value_minor)
     .bind(currency_code)
     .fetch_one(db)
-    .await?)
+    .await?
+    .into())
 }
 
 /// Record (or refresh, if one already exists for this account today) a brokerage-computed
@@ -83,7 +116,7 @@ pub async fn upsert_from_brokerage(
     value_minor: i64,
     currency_code: &str,
 ) -> AppResult<Valuation> {
-    Ok(sqlx::query_as::<_, Valuation>(
+    Ok(sqlx::query_as::<_, ValuationRow>(
         "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source)
          VALUES (?1, ?2, ?3, ?4, 'brokerage')
          ON CONFLICT(account_id, as_of) WHERE source='brokerage' DO UPDATE SET
@@ -95,7 +128,8 @@ pub async fn upsert_from_brokerage(
     .bind(value_minor)
     .bind(currency_code)
     .fetch_one(db)
-    .await?)
+    .await?
+    .into())
 }
 
 /// Delete a valuation.

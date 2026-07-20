@@ -1,13 +1,12 @@
 //! Brokerage accounts: holdings lots, computed positions/snapshot, and dividend detail —
-//! wire/domain shapes. See `packages/dal/src/brokerage.rs` for persistence and
-//! `packages/api/src/brokerage.rs` for the price-lookup/FX compute that turns lots into a
-//! snapshot.
+//! pure domain shapes. See `packages/dal/src/brokerage.rs` for persistence (the row shape
+//! lives there, mapped into these types) and `packages/app/src/brokerage.rs` for the
+//! price-lookup/FX compute that turns lots into a snapshot.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct HoldingLot {
     pub id: i64,
     pub account_id: i64,
@@ -86,7 +85,6 @@ pub struct BrokerageSnapshot {
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct DividendWithholding {
     pub id: i64,
     pub dividend_id: i64,
@@ -97,7 +95,6 @@ pub struct DividendWithholding {
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Dividend {
     pub id: i64,
     pub account_id: i64,

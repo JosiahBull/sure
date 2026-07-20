@@ -1,14 +1,39 @@
+use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
 pub use sure_core::{Currency, NewCurrency};
 
 use crate::Db;
 
+#[derive(Debug, FromRow)]
+struct CurrencyRow {
+    code: String,
+    name: String,
+    symbol: String,
+    decimal_places: i64,
+    created_at: String,
+}
+
+impl From<CurrencyRow> for Currency {
+    fn from(r: CurrencyRow) -> Self {
+        Currency {
+            code: r.code,
+            name: r.name,
+            symbol: r.symbol,
+            decimal_places: r.decimal_places,
+            created_at: r.created_at,
+        }
+    }
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Currency>> {
     Ok(
-        sqlx::query_as::<_, Currency>("SELECT * FROM currencies ORDER BY code")
+        sqlx::query_as::<_, CurrencyRow>("SELECT * FROM currencies ORDER BY code")
             .fetch_all(db)
-            .await?,
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect(),
     )
 }
 
@@ -18,7 +43,7 @@ pub async fn upsert(db: &Db, input: NewCurrency) -> AppResult<Currency> {
     if code.is_empty() {
         return Err(AppError::validation("currency code is required"));
     }
-    Ok(sqlx::query_as::<_, Currency>(
+    Ok(sqlx::query_as::<_, CurrencyRow>(
         "INSERT INTO currencies (code, name, symbol, decimal_places)
          VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(code) DO UPDATE SET
@@ -30,7 +55,8 @@ pub async fn upsert(db: &Db, input: NewCurrency) -> AppResult<Currency> {
     .bind(input.symbol.trim())
     .bind(input.decimal_places)
     .fetch_one(db)
-    .await?)
+    .await?
+    .into())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]

@@ -1,6 +1,7 @@
 //! Equity grants, exercises, and computed vesting status.
 
 use chrono::{Datelike, NaiveDate, Utc};
+use sqlx::FromRow;
 pub use sure_core::{
     AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
 };
@@ -8,14 +9,79 @@ use sure_core::{AppError, AppResult};
 
 use crate::Db;
 
+#[derive(Debug, FromRow)]
+struct EquityGrantRow {
+    id: i64,
+    account_id: i64,
+    company: String,
+    grant_date: String,
+    quantity: i64,
+    strike_minor: i64,
+    currency_code: String,
+    vest_months: i64,
+    cliff_months: i64,
+    unit_value_minor: Option<i64>,
+    note: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+impl From<EquityGrantRow> for EquityGrant {
+    fn from(r: EquityGrantRow) -> Self {
+        EquityGrant {
+            id: r.id,
+            account_id: r.account_id,
+            company: r.company,
+            grant_date: r.grant_date,
+            quantity: r.quantity,
+            strike_minor: r.strike_minor,
+            currency_code: r.currency_code,
+            vest_months: r.vest_months,
+            cliff_months: r.cliff_months,
+            unit_value_minor: r.unit_value_minor,
+            note: r.note,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct EquityExerciseRow {
+    id: i64,
+    grant_id: i64,
+    exercise_date: String,
+    quantity: i64,
+    price_minor: i64,
+    note: Option<String>,
+    created_at: String,
+}
+
+impl From<EquityExerciseRow> for EquityExercise {
+    fn from(r: EquityExerciseRow) -> Self {
+        EquityExercise {
+            id: r.id,
+            grant_id: r.grant_id,
+            exercise_date: r.exercise_date,
+            quantity: r.quantity,
+            price_minor: r.price_minor,
+            note: r.note,
+            created_at: r.created_at,
+        }
+    }
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_grants(db: &Db, account_id: i64) -> AppResult<Vec<EquityGrant>> {
-    Ok(sqlx::query_as::<_, EquityGrant>(
+    Ok(sqlx::query_as::<_, EquityGrantRow>(
         "SELECT * FROM equity_grants WHERE account_id=?1 ORDER BY grant_date, id",
     )
     .bind(account_id)
     .fetch_all(db)
-    .await?)
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -33,7 +99,7 @@ pub async fn create_grant(db: &Db, account_id: i64, input: SaveGrant) -> AppResu
         .filter(|s| !s.is_empty())
         .map(|s| s.to_uppercase())
         .unwrap_or(account_ccy);
-    Ok(sqlx::query_as::<_, EquityGrant>(
+    Ok(sqlx::query_as::<_, EquityGrantRow>(
         "INSERT INTO equity_grants
             (account_id, company, grant_date, quantity, strike_minor, currency_code,
              vest_months, cliff_months, unit_value_minor, note)
@@ -50,13 +116,14 @@ pub async fn create_grant(db: &Db, account_id: i64, input: SaveGrant) -> AppResu
     .bind(input.unit_value_minor)
     .bind(&input.note)
     .fetch_one(db)
-    .await?)
+    .await?
+    .into())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update_grant(db: &Db, id: i64, input: SaveGrant) -> AppResult<EquityGrant> {
     validate_grant(&input)?;
-    sqlx::query_as::<_, EquityGrant>(
+    Ok(sqlx::query_as::<_, EquityGrantRow>(
         "UPDATE equity_grants SET company=?2, grant_date=?3, quantity=?4, strike_minor=?5,
             vest_months=?6, cliff_months=?7, unit_value_minor=?8, note=?9,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -73,7 +140,8 @@ pub async fn update_grant(db: &Db, id: i64, input: SaveGrant) -> AppResult<Equit
     .bind(&input.note)
     .fetch_optional(db)
     .await?
-    .ok_or(AppError::NotFound("grant"))
+    .ok_or(AppError::NotFound("grant"))?
+    .into())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -90,12 +158,15 @@ pub async fn delete_grant(db: &Db, id: i64) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_exercises(db: &Db, grant_id: i64) -> AppResult<Vec<EquityExercise>> {
-    Ok(sqlx::query_as::<_, EquityExercise>(
+    Ok(sqlx::query_as::<_, EquityExerciseRow>(
         "SELECT * FROM equity_exercises WHERE grant_id=?1 ORDER BY exercise_date, id",
     )
     .bind(grant_id)
     .fetch_all(db)
-    .await?)
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -116,7 +187,7 @@ pub async fn create_exercise(
             status.vested_unexercised
         )));
     }
-    Ok(sqlx::query_as::<_, EquityExercise>(
+    Ok(sqlx::query_as::<_, EquityExerciseRow>(
         "INSERT INTO equity_exercises (grant_id, exercise_date, quantity, price_minor, note)
          VALUES (?1,?2,?3,?4,?5) RETURNING *",
     )
@@ -126,7 +197,8 @@ pub async fn create_exercise(
     .bind(input.price_minor)
     .bind(&input.note)
     .fetch_one(db)
-    .await?)
+    .await?
+    .into())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -161,12 +233,15 @@ pub async fn account_equity(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<
             .fetch_optional(db)
             .await?
             .ok_or(AppError::NotFound("account"))?;
-    let grants = sqlx::query_as::<_, EquityGrant>(
+    let grants: Vec<EquityGrant> = sqlx::query_as::<_, EquityGrantRow>(
         "SELECT * FROM equity_grants WHERE account_id=?1 ORDER BY grant_date, id",
     )
     .bind(id)
     .fetch_all(db)
-    .await?;
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect();
     let mut statuses = Vec::new();
     let mut total = 0i64;
     for g in &grants {
@@ -275,11 +350,14 @@ fn validate_grant(input: &SaveGrant) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn fetch_grant(db: &Db, id: i64) -> AppResult<EquityGrant> {
-    sqlx::query_as::<_, EquityGrant>("SELECT * FROM equity_grants WHERE id=?1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(AppError::NotFound("grant"))
+    Ok(
+        sqlx::query_as::<_, EquityGrantRow>("SELECT * FROM equity_grants WHERE id=?1")
+            .bind(id)
+            .fetch_optional(db)
+            .await?
+            .ok_or(AppError::NotFound("grant"))?
+            .into(),
+    )
 }
 
 fn parse_date(s: &str) -> Option<NaiveDate> {

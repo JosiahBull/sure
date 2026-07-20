@@ -200,7 +200,7 @@ pub async fn link(db: &Db, input: LinkProviderAccount) -> AppResult<Provider> {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING *",
         )
         .bind(new_account.name.trim())
-        .bind(new_account.kind)
+        .bind(new_account.kind.as_str())
         .bind(new_account.currency_code.trim().to_uppercase())
         .bind(&new_account.institution)
         .bind(metadata)
@@ -271,7 +271,7 @@ pub async fn link_group(db: &Db, input: LinkProviderGroup) -> AppResult<Vec<Prov
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING *",
         )
         .bind(new_account.name.trim())
-        .bind(new_account.kind)
+        .bind(new_account.kind.as_str())
         .bind(new_account.currency_code.trim().to_uppercase())
         .bind(&new_account.institution)
         .bind(metadata)
@@ -422,6 +422,31 @@ pub async fn update_last_synced(db: &Db, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+#[derive(Debug, FromRow)]
+struct ProviderSyncRow {
+    id: i64,
+    provider_id: i64,
+    imported: i64,
+    skipped: i64,
+    status: String,
+    detail: Option<String>,
+    created_at: String,
+}
+
+impl From<ProviderSyncRow> for ProviderSync {
+    fn from(r: ProviderSyncRow) -> Self {
+        ProviderSync {
+            id: r.id,
+            provider_id: r.provider_id,
+            imported: r.imported,
+            skipped: r.skipped,
+            status: r.status,
+            detail: r.detail,
+            created_at: r.created_at,
+        }
+    }
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn record_sync(
     db: &Db,
@@ -431,7 +456,7 @@ pub async fn record_sync(
     status: &str,
     detail: Option<&str>,
 ) -> AppResult<ProviderSync> {
-    Ok(sqlx::query_as::<_, ProviderSync>(
+    Ok(sqlx::query_as::<_, ProviderSyncRow>(
         "INSERT INTO provider_syncs (provider_id, imported, skipped, status, detail)
          VALUES (?1,?2,?3,?4,?5) RETURNING *",
     )
@@ -441,17 +466,21 @@ pub async fn record_sync(
     .bind(status)
     .bind(detail)
     .fetch_one(db)
-    .await?)
+    .await?
+    .into())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_syncs(db: &Db, provider_id: i64) -> AppResult<Vec<ProviderSync>> {
-    Ok(sqlx::query_as::<_, ProviderSync>(
+    Ok(sqlx::query_as::<_, ProviderSyncRow>(
         "SELECT * FROM provider_syncs WHERE provider_id=?1 ORDER BY id DESC",
     )
     .bind(provider_id)
     .fetch_all(db)
-    .await?)
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect())
 }
 
 fn map_fk(e: sqlx::Error) -> AppError {
@@ -699,13 +728,14 @@ mod tests {
     }
 
     async fn imported_row(db: &Db, external_id: &str) -> sure_core::Transaction {
-        sqlx::query_as::<_, sure_core::Transaction>(
+        sqlx::query_as::<_, crate::transactions::TransactionRow>(
             "SELECT * FROM transactions WHERE external_id = ?1",
         )
         .bind(external_id)
         .fetch_one(db)
         .await
         .unwrap()
+        .into()
     }
 
     fn enriched_row(external_id: &str, merchant: &str, category: &str, group: &str) -> ImportRow {

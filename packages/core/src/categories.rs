@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Category {
     pub id: i64,
     pub name: String,

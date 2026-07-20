@@ -1,4 +1,4 @@
-use sqlx::{QueryBuilder, Sqlite};
+use sqlx::{FromRow, QueryBuilder, Sqlite};
 use sure_core::{AppError, AppResult};
 pub use sure_core::{
     BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,
@@ -6,6 +6,51 @@ pub use sure_core::{
 };
 
 use crate::Db;
+
+#[derive(Debug, FromRow)]
+pub(crate) struct TransactionRow {
+    id: i64,
+    account_id: i64,
+    posted_at: String,
+    amount_minor: i64,
+    currency_code: String,
+    description: String,
+    merchant: Option<String>,
+    merchant_id: Option<i64>,
+    notes: Option<String>,
+    category_id: Option<i64>,
+    is_one_off: bool,
+    linked_transaction_id: Option<i64>,
+    provider: Option<String>,
+    external_id: Option<String>,
+    categorized_by_rule_id: Option<i64>,
+    created_at: String,
+    updated_at: String,
+}
+
+impl From<TransactionRow> for Transaction {
+    fn from(r: TransactionRow) -> Self {
+        Transaction {
+            id: r.id,
+            account_id: r.account_id,
+            posted_at: r.posted_at,
+            amount_minor: r.amount_minor,
+            currency_code: r.currency_code,
+            description: r.description,
+            merchant: r.merchant,
+            merchant_id: r.merchant_id,
+            notes: r.notes,
+            category_id: r.category_id,
+            is_one_off: r.is_one_off,
+            linked_transaction_id: r.linked_transaction_id,
+            provider: r.provider,
+            external_id: r.external_id,
+            categorized_by_rule_id: r.categorized_by_rule_id,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }
+    }
+}
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
@@ -44,7 +89,13 @@ pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
     qb.push(" LIMIT ").push_bind(limit);
     qb.push(" OFFSET ").push_bind(q.offset.unwrap_or(0).max(0));
 
-    Ok(qb.build_query_as::<Transaction>().fetch_all(db).await?)
+    Ok(qb
+        .build_query_as::<TransactionRow>()
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .map(Into::into)
+        .collect())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -56,7 +107,7 @@ pub async fn get(db: &Db, id: i64) -> AppResult<Transaction> {
 pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
     let currency = resolve_currency(db, &input).await?;
     validate_category(db, input.category_id).await?;
-    sqlx::query_as::<_, Transaction>(
+    Ok(sqlx::query_as::<_, TransactionRow>(
         "INSERT INTO transactions
             (account_id, posted_at, amount_minor, currency_code, description, merchant, notes,
              category_id, is_one_off, merchant_id)
@@ -74,14 +125,15 @@ pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
     .bind(input.merchant_id)
     .fetch_one(db)
     .await
-    .map_err(map_fk)
+    .map_err(map_fk)?
+    .into())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Transaction> {
     let currency = resolve_currency(db, &input).await?;
     validate_category(db, input.category_id).await?;
-    sqlx::query_as::<_, Transaction>(
+    Ok(sqlx::query_as::<_, TransactionRow>(
         "UPDATE transactions SET account_id=?2, posted_at=?3, amount_minor=?4, currency_code=?5,
             description=?6, merchant=?7, notes=?8, category_id=?9, is_one_off=?10, merchant_id=?11,
             categorized_by_rule_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -101,7 +153,8 @@ pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Trans
     .fetch_optional(db)
     .await
     .map_err(map_fk)?
-    .ok_or(AppError::NotFound("transaction"))
+    .ok_or(AppError::NotFound("transaction"))?
+    .into())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -253,7 +306,7 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
     validate_category(db, req.category_id).await?;
 
     let mut tx = db.begin().await?;
-    let out = sqlx::query_as::<_, Transaction>(
+    let out: Transaction = sqlx::query_as::<_, TransactionRow>(
         "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code, description, category_id)
          VALUES (?1,?2,?3,?4,?5,?6) RETURNING *",
     )
@@ -264,8 +317,9 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
     .bind(req.description.trim())
     .bind(req.category_id)
     .fetch_one(&mut *tx)
-    .await?;
-    let inflow = sqlx::query_as::<_, Transaction>(
+    .await?
+    .into();
+    let inflow: Transaction = sqlx::query_as::<_, TransactionRow>(
         "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code, description, category_id, linked_transaction_id)
          VALUES (?1,?2,?3,?4,?5,?6,?7) RETURNING *",
     )
@@ -277,7 +331,8 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
     .bind(req.category_id)
     .bind(out.id)
     .fetch_one(&mut *tx)
-    .await?;
+    .await?
+    .into();
     sqlx::query("UPDATE transactions SET linked_transaction_id=?2 WHERE id=?1")
         .bind(out.id)
         .bind(inflow.id)
@@ -389,11 +444,14 @@ pub async fn link_transfers(db: &Db, window_days: i64) -> AppResult<i64> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn fetch(db: &Db, id: i64) -> AppResult<Transaction> {
-    sqlx::query_as::<_, Transaction>("SELECT * FROM transactions WHERE id = ?1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(AppError::NotFound("transaction"))
+    Ok(
+        sqlx::query_as::<_, TransactionRow>("SELECT * FROM transactions WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(db)
+            .await?
+            .ok_or(AppError::NotFound("transaction"))?
+            .into(),
+    )
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
