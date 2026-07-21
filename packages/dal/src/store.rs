@@ -491,8 +491,13 @@ impl ReportRepo for SqliteStore {
                 category_id: t.category_id,
                 is_one_off: t.is_one_off,
                 linked_transaction_id: t.linked_transaction_id,
+                account_kind: t.account_kind,
             })
             .collect())
+    }
+
+    async fn earliest_transaction_date(&self) -> AppResult<Option<String>> {
+        crate::reports::earliest_transaction_date(&self.db).await
     }
 
     async fn active_accounts(&self) -> AppResult<Vec<ActiveAccount>> {

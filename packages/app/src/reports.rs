@@ -268,6 +268,14 @@ fn class_of(kind: &str) -> &'static str {
     }
 }
 
+/// Mortgage and brokerage accounts carry the instrument's own bookkeeping — loan
+/// drawdowns/amortisation, trades/FX — not household income or spending. Unlike
+/// `credit_card`/`revolving_credit`, which are everyday transaction accounts, these two
+/// kinds should never feed the income/expense report, one-off toggle or not.
+fn is_excluded_from_spend(account_kind: &str) -> bool {
+    matches!(account_kind, "mortgage" | "brokerage")
+}
+
 // ---- category lookups (shared by pie + sankey) ----------------------------
 
 struct Categories {
@@ -362,6 +370,9 @@ async fn load_spend(
             if t.linked_transaction_id.is_some() {
                 return false;
             }
+            if is_excluded_from_spend(&t.account_kind) {
+                return false;
+            }
             if !include_one_off && t.is_one_off {
                 return false;
             }
@@ -402,16 +413,26 @@ impl ReportService {
         self.reports.base_currency().await
     }
 
-    /// Resolve the report window with data-driven defaults.
-    fn window(&self, from: Option<&str>, to: Option<&str>) -> (NaiveDate, NaiveDate) {
+    /// Resolve the report window with data-driven defaults. A missing `from` defaults to
+    /// the earliest transaction on record (true "all time"), not a rolling 12 months.
+    async fn window(
+        &self,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> AppResult<(NaiveDate, NaiveDate)> {
         let today = self.clock.today();
         let to = to.and_then(parse_date).unwrap_or(today);
-        let from = from.and_then(parse_date).unwrap_or_else(|| {
-            // default to the start of the month 12 months back
-            let d = to - chrono::Duration::days(365);
-            NaiveDate::from_ymd_opt(d.year(), d.month(), 1).unwrap_or(d)
-        });
-        (from, to)
+        let from = match from.and_then(parse_date) {
+            Some(d) => d,
+            None => self
+                .reports
+                .earliest_transaction_date()
+                .await?
+                .as_deref()
+                .and_then(parse_date)
+                .unwrap_or(to),
+        };
+        Ok((from, to))
     }
 
     /// Net worth over time, sampled at the requested interval.
@@ -495,7 +516,7 @@ impl ReportService {
         let base = self.base_currency(q.currency.as_deref()).await?;
         let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
         let cats = Categories::load(self.reports.as_ref()).await?;
-        let (from, to) = self.window(q.from.as_deref(), q.to.as_deref());
+        let (from, to) = self.window(q.from.as_deref(), q.to.as_deref()).await?;
         let spend = load_spend(
             self.reports.as_ref(),
             &cats,
@@ -554,7 +575,7 @@ impl ReportService {
         let base = self.base_currency(q.currency.as_deref()).await?;
         let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
         let cats = Categories::load(self.reports.as_ref()).await?;
-        let (from, to) = self.window(q.from.as_deref(), q.to.as_deref());
+        let (from, to) = self.window(q.from.as_deref(), q.to.as_deref()).await?;
         let spend = load_spend(
             self.reports.as_ref(),
             &cats,

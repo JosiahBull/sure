@@ -342,6 +342,7 @@ pub struct SpendTransaction {
     pub category_id: Option<i64>,
     pub is_one_off: bool,
     pub linked_transaction_id: Option<i64>,
+    pub account_kind: String,
 }
 
 /// A transaction row denormalised for rule evaluation.
@@ -562,6 +563,8 @@ pub trait ReportRepo: Send + Sync {
     async fn valuations(&self) -> AppResult<Vec<LedgerValuation>>;
     async fn categories(&self) -> AppResult<Vec<ReportCategory>>;
     async fn spend_transactions(&self) -> AppResult<Vec<SpendTransaction>>;
+    /// The earliest transaction date on record, for defaulting an unbounded report window.
+    async fn earliest_transaction_date(&self) -> AppResult<Option<String>>;
     async fn active_accounts(&self) -> AppResult<Vec<ActiveAccount>>;
     async fn account(&self, id: i64) -> AppResult<AssetAccount>;
     async fn secured_liabilities(&self, asset_id: i64) -> AppResult<Vec<SecuredLiabilityAccount>>;

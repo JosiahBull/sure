@@ -91,6 +91,7 @@ pub struct SpendTransaction {
     pub category_id: Option<i64>,
     pub is_one_off: bool,
     pub linked_transaction_id: Option<i64>,
+    pub account_kind: String,
 }
 
 /// Every currency's decimal scale.
@@ -192,9 +193,20 @@ pub async fn categories(db: &Db) -> AppResult<Vec<Category>> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn spend_transactions(db: &Db) -> AppResult<Vec<SpendTransaction>> {
     Ok(sqlx::query_as::<_, SpendTransaction>(
-        "SELECT posted_at, amount_minor, currency_code, category_id, is_one_off,
-                linked_transaction_id FROM transactions",
+        "SELECT t.posted_at, t.amount_minor, t.currency_code, t.category_id, t.is_one_off,
+                t.linked_transaction_id, a.kind AS account_kind
+         FROM transactions t JOIN accounts a ON a.id = t.account_id",
     )
     .fetch_all(db)
     .await?)
+}
+
+/// The earliest transaction date on record, for defaulting an unbounded report window.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn earliest_transaction_date(db: &Db) -> AppResult<Option<String>> {
+    Ok(
+        sqlx::query_scalar::<_, Option<String>>("SELECT MIN(posted_at) FROM transactions")
+            .fetch_one(db)
+            .await?,
+    )
 }
