@@ -1,8 +1,10 @@
 //! Data-access layer: owns the SQLite connection pool, the embedded schema migrations,
-//! and every SQL query in the app. Higher layers (the HTTP crate) call the repository
-//! functions here and never touch `sqlx` directly — the persisted data types live here
-//! too (they derive `FromRow`), and are re-exported by the API crate for its handlers
-//! and OpenAPI document.
+//! and every SQL query in the app. Nothing above this crate touches `sqlx`: the
+//! application core (`sure-app`) and the HTTP layer (`sure-api`) reach persistence only
+//! through the repository ports in `sure_app::ports`, which [`store::SqliteStore`]
+//! implements by delegating to the per-entity `pub` functions here. Each module keeps its
+//! own `FromRow` row structs and maps them into the `sure-core` domain types, so no `sqlx`
+//! type ever crosses the crate boundary.
 
 // Money is stored in minor units and written with a `dollars_cents` digit grouping
 // (e.g. `114_269_63` == $114,269.63); clippy's grouping lint fights that convention.
