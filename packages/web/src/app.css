@@ -1,9 +1,13 @@
 /* ---- Design tokens --------------------------------------------------------
-   Teal = money in, rose = money out; surfaces layer up toward the viewer.
-   Two palettes share one variable contract. The active palette is chosen by
-   the [data-theme] attribute on <html> (set by src/lib/theme.svelte.ts, which
-   resolves the "auto" preference from the system). Dark is the default so the
-   app renders correctly even before JS runs. System fonts only. */
+   Neutral gray/black/white system matching the reference app's Untitled-UI-
+   style tokens (bg-surface/bg-container/text-primary/text-secondary etc,
+   see ../sure-old's tailwind design-system source) — no colored accent, just
+   an inverse (black-on-white / white-on-black) primary, and green/red for
+   money in/out. Two palettes share one variable contract. The active palette
+   is chosen by the [data-theme] attribute on <html> (set by
+   src/lib/theme.svelte.ts, which resolves the "auto" preference from the
+   system). Dark is the default so the app renders correctly even before JS
+   runs. System fonts only. */
 @font-face {
   font-family: "Geist";
   src: url("/fonts/Geist[wght].woff2") format("woff2-variations");
@@ -34,66 +38,67 @@
   --mono: "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
-/* Dark — the calm "night ledger" palette (default / no-JS fallback). */
+/* Dark — bg-surface/bg-container from the reference's dark tokens
+   (default / no-JS fallback). */
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --bg: #0b1120;
-  --bg-elev: #111a2e;
-  --surface: #16223c;
-  --surface-2: #1d2c4b;
-  --border: rgba(148, 163, 184, 0.16);
-  --border-strong: rgba(148, 163, 184, 0.28);
+  --bg: #0b0b0b; /* bg-surface */
+  --bg-elev: #242424; /* bg-container-inset (gray-800) */
+  --surface: #171717; /* bg-container (gray-900) */
+  --surface-2: #242424; /* bg-container-hover (gray-800) */
+  --border: rgba(255, 255, 255, 0.15); /* border-secondary */
+  --border-strong: rgba(255, 255, 255, 0.2); /* border-primary */
 
-  --text: #e6edf7;
-  --text-muted: #93a2ba;
-  --text-faint: #64748b;
+  --text: #ffffff; /* text-primary */
+  --text-muted: #cfcfcf; /* text-secondary (gray-300) */
+  --text-faint: #737373; /* text-subdued (gray-500) */
 
-  --accent: #2dd4bf;
-  --accent-ink: #032b28;
-  --positive: #34d399;
-  --negative: #fb7185;
-  --warn: #fbbf24;
+  --accent: #ffffff; /* button-bg-primary (inverse) */
+  --accent-ink: #171717;
+  --positive: #12b76a; /* color-success */
+  --negative: #ed4e4e; /* color-destructive */
+  --warn: #fdb022; /* color-warning */
 
-  --bg-glow: #142b4a; /* radial wash behind the page */
-  --topbar-bg: rgba(11, 17, 32, 0.82);
-  --hover: rgba(148, 163, 184, 0.05);
-  --knob: #cbd5e1; /* toggle handle */
-  --knob-on: #04201d;
-  /* Flat hairline treatment, not a real drop shadow — matches the reference app's cards. */
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --bg-glow: #0b0b0b; /* flat — the reference has no radial wash */
+  --topbar-bg: rgba(11, 11, 11, 0.82);
+  --hover: rgba(255, 255, 255, 0.06);
+  --knob: #e7e7e7; /* toggle handle */
+  --knob-on: #171717;
+  /* shadow-border-xs: shadow-xs + hairline border, both white-based on dark. */
+  --shadow: 0 1px 2px rgba(255, 255, 255, 0.08), 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 
-/* Light — clean "paper ledger": slate ink on soft white, deeper accents so
-   thin strokes and primary buttons keep contrast on a bright background. */
+/* Light — bg-surface/bg-container from the reference's light tokens: gray-50
+   page, white cards, near-black ink. */
 :root[data-theme="light"] {
   color-scheme: light;
 
-  --bg: #f5f7fb;
-  --bg-elev: #ffffff;
-  --surface: #ffffff;
-  --surface-2: #eef2f8;
-  --border: rgba(15, 23, 42, 0.1);
-  --border-strong: rgba(15, 23, 42, 0.18);
+  --bg: #f7f7f7; /* bg-surface (gray-50) */
+  --bg-elev: #f0f0f0; /* bg-container-inset (gray-100) */
+  --surface: #ffffff; /* bg-container */
+  --surface-2: #f0f0f0; /* bg-container-hover (gray-100) */
+  --border: rgba(0, 0, 0, 0.1); /* border-secondary */
+  --border-strong: rgba(0, 0, 0, 0.15); /* border-primary */
 
-  --text: #0f172a;
-  --text-muted: #4a5a72;
-  --text-faint: #8493a8;
+  --text: #171717; /* text-primary (gray-900) */
+  --text-muted: #737373; /* text-secondary (gray-500) */
+  --text-faint: #9e9e9e; /* text-subdued (gray-400) */
 
-  --accent: #0d9488;
+  --accent: #171717; /* button-bg-primary (inverse) */
   --accent-ink: #ffffff;
-  --positive: #059669;
-  --negative: #e11d48;
-  --warn: #b45309;
+  --positive: #10a861; /* color-success */
+  --negative: #ec2222; /* color-destructive */
+  --warn: #dc6803; /* color-warning */
 
-  --bg-glow: #dbe6f6;
-  --topbar-bg: rgba(245, 247, 251, 0.82);
-  --hover: rgba(15, 23, 42, 0.04);
+  --bg-glow: #f7f7f7; /* flat — the reference has no radial wash */
+  --topbar-bg: rgba(247, 247, 247, 0.82);
+  --hover: rgba(0, 0, 0, 0.04);
   --knob: #ffffff;
   --knob-on: #ffffff;
-  /* Flat hairline treatment, not a real drop shadow — matches the reference app's cards. */
-  --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 0 0 1px rgba(15, 23, 42, 0.05);
+  /* shadow-border-xs: shadow-xs + hairline border, both black-based on light. */
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.05);
 }
 
 * {
@@ -271,7 +276,7 @@ textarea {
 .input:focus,
 .select:focus,
 textarea:focus {
-  outline: 2px solid rgba(45, 212, 191, 0.4);
+  outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
   outline-offset: 0;
   border-color: var(--accent);
 }

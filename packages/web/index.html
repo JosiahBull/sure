@@ -8,7 +8,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0"
     />
-    <meta name="theme-color" content="#0b1120" />
+    <meta name="theme-color" content="#0b0b0b" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Sure" />
@@ -33,7 +33,7 @@
                 : "light";
           document.documentElement.setAttribute("data-theme", resolved);
           var meta = document.querySelector('meta[name="theme-color"]');
-          if (meta) meta.setAttribute("content", resolved === "dark" ? "#0b1120" : "#f5f7fb");
+          if (meta) meta.setAttribute("content", resolved === "dark" ? "#0b0b0b" : "#f7f7f7");
         } catch (e) {}
       })();
     </script>

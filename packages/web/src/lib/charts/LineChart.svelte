@@ -41,6 +41,11 @@
   );
   const last = $derived(points.at(-1));
   const zeroY = $derived(minY < 0 ? sy(0) : null);
+  // The reference colors this trend line by direction (green up, red down),
+  // matching the pos/neg delta badge shown above it — not a neutral accent.
+  const trendColor = $derived(
+    points.length >= 2 && points[0].y > last!.y ? "var(--negative)" : "var(--positive)"
+  );
 
   // ---- Interaction ----------------------------------------------------------
   let svgEl = $state<SVGSVGElement | null>(null);
@@ -149,21 +154,21 @@
         <line x1={pad.l} x2={W - pad.r} y1={zeroY} y2={zeroY} stroke="var(--border-strong)"
               stroke-dasharray="3 3" />
       {/if}
-      <path d={linePath} fill="none" stroke="var(--accent)" stroke-width="1.5"
+      <path d={linePath} fill="none" stroke={trendColor} stroke-width="1.5"
             stroke-linejoin="round" vector-effect="non-scaling-stroke" />
       {#if brushRect}
         <rect x={brushRect.x} y={pad.t} width={brushRect.w} height={height - pad.t - pad.b}
-              fill="var(--accent)" fill-opacity="0.12" stroke="var(--accent)"
+              fill={trendColor} fill-opacity="0.12" stroke={trendColor}
               stroke-opacity="0.5" vector-effect="non-scaling-stroke" />
       {/if}
       {#if hover !== null && points[hover] && !brushing}
         <line x1={sx(hover)} x2={sx(hover)} y1={pad.t} y2={height - pad.b}
               stroke="var(--border-strong)" vector-effect="non-scaling-stroke" />
-        <circle cx={sx(hover)} cy={sy(points[hover].y)} r="4.5" fill="var(--accent)"
+        <circle cx={sx(hover)} cy={sy(points[hover].y)} r="4.5" fill={trendColor}
                 stroke="var(--bg-elev)" stroke-width="1.5" />
       {/if}
       {#if last}
-        <circle cx={sx(points.length - 1)} cy={sy(last.y)} r="3.5" fill="var(--accent)" />
+        <circle cx={sx(points.length - 1)} cy={sy(last.y)} r="3.5" fill={trendColor} />
       {/if}
     </svg>
     {#if tip && hover !== null && points[hover]}

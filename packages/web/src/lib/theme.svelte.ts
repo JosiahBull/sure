@@ -14,8 +14,8 @@ const STORAGE_KEY = "sure:theme";
 
 // Keep these in sync with --bg in app.css and the inline script in index.html.
 const THEME_COLOR: Record<ResolvedTheme, string> = {
-  dark: "#0b1120",
-  light: "#f5f7fb",
+  dark: "#0b0b0b",
+  light: "#f7f7f7",
 };
 
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");

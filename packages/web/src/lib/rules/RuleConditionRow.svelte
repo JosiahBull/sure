@@ -159,7 +159,7 @@
     min-height: 38px;
   }
   .tags:focus-within {
-    outline: 2px solid rgba(45, 212, 191, 0.4);
+    outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
     border-color: var(--accent);
   }
   .tag {

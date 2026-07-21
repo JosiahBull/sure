@@ -142,21 +142,20 @@
 
 <style>
   .shell {
-    display: grid;
-    grid-template-columns: var(--rail-w) var(--panel-w) 1fr;
+    display: flex;
+    align-items: stretch;
     min-height: 100vh;
     min-height: 100dvh;
   }
-  .shell.panel-collapsed {
-    grid-template-columns: var(--rail-w) 0 1fr;
-  }
   @media (max-width: 720px) {
-    .shell {
-      grid-template-columns: var(--rail-w) 0 1fr;
+    .panel-col {
+      width: 0 !important;
+      border-right-width: 0 !important;
     }
   }
 
   .rail {
+    flex: 0 0 var(--rail-w);
     position: sticky;
     top: 0;
     height: 100dvh;
@@ -219,12 +218,20 @@
   }
 
   .panel-col {
+    flex: 0 0 auto;
+    width: var(--panel-w);
     position: sticky;
     top: 0;
     height: 100dvh;
     overflow: hidden;
     background: var(--surface);
     border-right: 1px solid var(--border);
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+      border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .shell.panel-collapsed .panel-col {
+    width: 0;
+    border-right-color: transparent;
   }
   .panel-col > :global(*) {
     height: 100%;
@@ -235,6 +242,7 @@
   }
 
   .main-col {
+    flex: 1 1 auto;
     min-width: 0;
   }
   .subbar {
