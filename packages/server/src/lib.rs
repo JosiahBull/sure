@@ -8,6 +8,7 @@ pub mod config;
 use std::sync::Arc;
 
 use sure_app::brokerage::BrokerageService;
+use sure_app::forecast::ForecastService;
 use sure_app::ports::{ProviderRegistry, StockPriceProvider};
 use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
@@ -48,12 +49,21 @@ fn build_state(
         store.clone(),
         store.clone(),
         registry.clone(),
+        clock.clone(),
+    ));
+    let forecast = Arc::new(ForecastService::new(
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
         clock,
     ));
 
     sure_api::State {
         brokerage,
         reports,
+        forecast,
         rules,
         sync,
         stock_prices: store.clone(),

@@ -35,6 +35,12 @@ pub struct Snapshot {
     pub dividends: Vec<DividendRow>,
     #[serde(default)]
     pub dividend_withholdings: Vec<DividendWithholdingRow>,
+    // Forecast assumption overrides + known future events — `#[serde(default)]` so
+    // snapshots taken before these tables existed still import (as empty).
+    #[serde(default)]
+    pub forecast_assumptions: Vec<ForecastAssumptionRow>,
+    #[serde(default)]
+    pub forecast_events: Vec<ForecastEventRow>,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
@@ -245,6 +251,31 @@ pub struct DividendWithholdingRow {
     pub currency_code: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct ForecastAssumptionRow {
+    pub id: i64,
+    pub target_type: String,
+    pub target_id: i64,
+    pub annual_growth_bps: Option<i64>,
+    pub annual_volatility_bps: Option<i64>,
+    pub dividend_yield_bps: Option<i64>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct ForecastEventRow {
+    pub id: i64,
+    pub target_type: String,
+    pub target_id: i64,
+    pub kind: String,
+    pub effective_date: String,
+    pub amount_minor: i64,
+    pub label: String,
+    pub created_at: String,
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn export(db: &Db) -> AppResult<Snapshot> {
     let base_currency_code =
@@ -300,6 +331,12 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         dividend_withholdings: sqlx::query_as("SELECT * FROM dividend_withholdings ORDER BY id")
             .fetch_all(db)
             .await?,
+        forecast_assumptions: sqlx::query_as("SELECT * FROM forecast_assumptions ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        forecast_events: sqlx::query_as("SELECT * FROM forecast_events ORDER BY id")
+            .fetch_all(db)
+            .await?,
     })
 }
 
@@ -316,6 +353,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         "rule_runs",
         "cron_runs",
         "provider_syncs",
+        "forecast_events",
+        "forecast_assumptions",
         "dividend_withholdings",
         "dividends",
         "holdings",
@@ -410,6 +449,16 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             .bind(w.id).bind(w.dividend_id).bind(&w.owed_to).bind(w.tax_amount_minor).bind(w.tax_credit_minor).bind(&w.currency_code)
             .execute(&mut *txn).await?;
     }
+    for f in &snap.forecast_assumptions {
+        sqlx::query("INSERT INTO forecast_assumptions (id, target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps, notes, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)")
+            .bind(f.id).bind(&f.target_type).bind(f.target_id).bind(f.annual_growth_bps).bind(f.annual_volatility_bps).bind(f.dividend_yield_bps).bind(&f.notes).bind(&f.created_at).bind(&f.updated_at)
+            .execute(&mut *txn).await?;
+    }
+    for e in &snap.forecast_events {
+        sqlx::query("INSERT INTO forecast_events (id, target_type, target_id, kind, effective_date, amount_minor, label, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")
+            .bind(e.id).bind(&e.target_type).bind(e.target_id).bind(&e.kind).bind(&e.effective_date).bind(e.amount_minor).bind(&e.label).bind(&e.created_at)
+            .execute(&mut *txn).await?;
+    }
     for r in &snap.exchange_rates {
         sqlx::query(
             "INSERT INTO exchange_rates (base_code, quote_code, as_of, rate) VALUES (?1,?2,?3,?4)",
@@ -441,6 +490,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             "holdings": snap.holdings.len(),
             "dividends": snap.dividends.len(),
             "dividend_withholdings": snap.dividend_withholdings.len(),
+            "forecast_assumptions": snap.forecast_assumptions.len(),
+            "forecast_events": snap.forecast_events.len(),
         }
     }))
 }

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use sure_app::brokerage::BrokerageService;
+use sure_app::forecast::ForecastService;
 use sure_app::ports::{
     AccountRepo, CategoryRepo, CronRepo, CurrencyRepo, EquityRepo, MerchantRepo, ProviderRegistry,
     ProviderRepo, SettingsRepo, SnapshotRepo, StockPriceCacheRepo, StockPriceProvider,
@@ -21,6 +22,7 @@ use sure_app::sync::SyncService;
 pub struct AppState {
     pub brokerage: Arc<BrokerageService>,
     pub reports: Arc<ReportService>,
+    pub forecast: Arc<ForecastService>,
     pub rules: Arc<RuleService>,
     pub sync: Arc<SyncService>,
     pub stock_prices: Arc<dyn StockPriceCacheRepo>,

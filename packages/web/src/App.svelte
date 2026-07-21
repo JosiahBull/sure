@@ -5,6 +5,7 @@
   import AccountPanel from "./lib/AccountPanel.svelte";
   import SettingsNav from "./lib/SettingsNav.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
+  import Forecast from "./pages/Forecast.svelte";
   import Transactions from "./pages/Transactions.svelte";
   import Accounts from "./pages/Accounts.svelte";
   import Rules from "./pages/Rules.svelte";
@@ -15,12 +16,13 @@
   import Appearance from "./pages/Appearance.svelte";
   import ScheduledAdjustments from "./pages/ScheduledAdjustments.svelte";
 
-  // The icon rail only surfaces the two data-driven views; every management/config page
+  // The icon rail only surfaces the data-driven views; every management/config page
   // (accounts, rules, categories, merchants, providers, preferences...) lives under Settings,
   // reached via the gear icon — matching the reference app's actual IA.
   const NAV = [
     { path: "/", label: "Dashboard", icon: "pie-chart" as const },
     { path: "/transactions", label: "Transactions", icon: "credit-card" as const },
+    { path: "/forecast", label: "Forecast", icon: "trending-up" as const },
     { path: "/settings/accounts", label: "Settings", icon: "settings" as const },
   ];
 
@@ -32,6 +34,8 @@
     switch (activePath) {
       case "/transactions":
         return Transactions;
+      case "/forecast":
+        return Forecast;
       case "/settings/accounts":
         return Accounts;
       case "/settings/rules":

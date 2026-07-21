@@ -10,4 +10,5 @@ export const ICONS: Record<string, string> = {
   "chevron-down": `<path d="m6 9 6 6 6-6"/>`,
   "chevron-right": `<path d="m9 18 6-6-6-6"/>`,
   "panel-left": `<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>`,
+  "trending-up": `<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>`,
 };

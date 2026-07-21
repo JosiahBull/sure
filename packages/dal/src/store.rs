@@ -11,20 +11,21 @@ use async_trait::async_trait;
 use sure_app::ports::{
     AccountCurrency, AccountRepo, ActiveAccount, Activity30dRow, AssetAccount, BrokerageRepo,
     CategoryRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo, DividendImport, EquityRepo,
-    ExchangeRateRepo, ExchangeRateRow, FxRatesRepo, HoldingImport, HoldingRow, ImportCounts,
-    ImportRow, LedgerTx, LedgerValuation, MerchantRepo, PlannedApplication, ProviderRepo,
-    ReportCategory, ReportRepo, RuleRepo, SecuredLiabilityAccount, SettingsRepo, SharesTicker,
-    SnapshotRepo, StockPriceCacheRepo, TransactionRepo, TransferRepo, TxCtx, ValuationRepo,
-    WalletRow,
+    ExchangeRateRepo, ExchangeRateRow, ForecastRepo, FxRatesRepo, HoldingImport, HoldingRow,
+    ImportCounts, ImportRow, LedgerTx, LedgerValuation, MerchantRepo, PlannedApplication,
+    ProviderRepo, ReportCategory, ReportRepo, RuleRepo, SecuredLiabilityAccount, SettingsRepo,
+    SharesTicker, SnapshotRepo, StockPriceCacheRepo, TransactionRepo, TransferRepo, TxCtx,
+    ValuationRepo, WalletRow,
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
-    CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, HoldingLot,
-    LinkProviderAccount, LinkProviderGroup, LinkRequest, Merchant, NewCurrency, NewValuation,
-    Provider, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RunResult, SaveAccount,
-    SaveCategory, SaveCron, SaveExercise, SaveGrant, SaveHoldingLot, SaveMerchant, SaveProvider,
-    SaveRule, SaveTransaction, Settings, StockPrice, Transaction, TransferRequest, TxQuery,
-    UpdateSettings, Valuation, VestingStatus,
+    CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, ForecastAssumption,
+    ForecastEvent, ForecastTargetType, HoldingLot, LinkProviderAccount, LinkProviderGroup,
+    LinkRequest, Merchant, NewCurrency, NewValuation, Provider, ProviderSync, Rule,
+    RuleApplicationDetail, RuleRun, RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise,
+    SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot, SaveMerchant,
+    SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice, Transaction, TransferRequest,
+    TxQuery, UpdateSettings, Valuation, VestingStatus,
 };
 
 use crate::Db;
@@ -872,6 +873,44 @@ impl CronRepo for SqliteStore {
 
     async fn undo_run(&self, run_id: i64) -> AppResult<()> {
         crate::crons::undo_run(&self.db, run_id).await
+    }
+}
+
+#[async_trait]
+impl ForecastRepo for SqliteStore {
+    async fn list_assumptions(&self) -> AppResult<Vec<ForecastAssumption>> {
+        crate::forecast::list_assumptions(&self.db).await
+    }
+
+    async fn upsert_assumption(
+        &self,
+        input: SaveForecastAssumption,
+    ) -> AppResult<ForecastAssumption> {
+        crate::forecast::upsert_assumption(&self.db, input).await
+    }
+
+    async fn clear_assumption(
+        &self,
+        target_type: ForecastTargetType,
+        target_id: i64,
+    ) -> AppResult<()> {
+        crate::forecast::clear_assumption(&self.db, target_type, target_id).await
+    }
+
+    async fn trailing_dividends_minor(&self, account_id: i64, since: &str) -> AppResult<i64> {
+        crate::forecast::trailing_dividends_minor(&self.db, account_id, since).await
+    }
+
+    async fn list_events(&self) -> AppResult<Vec<ForecastEvent>> {
+        crate::forecast::list_events(&self.db).await
+    }
+
+    async fn create_event(&self, input: SaveForecastEvent) -> AppResult<ForecastEvent> {
+        crate::forecast::create_event(&self.db, input).await
+    }
+
+    async fn delete_event(&self, id: i64) -> AppResult<()> {
+        crate::forecast::delete_event(&self.db, id).await
     }
 }
 

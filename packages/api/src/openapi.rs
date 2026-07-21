@@ -101,6 +101,13 @@ use utoipa::OpenApi;
         crate::routes::snapshot::export,
         crate::routes::snapshot::import,
         crate::routes::stock_prices::get_price,
+        crate::routes::forecast::list_assumptions,
+        crate::routes::forecast::upsert_assumption,
+        crate::routes::forecast::clear_assumption,
+        crate::routes::forecast::simulate,
+        crate::routes::forecast::list_events,
+        crate::routes::forecast::create_event,
+        crate::routes::forecast::delete_event,
     ),
     components(schemas(
         crate::error::ErrorBody,
@@ -189,6 +196,17 @@ use utoipa::OpenApi;
         sure_core::ProviderKind,
         sure_core::ProviderAccount,
         crate::routes::stock_prices::StockPrice,
+        sure_core::ForecastTargetType,
+        sure_core::ForecastAssumption,
+        sure_core::SaveForecastAssumption,
+        sure_core::ForecastEvent,
+        sure_core::ForecastEventKind,
+        sure_core::SaveForecastEvent,
+        crate::routes::forecast::AssumptionSource,
+        crate::routes::forecast::ResolvedAssumption,
+        crate::routes::forecast::Band,
+        crate::routes::forecast::ForecastMonth,
+        crate::routes::forecast::ForecastResult,
     )),
     tags(
         (name = "meta", description = "Service metadata"),
@@ -206,6 +224,7 @@ use utoipa::OpenApi;
         (name = "brokerage", description = "Brokerage holdings, wallets & import"),
         (name = "providers", description = "External provider integrations"),
         (name = "config", description = "Config snapshot export/import"),
+        (name = "forecast", description = "Net-worth/cash-flow forecast assumptions"),
     )
 )]
 pub struct ApiDoc;

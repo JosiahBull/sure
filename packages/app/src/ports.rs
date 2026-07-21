@@ -18,10 +18,11 @@ use serde_json::Value;
 
 use sure_core::{
     Account, AccountEquity, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
-    CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, HoldingLot,
-    LinkProviderAccount, LinkProviderGroup, LinkRequest, Merchant, NewCurrency, NewValuation,
-    Provider, ProviderAccount, ProviderKind, ProviderSync, Rule, RuleApplicationDetail, RuleRun,
-    RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveGrant, SaveHoldingLot,
+    CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, ForecastAssumption,
+    ForecastEvent, ForecastTargetType, HoldingLot, LinkProviderAccount, LinkProviderGroup,
+    LinkRequest, Merchant, NewCurrency, NewValuation, Provider, ProviderAccount, ProviderKind,
+    ProviderSync, Rule, RuleApplicationDetail, RuleRun, RunResult, SaveAccount, SaveCategory,
+    SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
     SaveMerchant, SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice, Transaction,
     TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
 };
@@ -719,6 +720,31 @@ pub trait CronRepo: Send + Sync {
     async fn run_one(&self, id: i64, to: Option<&str>) -> AppResult<CronRunResult>;
     async fn run_all(&self, to: Option<&str>) -> AppResult<CronRunResult>;
     async fn undo_run(&self, run_id: i64) -> AppResult<()>;
+}
+
+/// Forecast assumption overrides, plus the one read query nothing else exposes
+/// (`trailing_dividends_minor`, for the dividend-yield default). The resolution logic —
+/// which knob wins between an override, an existing cron's rate, and a historical
+/// default — lives in `crate::forecast::ForecastService`, which also depends on
+/// `ReportRepo`, `AccountRepo`, `CronRepo`, and `FxRatesRepo` for the read side.
+#[async_trait]
+pub trait ForecastRepo: Send + Sync {
+    async fn list_assumptions(&self) -> AppResult<Vec<ForecastAssumption>>;
+    async fn upsert_assumption(
+        &self,
+        input: SaveForecastAssumption,
+    ) -> AppResult<ForecastAssumption>;
+    async fn clear_assumption(
+        &self,
+        target_type: ForecastTargetType,
+        target_id: i64,
+    ) -> AppResult<()>;
+    /// Sum of dividend cash paid to `account_id` on or after `since` (ISO-8601 date).
+    async fn trailing_dividends_minor(&self, account_id: i64, since: &str) -> AppResult<i64>;
+    /// Every known future step-change/one-off, soonest first.
+    async fn list_events(&self) -> AppResult<Vec<ForecastEvent>>;
+    async fn create_event(&self, input: SaveForecastEvent) -> AppResult<ForecastEvent>;
+    async fn delete_event(&self, id: i64) -> AppResult<()>;
 }
 
 /// The config export/import blob is treated as opaque JSON at this boundary — its shape

@@ -4,6 +4,7 @@
 #![allow(clippy::inconsistent_digit_grouping)]
 
 pub mod brokerage;
+pub mod forecast;
 pub mod fx;
 pub mod ports;
 pub mod reports;

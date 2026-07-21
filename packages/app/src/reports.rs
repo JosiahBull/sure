@@ -143,11 +143,11 @@ pub struct EquityPosition {
 
 // ---- helpers (pure, no repo access) ---------------------------------------
 
-fn parse_date(s: &str) -> Option<NaiveDate> {
+pub(crate) fn parse_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s.get(0..10).unwrap_or(s), "%Y-%m-%d").ok()
 }
 
-fn last_day_of_month(y: i32, m: u32) -> NaiveDate {
+pub(crate) fn last_day_of_month(y: i32, m: u32) -> NaiveDate {
     let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
     NaiveDate::from_ymd_opt(ny, nm, 1)
         .unwrap()
@@ -170,7 +170,7 @@ fn last_day_of_month(y: i32, m: u32) -> NaiveDate {
 ///    would show a spurious positive "asset". Before the account's first transaction it
 ///    hadn't been opened/drawn down yet, so it's 0.
 /// 3. No valuations at all — the running transaction balance (a plain cash account).
-fn account_value_at(
+pub(crate) fn account_value_at(
     id: i64,
     currency: &str,
     date: NaiveDate,
@@ -217,7 +217,7 @@ fn account_value_at(
     (balance, currency.to_string())
 }
 
-fn sample_dates(from: NaiveDate, to: NaiveDate, interval: &str) -> Vec<NaiveDate> {
+pub(crate) fn sample_dates(from: NaiveDate, to: NaiveDate, interval: &str) -> Vec<NaiveDate> {
     if to < from {
         return vec![to];
     }
@@ -272,13 +272,13 @@ fn class_of(kind: &str) -> &'static str {
 /// drawdowns/amortisation, trades/FX — not household income or spending. Unlike
 /// `credit_card`/`revolving_credit`, which are everyday transaction accounts, these two
 /// kinds should never feed the income/expense report, one-off toggle or not.
-fn is_excluded_from_spend(account_kind: &str) -> bool {
+pub(crate) fn is_excluded_from_spend(account_kind: &str) -> bool {
     matches!(account_kind, "mortgage" | "brokerage")
 }
 
 // ---- category lookups (shared by pie + sankey) ----------------------------
 
-struct Categories {
+pub(crate) struct Categories {
     parents: HashMap<i64, Option<i64>>,
     names: HashMap<i64, String>,
     colors: HashMap<i64, Option<String>>,
@@ -286,7 +286,7 @@ struct Categories {
 }
 
 impl Categories {
-    async fn load(reports: &dyn ReportRepo) -> AppResult<Self> {
+    pub(crate) async fn load(reports: &dyn ReportRepo) -> AppResult<Self> {
         let cats = reports.categories().await?;
         let mut c = Categories {
             parents: HashMap::new(),
@@ -303,7 +303,7 @@ impl Categories {
         Ok(c)
     }
 
-    fn top_ancestor(&self, id: i64) -> i64 {
+    pub(crate) fn top_ancestor(&self, id: i64) -> i64 {
         let mut cur = id;
         for _ in 0..64 {
             match self.parents.get(&cur) {
@@ -314,21 +314,67 @@ impl Categories {
         cur
     }
 
-    fn is_transfer(&self, id: i64) -> bool {
+    pub(crate) fn is_transfer(&self, id: i64) -> bool {
         self.kinds
             .get(&id)
             .map(|k| k == "transfer")
             .unwrap_or(false)
     }
+
+    /// Every top-level (no parent) category id and its flow `kind` ('income'|'expense'
+    /// |'transfer') — the granularity the forecast's category assumptions resolve at,
+    /// matching `category_breakdown`'s own top-level roll-up.
+    pub(crate) fn top_level_kinds(&self) -> Vec<(i64, String)> {
+        self.parents
+            .iter()
+            .filter(|(_, parent)| parent.is_none())
+            .filter_map(|(id, _)| self.kinds.get(id).map(|k| (*id, k.clone())))
+            .collect()
+    }
+
+    pub(crate) fn name_of(&self, id: i64) -> String {
+        self.names.get(&id).cloned().unwrap_or_else(|| "?".into())
+    }
+
+    pub(crate) fn kind_of(&self, id: i64) -> Option<String> {
+        self.kinds.get(&id).cloned()
+    }
+}
+
+#[cfg(test)]
+impl Categories {
+    /// A bare `Categories` for tests elsewhere in this crate that don't need a real
+    /// `ReportRepo` — build it up with [`Self::insert_for_test`].
+    pub(crate) fn default_for_test() -> Self {
+        Categories {
+            parents: HashMap::new(),
+            names: HashMap::new(),
+            colors: HashMap::new(),
+            kinds: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn insert_for_test(
+        &mut self,
+        id: i64,
+        parent_id: Option<i64>,
+        name: &str,
+        kind: &str,
+    ) {
+        self.parents.insert(id, parent_id);
+        self.names.insert(id, name.to_string());
+        self.colors.insert(id, None);
+        self.kinds.insert(id, kind.to_string());
+    }
 }
 
 /// Load transactions + valuations indexed per account, for point-in-time balances.
-type Ledger = (
+pub(crate) type Ledger = (
     HashMap<i64, Vec<(NaiveDate, i64)>>,
     HashMap<i64, Vec<(NaiveDate, i64, String)>>,
 );
 
-async fn load_ledger(reports: &dyn ReportRepo) -> AppResult<Ledger> {
+pub(crate) async fn load_ledger(reports: &dyn ReportRepo) -> AppResult<Ledger> {
     let txns = reports.transactions().await?;
     let vals = reports.valuations().await?;
     let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
@@ -355,7 +401,7 @@ async fn load_ledger(reports: &dyn ReportRepo) -> AppResult<Ledger> {
 
 /// Load transactions in the window, excluding transfers (either linked, or in a
 /// transfer-kind category) and — optionally — one-offs.
-async fn load_spend(
+pub(crate) async fn load_spend(
     reports: &dyn ReportRepo,
     cats: &Categories,
     from: NaiveDate,

@@ -27,10 +27,11 @@ sure-providers ─► app, sure-core   concrete adapters implementing sure-app's
                                      Yahoo Finance prices, Frankfurter FX, a `Registry`
                                      (implements `ProviderRegistry`), + the Sharesies parser
 sure-app   ──►  core, scheduler    the application core: use-case services (brokerage,
-                                     reports, rules, sync, stock prices) + the background
-                                     tasks, the compute engines (rule eval, report
-                                     aggregation), and every PORT the services depend on —
-                                     repos, Clock, and the provider ports. No SQL, no HTTP.
+                                     reports, rules, sync, stock prices, forecast) + the
+                                     background tasks, the compute engines (rule eval,
+                                     report aggregation, Monte Carlo projection), and every
+                                     PORT the services depend on — repos, Clock, and the
+                                     provider ports. No SQL, no HTTP.
 sure-dal   ──►  app, core,         SQLite pool + migrations + every SQL query (per-entity
                 scheduler            repository modules) + `SqliteStore`, which implements
                                      every one of sure-app's repo ports, and the
@@ -223,6 +224,14 @@ unit-tested against in-memory fakes:
   into decided category/merchant/one-off changes.
 - `SyncService` — the fetch → dedupe → persist → audit → revalue flow shared by the manual
   sync route and `ProviderPollTask`.
+- `ForecastService` — resolves each asset/investment/liability account's and each
+  top-level income/expense category's growth/volatility/dividend-yield assumption
+  (override → an existing enabled cron's rate → derived from history, or a deterministic
+  amortisation schedule for a mortgage/loan with complete terms), then runs a Monte Carlo
+  projection (thousands of independent monthly paths) into P10/P25/median/mean/P75/P90
+  net-worth bands. Every `forecast_events` step-change/one-off applies identically across
+  every path — a user-asserted certainty, not something the simulation adds noise to.
+  Never writes to the real ledger; unlike `crons`, nothing here is ever applied for real.
 - `StockPriceTask` and `sure_app::tasks::{exchange_rates, provider_poll, transfer_link}` —
   the `ScheduledTask` implementations.
 
@@ -240,9 +249,9 @@ pub trait AccountRepo: Send + Sync {
     async fn get(&self, id: i64) -> AppResult<Account>;
 }
 // …plus BrokerageRepo, StockPriceCacheRepo, ValuationRepo, FxRatesRepo, RuleRepo,
-//    ReportRepo, ProviderRepo, TransferRepo, ExchangeRateRepo — and the provider ports
-//    (TransactionProvider, StockPriceProvider, ExchangeRateProvider, ProviderRegistry),
-//    all implemented by sure-providers.
+//    ReportRepo, ProviderRepo, TransferRepo, ExchangeRateRepo, ForecastRepo — and the
+//    provider ports (TransactionProvider, StockPriceProvider, ExchangeRateProvider,
+//    ProviderRegistry), all implemented by sure-providers.
 ```
 
 Both `sure-dal` and `sure-providers` implement ports from this crate, so both depend on it
@@ -271,7 +280,7 @@ classic `sqlx::migrate!` staleness trap).
 
 Queries live in per-entity repository modules (`sure_dal::{accounts, transactions,
 categories, merchants, rules, reports, crons, equity, providers, snapshot, valuations,
-currencies, settings, exchange_rate_cache, scheduled_tasks}`). Each module owns its
+currencies, settings, exchange_rate_cache, scheduled_tasks, forecast}`). Each module owns its
 row/request/response types (they derive `FromRow`) and its functions, which take `&Db` and
 return `AppResult<T>` — so no `sqlx` type ever crosses the crate boundary. Conventions are
 uniform: `list → Vec<T>`, `create → T`, `get`/`update → T` (`NotFound` if absent),
@@ -300,7 +309,7 @@ pub use sure_providers as providers;  // crate::providers::{Registry, Transactio
 ```
 
 `AppState` (defined in `state.rs`) is the injection point: every field is either an
-`Arc<Service>` (the four logic-heavy services) or `Arc<dyn Port>` (a `sure_app::ports`
+`Arc<Service>` (the five logic-heavy services) or `Arc<dyn Port>` (a `sure_app::ports`
 trait object for a thin-CRUD aggregate) — both types `sure-app` defines, so the struct
 itself never names `sure_dal`. `build_app(state, web_dir)` assembles the router, the
 OpenAPI JSON endpoint, CORS, and the telemetry layers around whatever `AppState` it's
@@ -357,7 +366,7 @@ volatile technologies (web framework, database) pinned to the edges:
   concrete store sits behind `SqliteStore`, so a different backend is a new adapter, not a
   rewrite of the services.
 - **Every aggregate sits behind a port, but for two different reasons.** The logic-heavy
-  services (brokerage, reports, rules, sync) depend on repo-port *traits* and the `Clock`
+  services (brokerage, reports, rules, sync, forecast) depend on repo-port *traits* and the `Clock`
   port because that's what makes their branching logic unit-testable against in-memory
   fakes — `SqliteStore` is one implementation among what could be several. The thin CRUD
   aggregates (accounts, categories, merchants, currencies, settings, …) also go through a

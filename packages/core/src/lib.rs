@@ -7,6 +7,7 @@ pub mod crons;
 pub mod currencies;
 pub mod equity;
 pub mod error;
+pub mod forecast;
 pub mod merchants;
 pub mod providers;
 pub mod rules;
@@ -27,6 +28,10 @@ pub use equity::{
     AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
 };
 pub use error::{AppError, AppResult, ErrorBody, ErrorDetail};
+pub use forecast::{
+    ForecastAssumption, ForecastEvent, ForecastEventKind, ForecastTargetType,
+    SaveForecastAssumption, SaveForecastEvent,
+};
 pub use merchants::{Merchant, SaveMerchant};
 pub use providers::{
     LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderAccount,

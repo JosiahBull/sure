@@ -1869,6 +1869,289 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/forecast": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A Monte Carlo net-worth/cash-flow projection: `simulations` independent monthly
+         *     paths out to `horizon_months`, aggregated into percentile bands (P10/P25/median/
+         *     mean/P75/P90) per month, plus the resolved assumptions actually used.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description How many months forward to project (1-60). Defaults to 12. */
+                    horizon_months?: number;
+                    /**
+                     * @description Monte Carlo path count (100-5000, more = smoother percentiles, slower).
+                     *     Defaults to 2000.
+                     */
+                    simulations?: number;
+                    /** @description Report currency; defaults to the configured base currency. */
+                    currency?: string;
+                    /** @description Fixed RNG seed for reproducible output; omit for a fresh random draw each call. */
+                    seed?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ForecastResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/forecast/assumptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every asset/investment/liability account and top-level income/expense category's
+         *     resolved forecast assumption: an override if set, else an existing cron's rate, else
+         *     a value derived from history (or a deterministic amortisation schedule for a
+         *     mortgage/loan with complete metadata).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ResolvedAssumption"][];
+                    };
+                };
+            };
+        };
+        /**
+         * Set (or replace) the override for a target: a field left out clears that knob back
+         *     to "derive from history".
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveForecastAssumption"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ForecastAssumption"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/forecast/assumptions/{target_type}/{target_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Clear a target's override, if one exists — it then falls back to a cron-derived or
+         *     historical default.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    target_type: string;
+                    target_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/forecast/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every known future step-change/one-off, soonest first. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ForecastEvent"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Record a known future step-change (a promotion, a fixed appreciation rate) or
+         *     one-off (a planned bonus, a lump-sum contribution).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveForecastEvent"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ForecastEvent"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/forecast/events/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -3690,6 +3973,8 @@ export interface components {
             /** @enum {string} */
             profile: "generic";
         });
+        /** @enum {string} */
+        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history";
         BackfillResult: {
             /**
              * Format: int64
@@ -3703,6 +3988,20 @@ export interface components {
             /** Format: int64 */
             total_minor: number;
             accounts: components["schemas"]["AccountBalance"][];
+        };
+        Band: {
+            /** Format: int64 */
+            p10_minor: number;
+            /** Format: int64 */
+            p25_minor: number;
+            /** Format: int64 */
+            median_minor: number;
+            /** Format: int64 */
+            mean_minor: number;
+            /** Format: int64 */
+            p75_minor: number;
+            /** Format: int64 */
+            p90_minor: number;
         };
         /**
          * @description A rolling 30-days-to-`as_of` cash-movement summary for a brokerage account.
@@ -4026,6 +4325,58 @@ export interface components {
             /** @description Human-readable description. */
             message: string;
         };
+        ForecastAssumption: {
+            /** Format: int64 */
+            id: number;
+            target_type: components["schemas"]["ForecastTargetType"];
+            /** Format: int64 */
+            target_id: number;
+            /** Format: int64 */
+            annual_growth_bps?: number | null;
+            /** Format: int64 */
+            annual_volatility_bps?: number | null;
+            /** Format: int64 */
+            dividend_yield_bps?: number | null;
+            notes?: string | null;
+            created_at: string;
+            updated_at: string;
+        };
+        ForecastEvent: {
+            /** Format: int64 */
+            id: number;
+            target_type: components["schemas"]["ForecastTargetType"];
+            /** Format: int64 */
+            target_id: number;
+            kind: components["schemas"]["ForecastEventKind"];
+            effective_date: string;
+            /** Format: int64 */
+            amount_minor: number;
+            label: string;
+            created_at: string;
+        };
+        /**
+         * @description A known future change, applied identically across every simulated path (it's a
+         *     certainty the user is asserting, not a statistical estimate).
+         * @enum {string}
+         */
+        ForecastEventKind: "step_change" | "one_off_amount";
+        ForecastMonth: {
+            as_of: string;
+            net_worth: components["schemas"]["Band"];
+            assets: components["schemas"]["Band"];
+            liabilities: components["schemas"]["Band"];
+        };
+        ForecastResult: {
+            currency: string;
+            months: components["schemas"]["ForecastMonth"][];
+            /** @description The resolved assumptions this projection actually used, for transparency. */
+            assumptions: components["schemas"]["ResolvedAssumption"][];
+        };
+        /**
+         * @description What kind of thing a `forecast_assumptions` row tunes.
+         * @enum {string}
+         */
+        ForecastTargetType: "account" | "category";
         /** @description Any other asset or liability. */
         GenericMeta: {
             url?: string | null;
@@ -4353,6 +4704,28 @@ export interface components {
          * @enum {string}
          */
         RateType: "fixed" | "floating" | "split";
+        ResolvedAssumption: {
+            target_type: components["schemas"]["ForecastTargetType"];
+            /** Format: int64 */
+            target_id: number;
+            label: string;
+            /** Format: int64 */
+            annual_growth_bps: number;
+            /** Format: int64 */
+            annual_volatility_bps: number;
+            /**
+             * Format: int64
+             * @description Only set for Investment-class accounts (brokerage/shares).
+             */
+            dividend_yield_bps?: number | null;
+            /**
+             * Format: int64
+             * @description Only set for categories: the current fitted monthly run-rate the simulation
+             *     grows forward from.
+             */
+            baseline_minor?: number | null;
+            source: components["schemas"]["AssumptionSource"];
+        };
         Rule: {
             /** Format: int64 */
             id: number;
@@ -4501,6 +4874,33 @@ export interface components {
             /** Format: int64 */
             price_minor?: number;
             note?: string | null;
+        };
+        /**
+         * @description Upsert body, keyed by `(target_type, target_id)`. A field left `None` means "no
+         *     override for this knob — derive it from history"; this is a full-replace PUT, not a
+         *     patch, so clearing a previously-set override is just omitting it here.
+         */
+        SaveForecastAssumption: {
+            target_type: components["schemas"]["ForecastTargetType"];
+            /** Format: int64 */
+            target_id: number;
+            /** Format: int64 */
+            annual_growth_bps?: number | null;
+            /** Format: int64 */
+            annual_volatility_bps?: number | null;
+            /** Format: int64 */
+            dividend_yield_bps?: number | null;
+            notes?: string | null;
+        };
+        SaveForecastEvent: {
+            target_type: components["schemas"]["ForecastTargetType"];
+            /** Format: int64 */
+            target_id: number;
+            kind: components["schemas"]["ForecastEventKind"];
+            effective_date: string;
+            /** Format: int64 */
+            amount_minor: number;
+            label: string;
         };
         SaveGrant: {
             company: string;

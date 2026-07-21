@@ -18,6 +18,8 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 zen-expression = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

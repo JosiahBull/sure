@@ -69,3 +69,16 @@ impl Fx {
         (base_major * 10f64.powi(self.dp(&self.base))).round() as i64
     }
 }
+
+#[cfg(test)]
+impl Fx {
+    /// A trivial same-currency `Fx` for tests elsewhere in this crate that don't need
+    /// real conversion rates — `factor`/`to_base_major` are identity for `base` itself.
+    pub(crate) fn parity(base: &str) -> Self {
+        Fx {
+            base: base.to_string(),
+            rates: HashMap::new(),
+            decimals: HashMap::new(),
+        }
+    }
+}

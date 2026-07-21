@@ -53,6 +53,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 csv = "1"
 zen-expression = "0.55"
+# The forecast's Monte Carlo simulation: a seedable RNG (reproducible in tests) plus the
+# normal distribution its stochastic accounts/categories draw monthly returns from.
+rand = "0.8"
+rand_distr = "0.4"
 
 # Internal crates
 sure-core = { path = "packages/core" }
