@@ -17,8 +17,8 @@ pub mod types;
 pub mod valuations;
 
 pub use brokerage::{
-    BrokerageImportResult, BrokerageSnapshot, Dividend, DividendDetail, DividendWithholding,
-    HoldingLot, Position, SaveHoldingLot, WalletBalance,
+    BrokerageActivity30d, BrokerageImportResult, BrokerageSnapshot, Dividend, DividendDetail,
+    DividendWithholding, HoldingLot, Position, SaveHoldingLot, WalletBalance,
 };
 pub use categories::{Category, CategoryNode, SaveCategory};
 pub use crons::{Cron, CronRun, CronRunResult, SaveCron};

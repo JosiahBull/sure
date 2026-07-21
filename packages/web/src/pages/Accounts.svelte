@@ -13,8 +13,8 @@
   import PropertyPanel from "../lib/PropertyPanel.svelte";
   import BrokeragePanel from "../lib/BrokeragePanel.svelte";
   import { navigate } from "../lib/router.svelte";
+  import { balances, refresh as refreshBalances } from "../lib/balances.svelte";
 
-  let balances = $state<Schemas["BalancesReport"] | null>(null);
   let currencies = $state<Schemas["Currency"][]>([]);
   let accounts = $state<Schemas["Account"][]>([]);
   let error = $state<string | null>(null);
@@ -36,19 +36,18 @@
 
   async function load() {
     loading = true;
-    const [b, c, a] = await Promise.all([
-      api.GET("/api/reports/balances", {}),
+    const [, c, a] = await Promise.all([
+      refreshBalances(),
       api.GET("/api/currencies", {}),
       api.GET("/api/accounts", {}),
     ]);
-    balances = b.data ?? null;
     currencies = c.data ?? [];
     accounts = a.data ?? [];
     loading = false;
   }
   onMount(load);
 
-  const inClass = (cls: string) => (balances?.accounts ?? []).filter((a) => a.class === cls);
+  const inClass = (cls: string) => (balances.data?.accounts ?? []).filter((a) => a.class === cls);
 
   function saved() {
     showAdd = false;
@@ -89,10 +88,10 @@
 <div class="row spread wrap" style="margin-bottom:14px;gap:10px">
   <div>
     <h1 style="font-size:20px">Accounts</h1>
-    {#if balances}
+    {#if balances.data}
       <div class="muted small">
         Net worth <strong class="tabular" style="color:var(--text)"
-          >{formatMoney(balances.total_minor, balances.currency)}</strong
+          >{formatMoney(balances.data.total_minor, balances.data.currency)}</strong
         >
       </div>
     {/if}
@@ -108,7 +107,7 @@
   <AccountForm {currencies} {accounts} onsave={saved} oncancel={() => (showAdd = false)} />
 {/if}
 
-{#if loading && !balances}
+{#if loading && !balances.data}
   <div class="row" style="justify-content:center;padding:40px"><span class="spinner"></span></div>
 {:else}
   <div class="grid" style="gap:14px">
@@ -186,7 +185,7 @@
         </section>
       {/if}
     {/each}
-    {#if (balances?.accounts ?? []).length === 0}
+    {#if (balances.data?.accounts ?? []).length === 0}
       <div class="empty">No accounts yet — add one to get started.</div>
     {/if}
   </div>

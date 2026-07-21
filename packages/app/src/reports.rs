@@ -263,7 +263,7 @@ fn class_of(kind: &str) -> &'static str {
         "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan" | "liability" => {
             "liability"
         }
-        "shares_nz" | "shares_us" | "shares_private" => "investment",
+        "shares_nz" | "shares_us" | "shares_private" | "brokerage" => "investment",
         _ => "asset",
     }
 }

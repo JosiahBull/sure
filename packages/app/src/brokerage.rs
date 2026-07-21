@@ -10,13 +10,17 @@ use std::sync::Arc;
 
 use chrono::NaiveDate;
 
+use std::collections::HashMap;
+
 use sure_core::StockPrice;
-use sure_core::{AppError, AppResult, BrokerageSnapshot, Position, WalletBalance};
+use sure_core::{
+    AppError, AppResult, BrokerageActivity30d, BrokerageSnapshot, Position, WalletBalance,
+};
 
 use crate::fx::Fx;
 use crate::ports::{
-    AccountRepo, BrokerageRepo, Clock, FxRatesRepo, StockPriceCacheRepo, StockPriceProvider,
-    ValuationRepo,
+    AccountRepo, BrokerageRepo, Clock, CostLotRow, FxRatesRepo, StockPriceCacheRepo,
+    StockPriceProvider, ValuationRepo,
 };
 
 pub struct BrokerageService {
@@ -87,6 +91,9 @@ impl BrokerageService {
 
         let mut total_major = 0.0f64;
 
+        let cost_by_ticker =
+            cost_basis_by_ticker(&self.brokerage.lots_at(account_id, &as_of_str).await?, &fx);
+
         let mut positions = Vec::new();
         for p in self.brokerage.positions_at(account_id, &as_of_str).await? {
             let price = self
@@ -109,6 +116,14 @@ impl BrokerageService {
                     .unwrap_or(&p.currency_code);
                 total_major += fx.to_base_major(v, value_ccy);
             }
+            let cost_basis_minor = cost_by_ticker
+                .get(&(p.ticker.clone(), p.exchange.clone()))
+                .copied()
+                .flatten();
+            let return_pct = match (value_minor, cost_basis_minor) {
+                (Some(v), Some(c)) if c != 0 => Some((v - c) as f64 / c as f64 * 100.0),
+                _ => None,
+            };
             positions.push(Position {
                 ticker: p.ticker,
                 exchange: p.exchange,
@@ -118,6 +133,8 @@ impl BrokerageService {
                 price: price_text,
                 price_as_of,
                 market_value_minor: value_minor,
+                cost_basis_minor,
+                return_pct,
             });
         }
 
@@ -134,6 +151,8 @@ impl BrokerageService {
             });
         }
 
+        let a = self.brokerage.activity_30d(account_id, &as_of_str).await?;
+
         Ok(BrokerageSnapshot {
             account_id,
             as_of: as_of_str,
@@ -141,6 +160,11 @@ impl BrokerageService {
             positions,
             wallets,
             total_value_minor: fx.base_minor(total_major),
+            activity_30d: BrokerageActivity30d {
+                contributions_minor: a.contributions_minor,
+                withdrawals_minor: a.withdrawals_minor,
+                trades: a.trades,
+            },
         })
     }
 
@@ -283,6 +307,64 @@ fn market_value_minor(quantity: f64, close: &str, dp: i32) -> Option<i64> {
     Some((quantity * close * 10f64.powi(dp)).round() as i64)
 }
 
+/// Remaining cost basis per `(ticker, exchange)` in minor units of each lot's own
+/// currency, average-cost method, walking lots in trade-date order (the caller fetches
+/// them pre-sorted — see `lots_at`). `None` for a ticker means either it was fully exited
+/// (no remaining position) or no lot ever carried a price (nothing to base a cost on) —
+/// the caller treats both as "no return%".
+///
+/// - A buy (or a priced `corporate` row — e.g. a DRIP) adds `quantity × unit_price` (scaled
+///   to minor units via `fx.dp`) plus `fee_minor` to cost, and `quantity` to the running
+///   total.
+/// - A sell reduces cost proportionally to the fraction of the current position it exits
+///   (average-cost realizes the rest as gain/loss, which this doesn't track — only the
+///   remaining unrealized basis matters for `return_pct`).
+/// - An unpriced `corporate` row (a split/bonus issue — no real per-share price) is a
+///   quantity-only adjustment: total cost held doesn't change, just how many shares it's
+///   spread across.
+fn cost_basis_by_ticker(lots: &[CostLotRow], fx: &Fx) -> HashMap<(String, String), Option<i64>> {
+    struct Running {
+        qty: f64,
+        cost_minor: f64,
+        ever_priced: bool,
+    }
+    let mut running: HashMap<(String, String), Running> = HashMap::new();
+
+    for lot in lots {
+        let key = (lot.ticker.clone(), lot.exchange.clone());
+        let r = running.entry(key).or_insert(Running {
+            qty: 0.0,
+            cost_minor: 0.0,
+            ever_priced: false,
+        });
+        if lot.kind == "sell" {
+            if r.qty > 0.0 {
+                let frac_sold = (-lot.quantity / r.qty).clamp(0.0, 1.0);
+                r.cost_minor -= r.cost_minor * frac_sold;
+            }
+            r.qty += lot.quantity;
+        } else if let Some(price) = lot.unit_price {
+            // buy, or a priced corporate action (DRIP).
+            let dp = fx.dp(&lot.currency_code);
+            r.cost_minor += lot.quantity * price * 10f64.powi(dp) + lot.fee_minor as f64;
+            r.qty += lot.quantity;
+            r.ever_priced = true;
+        } else {
+            // unpriced corporate action (split/bonus issue): quantity-only.
+            r.qty += lot.quantity;
+        }
+    }
+
+    running
+        .into_iter()
+        .map(|(key, r)| {
+            let basis =
+                (r.qty.abs() > 0.0000001 && r.ever_priced).then_some(r.cost_minor.round() as i64);
+            (key, basis)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -297,7 +379,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::ports::{CurrencyDecimals, ExchangeRateRow, HoldingRow, SharesTicker, WalletRow};
+    use crate::ports::{
+        CostLotRow, CurrencyDecimals, ExchangeRateRow, HoldingRow, SharesTicker, WalletRow,
+    };
     use crate::test_clock::FixedClock;
 
     fn brokerage_account(id: i64, ccy: &str) -> Account {
@@ -375,6 +459,8 @@ mod tests {
         wallets: Vec<WalletRow>,
         tickers: Vec<(String, String)>,
         earliest: Option<String>,
+        lots: Vec<CostLotRow>,
+        activity: crate::ports::Activity30dRow,
     }
     #[async_trait]
     impl BrokerageRepo for FakeBrokerage {
@@ -387,6 +473,16 @@ mod tests {
             _as_of: &str,
         ) -> AppResult<Vec<WalletRow>> {
             Ok(self.wallets.clone())
+        }
+        async fn lots_at(&self, _account_id: i64, _as_of: &str) -> AppResult<Vec<CostLotRow>> {
+            Ok(self.lots.clone())
+        }
+        async fn activity_30d(
+            &self,
+            _account_id: i64,
+            _as_of: &str,
+        ) -> AppResult<crate::ports::Activity30dRow> {
+            Ok(self.activity.clone())
         }
         async fn account_tickers(&self, _account_id: i64) -> AppResult<Vec<(String, String)>> {
             Ok(self.tickers.clone())
@@ -635,6 +731,7 @@ mod tests {
                 wallets: vec![],
                 tickers: vec![("MEL".to_string(), "NZX".to_string())],
                 earliest: Some(today.to_string()),
+                ..Default::default()
             },
             today,
         );
@@ -654,5 +751,95 @@ mod tests {
         // Re-running upserts the same day rather than accumulating rows.
         svc.backfill_history(&provider, 1).await.unwrap();
         assert_eq!(valuations.rows.lock().unwrap().len(), 1);
+    }
+
+    fn lot(ticker: &str, qty: f64, price: Option<f64>, fee_minor: i64, kind: &str) -> CostLotRow {
+        CostLotRow {
+            ticker: ticker.to_string(),
+            exchange: "NZX".to_string(),
+            currency_code: "NZD".to_string(),
+            quantity: qty,
+            unit_price: price,
+            fee_minor,
+            kind: kind.to_string(),
+        }
+    }
+
+    async fn nzd_fx() -> Fx {
+        Fx::load(
+            &FakeFx {
+                decimals: vec![CurrencyDecimals {
+                    code: "NZD".to_string(),
+                    decimal_places: 2,
+                }],
+                rates: vec![],
+            },
+            "NZD".to_string(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn cost_basis_averages_and_reduces_proportionally_on_a_partial_sell() {
+        let fx = nzd_fx().await;
+        // Buy 10 @ $5.00 + $2 fee => $52.00 cost. Selling 4 (40% of the position) removes
+        // 40% of that cost, leaving the other 6 shares at the same average per-share cost.
+        let lots = vec![
+            lot("MEL", 10.0, Some(5.00), 200, "buy"),
+            lot("MEL", -4.0, None, 0, "sell"),
+        ];
+        let basis = cost_basis_by_ticker(&lots, &fx);
+        assert_eq!(basis[&("MEL".to_string(), "NZX".to_string())], Some(3120));
+    }
+
+    #[tokio::test]
+    async fn cost_basis_is_none_once_fully_exited() {
+        let fx = nzd_fx().await;
+        let lots = vec![
+            lot("MEL", 10.0, Some(5.00), 200, "buy"),
+            lot("MEL", -4.0, None, 0, "sell"),
+            lot("MEL", -6.0, None, 0, "sell"),
+        ];
+        let basis = cost_basis_by_ticker(&lots, &fx);
+        assert_eq!(basis[&("MEL".to_string(), "NZX".to_string())], None);
+    }
+
+    #[tokio::test]
+    async fn an_unpriced_corporate_action_dilutes_per_share_cost_not_total_basis() {
+        let fx = nzd_fx().await;
+        // A 2-for-1 split (or bonus issue): total cost held doesn't change, only how many
+        // shares it's spread across.
+        let lots = vec![
+            lot("FPH", 10.0, Some(5.00), 0, "buy"),
+            lot("FPH", 10.0, None, 0, "corporate"),
+        ];
+        let basis = cost_basis_by_ticker(&lots, &fx);
+        assert_eq!(basis[&("FPH".to_string(), "NZX".to_string())], Some(5000));
+    }
+
+    #[tokio::test]
+    async fn a_priced_corporate_action_is_treated_like_a_buy() {
+        let fx = nzd_fx().await;
+        // e.g. a dividend reinvestment (DRIP): a real per-share price, adds to cost.
+        let lots = vec![
+            lot("AIA", 10.0, Some(5.00), 0, "buy"),
+            lot("AIA", 2.0, Some(5.10), 0, "corporate"),
+        ];
+        let basis = cost_basis_by_ticker(&lots, &fx);
+        assert_eq!(
+            basis[&("AIA".to_string(), "NZX".to_string())],
+            Some(5000 + 1020)
+        );
+    }
+
+    #[tokio::test]
+    async fn cost_basis_is_none_for_a_position_with_no_priced_lot() {
+        let fx = nzd_fx().await;
+        // Only an unpriced corporate action ever touched this ticker (e.g. a spin-off share
+        // received with no recorded price) — nothing to base a cost on.
+        let lots = vec![lot("SPUN", 5.0, None, 0, "corporate")];
+        let basis = cost_basis_by_ticker(&lots, &fx);
+        assert_eq!(basis[&("SPUN".to_string(), "NZX".to_string())], None);
     }
 }

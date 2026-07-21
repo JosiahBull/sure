@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, formatMoney, formatDate, type Schemas } from "../lib/api";
+  import { api, formatMoney, formatDate, colorFor, type Schemas } from "../lib/api";
   import { RANGES, activeRange, filters, type RangeKey } from "../lib/state.svelte";
   import { router } from "../lib/router.svelte";
 
@@ -137,6 +137,46 @@
       if (va > vb) return dir;
       return 0;
     });
+  });
+
+  // The reference's date-grouped, stat-headed layout only reads correctly while the list is
+  // in its natural newest-first order; any other sort falls back to the flat, fully-sortable
+  // table. Clicking a column header from the grouped view re-sorts (switching to that flat
+  // table); re-selecting Date returns here — so no sort column is ever unreachable.
+  const grouped = $derived(sortKey === "date" && sortDir === "desc");
+
+  const catById = $derived(new Map(categories.map((c) => [c.id, c])));
+  const txName = (t: Tx) => merchantName.get(t.merchant_id ?? -1) ?? t.merchant ?? t.description ?? "";
+
+  // Header stats + per-day summaries are derived from the current filtered set (the same set
+  // the "{n} transactions" footer counts), entirely client-side. Amounts can span currencies;
+  // the stat/day totals are shown in a single representative currency (the filtered account's,
+  // else the first row's) — a deliberate approximation, not a converted total.
+  const statCurrency = $derived(
+    accountId !== "" ? (currencyOf.get(accountId) ?? "NZD") : (sortedFiltered[0]?.currency_code ?? "NZD"),
+  );
+  const stats = $derived.by(() => {
+    let income = 0;
+    let expenses = 0;
+    for (const t of sortedFiltered) {
+      if (t.amount_minor >= 0) income += t.amount_minor;
+      else expenses += t.amount_minor;
+    }
+    return { count: sortedFiltered.length, income, expenses };
+  });
+  // Calendar-day → { count, net } over the whole filtered set, so a day heading always shows
+  // that day's full totals even when virtualisation has only mounted part of the day.
+  const dayGroups = $derived.by(() => {
+    const m = new Map<string, { count: number; net: number }>();
+    for (const t of sortedFiltered) {
+      const k = t.posted_at.slice(0, 10);
+      const g = m.get(k);
+      if (g) {
+        g.count++;
+        g.net += t.amount_minor;
+      } else m.set(k, { count: 1, net: t.amount_minor });
+    }
+    return m;
   });
 
   // Virtualised, "infinite scroll" rendering: the table can easily hold thousands of rows
@@ -459,6 +499,23 @@
 {/if}
 
 <section class="card">
+  {#if grouped && sortedFiltered.length > 0}
+    <div class="statbar">
+      <div class="stat">
+        <span class="label">Total transactions</span>
+        <span class="value tabular">{stats.count}</span>
+      </div>
+      <div class="stat">
+        <span class="label">Income</span>
+        <span class="value tabular pos">{formatMoney(stats.income, statCurrency)}</span>
+      </div>
+      <div class="stat">
+        <span class="label">Expenses</span>
+        <span class="value tabular neg">{formatMoney(Math.abs(stats.expenses), statCurrency)}</span>
+      </div>
+    </div>
+  {/if}
+
   <div class="row wrap" style="gap:10px;margin-bottom:12px">
     <select class="select" style="width:auto" aria-label="Filter by account" bind:value={accountId}>
       <option value="">All accounts</option>
@@ -475,6 +532,102 @@
     <div class="row" style="justify-content:center;padding:30px"><span class="spinner"></span></div>
   {:else if sortedFiltered.length === 0}
     <div class="empty">No transactions.</div>
+  {:else if grouped}
+    <!-- Grouped-by-day view (default newest-first sort). The column labels are still sort
+         buttons — clicking one re-sorts and drops to the flat table below. Each row's fixed-
+         width pieces (avatar, category pill, amount, delete) can add up to more than a narrow
+         phone screen, so this scrolls horizontally rather than crushing the description to
+         zero width — same fallback the flat table below already uses. -->
+    <div style="overflow-x:auto">
+    <div class="tx-head">
+      <span class="tx-check">
+        <input
+          type="checkbox"
+          aria-label="Select all transactions"
+          title={allSelected ? "Clear selection" : "Select all"}
+          checked={allSelected}
+          indeterminate={someSelected}
+          onchange={toggleAll}
+        />
+      </span>
+      <button class="col-btn grow" onclick={() => toggleSort("description")}>Transaction{sortArrow("description")}</button>
+      <button class="col-btn" onclick={() => toggleSort("category")}>Category{sortArrow("category")}</button>
+      <button class="col-btn amount" onclick={() => toggleSort("amount")}>Amount{sortArrow("amount")}</button>
+      <span class="tx-del" aria-hidden="true"></span>
+    </div>
+    <div class="tx-list" bind:this={tableEl}>
+      <div aria-hidden="true" style={`height:${windowStart * ROW_HEIGHT}px`}></div>
+      {#each windowed as t, i (t.id)}
+        {@const dk = t.posted_at.slice(0, 10)}
+        {@const name = txName(t)}
+        {@const cat = t.category_id != null ? catById.get(t.category_id) : null}
+        {@const cc = cat ? (cat.color ?? colorFor(cat.parent_id ?? cat.id)) : colorFor(null)}
+        {#if i === 0 || windowed[i - 1].posted_at.slice(0, 10) !== dk}
+          {@const day = dayGroups.get(dk)}
+          <div class="day-head">
+            <span class="day-date">{formatDate(t.posted_at)}</span>
+            <span class="faint small">· {day?.count ?? 0}</span>
+            <span
+              class="tabular grow"
+              style="text-align:right"
+              class:pos={(day?.net ?? 0) >= 0}
+              class:neg={(day?.net ?? 0) < 0}
+            >
+              {formatMoney(day?.net ?? 0, statCurrency)}
+            </span>
+          </div>
+        {/if}
+        <div
+          id={`tx-${t.id}`}
+          class="tx-row"
+          class:highlight={t.id === highlightId}
+          class:selected={selected.has(t.id)}
+        >
+          <label class="tx-check">
+            <input
+              type="checkbox"
+              aria-label="Select transaction"
+              checked={selected.has(t.id)}
+              onchange={(e) => toggleOne(t.id, e.currentTarget.checked)}
+            />
+          </label>
+          <span class="avatar" style="background:{colorFor(t.merchant_id ?? t.merchant ?? t.description)}">
+            {(name || "?").charAt(0).toUpperCase()}
+          </span>
+          <div class="tx-main">
+            <div class="tx-name-row">
+              <span class="ell tx-name">{name || t.description || "—"}</span>
+              {#if t.is_one_off}<span class="badge">one-off</span>{/if}
+              {#if t.linked_transaction_id}<span class="badge">⇄ transfer</span>{/if}
+            </div>
+            <span class="small faint ell">{accountName.get(t.account_id) ?? "—"}</span>
+          </div>
+          <div class="cat-pill" style="--c:{cc}">
+            {#if cat?.icon}<span class="pill-icon">{cat.icon}</span>{/if}
+            <span class="ell">{cat?.name ?? "Uncategorised"}</span>
+            <select
+              class="pill-select"
+              aria-label="Category"
+              value={t.category_id ?? ""}
+              onchange={(e) => setCategory(t, e.currentTarget.value === "" ? "" : Number(e.currentTarget.value))}
+            >
+              <option value="">— none —</option>
+              {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+            </select>
+          </div>
+          <span
+            class="tx-amount tabular"
+            class:pos={t.amount_minor >= 0}
+            class:neg={t.amount_minor < 0}
+          >
+            {formatMoney(t.amount_minor, currencyOf.get(t.account_id) ?? t.currency_code)}
+          </span>
+          <button class="btn btn-sm btn-danger tx-del" title="Delete" onclick={() => del(t)}>✕</button>
+        </div>
+      {/each}
+      <div aria-hidden="true" style={`height:${(sortedFiltered.length - windowEnd) * ROW_HEIGHT}px`}></div>
+    </div>
+    </div>
   {:else}
     <div style="overflow-x:auto">
       <table class="table" bind:this={tableEl}>
@@ -602,6 +755,181 @@
 {/if}
 
 <style>
+  /* ---- Grouped ("by day") view ---------------------------------------------- */
+  .statbar {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    padding-bottom: 16px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .statbar .value {
+    font-size: 22px;
+  }
+  @media (max-width: 560px) {
+    .statbar {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+  }
+
+  /* Column-label bar; the labels are sort buttons that drop to the flat table. */
+  .tx-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-radius: var(--r);
+    background: var(--surface-2);
+    color: var(--text-faint);
+    min-width: 480px;
+  }
+  .col-btn {
+    all: unset;
+    cursor: pointer;
+    font-size: 11.5px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .col-btn:hover {
+    color: var(--text);
+  }
+  .col-btn.amount {
+    text-align: right;
+    width: 110px;
+    flex: 0 0 auto;
+  }
+
+  .tx-list {
+    display: flex;
+    flex-direction: column;
+  }
+  .day-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 16px 12px 6px;
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .day-head .day-date {
+    color: var(--text);
+  }
+
+  .tx-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-radius: var(--r);
+    border: 1px solid transparent;
+    min-width: 480px;
+  }
+  .tx-row:hover {
+    background: var(--hover);
+  }
+  .tx-row.selected {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  .tx-row.highlight {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    animation: tx-flash 1.8s ease-out;
+  }
+
+  .tx-check {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+  }
+  .tx-check input {
+    cursor: pointer;
+    vertical-align: middle;
+  }
+  .avatar {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 650;
+    color: #fff;
+  }
+  .tx-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .tx-name-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .tx-name {
+    font-weight: 550;
+  }
+  .ell {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Category pill: a colour-coded chip (matching Categories/Dashboard) with the real
+     <select> laid transparently on top, so the native picker still drives setCategory. */
+  .cat-pill {
+    position: relative;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 190px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 550;
+    color: var(--c);
+    background: color-mix(in srgb, var(--c) 16%, transparent);
+    cursor: pointer;
+  }
+  .cat-pill .pill-icon {
+    flex: 0 0 auto;
+    line-height: 1;
+  }
+  .pill-select {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: none;
+    opacity: 0;
+    cursor: pointer;
+    appearance: none;
+  }
+  .tx-amount {
+    flex: 0 0 auto;
+    width: 110px;
+    text-align: right;
+    white-space: nowrap;
+    font-weight: 550;
+  }
+  .tx-del {
+    flex: 0 0 auto;
+  }
+
   .sort-btn {
     all: unset;
     cursor: pointer;

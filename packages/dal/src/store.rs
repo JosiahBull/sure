@@ -9,12 +9,13 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use sure_app::ports::{
-    AccountCurrency, AccountRepo, ActiveAccount, AssetAccount, BrokerageRepo, CategoryRepo,
-    CronRepo, CurrencyDecimals, CurrencyRepo, DividendImport, EquityRepo, ExchangeRateRepo,
-    ExchangeRateRow, FxRatesRepo, HoldingImport, HoldingRow, ImportCounts, ImportRow, LedgerTx,
-    LedgerValuation, MerchantRepo, PlannedApplication, ProviderRepo, ReportCategory, ReportRepo,
-    RuleRepo, SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo,
-    StockPriceCacheRepo, TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
+    AccountCurrency, AccountRepo, ActiveAccount, Activity30dRow, AssetAccount, BrokerageRepo,
+    CategoryRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo, DividendImport, EquityRepo,
+    ExchangeRateRepo, ExchangeRateRow, FxRatesRepo, HoldingImport, HoldingRow, ImportCounts,
+    ImportRow, LedgerTx, LedgerValuation, MerchantRepo, PlannedApplication, ProviderRepo,
+    ReportCategory, ReportRepo, RuleRepo, SecuredLiabilityAccount, SettingsRepo, SharesTicker,
+    SnapshotRepo, StockPriceCacheRepo, TransactionRepo, TransferRepo, TxCtx, ValuationRepo,
+    WalletRow,
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
@@ -133,6 +134,31 @@ impl BrokerageRepo for SqliteStore {
                 })
                 .collect(),
         )
+    }
+
+    async fn lots_at(&self, account_id: i64, as_of: &str) -> AppResult<Vec<CostLotRow>> {
+        Ok(crate::brokerage::lots_at(&self.db, account_id, as_of)
+            .await?
+            .into_iter()
+            .map(|l| CostLotRow {
+                ticker: l.ticker,
+                exchange: l.exchange,
+                currency_code: l.currency_code,
+                quantity: l.quantity,
+                unit_price: l.unit_price,
+                fee_minor: l.fee_minor,
+                kind: l.kind,
+            })
+            .collect())
+    }
+
+    async fn activity_30d(&self, account_id: i64, as_of: &str) -> AppResult<Activity30dRow> {
+        let a = crate::brokerage::activity_30d(&self.db, account_id, as_of).await?;
+        Ok(Activity30dRow {
+            contributions_minor: a.contributions_minor,
+            withdrawals_minor: a.withdrawals_minor,
+            trades: a.trades,
+        })
     }
 
     async fn account_tickers(&self, account_id: i64) -> AppResult<Vec<(String, String)>> {

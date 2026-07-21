@@ -3705,6 +3705,26 @@ export interface components {
             accounts: components["schemas"]["AccountBalance"][];
         };
         /**
+         * @description A rolling 30-days-to-`as_of` cash-movement summary for a brokerage account.
+         *
+         *     `trades` (buy/sell lot count) is an exact count. `contributions_minor`/
+         *     `withdrawals_minor` are a **heuristic** — the wallet-cash ledger is just the account's
+         *     ordinary `transactions` rows, and today nothing distinguishes an external top-up/
+         *     withdrawal from internal trade-settlement cash movement at the data-model level (e.g.
+         *     the Sharesies importer files deposits, withdrawals, and trade settlement all under one
+         *     `"Transfers"` category). This matches on the raw transaction `description` text
+         *     (provider-specific phrasing like "Wallet top up"/"Withdrawal"), so it only recognises
+         *     contributions/withdrawals it has seen a pattern for — not a durable classification.
+         */
+        BrokerageActivity30d: {
+            /** Format: int64 */
+            contributions_minor: number;
+            /** Format: int64 */
+            withdrawals_minor: number;
+            /** Format: int64 */
+            trades: number;
+        };
+        /**
          * @description The outcome of a bulk zip import: counts for each of the three things it can write,
          *     plus any per-record parse issues that were skipped rather than failing the whole
          *     import.
@@ -3749,6 +3769,7 @@ export interface components {
             wallets: components["schemas"]["WalletBalance"][];
             /** Format: int64 */
             total_value_minor: number;
+            activity_30d: components["schemas"]["BrokerageActivity30d"];
         };
         /** @description The ids to delete in a single bulk request. */
         BulkDelete: {
@@ -4219,6 +4240,20 @@ export interface components {
              *     necessarily the account's).
              */
             market_value_minor?: number | null;
+            /**
+             * Format: int64
+             * @description Remaining cost basis of the current position, average-cost method, in
+             *     `currency_code`. `None` if the position was fully exited (no remaining basis) or no
+             *     lot ever carried a price (nothing to base a cost on). An estimate, not authoritative
+             *     — `holdings.unit_price` is informational-only, and corporate actions (splits, bonus
+             *     issues) with no price are treated as quantity-only adjustments.
+             */
+            cost_basis_minor?: number | null;
+            /**
+             * Format: double
+             * @description (market_value − cost_basis) / cost_basis × 100. `None` if either side is unavailable.
+             */
+            return_pct?: number | null;
         };
         PreviewMatch: {
             /** Format: int64 */
@@ -4265,7 +4300,10 @@ export interface components {
         };
         /**
          * @description An upstream account surfaced by a provider that supports account discovery
-         *     (see [`TransactionProvider::list_accounts`]) — not yet linked to a local `Account`.
+         *     (see `sure_app::ports::TransactionProvider::list_accounts`) — not yet linked to a
+         *     local `Account`. Surfaced by `GET /provider-kinds/{kind}/accounts`. Lives here, with
+         *     the other provider API DTOs, so both the provider adapters and the OpenAPI document
+         *     can name it without either depending on the other.
          */
         ProviderAccount: {
             /**
@@ -4290,7 +4328,7 @@ export interface components {
              */
             supports_transactions: boolean;
         };
-        /** @description Metadata about an available provider kind, surfaced via the API. */
+        /** @description Metadata about an available provider kind, surfaced via `GET /provider-kinds`. */
         ProviderKind: {
             kind: string;
             description: string;

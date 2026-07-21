@@ -251,6 +251,26 @@ pub struct WalletRow {
     pub amount_minor: i64,
 }
 
+/// One lot, reduced to what the average-cost-basis walk needs (see `crate::brokerage`).
+#[derive(Debug, Clone)]
+pub struct CostLotRow {
+    pub ticker: String,
+    pub exchange: String,
+    pub currency_code: String,
+    pub quantity: f64,
+    pub unit_price: Option<f64>,
+    pub fee_minor: i64,
+    pub kind: String,
+}
+
+/// Rolling 30-days-to-`as_of` activity — see [`sure_core::BrokerageActivity30d`].
+#[derive(Debug, Clone, Default)]
+pub struct Activity30dRow {
+    pub contributions_minor: i64,
+    pub withdrawals_minor: i64,
+    pub trades: i64,
+}
+
 /// A `(ticker, exchange)` pair a shares/brokerage account holds.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SharesTicker {
@@ -469,6 +489,8 @@ pub trait AccountRepo: Send + Sync {
 pub trait BrokerageRepo: Send + Sync {
     async fn positions_at(&self, account_id: i64, as_of: &str) -> AppResult<Vec<HoldingRow>>;
     async fn wallet_balances_at(&self, account_id: i64, as_of: &str) -> AppResult<Vec<WalletRow>>;
+    async fn lots_at(&self, account_id: i64, as_of: &str) -> AppResult<Vec<CostLotRow>>;
+    async fn activity_30d(&self, account_id: i64, as_of: &str) -> AppResult<Activity30dRow>;
     async fn account_tickers(&self, account_id: i64) -> AppResult<Vec<(String, String)>>;
     async fn earliest_activity_date(&self, account_id: i64) -> AppResult<Option<String>>;
     async fn list_holdings(&self, account_id: i64) -> AppResult<Vec<HoldingLot>>;

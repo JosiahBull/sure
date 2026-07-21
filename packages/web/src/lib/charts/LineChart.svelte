@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { formatShort, formatDate, formatMoney } from "../api";
+  import { formatDate, formatMoney } from "../api";
 
   // Responsive line+area chart on a fixed viewBox (scales to container width).
   // Supports a snapping hover crosshair/tooltip and a click-drag brush that
@@ -21,7 +21,7 @@
   } = $props();
 
   const W = 640;
-  const pad = { l: 6, r: 54, t: 14, b: 22 };
+  const pad = { l: 6, r: 10, t: 14, b: 22 };
 
   const ys = $derived(points.map((p) => p.y));
   const minY = $derived(points.length ? Math.min(0, ...ys) : 0);
@@ -38,11 +38,6 @@
 
   const linePath = $derived(
     points.map((p, i) => `${i ? "L" : "M"} ${sx(i).toFixed(1)} ${sy(p.y).toFixed(1)}`).join(" ")
-  );
-  const areaPath = $derived(
-    points.length
-      ? `${linePath} L ${sx(points.length - 1).toFixed(1)} ${sy(minY).toFixed(1)} L ${sx(0).toFixed(1)} ${sy(minY).toFixed(1)} Z`
-      : ""
   );
   const last = $derived(points.at(-1));
   const zeroY = $derived(minY < 0 ? sy(0) : null);
@@ -150,18 +145,11 @@
       onpointercancel={endBrush}
       onpointerleave={onPointerLeave}
     >
-      <defs>
-        <linearGradient id="nw-fill" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28" />
-          <stop offset="100%" stop-color="var(--accent)" stop-opacity="0" />
-        </linearGradient>
-      </defs>
       {#if zeroY !== null}
         <line x1={pad.l} x2={W - pad.r} y1={zeroY} y2={zeroY} stroke="var(--border-strong)"
               stroke-dasharray="3 3" />
       {/if}
-      <path d={areaPath} fill="url(#nw-fill)" />
-      <path d={linePath} fill="none" stroke="var(--accent)" stroke-width="2.5"
+      <path d={linePath} fill="none" stroke="var(--accent)" stroke-width="1.5"
             stroke-linejoin="round" vector-effect="non-scaling-stroke" />
       {#if brushRect}
         <rect x={brushRect.x} y={pad.t} width={brushRect.w} height={height - pad.t - pad.b}
@@ -176,10 +164,6 @@
       {/if}
       {#if last}
         <circle cx={sx(points.length - 1)} cy={sy(last.y)} r="3.5" fill="var(--accent)" />
-        <text x={W - pad.r + 6} y={sy(maxY) + 4} font-size="11" fill="var(--text-faint)"
-              class="tabular">{formatShort(maxY)}</text>
-        <text x={W - pad.r + 6} y={sy(minY)} font-size="11" fill="var(--text-faint)"
-              class="tabular">{formatShort(minY)}</text>
       {/if}
     </svg>
     {#if tip && hover !== null && points[hover]}

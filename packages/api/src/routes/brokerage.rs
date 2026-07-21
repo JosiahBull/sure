@@ -18,8 +18,8 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 pub use sure_core::{
-    BrokerageImportResult, BrokerageSnapshot, Dividend, DividendDetail, DividendWithholding,
-    HoldingLot, Position, SaveHoldingLot, WalletBalance,
+    BrokerageActivity30d, BrokerageImportResult, BrokerageSnapshot, Dividend, DividendDetail,
+    DividendWithholding, HoldingLot, Position, SaveHoldingLot, WalletBalance,
 };
 
 // OTEL span names for this module's handlers.

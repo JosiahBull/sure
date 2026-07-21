@@ -171,6 +171,7 @@ use utoipa::OpenApi;
         crate::routes::brokerage::HoldingLot,
         crate::routes::brokerage::SaveHoldingLot,
         crate::routes::brokerage::Position,
+        crate::routes::brokerage::BrokerageActivity30d,
         crate::routes::brokerage::WalletBalance,
         crate::routes::brokerage::BrokerageSnapshot,
         crate::routes::brokerage::Dividend,

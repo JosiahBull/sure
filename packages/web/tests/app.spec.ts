@@ -21,7 +21,7 @@ test("overview shows net worth, category breakdown and the money-flow sankey", a
 });
 
 test("rules lists the seeded rule and its audit run", async ({ page }) => {
-  await goto(page, "/rules");
+  await goto(page, "/settings/rules");
   // The rule name now appears both in the Active rules card and the audit log, so scope.
   await expect(page.getByText("Supermarkets → Groceries").first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Audit log" })).toBeVisible();
@@ -31,7 +31,7 @@ test("rules lists the seeded rule and its audit run", async ({ page }) => {
 });
 
 test("accounts show share vesting and property paid-off %", async ({ page }) => {
-  await goto(page, "/accounts");
+  await goto(page, "/settings/accounts");
   await expect(page.getByText("Family Home")).toBeVisible();
   await expect(page.getByText("Home Loan", { exact: true })).toBeVisible();
 
@@ -46,22 +46,30 @@ test("accounts show share vesting and property paid-off %", async ({ page }) => 
   await expect(page).toHaveScreenshot("accounts.png", { fullPage: true });
 });
 
-test("transactions list renders with a merchant column", async ({ page }) => {
+test("transactions list renders, preferring a transaction's merchant name over its raw description", async ({ page }) => {
   await goto(page, "/transactions");
   await expect(page.getByRole("heading", { name: "Transactions" })).toBeVisible();
-  await expect(page.getByRole("columnheader", { name: "Merchant" })).toBeVisible();
-  await expect(page.locator("table tbody tr").first()).toBeVisible();
+  // The default (date-sorted) view groups rows by day as ".tx-row" divs, not a <table> —
+  // merchant support shows as the row's primary name (txName prefers merchant over the
+  // raw description) rather than a separate "Merchant" column.
+  await expect(page.locator(".tx-row").first()).toBeVisible();
+  await expect(page.locator(".tx-row .tx-name").first()).not.toBeEmpty();
   await expect(page).toHaveScreenshot("transactions.png", { fullPage: true });
 });
 
-test("settings exposes merchant management and config backup", async ({ page }) => {
-  await goto(page, "/settings");
-  await expect(page.getByRole("heading", { name: "Merchants" })).toBeVisible();
+test("merchants settings page lists seeded merchants", async ({ page }) => {
+  await goto(page, "/settings/merchants");
+  await expect(page.getByRole("heading", { name: "Merchants", exact: true })).toBeVisible();
   // A seeded merchant is listed.
   await expect(page.getByText("Netflix").first()).toBeVisible();
+  await expect(page).toHaveScreenshot("settings-merchants.png", { fullPage: true });
+});
+
+test("preferences settings page exposes config backup", async ({ page }) => {
+  await goto(page, "/settings/preferences");
   await expect(page.getByRole("heading", { name: "Backup & restore" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Export JSON" })).toBeVisible();
-  await expect(page).toHaveScreenshot("settings.png", { fullPage: true });
+  await expect(page).toHaveScreenshot("settings-preferences.png", { fullPage: true });
 });
 
 test("can add a transaction and see it in the list", async ({ page }) => {
@@ -77,7 +85,7 @@ test("can add a transaction and see it in the list", async ({ page }) => {
 // real AccountForm: picking a kind reveals that kind's typed fields, and creating
 // persists them (exercising the major→minor / metadata-building conversions).
 test("can create an account with typed metadata via the form", async ({ page }) => {
-  await goto(page, "/accounts");
+  await goto(page, "/settings/accounts");
   await page.getByRole("button", { name: "+ Add account" }).click();
 
   await page.getByLabel("Type").selectOption("vehicle");

@@ -49,8 +49,8 @@ export async function unwrap<T>(p: Promise<{ data?: T; error?: unknown }>): Prom
 
 /** Deterministic color for a category id (stable across renders). */
 const PALETTE = [
-  "#2dd4bf", "#60a5fa", "#f472b6", "#fbbf24", "#a78bfa", "#34d399",
-  "#fb7185", "#38bdf8", "#facc15", "#c084fc", "#4ade80", "#f97316",
+  "#e99537", "#4da568", "#6471eb", "#db5a54", "#df4e92",
+  "#c44fe9", "#eb5429", "#61c9ea", "#805dee", "#6ad28a",
 ];
 export function colorFor(key: string | number | null | undefined, fallbackIndex = 0): string {
   if (key === null || key === undefined) return "#64748b";

@@ -63,6 +63,14 @@ pub struct Position {
     /// quantity × price, in `currency_code` (the position's own trading currency, not
     /// necessarily the account's).
     pub market_value_minor: Option<i64>,
+    /// Remaining cost basis of the current position, average-cost method, in
+    /// `currency_code`. `None` if the position was fully exited (no remaining basis) or no
+    /// lot ever carried a price (nothing to base a cost on). An estimate, not authoritative
+    /// — `holdings.unit_price` is informational-only, and corporate actions (splits, bonus
+    /// issues) with no price are treated as quantity-only adjustments.
+    pub cost_basis_minor: Option<i64>,
+    /// (market_value − cost_basis) / cost_basis × 100. `None` if either side is unavailable.
+    pub return_pct: Option<f64>,
 }
 
 /// A wallet cash balance in one currency, as of a date.
@@ -82,6 +90,24 @@ pub struct BrokerageSnapshot {
     pub positions: Vec<Position>,
     pub wallets: Vec<WalletBalance>,
     pub total_value_minor: i64,
+    pub activity_30d: BrokerageActivity30d,
+}
+
+/// A rolling 30-days-to-`as_of` cash-movement summary for a brokerage account.
+///
+/// `trades` (buy/sell lot count) is an exact count. `contributions_minor`/
+/// `withdrawals_minor` are a **heuristic** — the wallet-cash ledger is just the account's
+/// ordinary `transactions` rows, and today nothing distinguishes an external top-up/
+/// withdrawal from internal trade-settlement cash movement at the data-model level (e.g.
+/// the Sharesies importer files deposits, withdrawals, and trade settlement all under one
+/// `"Transfers"` category). This matches on the raw transaction `description` text
+/// (provider-specific phrasing like "Wallet top up"/"Withdrawal"), so it only recognises
+/// contributions/withdrawals it has seen a pattern for — not a durable classification.
+#[derive(Debug, Serialize, ToSchema, Clone, Default)]
+pub struct BrokerageActivity30d {
+    pub contributions_minor: i64,
+    pub withdrawals_minor: i64,
+    pub trades: i64,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]

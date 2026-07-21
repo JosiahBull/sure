@@ -214,6 +214,85 @@ pub struct PositionRow {
     pub quantity: f64,
 }
 
+/// One lot, reduced to what the average-cost-basis walk needs (see `sure_api::brokerage`).
+#[derive(Debug, FromRow, Clone)]
+pub struct CostLotRow {
+    pub ticker: String,
+    pub exchange: String,
+    pub currency_code: String,
+    pub quantity: f64,
+    pub unit_price: Option<f64>,
+    pub fee_minor: i64,
+    pub kind: String,
+}
+
+/// Every lot up to `as_of`, ordered per-ticker by trade date — the cost-basis walk needs
+/// them in that order and groups them by `(ticker, exchange)` itself.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn lots_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<CostLotRow>> {
+    Ok(sqlx::query_as::<_, CostLotRow>(
+        "SELECT ticker, exchange, currency_code, quantity, unit_price, fee_minor, kind
+         FROM holdings
+         WHERE account_id=?1 AND date(trade_date) <= date(?2)
+         ORDER BY ticker, exchange, date(trade_date), id",
+    )
+    .bind(account_id)
+    .bind(as_of)
+    .fetch_all(db)
+    .await?)
+}
+
+/// Rolling 30-days-to-`as_of` activity: an exact trade count, plus a heuristic
+/// contributions/withdrawals split — see [`sure_core::BrokerageActivity30d`] doc comment
+/// for why the latter is text-matched rather than category-driven.
+#[derive(Debug, FromRow)]
+pub struct Activity30dRow {
+    pub contributions_minor: i64,
+    pub withdrawals_minor: i64,
+    pub trades: i64,
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn activity_30d(db: &Db, account_id: i64, as_of: &str) -> AppResult<Activity30dRow> {
+    let trades: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM holdings
+         WHERE account_id=?1 AND kind IN ('buy','sell')
+           AND date(trade_date) > date(?2, '-30 days') AND date(trade_date) <= date(?2)",
+    )
+    .bind(account_id)
+    .bind(as_of)
+    .fetch_one(db)
+    .await?;
+
+    let contributions_minor: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount_minor),0) FROM transactions
+         WHERE account_id=?1 AND amount_minor > 0
+           AND (description LIKE 'Wallet top up%' OR description LIKE 'Deposit%')
+           AND date(posted_at) > date(?2, '-30 days') AND date(posted_at) <= date(?2)",
+    )
+    .bind(account_id)
+    .bind(as_of)
+    .fetch_one(db)
+    .await?;
+
+    let withdrawals_minor: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(-amount_minor),0) FROM transactions
+         WHERE account_id=?1 AND amount_minor < 0
+           AND description LIKE 'Withdrawal%'
+           AND date(posted_at) > date(?2, '-30 days') AND date(posted_at) <= date(?2)",
+    )
+    .bind(account_id)
+    .bind(as_of)
+    .fetch_one(db)
+    .await?;
+
+    Ok(Activity30dRow {
+        contributions_minor,
+        withdrawals_minor,
+        trades,
+    })
+}
+
 /// Net quantity held per `(ticker, exchange)` as of `as_of`, dropping fully-exited
 /// positions (and float dust from fractional buy/sell rounding).
 #[tracing::instrument(level = "debug", skip_all)]

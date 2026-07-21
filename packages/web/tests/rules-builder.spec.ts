@@ -18,13 +18,16 @@ const SEED_SUPERMARKETS =
 // `contains(...)` collapse into one multi-value "Description contains …" row (keeping
 // the `"pak'nsave"` value), and saving the rebuilt tree preserves the exact expression.
 test("editing a rule reconstructs it and round-trips on save", async ({ page }) => {
-  await goto(page, "/rules");
+  await goto(page, "/settings/rules");
   await page
     .locator(".rule", { hasText: "Supermarkets → Groceries" })
     .getByRole("button", { name: "Edit" })
     .click();
 
-  await expect(page.getByRole("button", { name: "All", exact: true })).toBeVisible();
+  // Scoped: the account panel (persistent across every page) also has an "All" tab.
+  await expect(
+    page.getByLabel("Combine conditions").getByRole("button", { name: "All", exact: true })
+  ).toBeVisible();
   await expect(page.locator(".tag", { hasText: "countdown" })).toBeVisible();
   await expect(page.locator(".tag", { hasText: "new world" })).toBeVisible();
   await expect(page.locator(".tag", { hasText: "pak'nsave" })).toBeVisible();
@@ -37,7 +40,7 @@ test("editing a rule reconstructs it and round-trips on save", async ({ page }) 
 // Building from scratch: pick a value, see the live match preview, save, and confirm
 // the emitted Zen (checked via the API — it's intentionally not shown in the UI).
 test("can build a new rule, preview matches, and save", async ({ page }) => {
-  await goto(page, "/rules");
+  await goto(page, "/settings/rules");
   await page.getByRole("button", { name: "+ New rule" }).click();
   await page.getByPlaceholder("Groceries").fill("Coffee shops");
 
@@ -58,7 +61,7 @@ test("can build a new rule, preview matches, and save", async ({ page }) => {
 
 // The audit log expands a run into a per-transaction diff (what each change was).
 test("audit log expands a run into a per-transaction diff", async ({ page }) => {
-  await goto(page, "/rules");
+  await goto(page, "/settings/rules");
   const runRow = page.locator("table tbody tr", { has: page.getByRole("button", { name: "Show changes" }) }).first();
   await runRow.getByRole("button", { name: "Show changes" }).click();
 
@@ -70,7 +73,7 @@ test("audit log expands a run into a per-transaction diff", async ({ page }) => 
 
 // Each run is listed under the rule it applied (not just a generic "Single rule").
 test("audit log shows which rule each run applied", async ({ page }) => {
-  await goto(page, "/rules");
+  await goto(page, "/settings/rules");
   await expect(page.getByRole("columnheader", { name: "Rule" })).toBeVisible();
   // The seed ran the supermarkets rule, so the audit body names it.
   await expect(page.locator("table tbody")).toContainText("Supermarkets → Groceries");
@@ -78,7 +81,7 @@ test("audit log shows which rule each run applied", async ({ page }) => {
 
 // The whole row is a toggle, not just the caret.
 test("clicking anywhere on an audit row expands its diff", async ({ page }) => {
-  await goto(page, "/rules");
+  await goto(page, "/settings/rules");
   const runRow = page.locator("table tbody tr", { has: page.getByRole("button", { name: "Show changes" }) }).first();
   // Click the "Matched" cell — not the caret — and the row still expands.
   await runRow.getByRole("cell").nth(2).click();
@@ -90,7 +93,7 @@ test("clicking anywhere on an audit row expands its diff", async ({ page }) => {
 
 // A changed transaction links through to it on the transactions page, highlighted.
 test("a changed transaction links to the transactions page", async ({ page }) => {
-  await goto(page, "/rules");
+  await goto(page, "/settings/rules");
   const runRow = page.locator("table tbody tr", { has: page.getByRole("button", { name: "Show changes" }) }).first();
   await runRow.getByRole("button", { name: "Show changes" }).click();
 
@@ -99,7 +102,8 @@ test("a changed transaction links to the transactions page", async ({ page }) =>
   await firstTxn.click();
 
   await expect(page).toHaveURL(/#\/transactions\?tx=\d+/);
-  await expect(page.locator("tr.highlight")).toBeVisible();
+  // The default (date-sorted) view groups rows by day as ".tx-row" divs, not a <table>.
+  await expect(page.locator(".tx-row.highlight")).toBeVisible();
 });
 
 // Regression for the expanded audit-log diff's layout, on a mobile viewport:
@@ -109,7 +113,7 @@ test("a changed transaction links to the transactions page", async ({ page }) =>
 //  • Horizontal: the audit table was ~409px wide on a 402px screen, so the diff's amount
 //    sat off-screen and the page scrolled sideways.
 test("audit-log diff rows stay compact and don't overflow horizontally", async ({ page }) => {
-  await goto(page, "/rules");
+  await goto(page, "/settings/rules");
   const runRow = page.locator("table tbody tr", { has: page.getByRole("button", { name: "Show changes" }) }).first();
   await runRow.getByRole("button", { name: "Show changes" }).click();
 
@@ -133,7 +137,7 @@ test("audit-log diff rows stay compact and don't overflow horizontally", async (
 
 // A numeric field exercises the non-text value editor and the `abs_amount` mapping.
 test("numeric field builds an amount comparison", async ({ page }) => {
-  await goto(page, "/rules");
+  await goto(page, "/settings/rules");
   await page.getByRole("button", { name: "+ New rule" }).click();
   await page.getByPlaceholder("Groceries").fill("Big spend");
 

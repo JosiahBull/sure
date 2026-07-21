@@ -33,7 +33,7 @@ test("clicking a pie segment opens transactions filtered to that category and ra
   await pie.locator('svg .seg[aria-label="Housing"]').dispatchEvent("click");
 
   await expect(page).toHaveURL(/#\/transactions\?category=\d+&range=last_12m/);
-  await expect(page.locator("table tbody tr").first()).toBeVisible();
+  await expect(page.locator(".tx-row").first()).toBeVisible();
 });
 
 test("a category deep-link includes the whole subtree", async ({ page }) => {
@@ -45,7 +45,7 @@ test("a category deep-link includes the whole subtree", async ({ page }) => {
   await goto(page, `/transactions?category=${food!.id}&range=all`);
   // Food's spend is filed under its children (Groceries / Dining out); an exact-match
   // filter would show nothing, so visible rows prove the subtree filter works.
-  await expect(page.locator("table tbody tr").first()).toBeVisible();
+  await expect(page.locator(".tx-row").first()).toBeVisible();
 });
 
 test("the legend mirrors the pie and is clickable", async ({ page }) => {
@@ -84,5 +84,5 @@ test("clicking a sankey category node opens its filtered transactions", async ({
   await flow.locator("g.node", { hasText: "Housing" }).dispatchEvent("click");
 
   await expect(page).toHaveURL(/#\/transactions\?category=\d+&range=last_12m/);
-  await expect(page.locator("table tbody tr").first()).toBeVisible();
+  await expect(page.locator(".tx-row").first()).toBeVisible();
 });

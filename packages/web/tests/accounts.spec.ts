@@ -9,7 +9,7 @@ async function goto(page: Page, route: string) {
 // shared demo database is left intact for the other specs.
 
 test("deleting an account asks for confirmation first, and Cancel keeps it", async ({ page }) => {
-  await goto(page, "/accounts");
+  await goto(page, "/settings/accounts");
   const row = page.locator(".acct", { hasText: "Sharesies (US)" });
   await row.getByRole("button", { name: "Delete Sharesies (US)" }).click();
 
@@ -20,7 +20,7 @@ test("deleting an account asks for confirmation first, and Cancel keeps it", asy
 });
 
 test("an asset with secured debts is blocked from deletion, naming the debts", async ({ page }) => {
-  await goto(page, "/accounts");
+  await goto(page, "/settings/accounts");
   const row = page.locator(".acct", { hasText: "Family Home" });
   await row.getByRole("button", { name: "Delete Family Home" }).click();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
@@ -32,7 +32,7 @@ test("an asset with secured debts is blocked from deletion, naming the debts", a
 });
 
 test("Institution shows for banks but not shares (which use a broker)", async ({ page }) => {
-  await goto(page, "/accounts");
+  await goto(page, "/settings/accounts");
   // Shares: a broker/platform field, no Institution.
   await page.locator(".acct", { hasText: "Sharesies (US)" }).getByRole("button", { name: "Edit" }).click();
   await expect(page.getByLabel("Broker / platform")).toBeVisible();
@@ -43,7 +43,7 @@ test("Institution shows for banks but not shares (which use a broker)", async ({
 });
 
 test("clicking an account jumps to its filtered transactions", async ({ page }) => {
-  await goto(page, "/accounts");
+  await goto(page, "/settings/accounts");
   await page
     .locator(".acct", { hasText: "Everyday" })
     .getByRole("button", { name: "View transactions for Everyday" })
@@ -57,21 +57,22 @@ test("clicking an account jumps to its filtered transactions", async ({ page }) 
   const selectedLabel = await accountFilter.locator("option:checked").textContent();
   expect(selectedLabel).toBe("Everyday");
 
-  // Every visible row belongs to the filtered account — not a mix. Columns are
-  // checkbox, date, description, account, … so the account is the 4th cell.
-  const accountCells = page.locator("table tbody tr td:nth-child(4)");
+  // Every visible row belongs to the filtered account — not a mix. The default
+  // (date-sorted) view groups rows by day as ".tx-row" divs, not a <table>; the account
+  // name is the small faint line under the description.
+  const accountCells = page.locator(".tx-row .small.faint.ell");
   await expect(accountCells.first()).toBeVisible();
   const distinctAccounts = new Set(await accountCells.allTextContents());
   expect([...distinctAccounts]).toEqual(["Everyday"]);
 });
 
 test("Edit and Delete on an account row don't trigger the transactions jump", async ({ page }) => {
-  await goto(page, "/accounts");
+  await goto(page, "/settings/accounts");
   await page.locator(".acct", { hasText: "Everyday" }).getByRole("button", { name: "Edit" }).click();
-  await expect(page).toHaveURL(/#\/accounts$/);
+  await expect(page).toHaveURL(/#\/settings\/accounts$/);
   await page.locator(".acct", { hasText: "Everyday" }).getByRole("button", { name: "Close" }).click();
 
   await page.locator(".acct", { hasText: "Everyday" }).getByRole("button", { name: "Delete Everyday" }).click();
-  await expect(page).toHaveURL(/#\/accounts$/);
+  await expect(page).toHaveURL(/#\/settings\/accounts$/);
   await page.getByRole("button", { name: "Cancel" }).click();
 });

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { api, formatMoney, formatDate, colorFor, type Schemas } from "../lib/api";
   import { filters, activeRange } from "../lib/state.svelte";
   import { navigate } from "../lib/router.svelte";
@@ -7,6 +8,10 @@
   import LineChart from "../lib/charts/LineChart.svelte";
   import PieChart from "../lib/charts/PieChart.svelte";
   import Sankey from "../lib/charts/Sankey.svelte";
+  import WeightBar from "../lib/charts/WeightBar.svelte";
+  import { balances, refresh as refreshBalances } from "../lib/balances.svelte";
+  import { groupByKind } from "../lib/balanceGroups";
+  import Icon from "../lib/Icon.svelte";
 
   let nw = $state<Schemas["NetWorthSeries"] | null>(null);
   let breakdown = $state<Schemas["CategoryBreakdown"] | null>(null);
@@ -57,6 +62,83 @@
     filters.custom;
     load();
   });
+
+  // Balance Sheet / Investments show today's balances, not the date-range report — loaded
+  // once (shared with the account panel, which may already have triggered this).
+  onMount(() => {
+    if (!balances.data) refreshBalances();
+  });
+  let expandedBSKinds = $state(new Set<string>());
+  function toggleBSKind(kind: string) {
+    const next = new Set(expandedBSKinds);
+    if (next.has(kind)) next.delete(kind);
+    else next.add(kind);
+    expandedBSKinds = next;
+  }
+  const assetsGrouped = $derived(groupByKind(balances.data?.accounts ?? [], "assets"));
+  const liabilitiesGrouped = $derived(groupByKind(balances.data?.accounts ?? [], "debts"));
+  const investmentAccounts = $derived(
+    (balances.data?.accounts ?? []).filter((a) => a.class === "investment")
+  );
+  const investmentTotal = $derived(investmentAccounts.reduce((s, a) => s + a.value_minor, 0));
+
+  // Per-account brokerage snapshots (positions + 30d activity), fetched in parallel once the
+  // balances store identifies the investment-class accounts.
+  let snapshots = $state<Record<number, Schemas["BrokerageSnapshot"]>>({});
+  $effect(() => {
+    const ids = investmentAccounts.map((a) => a.account_id);
+    if (ids.length === 0) {
+      snapshots = {};
+      return;
+    }
+    Promise.all(
+      ids.map((id) => api.GET("/api/accounts/{id}/brokerage", { params: { path: { id } } }))
+    ).then((results) => {
+      const next: Record<number, Schemas["BrokerageSnapshot"]> = {};
+      results.forEach((r, i) => {
+        if (r.data) next[ids[i]] = r.data;
+      });
+      snapshots = next;
+    });
+  });
+
+  // Every position across every investment account, largest first. Market value stays in each
+  // position's own trading currency (matching the per-row native-currency convention used in the
+  // account panel), so weight% is a naive share of the summed minor units.
+  const holdings = $derived(
+    Object.values(snapshots)
+      .flatMap((s) => s.positions)
+      .sort((a, b) => (b.market_value_minor ?? 0) - (a.market_value_minor ?? 0))
+  );
+  const holdingsValueMinor = $derived(
+    holdings.reduce((s, p) => s + (p.market_value_minor ?? 0), 0)
+  );
+
+  // Aggregate return over holdings that carry a cost basis; a holding without one is skipped
+  // rather than blanking the whole figure. Estimated (average-cost) — see the return-column note.
+  const costed = $derived(
+    holdings.filter((p) => p.cost_basis_minor != null && p.market_value_minor != null)
+  );
+  const totalCostMinor = $derived(costed.reduce((s, p) => s + (p.cost_basis_minor ?? 0), 0));
+  const totalReturnMinor = $derived(
+    costed.reduce((s, p) => s + (p.market_value_minor ?? 0), 0) - totalCostMinor
+  );
+  const totalReturnPct = $derived(
+    totalCostMinor > 0 ? (totalReturnMinor / totalCostMinor) * 100 : null
+  );
+
+  // Combined 30-day cash-movement summary across every investment account.
+  const activity = $derived(
+    Object.values(snapshots).reduce(
+      (acc, s) => ({
+        contributions_minor: acc.contributions_minor + s.activity_30d.contributions_minor,
+        withdrawals_minor: acc.withdrawals_minor + s.activity_30d.withdrawals_minor,
+        trades: acc.trades + s.activity_30d.trades,
+      }),
+      { contributions_minor: 0, withdrawals_minor: 0, trades: 0 }
+    )
+  );
+  const hasSnapshots = $derived(Object.keys(snapshots).length > 0);
 
   const currency = $derived(breakdown?.currency ?? nw?.currency ?? "NZD");
   // Whole-dollar money (no cents) — keeps the donut centre from overflowing on hover.
@@ -155,7 +237,7 @@
   </section>
 
   <div class="grid two">
-    {#each [{ title: "Where money went", slices: expenseSlices, total: totalExpense, cls: "neg" }, { title: "Where money came from", slices: incomeSlices, total: totalIncome, cls: "pos" }] as panel, pi}
+    {#each [{ title: "Where money went", slices: expenseSlices, total: totalExpense }, { title: "Where money came from", slices: incomeSlices, total: totalIncome }] as panel, pi}
       <section class="card">
         <h2>{panel.title}</h2>
         {#if panel.slices.length === 0}
@@ -191,7 +273,7 @@
                       <span class="dot" style="background:{s.color}"></span>
                       <span class="ell">{s.label}</span>
                     </span>
-                    <span class="tabular {panel.cls}">{formatMoney(s.value, currency)}</span>
+                    <span class="tabular">{formatMoney(s.value, currency)}</span>
                   </button>
                 </li>
               {/each}
@@ -214,6 +296,171 @@
         format={(v) => formatMoney(v, currency)}
         onselect={goToCategory}
       />
+    </section>
+  {/if}
+
+  {#if balances.data && (assetsGrouped.groups.length || liabilitiesGrouped.groups.length)}
+    <div class="grid two">
+      {#each [{ title: "Assets", grouped: assetsGrouped }, { title: "Liabilities", grouped: liabilitiesGrouped }] as panel}
+        <section class="card">
+          <div class="card-title">
+            <h2>{panel.title}</h2>
+            <span class="muted small tabular">
+              {formatMoney(panel.grouped.totalMinor, balances.data?.currency)}
+            </span>
+          </div>
+          {#if panel.grouped.groups.length === 0}
+            <div class="empty">Nothing here yet.</div>
+          {:else}
+            <WeightBar
+              segments={panel.grouped.groups.map((g) => ({
+                label: g.label,
+                color: colorFor(g.kind),
+                weightPct: g.weightPct,
+              }))}
+            />
+            <ul class="legend" style="margin-top:12px">
+              {#each panel.grouped.groups as g (g.kind)}
+                <li>
+                  <button type="button" class="legend-row" onclick={() => toggleBSKind(g.kind)}>
+                    <span class="row" style="gap:6px;min-width:0">
+                      <Icon name={expandedBSKinds.has(g.kind) ? "chevron-down" : "chevron-right"} size={14} />
+                      <span class="dot" style="background:{colorFor(g.kind)}"></span>
+                      <span class="ell">{g.label}</span>
+                    </span>
+                    <span class="row" style="gap:8px">
+                      <span class="small faint tabular">{g.weightPct.toFixed(1)}%</span>
+                      <span class="tabular">{formatMoney(g.totalMinor, balances.data?.currency)}</span>
+                    </span>
+                  </button>
+                  {#if expandedBSKinds.has(g.kind)}
+                    <ul class="sub-list">
+                      {#each g.accounts as a (a.account_id)}
+                        <li class="row spread small" style="padding:4px 8px 4px 30px">
+                          <span class="ell muted">{a.name}</span>
+                          <span class="tabular">{formatMoney(a.value_minor, a.currency_code)}</span>
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+      {/each}
+    </div>
+  {/if}
+
+  {#if investmentAccounts.length > 0}
+    <section class="card">
+      <div class="card-title">
+        <h2>Investments</h2>
+      </div>
+      <div class="stat" style="margin-bottom:4px">
+        <div class="value tabular">{formatMoney(investmentTotal, balances.data?.currency)}</div>
+      </div>
+      {#if totalReturnPct != null}
+        <div class="small" style="margin-bottom:14px">
+          <span class="muted">Total return:</span>
+          <span
+            class="tabular"
+            class:pos={totalReturnMinor >= 0}
+            class:neg={totalReturnMinor < 0}
+            style="font-weight:620"
+            title="Estimated — average cost basis"
+          >
+            {formatMoney(totalReturnMinor, balances.data?.currency)}
+            ({totalReturnPct >= 0 ? "+" : ""}{totalReturnPct.toFixed(1)}%)
+          </span>
+        </div>
+      {/if}
+
+      {#if holdings.length > 0}
+        <table class="table holdings">
+          <thead>
+            <tr>
+              <th>Holding</th>
+              <th class="num">Weight</th>
+              <th class="num">Value</th>
+              <th class="num" title="Estimated — average cost basis">Return</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each holdings as p (p.exchange + ":" + p.ticker)}
+              <tr>
+                <td>
+                  <span class="row" style="gap:10px;min-width:0">
+                    <span class="avatar">{p.ticker.slice(0, 2).toUpperCase()}</span>
+                    <span class="hold-name">
+                      <span class="ell" style="font-weight:560">{p.ticker}</span>
+                      <span class="ell small faint">{p.name ?? p.exchange}</span>
+                    </span>
+                  </span>
+                </td>
+                <td class="num tabular faint">
+                  {holdingsValueMinor > 0 && p.market_value_minor != null
+                    ? ((p.market_value_minor / holdingsValueMinor) * 100).toFixed(1) + "%"
+                    : "—"}
+                </td>
+                <td class="num tabular">
+                  {p.market_value_minor != null
+                    ? formatMoney(p.market_value_minor, p.currency_code)
+                    : "—"}
+                </td>
+                <td
+                  class="num tabular"
+                  class:pos={p.return_pct != null && p.return_pct >= 0}
+                  class:neg={p.return_pct != null && p.return_pct < 0}
+                >
+                  {p.return_pct != null
+                    ? (p.return_pct >= 0 ? "+" : "") + p.return_pct.toFixed(1) + "%"
+                    : "—"}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else}
+        <ul class="legend">
+          {#each investmentAccounts as a (a.account_id)}
+            <li>
+              <button
+                type="button"
+                class="legend-row"
+                onclick={() => navigate(`/transactions?account=${a.account_id}`)}
+              >
+                <span class="ell">{a.name}</span>
+                <span class="tabular">{formatMoney(a.value_minor, a.currency_code)}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if hasSnapshots}
+        <div class="activity">
+          <div class="activity-head faint">Last 30 days activity</div>
+          <div class="activity-stats">
+            <div class="astat">
+              <span class="faint small">Contributions</span>
+              <span class="tabular">
+                {formatMoney(activity.contributions_minor, balances.data?.currency)}
+              </span>
+            </div>
+            <div class="astat">
+              <span class="faint small">Withdrawals</span>
+              <span class="tabular">
+                {formatMoney(activity.withdrawals_minor, balances.data?.currency)}
+              </span>
+            </div>
+            <div class="astat">
+              <span class="faint small">Trades</span>
+              <span class="tabular">{activity.trades}</span>
+            </div>
+          </div>
+        </div>
+      {/if}
     </section>
   {/if}
 </div>
@@ -242,6 +489,15 @@
     flex-direction: column;
     gap: 3px;
     font-size: 13.5px;
+  }
+  .sub-list {
+    list-style: none;
+    margin: 2px 0 4px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 13px;
   }
   .legend-row {
     width: 100%;
@@ -301,5 +557,60 @@
   .stat .label .on {
     color: var(--text-muted);
     font-weight: 600;
+  }
+
+  /* Investments holdings table */
+  .holdings th.num,
+  .holdings td.num {
+    text-align: right;
+    white-space: nowrap;
+  }
+  .avatar {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--surface-2);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .hold-name {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.25;
+  }
+
+  /* Last-30-days activity strip */
+  .activity {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+  }
+  .activity-head {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 10px;
+  }
+  .activity-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  .astat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  @media (max-width: 480px) {
+    .activity-stats {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
