@@ -8,13 +8,12 @@ pub mod routes;
 pub mod state;
 pub mod telemetry;
 
-// The lower layers now live in their own crates. Re-export them under the historical
-// module paths so handler/OpenAPI code keeps compiling against `crate::error` and
-// `crate::providers` unchanged. `sure-api` names neither `sure_dal` nor `sqlx` anywhere
-// in this crate — the composition root (`sure-server`) is the only place that connects
-// to the database and builds `AppState`.
+// The shared error type keeps its historical module path so handler/OpenAPI code compiles
+// against `crate::error` unchanged. `sure-api` names neither `sure_dal` nor `sqlx`
+// anywhere — the composition root (`sure-server`) is the only place that connects to the
+// database and builds `AppState`. Provider adapters are injected as ports too; the only
+// direct `sure-providers` use left is the Sharesies export parser in `routes::brokerage`.
 pub use sure_core::error; // crate::error::{AppError, AppResult, ErrorBody, ErrorDetail}
-pub use sure_providers as providers; // crate::providers::{Registry, SyncContext, ProviderKind, ...}
 
 use axum::{routing::get, Json, Router};
 use tower_http::cors::CorsLayer;

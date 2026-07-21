@@ -13,7 +13,7 @@ use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use crate::{ProviderCategory, ProviderTransaction};
+use sure_app::ports::{ProviderCategory, ProviderTransaction};
 
 /// A resolved instrument from `lookup.json` (fund_id -> ticker/name/exchange/currency).
 #[derive(Debug, Clone)]

@@ -79,10 +79,9 @@ pub async fn snapshot(
     Query(q): Query<AsOfQuery>,
 ) -> AppResult<Json<BrokerageSnapshot>> {
     ensure_brokerage(&st, id).await?;
-    let provider = sure_providers::YahooFinanceProvider::new();
     Ok(Json(
         st.brokerage
-            .snapshot(Some(&provider), id, parse_as_of(&q))
+            .snapshot(Some(st.stock_price_provider.as_ref()), id, parse_as_of(&q))
             .await?,
     ))
 }
@@ -277,9 +276,9 @@ pub async fn import(
     // call per ticker then loops every day since inception, which is too slow to block the
     // upload response on. Idempotent, so the panel's "Backfill" button is the retry path.
     let brokerage = st.brokerage.clone();
+    let provider = st.stock_price_provider.clone();
     tokio::spawn(async move {
-        let provider = sure_providers::YahooFinanceProvider::new();
-        if let Err(e) = brokerage.backfill_history(&provider, id).await {
+        if let Err(e) = brokerage.backfill_history(provider.as_ref(), id).await {
             tracing::warn!(account_id = id, error = %e, "brokerage history backfill failed");
         }
     });
@@ -314,10 +313,9 @@ pub async fn revalue(
     Query(q): Query<AsOfQuery>,
 ) -> AppResult<Json<BrokerageSnapshot>> {
     ensure_brokerage(&st, id).await?;
-    let provider = sure_providers::YahooFinanceProvider::new();
     Ok(Json(
         st.brokerage
-            .revalue(Some(&provider), id, parse_as_of(&q))
+            .revalue(Some(st.stock_price_provider.as_ref()), id, parse_as_of(&q))
             .await?,
     ))
 }
@@ -347,8 +345,10 @@ pub async fn backfill(
     Path(id): Path<i64>,
 ) -> AppResult<Json<BackfillResult>> {
     ensure_brokerage(&st, id).await?;
-    let provider = sure_providers::YahooFinanceProvider::new();
-    let days = st.brokerage.backfill_history(&provider, id).await? as i64;
+    let days = st
+        .brokerage
+        .backfill_history(st.stock_price_provider.as_ref(), id)
+        .await? as i64;
     Ok(Json(BackfillResult { days }))
 }
 

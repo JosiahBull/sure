@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
-use crate::types::SaveAccount;
+use crate::types::{AccountKind, SaveAccount};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Provider {
@@ -91,4 +91,36 @@ pub struct ProviderSync {
     pub status: String,
     pub detail: Option<String>,
     pub created_at: String,
+}
+
+/// An upstream account surfaced by a provider that supports account discovery
+/// (see `sure_app::ports::TransactionProvider::list_accounts`) — not yet linked to a
+/// local `Account`. Surfaced by `GET /provider-kinds/{kind}/accounts`. Lives here, with
+/// the other provider API DTOs, so both the provider adapters and the OpenAPI document
+/// can name it without either depending on the other.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ProviderAccount {
+    /// Stable identifier from the source; stored as `config.external_account_id` on the
+    /// `providers` row once linked, and used to fetch that account's transactions.
+    pub external_id: String,
+    pub name: String,
+    pub currency_code: String,
+    /// The financial institution's display name (e.g. "ASB"), if the source reports one.
+    pub institution: Option<String>,
+    /// Best-effort suggestion for the local account's `kind`; the user confirms/edits it
+    /// when linking, so an imperfect guess here isn't a correctness problem.
+    pub kind_hint: AccountKind,
+    pub balance_minor: i64,
+    /// Whether the source can provide transaction history for this account (some upstream
+    /// account types are balance-only).
+    pub supports_transactions: bool,
+}
+
+/// Metadata about an available provider kind, surfaced via `GET /provider-kinds`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ProviderKind {
+    pub kind: String,
+    pub description: String,
+    pub accepts_payload: bool,
+    pub supports_account_discovery: bool,
 }

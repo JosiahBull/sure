@@ -9,10 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sure_providers::Registry;
 use sure_scheduler::ScheduledTask;
 
-use crate::ports::ProviderRepo;
+use crate::ports::{ProviderRegistry, ProviderRepo};
 use crate::sync::SyncService;
 
 /// Bank data itself only refreshes a few times a day upstream, so there's no value in
@@ -21,12 +20,21 @@ const POLL_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 pub struct ProviderPollTask {
     providers: Arc<dyn ProviderRepo>,
+    registry: Arc<dyn ProviderRegistry>,
     sync: Arc<SyncService>,
 }
 
 impl ProviderPollTask {
-    pub fn new(providers: Arc<dyn ProviderRepo>, sync: Arc<SyncService>) -> Self {
-        Self { providers, sync }
+    pub fn new(
+        providers: Arc<dyn ProviderRepo>,
+        registry: Arc<dyn ProviderRegistry>,
+        sync: Arc<SyncService>,
+    ) -> Self {
+        Self {
+            providers,
+            registry,
+            sync,
+        }
     }
 }
 
@@ -41,7 +49,6 @@ impl ScheduledTask for ProviderPollTask {
     }
 
     async fn run(&self) -> anyhow::Result<()> {
-        let registry = Registry::new();
         let providers = self.providers.list().await?;
 
         for provider in providers {
@@ -50,7 +57,8 @@ impl ScheduledTask for ProviderPollTask {
             }
             // Payload providers (e.g. CSV) need a human to supply the payload each time,
             // so they can never be run unattended; anything else is safe to auto-sync.
-            let accepts_payload = registry
+            let accepts_payload = self
+                .registry
                 .get(&provider.kind)
                 .map(|p| p.accepts_payload())
                 .unwrap_or(true);

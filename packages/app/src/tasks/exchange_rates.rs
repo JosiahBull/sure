@@ -9,10 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sure_providers::ExchangeRateProvider;
 use sure_scheduler::ScheduledTask;
 
-use crate::ports::ExchangeRateRepo;
+use crate::ports::{ExchangeRateProvider, ExchangeRateRepo};
 
 /// Free upstream sources refresh at most daily, and exact intraday accuracy isn't
 /// needed here, so there's no value in polling more often than this.

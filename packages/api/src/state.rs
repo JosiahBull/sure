@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use sure_app::brokerage::BrokerageService;
 use sure_app::ports::{
-    AccountRepo, CategoryRepo, CronRepo, CurrencyRepo, EquityRepo, MerchantRepo, ProviderRepo,
-    SettingsRepo, SnapshotRepo, StockPriceCacheRepo, TransactionRepo, ValuationRepo,
+    AccountRepo, CategoryRepo, CronRepo, CurrencyRepo, EquityRepo, MerchantRepo, ProviderRegistry,
+    ProviderRepo, SettingsRepo, SnapshotRepo, StockPriceCacheRepo, StockPriceProvider,
+    TransactionRepo, ValuationRepo,
 };
 use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
@@ -34,4 +35,10 @@ pub struct AppState {
     pub crons: Arc<dyn CronRepo>,
     pub snapshot: Arc<dyn SnapshotRepo>,
     pub providers: Arc<dyn ProviderRepo>,
+    /// The transaction-provider adapters (CSV, Akahu), injected so provider routes never
+    /// name a concrete adapter or `Registry::new()`.
+    pub provider_registry: Arc<dyn ProviderRegistry>,
+    /// The stock-price feed (Yahoo Finance), injected for the on-demand price lookups the
+    /// brokerage/stock-price routes drive.
+    pub stock_price_provider: Arc<dyn StockPriceProvider>,
 }

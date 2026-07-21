@@ -9,7 +9,7 @@ use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use super::{ExchangeRateProvider, ExchangeRateQuote};
+use sure_app::ports::{ExchangeRateProvider, ExchangeRateQuote};
 
 const DEFAULT_BASE_URL: &str = "https://api.frankfurter.dev/v1";
 

@@ -59,10 +59,9 @@ pub async fn get_price(
         .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
         .unwrap_or_else(|| Utc::now().date_naive());
 
-    let provider = sure_providers::YahooFinanceProvider::new();
     sure_app::stock_prices::price_at(
         st.stock_prices.as_ref(),
-        &provider,
+        st.stock_price_provider.as_ref(),
         &ticker,
         &exchange,
         as_of,

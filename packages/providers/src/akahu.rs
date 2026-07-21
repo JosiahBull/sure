@@ -12,12 +12,10 @@ use async_trait::async_trait;
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde_json::Value;
-use sure_core::AccountKind;
-
-use super::{
-    ProviderAccount, ProviderBalance, ProviderCategory, ProviderTransaction, SyncContext,
-    TransactionProvider,
+use sure_app::ports::{
+    ProviderBalance, ProviderCategory, ProviderTransaction, SyncContext, TransactionProvider,
 };
+use sure_core::{AccountKind, ProviderAccount};
 
 const BASE_URL: &str = "https://api.akahu.io/v1";
 /// Re-fetch a small window before the last successful sync, since a transaction's

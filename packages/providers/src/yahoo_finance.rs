@@ -13,7 +13,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use super::{StockPriceProvider, StockPriceQuote};
+use sure_app::ports::{StockPriceProvider, StockPriceQuote};
 
 const BASE_URL: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
 

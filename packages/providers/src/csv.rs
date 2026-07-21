@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 
-use super::{ProviderTransaction, SyncContext, TransactionProvider};
+use sure_app::ports::{ProviderTransaction, SyncContext, TransactionProvider};
 
 pub struct CsvProvider;
 

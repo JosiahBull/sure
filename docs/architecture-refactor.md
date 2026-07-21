@@ -25,7 +25,10 @@ each ship independently.
 | **1 — Extract `sure-app`** | ✅ Done | 2026-07-20, `4ca476c` |
 | **2 — Repo ports for logic-heavy services** | ✅ Done | 2026-07-20, `95eccde` |
 | **3a — Row/domain split** | ✅ Done | 2026-07-20 |
-| **3b/3c/3d — DTO audit, full port coverage, `sure-server` split** | ⏳ Pending | — |
+| **3b — Wire-DTO audit (reports only; no other twin needed)** | ✅ Done | 2026-07-20 |
+| **3c — Full repo-port coverage** | ✅ Done | 2026-07-20, `79da86a` |
+| **3d — `sure-server` composition-root split** | ✅ Done | 2026-07-20, `136565c` |
+| **3c′ — Relocate provider ports into `sure-app`** | ✅ Done | 2026-07-21 (working tree) |
 
 Phases 1–2 shipped close to the plan below, with two notable as-built choices: the
 services became **structs** (`BrokerageService`, `ReportService`, `RuleService`,
@@ -226,10 +229,10 @@ pub trait Clock: Send + Sync {
 ```
 
 Also introduced here: `ValuationRepo`, `FxRatesRepo` (the `currency_decimals` +
-`exchange_rates` loaders `Fx::load` uses), `RuleRepo`, and `ReportRepo`. The
-existing provider port traits (`StockPriceProvider`, `TransactionProvider`,
-`ExchangeRateProvider`) stay in `sure-providers` and are consumed by `sure-app` as-is
-(Phase 3 optionally relocates them for a single source of truth).
+`exchange_rates` loaders `Fx::load` uses), `RuleRepo`, and `ReportRepo`. The provider port
+traits (`StockPriceProvider`, `TransactionProvider`, `ExchangeRateProvider`) were initially
+left in `sure-providers`; Phase 3c′ (below) relocated them into `sure-app::ports` too, so
+every port now has a single home.
 
 ### Adapter in `sure-dal`
 
@@ -391,14 +394,29 @@ responses, or when an API-compat concern pins the JSON while the domain evolves)
 they're identical, keeping the derives on the domain type is the pragmatic call. Track
 which types get a twin so the choice is deliberate, not accidental.
 
-### 3c. Complete the ports; relocate provider ports (optional)
+### 3c. Complete the ports; relocate provider ports
 
 Extend repo-port coverage to the aggregates left calling `sure_dal` directly in Phase 2,
 so `sure-api` need not depend on `sure-dal` at all except in the composition root. For a
-single source of truth, optionally move the provider port *traits*
-(`TransactionProvider`, `StockPriceProvider`, `ExchangeRateProvider`) into
-`sure-app::ports`, leaving `sure-providers` as pure adapters implementing them — mirroring
-the repo-port arrangement exactly.
+single source of truth, move the provider port *traits* (`TransactionProvider`,
+`StockPriceProvider`, `ExchangeRateProvider`) into `sure-app::ports`, leaving
+`sure-providers` as pure adapters implementing them — mirroring the repo-port arrangement
+exactly.
+
+> **✅ 3c′ as built (2026-07-21).** The provider ports moved into `sure_app::ports`
+> alongside the repo ports; `sure-providers` now depends on `sure-app` (the `app → providers`
+> arrow flipped) and defines no traits of its own. Placement split by role: the
+> API-surfaced DTOs (`ProviderAccount`, `ProviderKind`) went to `sure-core` beside the
+> other provider wire types (`Provider`, `ProviderSync`) so `sure-app` needn't take a
+> `utoipa`/`serde` dependency; the internal port DTOs (`ProviderTransaction`,
+> `ProviderCategory`, `ProviderBalance`, `SyncContext`, `StockPriceQuote`,
+> `ExchangeRateQuote`) went to `app::ports` with the traits. A new
+> `ProviderRegistry` port lets `sure-providers`' `Registry` be injected, so
+> `SyncService`, `ProviderPollTask`, and every `routes::providers` handler stop calling
+> `Registry::new()`; the stock-price feed is injected into `AppState` too, so the
+> brokerage/stock-price handlers no longer name `YahooFinanceProvider`. The only concrete
+> adapter `sure-api` still names directly is the Sharesies export *parser* (a pure
+> function, not a port), in `routes::brokerage`.
 
 ### 3d. (Optional) extract the composition root
 

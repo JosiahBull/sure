@@ -13,10 +13,9 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 pub use sure_core::AppResult;
 use sure_core::StockPrice;
-use sure_providers::StockPriceProvider;
 use sure_scheduler::ScheduledTask;
 
-use crate::ports::{AccountRepo, Clock, StockPriceCacheRepo};
+use crate::ports::{AccountRepo, Clock, StockPriceCacheRepo, StockPriceProvider};
 
 /// How far back to look when backfilling around a target date — comfortably spans
 /// weekends and most public-holiday clusters (e.g. Christmas/New Year) so "nearest
@@ -150,8 +149,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
+    use crate::ports::StockPriceQuote;
     use sure_core::Account;
-    use sure_providers::StockPriceQuote;
 
     use super::*;
     use crate::ports::SharesTicker;

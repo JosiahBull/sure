@@ -6,14 +6,16 @@
 use std::sync::Arc;
 
 use sure_core::{AppError, AppResult, Provider, ProviderSync};
-use sure_providers::{Registry, SyncContext};
 
-use crate::ports::{AccountRepo, Clock, ImportRow, ProviderRepo, ValuationRepo};
+use crate::ports::{
+    AccountRepo, Clock, ImportRow, ProviderRegistry, ProviderRepo, SyncContext, ValuationRepo,
+};
 
 pub struct SyncService {
     providers: Arc<dyn ProviderRepo>,
     accounts: Arc<dyn AccountRepo>,
     valuations: Arc<dyn ValuationRepo>,
+    registry: Arc<dyn ProviderRegistry>,
     clock: Arc<dyn Clock>,
 }
 
@@ -22,12 +24,14 @@ impl SyncService {
         providers: Arc<dyn ProviderRepo>,
         accounts: Arc<dyn AccountRepo>,
         valuations: Arc<dyn ValuationRepo>,
+        registry: Arc<dyn ProviderRegistry>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             providers,
             accounts,
             valuations,
+            registry,
             clock,
         }
     }
@@ -43,8 +47,7 @@ impl SyncService {
         let id = provider.id;
         let account_ccy = self.providers.account_currency(provider.account_id).await?;
 
-        let registry = Registry::new();
-        let p = registry.get(&provider.kind).ok_or_else(|| {
+        let p = self.registry.get(&provider.kind).ok_or_else(|| {
             AppError::validation(format!("unknown provider kind '{}'", provider.kind))
         })?;
         let ctx = SyncContext {

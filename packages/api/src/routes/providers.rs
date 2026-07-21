@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use crate::error::{AppError, AppResult};
-use crate::providers::{ProviderAccount, ProviderKind, Registry};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -9,8 +8,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 
 pub use sure_core::{
-    LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderSync, SaveProvider,
-    SyncRequest,
+    LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderAccount,
+    ProviderKind, ProviderSync, SaveProvider, SyncRequest,
 };
 
 // OTEL span names for this module's handlers.
@@ -34,8 +33,8 @@ const PROVIDERS_LIST_SYNCS: &str = "providers.list_syncs";
     skip_all,
     ret(level = tracing::Level::DEBUG),
 )]
-pub async fn kinds() -> Json<Vec<ProviderKind>> {
-    Json(Registry::new().kinds())
+pub async fn kinds(State(st): State<AppState>) -> Json<Vec<ProviderKind>> {
+    Json(st.provider_registry.kinds())
 }
 
 /// Upstream accounts a discovery-capable provider kind can see, excluding any already
@@ -55,8 +54,8 @@ pub async fn discover_accounts(
     State(st): State<AppState>,
     Path(kind): Path<String>,
 ) -> AppResult<Json<Vec<ProviderAccount>>> {
-    let registry = Registry::new();
-    let provider = registry
+    let provider = st
+        .provider_registry
         .get(&kind)
         .ok_or_else(|| AppError::validation(format!("unknown provider kind '{kind}'")))?;
 
@@ -112,7 +111,7 @@ pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveProvider>,
 ) -> AppResult<(StatusCode, Json<Provider>)> {
-    if Registry::new().get(&input.kind).is_none() {
+    if st.provider_registry.get(&input.kind).is_none() {
         return Err(AppError::validation(format!(
             "unknown provider kind '{}'",
             input.kind
@@ -137,7 +136,7 @@ pub async fn link(
     State(st): State<AppState>,
     Json(input): Json<LinkProviderAccount>,
 ) -> AppResult<(StatusCode, Json<Provider>)> {
-    if Registry::new().get(&input.kind).is_none() {
+    if st.provider_registry.get(&input.kind).is_none() {
         return Err(AppError::validation(format!(
             "unknown provider kind '{}'",
             input.kind
@@ -173,7 +172,7 @@ pub async fn link_group(
     State(st): State<AppState>,
     Json(input): Json<LinkProviderGroup>,
 ) -> AppResult<(StatusCode, Json<Vec<Provider>>)> {
-    if Registry::new().get(&input.kind).is_none() {
+    if st.provider_registry.get(&input.kind).is_none() {
         return Err(AppError::validation(format!(
             "unknown provider kind '{}'",
             input.kind
@@ -213,7 +212,7 @@ pub async fn update(
     Path(id): Path<i64>,
     Json(input): Json<SaveProvider>,
 ) -> AppResult<Json<Provider>> {
-    if Registry::new().get(&input.kind).is_none() {
+    if st.provider_registry.get(&input.kind).is_none() {
         return Err(AppError::validation(format!(
             "unknown provider kind '{}'",
             input.kind

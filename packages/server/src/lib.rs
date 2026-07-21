@@ -8,6 +8,7 @@ pub mod config;
 use std::sync::Arc;
 
 use sure_app::brokerage::BrokerageService;
+use sure_app::ports::{ProviderRegistry, StockPriceProvider};
 use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
 use sure_app::sync::SyncService;
@@ -20,7 +21,11 @@ use crate::config::Config;
 /// Build the `AppState` every handler shares: one `SqliteStore` + `SystemClock`, wired
 /// into the four logic-heavy services and handed out directly (as a repo port trait
 /// object) for every thin-CRUD aggregate.
-fn build_state(db: Db) -> sure_api::State {
+fn build_state(
+    db: Db,
+    registry: Arc<dyn ProviderRegistry>,
+    stock_price_provider: Arc<dyn StockPriceProvider>,
+) -> sure_api::State {
     let store = Arc::new(SqliteStore::new(db));
     let clock = Arc::new(SystemClock);
 
@@ -42,6 +47,7 @@ fn build_state(db: Db) -> sure_api::State {
         store.clone(),
         store.clone(),
         store.clone(),
+        registry.clone(),
         clock,
     ));
 
@@ -62,6 +68,8 @@ fn build_state(db: Db) -> sure_api::State {
         crons: store.clone(),
         snapshot: store.clone(),
         providers: store,
+        provider_registry: registry,
+        stock_price_provider,
     }
 }
 
@@ -76,6 +84,12 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let mut scheduler =
         sure_scheduler::Scheduler::new(task_state, std::time::Duration::from_secs(60));
 
+    // The concrete provider adapters, built once here (the composition root is the only
+    // crate that names them) and shared between the scheduled tasks and the HTTP handlers.
+    let registry: Arc<dyn ProviderRegistry> = Arc::new(sure_providers::Registry::new());
+    let stock_price_provider: Arc<dyn StockPriceProvider> =
+        Arc::new(sure_providers::YahooFinanceProvider::new());
+
     // One store + clock for the scheduled tasks' ports (a separate instance from the one
     // `build_state` builds for the HTTP handlers — both are stateless wrappers around
     // clones of the same pool, so there's nothing to share).
@@ -85,6 +99,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         store.clone(),
         store.clone(),
         store.clone(),
+        registry.clone(),
         clock.clone(),
     ));
 
@@ -95,20 +110,24 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         ),
     ));
     scheduler.register(Box::new(
-        sure_app::tasks::provider_poll::ProviderPollTask::new(store.clone(), sync),
+        sure_app::tasks::provider_poll::ProviderPollTask::new(
+            store.clone(),
+            registry.clone(),
+            sync,
+        ),
     ));
     scheduler.register(Box::new(sure_app::stock_prices::StockPriceTask::new(
         store.clone(),
         store.clone(),
         clock,
-        Arc::new(sure_providers::YahooFinanceProvider::new()),
+        stock_price_provider.clone(),
     )));
     scheduler.register(Box::new(
         sure_app::tasks::transfer_link::TransferLinkTask::new(store),
     ));
     scheduler.spawn();
 
-    let state = build_state(pool);
+    let state = build_state(pool, registry, stock_price_provider);
     let app = sure_api::build_app(state, config.web_dir.as_deref());
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;

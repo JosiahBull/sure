@@ -13,15 +13,17 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
+use rust_decimal::Decimal;
+use serde_json::Value;
 
 use sure_core::{
     Account, AccountEquity, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
     CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, HoldingLot,
     LinkProviderAccount, LinkProviderGroup, LinkRequest, Merchant, NewCurrency, NewValuation,
-    Provider, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RunResult, SaveAccount,
-    SaveCategory, SaveCron, SaveExercise, SaveGrant, SaveHoldingLot, SaveMerchant, SaveProvider,
-    SaveRule, SaveTransaction, Settings, StockPrice, Transaction, TransferRequest, TxQuery,
-    UpdateSettings, Valuation, VestingStatus,
+    Provider, ProviderAccount, ProviderKind, ProviderSync, Rule, RuleApplicationDetail, RuleRun,
+    RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveGrant, SaveHoldingLot,
+    SaveMerchant, SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice, Transaction,
+    TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
 };
 
 // ---- Clock ------------------------------------------------------------------
@@ -43,6 +45,188 @@ impl Clock for SystemClock {
     fn now(&self) -> DateTime<Utc> {
         Utc::now()
     }
+}
+
+// ---- provider ports ---------------------------------------------------------
+// The seams for pulling data from external sources (banks, brokers, price/FX feeds). The
+// trait definitions live here — the application core owns its ports — while the concrete
+// adapters (CSV, Akahu, Yahoo Finance, Frankfurter) live in `sure-providers`, which
+// depends on this crate to implement them. The composition root (`sure-server`) builds
+// the adapters and injects them: a [`ProviderRegistry`] for the transaction providers, an
+// `Arc<dyn StockPriceProvider>` / `Arc<dyn ExchangeRateProvider>` for the price/FX feeds.
+// The API-surfaced DTOs (`ProviderAccount`, `ProviderKind`) live in `sure_core` with the
+// other provider wire types; the internal ones below never leave the app boundary.
+
+/// A normalized transaction pulled from an external source.
+#[derive(Debug, Clone)]
+pub struct ProviderTransaction {
+    /// Stable identifier from the source, used to dedupe on re-sync.
+    pub external_id: String,
+    pub posted_at: String,
+    pub amount_minor: i64,
+    pub currency_code: Option<String>,
+    pub description: String,
+    pub merchant: Option<String>,
+    /// The source's own classification for this transaction (e.g. Akahu's NZFCC
+    /// enrichment), if it has one — used to find-or-create a matching Sure category (and,
+    /// for a newly-seen merchant, its default category) instead of leaving imported
+    /// transactions uncategorized.
+    pub category: Option<ProviderCategory>,
+}
+
+/// A merchant category as classified by the provider's own taxonomy.
+#[derive(Debug, Clone)]
+pub struct ProviderCategory {
+    /// Specific category name (e.g. "Cafes and restaurants") — becomes a Sure category,
+    /// nested under `group` when the source has one.
+    pub name: String,
+    /// Broader grouping (e.g. "Lifestyle"), if the source has one — becomes that
+    /// category's parent.
+    pub group: Option<String>,
+    /// Flow direction hint (`"income"` | `"expense"` | `"transfer"`) applied when the
+    /// category is first created. Most enrichment is spending, so `None` defaults to
+    /// expense on the DAL side; a broker's dividend row sets `"income"`, an internal
+    /// wallet ↔ bank movement sets `"transfer"` so it's excluded from spend/income reports.
+    pub kind: Option<String>,
+}
+
+/// Everything a provider needs to perform a sync. Cheap to copy (just references), so the
+/// sync service can pass it to both [`TransactionProvider::fetch`] and
+/// [`TransactionProvider::current_balance`].
+#[derive(Debug, Clone, Copy)]
+pub struct SyncContext<'a> {
+    pub config: &'a Value,
+    pub account_currency: &'a str,
+    /// Optional inline payload supplied with the sync request (e.g. uploaded CSV).
+    pub payload: Option<&'a str>,
+    /// When this provider last completed a successful sync (RFC3339), if ever. Lets
+    /// incremental providers avoid re-fetching full history on every run; providers that
+    /// don't support incremental fetch (e.g. CSV) simply ignore it.
+    pub last_synced_at: Option<&'a str>,
+}
+
+/// A point-in-time balance snapshot from an upstream source, plus whatever other
+/// per-account facts happened to come back on the same fetch (a single-account refetch is
+/// the natural place to also pick up slower-changing facts like a credit limit or an
+/// institution name, rather than a separate round-trip for each).
+#[derive(Debug, Clone)]
+pub struct ProviderBalance {
+    pub minor: i64,
+    pub currency_code: String,
+    /// Credit limit, in minor units, if the source reports one for this account (e.g. a
+    /// credit card or revolving credit facility).
+    pub limit_minor: Option<i64>,
+    /// The financial institution's display name, if the source reports one and the local
+    /// account doesn't already have one set (an existing value is never overwritten).
+    pub institution: Option<String>,
+    /// The original amount borrowed, in minor units, if the source reports one for this
+    /// account (e.g. a mortgage or personal loan) — lets a paid-down percentage be shown.
+    pub initial_principal_minor: Option<i64>,
+}
+
+/// The integration point for transaction sources. One method to fetch + normalize;
+/// everything else (dedupe, persistence, audit) is handled generically by
+/// [`crate::sync::SyncService`].
+#[async_trait]
+pub trait TransactionProvider: Send + Sync {
+    /// Stable identifier used to select this provider (e.g. `"csv"`).
+    fn kind(&self) -> &'static str;
+    /// Human-facing description shown in the UI.
+    fn description(&self) -> &'static str;
+    /// Whether the provider expects an inline payload on sync (vs. fetching remotely).
+    fn accepts_payload(&self) -> bool {
+        false
+    }
+    /// Whether this provider can enumerate linkable upstream accounts (see
+    /// [`Self::list_accounts`]).
+    fn supports_account_discovery(&self) -> bool {
+        false
+    }
+    /// Fetch and normalize transactions from the source.
+    async fn fetch(&self, ctx: SyncContext<'_>) -> anyhow::Result<Vec<ProviderTransaction>>;
+    /// List upstream accounts available to link, for providers that support discovery.
+    async fn list_accounts(&self) -> anyhow::Result<Vec<ProviderAccount>> {
+        Err(anyhow::anyhow!(
+            "{} does not support discovering accounts",
+            self.kind()
+        ))
+    }
+    /// The upstream's live current balance for the account this sync is for, if this
+    /// provider can report one. Used to keep the account's value accurate even when the
+    /// transaction history alone doesn't reach back to when the account was opened (a
+    /// mortgage's full term, say). Defaulting to `None` costs nothing for providers (like
+    /// CSV) with no such concept.
+    async fn current_balance(
+        &self,
+        _ctx: SyncContext<'_>,
+    ) -> anyhow::Result<Option<ProviderBalance>> {
+        Ok(None)
+    }
+}
+
+/// The set of transaction-provider adapters the server knows about, injected into
+/// [`crate::sync::SyncService`] and the poll task so the application core never names a
+/// concrete provider. `sure-providers`' `Registry` is the implementation; the composition
+/// root builds it.
+pub trait ProviderRegistry: Send + Sync {
+    /// The provider adapter registered for `kind`, if any.
+    fn get(&self, kind: &str) -> Option<&dyn TransactionProvider>;
+    /// Metadata for every registered provider kind (surfaced by the API).
+    fn kinds(&self) -> Vec<ProviderKind>;
+}
+
+/// A single day's closing price for a ticker.
+#[derive(Debug, Clone)]
+pub struct StockPriceQuote {
+    /// The trading day this close is for (daily resolution is all Sure needs).
+    pub as_of: NaiveDate,
+    pub close: Decimal,
+    /// The currency the price is quoted in (e.g. the exchange's listing currency).
+    pub currency_code: String,
+}
+
+/// The integration point for pulling historical daily stock prices from an upstream
+/// source. Implemented by `sure-providers`' `YahooFinanceProvider`.
+#[async_trait]
+pub trait StockPriceProvider: Send + Sync {
+    /// Stable identifier for this source (e.g. `"yahoo_finance"`).
+    fn kind(&self) -> &'static str;
+    /// Human-facing description.
+    fn description(&self) -> &'static str;
+    /// Fetch daily closes for `ticker` between `from` and `to` (inclusive). `exchange` is
+    /// a free-text hint (e.g. `"NZX"`, from an account's `SharesMeta.exchange`) used to
+    /// resolve exchange-specific symbol conventions; `None` or an unrecognised value falls
+    /// back to the bare ticker.
+    async fn fetch_daily_prices(
+        &self,
+        ticker: &str,
+        exchange: Option<&str>,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> anyhow::Result<Vec<StockPriceQuote>>;
+}
+
+/// A single quoted rate: 1 unit of the requested base currency equals `rate` units of
+/// `quote_code`.
+#[derive(Debug, Clone)]
+pub struct ExchangeRateQuote {
+    pub quote_code: String,
+    pub rate: Decimal,
+    /// ISO-8601 date the rate was quoted as of (the upstream's reference date, not the
+    /// time it was fetched).
+    pub as_of: String,
+}
+
+/// The integration point for pulling live currency exchange rates from an upstream source.
+/// Implemented by `sure-providers`' `FrankfurterProvider`.
+#[async_trait]
+pub trait ExchangeRateProvider: Send + Sync {
+    /// Stable identifier for this source (e.g. `"frankfurter"`).
+    fn kind(&self) -> &'static str;
+    /// Human-facing description.
+    fn description(&self) -> &'static str;
+    /// Fetch every available rate quoted against `base` (an ISO 4217 code).
+    async fn fetch_rates(&self, base: &str) -> anyhow::Result<Vec<ExchangeRateQuote>>;
 }
 
 // ---- shared row shapes --------------------------------------------------------

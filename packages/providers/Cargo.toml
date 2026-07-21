@@ -9,6 +9,10 @@ path = "src/lib.rs"
 
 [dependencies]
 sure-core = { workspace = true }
+# Depends on the application core to see the port traits it implements
+# (`sure_app::ports::{TransactionProvider, StockPriceProvider, ExchangeRateProvider,
+# ProviderRegistry}`). The inversion: adapters depend on the core, never the reverse.
+sure-app = { workspace = true }
 async-trait = { workspace = true }
 csv = { workspace = true }
 serde = { workspace = true }

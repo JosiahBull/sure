@@ -12,11 +12,11 @@ use chrono::NaiveDate;
 
 use sure_core::StockPrice;
 use sure_core::{AppError, AppResult, BrokerageSnapshot, Position, WalletBalance};
-use sure_providers::StockPriceProvider;
 
 use crate::fx::Fx;
 use crate::ports::{
-    AccountRepo, BrokerageRepo, Clock, FxRatesRepo, StockPriceCacheRepo, ValuationRepo,
+    AccountRepo, BrokerageRepo, Clock, FxRatesRepo, StockPriceCacheRepo, StockPriceProvider,
+    ValuationRepo,
 };
 
 pub struct BrokerageService {
@@ -288,13 +288,13 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
+    use crate::ports::StockPriceQuote;
     use async_trait::async_trait;
     use rust_decimal::Decimal;
     use sure_core::{
         Account, AccountClass, AccountKind, AccountMetadata, BrokerageMeta, NewValuation,
         SaveAccount, Valuation,
     };
-    use sure_providers::StockPriceQuote;
 
     use super::*;
     use crate::ports::{CurrencyDecimals, ExchangeRateRow, HoldingRow, SharesTicker, WalletRow};

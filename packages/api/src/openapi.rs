@@ -185,8 +185,8 @@ use utoipa::OpenApi;
         crate::routes::providers::LinkGroupMember,
         crate::routes::providers::SyncRequest,
         crate::routes::providers::ProviderSync,
-        crate::providers::ProviderKind,
-        crate::providers::ProviderAccount,
+        sure_core::ProviderKind,
+        sure_core::ProviderAccount,
         crate::routes::stock_prices::StockPrice,
     )),
     tags(

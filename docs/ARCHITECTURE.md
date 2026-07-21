@@ -22,14 +22,15 @@ sure-core  ──►  (nothing)          domain vocabulary: AppError, AccountKin
                                      shared request/response types (no persistence deps)
 sure-scheduler ─► (nothing)        generic recurring-task scheduler: ScheduledTask +
                                      TaskStateStore ports, storage-agnostic
-sure-providers ─► sure-core        TransactionProvider / StockPriceProvider /
-                                     ExchangeRateProvider traits, registry, CSV importer,
-                                     Akahu (NZ banking), Yahoo Finance, Frankfurter clients
-sure-app   ──►  core, providers,   the application core: use-case services (brokerage,
-                scheduler            reports, rules, sync, stock prices) + the background
+sure-providers ─► app, sure-core   concrete adapters implementing sure-app's provider
+                                     ports: CSV + Akahu (NZ banking) transaction sources,
+                                     Yahoo Finance prices, Frankfurter FX, a `Registry`
+                                     (implements `ProviderRegistry`), + the Sharesies parser
+sure-app   ──►  core, scheduler    the application core: use-case services (brokerage,
+                                     reports, rules, sync, stock prices) + the background
                                      tasks, the compute engines (rule eval, report
-                                     aggregation), and the repository PORTS + Clock the
-                                     services depend on. No SQL, no HTTP.
+                                     aggregation), and every PORT the services depend on —
+                                     repos, Clock, and the provider ports. No SQL, no HTTP.
 sure-dal   ──►  app, core,         SQLite pool + migrations + every SQL query (per-entity
                 scheduler            repository modules) + `SqliteStore`, which implements
                                      every one of sure-app's repo ports, and the
@@ -49,15 +50,19 @@ sure-server ──► app, dal,          the composition root: the only crate th
                                      through the client (validates client + API together)
 ```
 
-Arrows are "depends on". The graph runs `core ← providers ← app ← dal`, with `sure-api`
-depending on `sure-app` for every handler (plus `sure-providers` directly, for the handful
-of routes that instantiate a concrete provider adapter — discovery, the Sharesies import
-parser, on-demand price/FX lookups) and never on `sure-dal`. The key inversion is
-**`sure-dal` depends on `sure-app`** — the adapter depends on the core to see the port
-traits it implements, and the core never names the adapter. `sure-server` sits above all
-of it as the composition root, the one place every concrete adapter is named and wired
-together; the web framework's routing lives in `sure-api`, but the binary — and the only
-crate that touches both `sqlx` and a live `TcpListener` — is `sure-server`.
+Arrows are "depends on". The graph runs `core ← app ← {dal, providers}`, with `sure-api`
+depending on `sure-app` for every handler (plus `sure-providers` directly for just one
+thing now — the Sharesies export parser in `routes::brokerage`) and never on `sure-dal`.
+The key inversion is that **both `sure-dal` and `sure-providers` depend on `sure-app`** —
+the adapters depend on the core to see the port traits they implement (`SqliteStore` the
+repo ports; the provider clients the `TransactionProvider` / `StockPriceProvider` /
+`ExchangeRateProvider` ports; `Registry` the `ProviderRegistry` port), and the core never
+names an adapter. The concrete provider adapters (a `Registry`, a `StockPriceProvider`) are
+built by the composition root and injected into `AppState`, so a handler selects a provider
+through a port rather than naming a concrete one. `sure-server` sits above all of it as the
+composition root, the one place every concrete adapter is named and wired together; the web
+framework's routing lives in `sure-api`, but the binary — and the only crate that touches
+both `sqlx` and a live `TcpListener` — is `sure-server`.
 
 ### `sure-core` — the shared vocabulary
 Pure domain types every layer speaks: the workspace `AppError`/`AppResult`, the JSON
@@ -130,12 +135,15 @@ is a user-facing recurring-*adjustment* ledger (appreciation, interest, …), no
 background-job scheduler. This crate is the template the rest of the architecture now
 follows: a port defined with the mechanism, an adapter implementing it elsewhere.
 
-### `sure-providers` — the integration interface
-The generic extension point for external data sources:
+### `sure-providers` — the external adapters
+Concrete implementations of the provider ports — this crate holds adapters, **not** port
+definitions. The ports live in `sure_app::ports` (the hexagon owns its ports); this crate
+depends on `sure-app` to see them, so `sure-app` never depends back on it. The
+transaction-source port it implements is:
 
 ```rust
 #[async_trait]
-pub trait TransactionProvider: Send + Sync {
+pub trait TransactionProvider: Send + Sync {   // defined in sure_app::ports
     fn kind(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn accepts_payload(&self) -> bool { false }
@@ -146,10 +154,12 @@ pub trait TransactionProvider: Send + Sync {
 }
 ```
 
-A `Registry` holds the available implementations; `sure-app`'s sync service handles
-persistence, dedupe (on `(provider, external_id)`), and audit generically. The bundled
-`CsvProvider` is a credential-free reference implementation. To add a bank/broker
-integration you implement the trait, add it to `Registry::new()`, and touch nothing else.
+`Registry` (this crate) implements `sure_app::ports::ProviderRegistry`, holding the
+available implementations; the composition root builds it and injects it, and `sure-app`'s
+`SyncService` handles persistence, dedupe (on `(provider, external_id)`), and audit
+generically. The bundled `CsvProvider` is a credential-free reference implementation. To
+add a bank/broker integration you implement the trait and add it to `Registry::new()` —
+`sure-app` and `sure-api` never change.
 
 `list_accounts` is the account-discovery half: providers whose credentials can surface
 many upstream accounts (e.g. `AkahuProvider`, reading `AKAHU_APP_TOKEN`/`AKAHU_USER_TOKEN`
@@ -189,11 +199,12 @@ categorized instead of landing uncategorized, without duplicating a category/mer
 already reused by name across a sync's many rows. An already-known merchant's own default
 category is never overwritten by a later import.
 
-The crate carries two more ports alongside `TransactionProvider`, both consumed by
+This crate implements two more ports (also defined in `sure_app::ports`), consumed by
 `sure-app`'s scheduled tasks: `StockPriceProvider` (`fetch_daily_prices` → daily closes,
-implemented by `YahooFinanceProvider`, driven by `StockPriceTask`) and
+implemented by `YahooFinanceProvider`, driven by `StockPriceTask` and injected into
+`AppState` for the on-demand price lookups the brokerage/stock-price routes make) and
 `ExchangeRateProvider` (`fetch_rates(base)` → FX quotes, implemented by the free/keyless
-`FrankfurterProvider`, driven by `ExchangeRateTask`). Neither shares a `Registry` — there's
+`FrankfurterProvider`, driven by `ExchangeRateTask`). Neither uses the `Registry` — there's
 exactly one implementation of each, instantiated directly in the composition root.
 
 ### `sure-app` — the application core
@@ -229,8 +240,15 @@ pub trait AccountRepo: Send + Sync {
     async fn get(&self, id: i64) -> AppResult<Account>;
 }
 // …plus BrokerageRepo, StockPriceCacheRepo, ValuationRepo, FxRatesRepo, RuleRepo,
-//    ReportRepo, ProviderRepo, TransferRepo, ExchangeRateRepo.
+//    ReportRepo, ProviderRepo, TransferRepo, ExchangeRateRepo — and the provider ports
+//    (TransactionProvider, StockPriceProvider, ExchangeRateProvider, ProviderRegistry),
+//    all implemented by sure-providers.
 ```
+
+Both `sure-dal` and `sure-providers` implement ports from this crate, so both depend on it
+and it depends on neither — one rule for every outbound dependency: the port is defined
+here, the adapter lives outside and implements it, and the composition root injects the
+concrete one.
 
 Because `sure-dal` must depend on `sure-app` to implement these traits, `sure-app` cannot
 depend back on `sure-dal` (Cargo forbids the cycle). So every row shape a port returns is

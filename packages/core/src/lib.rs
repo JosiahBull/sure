@@ -29,8 +29,8 @@ pub use equity::{
 pub use error::{AppError, AppResult, ErrorBody, ErrorDetail};
 pub use merchants::{Merchant, SaveMerchant};
 pub use providers::{
-    LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderSync, SaveProvider,
-    SyncRequest,
+    LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderAccount,
+    ProviderKind, ProviderSync, SaveProvider, SyncRequest,
 };
 pub use rules::{
     PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RunResult,
