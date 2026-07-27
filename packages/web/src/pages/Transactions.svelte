@@ -3,19 +3,24 @@
   import { api, formatMoney, formatDate, colorFor, type Schemas } from "../lib/api";
   import { RANGES, activeRange, filters, type RangeKey } from "../lib/state.svelte";
   import { router } from "../lib/router.svelte";
+  import Icon from "../lib/Icon.svelte";
 
   // Deep links via the hash query, read once at mount:
   //   ?tx=<id>        highlight & scroll to a transaction (from the rules audit log)
   //   ?category=<id>  filter to a category and its whole subtree (from the overview pies)
   //   ?account=<id>   filter to a single account (from the accounts list)
+  //   ?type=<kind>    filter to income or outgoings (from the overview pies/Sankey)
   //   ?range=<key>    apply a preset time range
   //   ?at=<id>        resume the scroll position around a transaction (written as the list scrolls)
   const params = new URLSearchParams(router.path.split("?")[1] ?? "");
   const num = (v: string | null) => (v && Number.isFinite(Number(v)) ? Number(v) : null);
   const isRangeKey = (v: string | null): v is RangeKey => !!v && RANGES.some((r) => r.key === v);
+  type TypeFilter = "" | "income" | "expense";
+  const isTypeFilter = (v: string | null): v is Exclude<TypeFilter, ""> => v === "income" || v === "expense";
   const highlightId = num(params.get("tx"));
   const paramCategory = num(params.get("category"));
   const paramAccount = num(params.get("account"));
+  const paramType = params.get("type");
   const paramRange = params.get("range");
   const paramAnchor = num(params.get("at"));
 
@@ -33,9 +38,10 @@
 
   let accountId = $state<number | "">(paramAccount ?? "");
   let categoryId = $state<number | "">(paramCategory ?? "");
+  let typeFilter = $state<TypeFilter>(isTypeFilter(paramType) ? paramType : "");
   let search = $state("");
 
-  type SortKey = "date" | "description" | "account" | "category" | "merchant" | "amount";
+  type SortKey = "date" | "description" | "category" | "amount";
   let sortKey = $state<SortKey>("date");
   let sortDir = $state<"asc" | "desc">("desc");
   function toggleSort(key: SortKey) {
@@ -61,6 +67,10 @@
     filters.custom = null;
   }
 
+  // Matches the reference's "Transactions / Upcoming" tab bar. We don't project recurring/
+  // upcoming transactions yet, so that panel is an honest empty state rather than faked data.
+  let activeTab = $state<"transactions" | "upcoming">("transactions");
+
   let showAdd = $state(false);
   let form = $state({
     account_id: 0,
@@ -83,12 +93,8 @@
         return t.posted_at;
       case "description":
         return (t.description ?? "").toLowerCase();
-      case "account":
-        return (accountName.get(t.account_id) ?? "").toLowerCase();
       case "category":
         return (categoryName.get(t.category_id ?? -1) ?? "").toLowerCase();
-      case "merchant":
-        return (merchantName.get(t.merchant_id ?? -1) ?? t.merchant ?? "").toLowerCase();
       case "amount":
         return t.amount_minor;
     }
@@ -125,6 +131,10 @@
   const sortedFiltered = $derived.by(() => {
     const filtered = txns.filter((t) => {
       if (categorySubtree && !(t.category_id != null && categorySubtree.has(t.category_id))) return false;
+      // Income/outgoings is the same sign-of-amount split the stat bar below uses — not a
+      // separate server-side concept, just a client-side view over the same rows.
+      if (typeFilter === "income" && t.amount_minor < 0) return false;
+      if (typeFilter === "expense" && t.amount_minor >= 0) return false;
       if (search && !`${t.description} ${t.merchant ?? ""}`.toLowerCase().includes(search.toLowerCase()))
         return false;
       return true;
@@ -179,97 +189,134 @@
     return m;
   });
 
-  // Virtualised, "infinite scroll" rendering: the table can easily hold thousands of rows
-  // (each with two <select> menus), which is what actually makes the page feel slow — so
-  // only a window of rows around `anchorId` is ever mounted, and it's recomputed straight
-  // from the live scroll position on every scroll event (rather than incrementally sliding
-  // step by step — that got stuck permanently the moment a step happened to be a geometric
-  // no-op, e.g. right at the top of the list, since nothing then left/re-entered to trigger
-  // the next one). The window is anchored to a transaction *id*, not a row index, so it keeps
-  // pointing at the same transactions when new ones are added/removed elsewhere in the
-  // (sorted) list — an index would silently drift. The anchor is persisted to `?at=`
-  // (debounced) so a refresh resumes near the same transactions instead of at a fixed pixel
-  // offset.
-  const RENDER_COUNT = 60;
-  const ROW_HEIGHT = 56; // estimate: converts scrolled px into an approximate row index
-  const OVERSCAN = 15; // rendered on each side of the estimated position as a scroll buffer
+  // Numbered pagination (matching the reference app) over the already-loaded, filtered/sorted
+  // set — rows per page is user-choosable, like the reference's page-size select.
+  const PAGE_SIZES = [10, 20, 30, 50, 100];
+  let pageSize = $state(20);
+  let page = $state(1); // 1-indexed
+  const pageCount = $derived(Math.max(1, Math.ceil(sortedFiltered.length / pageSize)));
+  const paged = $derived(sortedFiltered.slice((page - 1) * pageSize, page * pageSize));
+  // The reference nests each day as its own two-tier card (a subtle outer wrapper holding a
+  // brighter inner card of rows) — bucket the current page's rows into contiguous same-day runs
+  // to render that. Only meaningful when `grouped` (paged is already date-desc, so same-day rows
+  // are always contiguous); otherwise rows render flat with no day wrapper.
+  const renderGroups = $derived.by(() => {
+    const out: { dateKey: string; rows: Tx[] }[] = [];
+    for (const t of paged) {
+      const dk = t.posted_at.slice(0, 10);
+      const last = out[out.length - 1];
+      if (last && last.dateKey === dk) last.rows.push(t);
+      else out.push({ dateKey: dk, rows: [t] });
+    }
+    return out;
+  });
+  // Condensed page-number list — first, last, current ±1, with "…" gaps — same shape as the
+  // reference's "1 2 3 4 5 … 757".
+  const pageNumbers = $derived.by(() => {
+    const nums = new Set([1, pageCount, page - 1, page, page + 1]);
+    const sorted = [...nums].filter((n) => n >= 1 && n <= pageCount).sort((a, b) => a - b);
+    const out: (number | "…")[] = [];
+    let prev = 0;
+    for (const n of sorted) {
+      if (prev && n - prev > 1) out.push("…");
+      out.push(n);
+      prev = n;
+    }
+    return out;
+  });
 
-  let anchorId = $state<number | null>(null);
-  const resolvedAnchorIndex = $derived(
-    anchorId == null ? 0 : Math.max(0, sortedFiltered.findIndex((t) => t.id === anchorId)),
-  );
-  const windowStart = $derived(Math.max(0, resolvedAnchorIndex - OVERSCAN));
-  const windowEnd = $derived(Math.min(sortedFiltered.length, windowStart + RENDER_COUNT));
-  const windowed = $derived(sortedFiltered.slice(windowStart, windowEnd));
-
-  let persistTimer: ReturnType<typeof setTimeout> | undefined;
-  function writeAnchorToUrl(id: number | null) {
+  function writePageAnchorToUrl() {
     const p = new URLSearchParams(router.path.split("?")[1] ?? "");
-    if (id == null) p.delete("at");
-    else p.set("at", String(id));
+    const anchorTx = paged[0]?.id;
+    if (anchorTx == null) p.delete("at");
+    else p.set("at", String(anchorTx));
     const base = router.path.split("?")[0];
     const qs = p.toString();
     history.replaceState(null, "", `#${base}${qs ? "?" + qs : ""}`);
   }
-  function schedulePersist() {
-    clearTimeout(persistTimer);
-    persistTimer = setTimeout(() => writeAnchorToUrl(anchorId), 250);
-  }
 
-  // How far the table has scrolled past the viewport's top edge, converted to a row index —
-  // recomputed fresh each time, so it can't get stuck the way an incremental step could.
-  let tableEl = $state<HTMLElement | null>(null);
-  let scrollRaf: ReturnType<typeof requestAnimationFrame> | undefined;
-  function onScroll() {
-    if (scrollRaf != null) return;
-    scrollRaf = requestAnimationFrame(() => {
-      scrollRaf = undefined;
-      if (!tableEl || sortedFiltered.length === 0) return;
-      const scrolledPast = Math.max(0, -tableEl.getBoundingClientRect().top);
-      const estIndex = Math.min(sortedFiltered.length - 1, Math.floor(scrolledPast / ROW_HEIGHT));
-      const id = sortedFiltered[estIndex]?.id;
-      if (id != null && id !== anchorId) {
-        anchorId = id;
-        schedulePersist();
-      }
-    });
-  }
+  // Resolve the initial page (from a highlight deep-link or a resumed `?at=`) once the data
+  // it refers to has loaded — lands on whichever page contains that transaction.
+  let didInitPage = false;
   $effect(() => {
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      if (scrollRaf != null) cancelAnimationFrame(scrollRaf);
-      clearTimeout(persistTimer);
-    };
-  });
-
-  // Resolve the initial anchor (from a highlight deep-link or a resumed `?at=`) once the
-  // data it refers to has loaded, then let scrolling take over.
-  let didInitAnchor = false;
-  $effect(() => {
-    if (didInitAnchor || sortedFiltered.length === 0) return;
-    didInitAnchor = true;
+    if (didInitPage || sortedFiltered.length === 0) return;
+    didInitPage = true;
     const initial = highlightId ?? paramAnchor;
-    if (initial != null && sortedFiltered.some((t) => t.id === initial)) anchorId = initial;
+    if (initial != null) {
+      const idx = sortedFiltered.findIndex((t) => t.id === initial);
+      if (idx >= 0) page = Math.floor(idx / pageSize) + 1;
+    }
+  });
+  // Persist the current page's leading transaction to `?at=` so a refresh resumes on the same
+  // page. Guarded on didInitPage so this doesn't clobber a still-pending deep-link resolution.
+  $effect(() => {
+    page;
+    if (didInitPage) writePageAnchorToUrl();
   });
 
-  // Filters/sort changing what's in the list makes the current anchor meaningless — jump
-  // back to the top. (A reload with the same filters, e.g. after saving a row, is not a
-  // change here, so the scroll position survives it.)
+  // Filters/sort/page-size changing what's in the list makes the current page meaningless —
+  // jump back to page 1. (A reload with the same filters, e.g. after saving a row, is not a
+  // change here, so the current page survives it.)
   let prevFilterSig: string | null = null;
   $effect(() => {
-    const sig = `${accountId}|${categoryId}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}`;
+    const sig = `${accountId}|${categoryId}|${typeFilter}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}|${pageSize}`;
     if (prevFilterSig != null && sig !== prevFilterSig) {
       // The visible set changed, so a lingering selection could act on rows the user can
       // no longer see — clear it. (A same-filter reload, e.g. after a save, isn't a change.)
       if (selected.size > 0) clearSelection();
-      if (anchorId != null) {
-        anchorId = null;
-        writeAnchorToUrl(null);
-        window.scrollTo({ top: 0 });
-      }
+      page = 1;
     }
     prevFilterSig = sig;
+  });
+
+  // ---- Filter panel: account/category/type tucked behind one "Filter" button + popover,
+  // matching the reference's search-bar + Filter-button layout. ----
+  let showFilterPanel = $state(false);
+  let filterPanelEl = $state<HTMLElement | null>(null);
+  let filterBtnEl = $state<HTMLElement | null>(null);
+  const activeFilterCount = $derived(
+    (accountId !== "" ? 1 : 0) + (categoryId !== "" ? 1 : 0) + (typeFilter !== "" ? 1 : 0),
+  );
+  $effect(() => {
+    if (!showFilterPanel) return;
+    function onDocClick(e: MouseEvent) {
+      const target = e.target as Node;
+      if (filterPanelEl?.contains(target) || filterBtnEl?.contains(target)) return;
+      showFilterPanel = false;
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") showFilterPanel = false;
+    }
+    document.addEventListener("click", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("click", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  });
+
+  // ---- "…" header menu: shortcuts to the categorisation pages the reference exposes here
+  // (rules/categories/merchants) — no CSV import feature exists yet, so that item is omitted
+  // rather than added as a dead link. ----
+  let showActionMenu = $state(false);
+  let actionMenuEl = $state<HTMLElement | null>(null);
+  let actionBtnEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    if (!showActionMenu) return;
+    function onDocClick(e: MouseEvent) {
+      const target = e.target as Node;
+      if (actionMenuEl?.contains(target) || actionBtnEl?.contains(target)) return;
+      showActionMenu = false;
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") showActionMenu = false;
+    }
+    document.addEventListener("click", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("click", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
   });
 
   async function loadRefs() {
@@ -307,21 +354,16 @@
     loadTx();
   });
 
-  // Once the anchor row has rendered (as the first row of the window, see above), scroll it
-  // into view — smoothly with a flash for an explicit ?tx= deep-link, instantly/silently when
-  // just resuming a scroll position from ?at=.
+  // Once the page containing a `?tx=` deep-link has rendered, flash-scroll it into view. A
+  // resumed `?at=` needs no scrolling — it already landed on the right page, near the top.
   let didScroll = false;
   $effect(() => {
-    void windowed.length; // re-run as the rendered rows change
-    const target = highlightId ?? paramAnchor;
-    if (target == null || didScroll) return;
-    const el = document.getElementById(`tx-${target}`);
+    void paged.length; // re-run once the target page's rows are rendered
+    if (highlightId == null || didScroll) return;
+    const el = document.getElementById(`tx-${highlightId}`);
     if (!el) return;
     didScroll = true;
-    const highlighting = highlightId != null;
-    requestAnimationFrame(() =>
-      el.scrollIntoView({ block: highlighting ? "center" : "start", behavior: highlighting ? "smooth" : "auto" }),
-    );
+    requestAnimationFrame(() => el.scrollIntoView({ block: "center", behavior: "smooth" }));
   });
 
   async function addTx() {
@@ -375,8 +417,6 @@
 
   const setCategory = (t: Tx, cat: number | "") =>
     saveTx(t, { category_id: cat === "" ? null : cat });
-  const setMerchant = (t: Tx, m: number | "") =>
-    saveTx(t, { merchant_id: m === "" ? null : m });
 
   async function del(t: Tx) {
     await api.DELETE("/api/transactions/{id}", { params: { path: { id: t.id } } });
@@ -450,10 +490,32 @@
 </script>
 
 <div class="row spread wrap" style="margin-bottom:14px;gap:10px">
-  <h1 style="font-size:20px">Transactions</h1>
-  <button class="btn btn-primary btn-sm" onclick={() => (showAdd = !showAdd)}>
-    {showAdd ? "Close" : "+ Add"}
-  </button>
+  <h1 style="font-size:20px;font-weight:500">Transactions</h1>
+  <div class="row" style="gap:8px">
+    <div class="menu-wrap">
+      <button
+        type="button"
+        class="btn btn-sm icon-btn"
+        bind:this={actionBtnEl}
+        onclick={() => (showActionMenu = !showActionMenu)}
+        aria-expanded={showActionMenu}
+        aria-label="More actions"
+        title="More actions"
+      >
+        <Icon name="more-horizontal" size={16} />
+      </button>
+      {#if showActionMenu}
+        <div class="action-menu" bind:this={actionMenuEl}>
+          <a href="#/settings/rules" class="action-item">Edit rules</a>
+          <a href="#/settings/categories" class="action-item">Edit categories</a>
+          <a href="#/settings/merchants" class="action-item">Edit merchants</a>
+        </div>
+      {/if}
+    </div>
+    <button class="btn btn-primary btn-sm" onclick={() => (showAdd = !showAdd)}>
+      {showAdd ? "Close" : "+ New transaction"}
+    </button>
+  </div>
 </div>
 
 {#if error}<div class="error-banner" style="margin-bottom:12px">{error}</div>{/if}
@@ -498,8 +560,8 @@
   </section>
 {/if}
 
-<section class="card">
-  {#if grouped && sortedFiltered.length > 0}
+{#if !(loading && txns.length === 0)}
+  <section class="card statcard">
     <div class="statbar">
       <div class="stat">
         <span class="label">Total transactions</span>
@@ -507,37 +569,86 @@
       </div>
       <div class="stat">
         <span class="label">Income</span>
-        <span class="value tabular pos">{formatMoney(stats.income, statCurrency)}</span>
+        <span class="value tabular">{formatMoney(stats.income, statCurrency)}</span>
       </div>
       <div class="stat">
         <span class="label">Expenses</span>
-        <span class="value tabular neg">{formatMoney(Math.abs(stats.expenses), statCurrency)}</span>
+        <span class="value tabular">{formatMoney(Math.abs(stats.expenses), statCurrency)}</span>
       </div>
     </div>
-  {/if}
+  </section>
+{/if}
 
-  <div class="row wrap" style="gap:10px;margin-bottom:12px">
-    <select class="select" style="width:auto" aria-label="Filter by account" bind:value={accountId}>
-      <option value="">All accounts</option>
-      {#each accounts as a}<option value={a.id}>{a.name}</option>{/each}
-    </select>
-    <select class="select" style="width:auto" bind:value={categoryId}>
-      <option value="">All categories</option>
-      {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
-    </select>
-    <input class="input grow" style="min-width:140px" placeholder="Search…" bind:value={search} />
+<div class="tabs-nav">
+  <button class="tab-btn" class:active={activeTab === "transactions"} onclick={() => (activeTab = "transactions")}>
+    Transactions
+  </button>
+  <button class="tab-btn" class:active={activeTab === "upcoming"} onclick={() => (activeTab = "upcoming")}>
+    Upcoming
+  </button>
+</div>
+
+{#if activeTab === "upcoming"}
+  <section class="card">
+    <div class="empty">
+      <p>Nothing scheduled yet</p>
+      <p class="small faint" style="margin-top:4px">
+        Upcoming/recurring transaction projections aren't tracked in this build.
+      </p>
+    </div>
+  </section>
+{:else}
+<section class="card">
+  <div class="row" style="gap:10px;margin-bottom:12px">
+    <input class="input grow" placeholder="Search transactions ..." bind:value={search} />
+    <div class="filter-wrap">
+      <button
+        type="button"
+        class="btn"
+        bind:this={filterBtnEl}
+        onclick={() => (showFilterPanel = !showFilterPanel)}
+        aria-expanded={showFilterPanel}
+      >
+        <Icon name="sliders-horizontal" size={14} />
+        Filter{#if activeFilterCount > 0}<span class="filter-badge">{activeFilterCount}</span>{/if}
+      </button>
+      {#if showFilterPanel}
+        <div class="filter-panel" bind:this={filterPanelEl}>
+          <label class="field">Account
+            <select class="select" aria-label="Filter by account" bind:value={accountId}>
+              <option value="">All accounts</option>
+              {#each accounts as a}<option value={a.id}>{a.name}</option>{/each}
+            </select>
+          </label>
+          <label class="field">Category
+            <select class="select" aria-label="Filter by category" bind:value={categoryId}>
+              <option value="">All categories</option>
+              {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+            </select>
+          </label>
+          <label class="field">Type
+            <select class="select" aria-label="Filter by type" bind:value={typeFilter}>
+              <option value="">All types</option>
+              <option value="income">Income</option>
+              <option value="expense">Outgoings</option>
+            </select>
+          </label>
+        </div>
+      {/if}
+    </div>
   </div>
 
   {#if loading && txns.length === 0}
     <div class="row" style="justify-content:center;padding:30px"><span class="spinner"></span></div>
   {:else if sortedFiltered.length === 0}
     <div class="empty">No transactions.</div>
-  {:else if grouped}
-    <!-- Grouped-by-day view (default newest-first sort). The column labels are still sort
-         buttons — clicking one re-sorts and drops to the flat table below. Each row's fixed-
-         width pieces (avatar, category pill, amount, delete) can add up to more than a narrow
-         phone screen, so this scrolls horizontally rather than crushing the description to
-         zero width — same fallback the flat table below already uses. -->
+  {:else}
+    <!-- One row style for every sort order — re-sorting only ever toggles the day-group
+         headers on/off (they only make sense over the default newest-first date order,
+         since a header assumes consecutive rows share a day), never the row styling itself.
+         Fixed-width pieces (avatar, category pill, amount, delete) can add up to more than a
+         narrow phone screen, so this scrolls horizontally rather than crushing the
+         description to zero width. -->
     <div style="overflow-x:auto">
     <div class="tx-head">
       <span class="tx-check">
@@ -550,173 +661,112 @@
           onchange={toggleAll}
         />
       </span>
+      <button class="col-btn" onclick={() => toggleSort("date")}>Date{sortArrow("date")}</button>
       <button class="col-btn grow" onclick={() => toggleSort("description")}>Transaction{sortArrow("description")}</button>
       <button class="col-btn" onclick={() => toggleSort("category")}>Category{sortArrow("category")}</button>
       <button class="col-btn amount" onclick={() => toggleSort("amount")}>Amount{sortArrow("amount")}</button>
       <span class="tx-del" aria-hidden="true"></span>
     </div>
-    <div class="tx-list" bind:this={tableEl}>
-      <div aria-hidden="true" style={`height:${windowStart * ROW_HEIGHT}px`}></div>
-      {#each windowed as t, i (t.id)}
-        {@const dk = t.posted_at.slice(0, 10)}
-        {@const name = txName(t)}
-        {@const cat = t.category_id != null ? catById.get(t.category_id) : null}
-        {@const cc = cat ? (cat.color ?? colorFor(cat.parent_id ?? cat.id)) : colorFor(null)}
-        {#if i === 0 || windowed[i - 1].posted_at.slice(0, 10) !== dk}
-          {@const day = dayGroups.get(dk)}
-          <div class="day-head">
-            <span class="day-date">{formatDate(t.posted_at)}</span>
-            <span class="faint small">· {day?.count ?? 0}</span>
-            <span
-              class="tabular grow"
-              style="text-align:right"
-              class:pos={(day?.net ?? 0) >= 0}
-              class:neg={(day?.net ?? 0) < 0}
-            >
-              {formatMoney(day?.net ?? 0, statCurrency)}
-            </span>
-          </div>
-        {/if}
-        <div
-          id={`tx-${t.id}`}
-          class="tx-row"
-          class:highlight={t.id === highlightId}
-          class:selected={selected.has(t.id)}
-        >
-          <label class="tx-check">
-            <input
-              type="checkbox"
-              aria-label="Select transaction"
-              checked={selected.has(t.id)}
-              onchange={(e) => toggleOne(t.id, e.currentTarget.checked)}
-            />
-          </label>
-          <span class="avatar" style="background:{colorFor(t.merchant_id ?? t.merchant ?? t.description)}">
-            {(name || "?").charAt(0).toUpperCase()}
-          </span>
-          <div class="tx-main">
-            <div class="tx-name-row">
-              <span class="ell tx-name">{name || t.description || "—"}</span>
-              {#if t.is_one_off}<span class="badge">one-off</span>{/if}
-              {#if t.linked_transaction_id}<span class="badge">⇄ transfer</span>{/if}
+    <div class="tx-list" class:grouped>
+      {#if grouped}
+        {#each renderGroups as g (g.dateKey)}
+          {@const day = dayGroups.get(g.dateKey)}
+          <div class="day-group">
+            <div class="day-head">
+              <span class="day-date">{formatDate(g.rows[0].posted_at)}</span>
+              <span class="small">· {day?.count ?? 0}</span>
+              <span class="tabular grow" style="text-align:right" class:pos={(day?.net ?? 0) >= 0}>
+                {formatMoney(day?.net ?? 0, statCurrency)}
+              </span>
             </div>
-            <span class="small faint ell">{accountName.get(t.account_id) ?? "—"}</span>
+            <div class="day-rows">
+              {#each g.rows as t (t.id)}
+                {@render row(t)}
+              {/each}
+            </div>
           </div>
-          <div class="cat-pill" style="--c:{cc}">
-            {#if cat?.icon}<span class="pill-icon">{cat.icon}</span>{/if}
-            <span class="ell">{cat?.name ?? "Uncategorised"}</span>
-            <select
-              class="pill-select"
-              aria-label="Category"
-              value={t.category_id ?? ""}
-              onchange={(e) => setCategory(t, e.currentTarget.value === "" ? "" : Number(e.currentTarget.value))}
-            >
-              <option value="">— none —</option>
-              {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
-            </select>
+        {/each}
+      {:else}
+        {#each paged as t (t.id)}
+          {@render row(t)}
+        {/each}
+      {/if}
+    </div>
+    </div>
+
+    {#snippet row(t: Tx)}
+      {@const name = txName(t)}
+      {@const cat = t.category_id != null ? catById.get(t.category_id) : null}
+      {@const cc = cat ? (cat.color ?? colorFor(cat.parent_id ?? cat.id)) : colorFor(null)}
+      <div
+        id={`tx-${t.id}`}
+        class="tx-row"
+        class:highlight={t.id === highlightId}
+        class:selected={selected.has(t.id)}
+      >
+        <label class="tx-check">
+          <input
+            type="checkbox"
+            aria-label="Select transaction"
+            checked={selected.has(t.id)}
+            onchange={(e) => toggleOne(t.id, e.currentTarget.checked)}
+          />
+        </label>
+        <span class="avatar">{(name || "?").charAt(0).toUpperCase()}</span>
+        <div class="tx-main">
+          <div class="tx-name-row">
+            <span class="ell tx-name">{name || t.description || "—"}</span>
+            {#if t.is_one_off}<span class="badge">one-off</span>{/if}
+            {#if t.linked_transaction_id}<span class="badge">⇄ transfer</span>{/if}
           </div>
-          <span
-            class="tx-amount tabular"
-            class:pos={t.amount_minor >= 0}
-            class:neg={t.amount_minor < 0}
-          >
-            {formatMoney(t.amount_minor, currencyOf.get(t.account_id) ?? t.currency_code)}
+          <span class="small faint ell">
+            {accountName.get(t.account_id) ?? "—"}{grouped ? "" : ` · ${formatDate(t.posted_at)}`}
           </span>
-          <button class="btn btn-sm btn-danger tx-del" title="Delete" onclick={() => del(t)}>✕</button>
         </div>
-      {/each}
-      <div aria-hidden="true" style={`height:${(sortedFiltered.length - windowEnd) * ROW_HEIGHT}px`}></div>
-    </div>
-    </div>
-  {:else}
-    <div style="overflow-x:auto">
-      <table class="table" bind:this={tableEl}>
-        <thead>
-          <tr>
-            <th class="chk-col">
-              <input
-                type="checkbox"
-                aria-label="Select all transactions"
-                title={allSelected ? "Clear selection" : "Select all"}
-                checked={allSelected}
-                indeterminate={someSelected}
-                onchange={toggleAll}
-              />
-            </th>
-            <th><button class="sort-btn" onclick={() => toggleSort("date")}>Date{sortArrow("date")}</button></th>
-            <th><button class="sort-btn" onclick={() => toggleSort("description")}>Description{sortArrow("description")}</button></th>
-            <th><button class="sort-btn" onclick={() => toggleSort("account")}>Account{sortArrow("account")}</button></th>
-            <th><button class="sort-btn" onclick={() => toggleSort("category")}>Category{sortArrow("category")}</button></th>
-            <th><button class="sort-btn" onclick={() => toggleSort("merchant")}>Merchant{sortArrow("merchant")}</button></th>
-            <th style="text-align:right"><button class="sort-btn" onclick={() => toggleSort("amount")}>Amount{sortArrow("amount")}</button></th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr aria-hidden="true">
-            <td colspan="8" style={`padding:0;border:none;height:${windowStart * ROW_HEIGHT}px`}></td>
-          </tr>
-          {#each windowed as t (t.id)}
-            <tr id={`tx-${t.id}`} class:highlight={t.id === highlightId} class:selected={selected.has(t.id)}>
-              <td class="chk-col">
-                <input
-                  type="checkbox"
-                  aria-label="Select transaction"
-                  checked={selected.has(t.id)}
-                  onchange={(e) => toggleOne(t.id, e.currentTarget.checked)}
-                />
-              </td>
-              <td class="faint small" style="white-space:nowrap">{formatDate(t.posted_at)}</td>
-              <td>
-                {t.description || "—"}
-                {#if t.is_one_off}<span class="badge" style="margin-left:6px">one-off</span>{/if}
-                {#if t.linked_transaction_id}<span class="badge" style="margin-left:6px">⇄ transfer</span>{/if}
-              </td>
-              <td class="muted small">{accountName.get(t.account_id) ?? "—"}</td>
-              <td>
-                <select
-                  class="select btn-sm"
-                  style="width:auto;padding:4px 8px"
-                  value={t.category_id ?? ""}
-                  onchange={(e) => setCategory(t, (e.currentTarget.value === "" ? "" : Number(e.currentTarget.value)))}
-                >
-                  <option value="">—</option>
-                  {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
-                </select>
-              </td>
-              <td>
-                <select
-                  class="select btn-sm"
-                  style="width:auto;padding:4px 8px"
-                  value={t.merchant_id ?? ""}
-                  onchange={(e) => setMerchant(t, (e.currentTarget.value === "" ? "" : Number(e.currentTarget.value)))}
-                >
-                  <option value="">—</option>
-                  {#each merchants as m}<option value={m.id}>{m.name}</option>{/each}
-                </select>
-              </td>
-              <td
-                class="tabular"
-                class:pos={t.amount_minor >= 0}
-                class:neg={t.amount_minor < 0}
-                style="text-align:right;white-space:nowrap"
-              >
-                {formatMoney(t.amount_minor, currencyOf.get(t.account_id) ?? t.currency_code)}
-              </td>
-              <td style="text-align:right">
-                <button class="btn btn-sm btn-danger" title="Delete" onclick={() => del(t)}>✕</button>
-              </td>
-            </tr>
+        <div class="cat-pill" style="--c:{cc}">
+          {#if cat?.icon}<span class="pill-icon">{cat.icon}</span>{/if}
+          <span class="ell">{cat?.name ?? "Uncategorised"}</span>
+          <select
+            class="pill-select"
+            aria-label="Category"
+            value={t.category_id ?? ""}
+            onchange={(e) => setCategory(t, e.currentTarget.value === "" ? "" : Number(e.currentTarget.value))}
+          >
+            <option value="">— none —</option>
+            {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+          </select>
+        </div>
+        <span class="tx-amount tabular" class:pos={t.amount_minor >= 0}>
+          {formatMoney(t.amount_minor, currencyOf.get(t.account_id) ?? t.currency_code)}
+        </span>
+        <button class="btn btn-sm btn-danger tx-del" title="Delete" onclick={() => del(t)}>✕</button>
+      </div>
+    {/snippet}
+
+    <div class="pagination row spread wrap">
+      <label class="row" style="gap:8px">
+        <span class="small faint">Rows per page</span>
+        <select class="select btn-sm" style="width:auto" bind:value={pageSize}>
+          {#each PAGE_SIZES as n}<option value={n}>{n}</option>{/each}
+        </select>
+      </label>
+      <nav class="pager" aria-label="Pagination">
+        <button class="pager-nav" disabled={page <= 1} onclick={() => (page = page - 1)} aria-label="Previous page">‹</button>
+        <div class="pager-pill">
+          {#each pageNumbers as n}
+            {#if n === "…"}
+              <span class="pager-ellipsis">…</span>
+            {:else}
+              <button class="pager-num" class:active={n === page} onclick={() => (page = n)}>{n}</button>
+            {/if}
           {/each}
-          <tr aria-hidden="true">
-            <td colspan="8" style={`padding:0;border:none;height:${(sortedFiltered.length - windowEnd) * ROW_HEIGHT}px`}></td>
-          </tr>
-        </tbody>
-      </table>
+        </div>
+        <button class="pager-nav" disabled={page >= pageCount} onclick={() => (page = page + 1)} aria-label="Next page">›</button>
+      </nav>
     </div>
-    <div class="small faint" style="margin-top:10px">{sortedFiltered.length} transactions</div>
   {/if}
 </section>
+{/if}
 
 {#if selected.size > 0}
   <!-- Floating action bar: fixed to the viewport so it stays reachable no matter how far
@@ -755,23 +805,200 @@
 {/if}
 
 <style>
-  /* ---- Grouped ("by day") view ---------------------------------------------- */
+  /* ---- Stat card -------------------------------------------------------------- */
+  /* Padding lives on each cell (matching the reference's per-cell p-4), not the card
+     itself, so the divider between cells runs flush to the card's rounded edges. */
+  .statcard {
+    padding: 0;
+  }
   .statbar {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
-    padding-bottom: 16px;
-    margin-bottom: 16px;
-    border-bottom: 1px solid var(--border);
+  }
+  .statbar .stat {
+    gap: 8px;
+    padding: 16px;
+  }
+  .statbar .stat:not(:last-child) {
+    border-right: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  }
+  .statbar .label {
+    font-size: 14px;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--text-muted);
   }
   .statbar .value {
-    font-size: 22px;
+    font-size: 20px;
+    font-weight: 500;
+    letter-spacing: normal;
   }
   @media (max-width: 560px) {
     .statbar {
       grid-template-columns: 1fr;
-      gap: 8px;
     }
+    .statbar .stat:not(:last-child) {
+      border-right: none;
+      border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+    }
+  }
+
+  /* ---- Tabs (Transactions / Upcoming) ------------------------------------------- */
+  .tabs-nav {
+    display: inline-flex;
+    gap: 2px;
+    width: fit-content;
+    padding: 4px;
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    margin-bottom: 16px;
+  }
+  .tab-btn {
+    all: unset;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5px 24px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 550;
+    color: var(--text-muted);
+    transition: background 0.15s, color 0.15s;
+  }
+  .tab-btn:hover:not(.active) {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .tab-btn.active {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow);
+  }
+
+  /* ---- Header "…" action menu --------------------------------------------------- */
+  .menu-wrap {
+    position: relative;
+  }
+  .action-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    min-width: 180px;
+    padding: 6px;
+    border-radius: var(--r);
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elev);
+    box-shadow: var(--shadow);
+  }
+  .action-item {
+    padding: 8px 10px;
+    border-radius: var(--r-sm);
+    font-size: 13.5px;
+    font-weight: 550;
+    color: var(--text);
+  }
+  .action-item:hover {
+    background: var(--hover);
+  }
+
+  /* ---- Filter popover ---------------------------------------------------------- */
+  .filter-wrap {
+    position: relative;
+    flex: 0 0 auto;
+  }
+  .filter-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 11px;
+    font-weight: 650;
+  }
+  .filter-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 220px;
+    padding: 14px;
+    border-radius: var(--r);
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elev);
+    box-shadow: var(--shadow);
+  }
+
+  /* ---- Pagination --------------------------------------------------------------- */
+  .pagination {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .pager {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  /* Plain icon buttons (not bordered boxes) for prev/next, matching the reference. */
+  .pager-nav {
+    all: unset;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 8px;
+    font-size: 15px;
+    color: var(--text-muted);
+  }
+  .pager-nav:hover:not(:disabled) {
+    color: var(--text);
+  }
+  .pager-nav:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  /* Page numbers live together in one inset pill; the active page is its own raised,
+     bordered sub-pill — a segmented control, not individually-boxed buttons. */
+  .pager-pill {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    border-radius: var(--r);
+    background: var(--surface-2);
+  }
+  .pager-num {
+    all: unset;
+    cursor: pointer;
+    padding: 5px 9px;
+    border-radius: var(--r-sm);
+    font-size: 13px;
+    font-weight: 550;
+    color: var(--text-muted);
+  }
+  .pager-num:hover {
+    color: var(--text);
+  }
+  .pager-num.active {
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow);
+    color: var(--text);
+  }
+  .pager-ellipsis {
+    padding: 0 9px;
+    color: var(--text-faint);
   }
 
   /* Column-label bar; the labels are sort buttons that drop to the flat table. */
@@ -789,7 +1016,7 @@
     all: unset;
     cursor: pointer;
     font-size: 11.5px;
-    font-weight: 650;
+    font-weight: 550;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     white-space: nowrap;
@@ -807,19 +1034,32 @@
     display: flex;
     flex-direction: column;
   }
+  .tx-list.grouped {
+    gap: 20px;
+  }
+  /* Each day is its own two-tier card — a subtle inset wrapper (day-group) holding a
+     brighter, shadowed card of rows (day-rows) — matching the reference exactly rather
+     than a single flat list with plain divider text. */
+  .day-group {
+    background: var(--surface-2);
+    border-radius: var(--r);
+    padding: 4px;
+  }
   .day-head {
     display: flex;
     align-items: baseline;
     gap: 8px;
-    padding: 16px 12px 6px;
+    padding: 8px 16px;
     font-size: 12px;
-    font-weight: 650;
+    font-weight: 550;
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--text-muted);
   }
-  .day-head .day-date {
-    color: var(--text);
+  .day-rows {
+    background: var(--surface);
+    border-radius: var(--r-sm);
+    box-shadow: var(--shadow);
   }
 
   .tx-row {
@@ -862,7 +1102,8 @@
     justify-content: center;
     font-size: 14px;
     font-weight: 650;
-    color: #fff;
+    background: var(--surface-2);
+    color: var(--text-muted);
   }
   .tx-main {
     flex: 1 1 auto;
@@ -897,10 +1138,11 @@
     max-width: 190px;
     padding: 5px 12px;
     border-radius: 999px;
+    border: 1px solid color-mix(in oklab, var(--c) 20%, transparent);
     font-size: 13px;
     font-weight: 550;
     color: var(--c);
-    background: color-mix(in srgb, var(--c) 16%, transparent);
+    background: color-mix(in oklab, var(--c) 10%, transparent);
     cursor: pointer;
   }
   .cat-pill .pill-icon {
@@ -928,27 +1170,6 @@
   }
   .tx-del {
     flex: 0 0 auto;
-  }
-
-  .sort-btn {
-    all: unset;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  /* Checkbox column: keep it tight and centred so the table's own columns stay put. */
-  .chk-col {
-    width: 1%;
-    white-space: nowrap;
-    text-align: center;
-  }
-  .chk-col input {
-    cursor: pointer;
-    vertical-align: middle;
-  }
-
-  tr.selected td {
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
   }
 
   /* Floating bulk-action bar, centred near the bottom of the viewport. */
@@ -980,12 +1201,6 @@
     margin: 2px 2px;
   }
 
-  /* Deep-linked transaction (e.g. from the rules audit log): a brief flash that settles
-     into a subtle persistent tint so the row stays identifiable. */
-  tr.highlight td {
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    animation: tx-flash 1.8s ease-out;
-  }
   @keyframes tx-flash {
     from {
       background: color-mix(in srgb, var(--accent) 34%, transparent);

@@ -43,6 +43,8 @@ async function main() {
   const transport = (await post("/api/categories", { name: "Transport", kind: "expense" })).id;
   const lifestyle = (await post("/api/categories", { name: "Lifestyle", kind: "expense" })).id;
   const fun = (await post("/api/categories", { name: "Entertainment", kind: "expense", parent_id: lifestyle })).id;
+  const transfers = (await post("/api/categories", { name: "Transfers", kind: "transfer" })).id;
+  const bankFees = (await post("/api/categories", { name: "Bank fees", kind: "expense" })).id;
 
   // Accounts, each with typed, per-kind metadata (see AccountMetadata in the backend).
   const everyday = (await post("/api/accounts", {
@@ -187,6 +189,15 @@ async function main() {
     description: "To savings",
   });
 
+  // Bank-statement-style entries that don't arrive pre-categorised from a feed —
+  // left uncategorised so the rules below classify them.
+  await tx(everyday, monthsAgo(2, 20), -50_000, "MB TRANSFER TO 12-3456-0000000-00", null);
+  await tx(savings, monthsAgo(2, 20), 50_000, "MB TRANSFER FROM 12-3456-0000000-00", null);
+  await tx(savings, monthsAgo(1, 1), 42, "CR.INT TO 01/06/2026", null);
+  await tx(card, monthsAgo(2, 9), -600, "ORIKAN NEW ZEALAND LTDALBANY CARD 1234", null);
+  await tx(card, monthsAgo(1, 14), -1950, "Twinkl 10000000Sheffield CARD 1234", null);
+  await tx(card, monthsAgo(1, 12), -57, "OffshoreServiceMargins", null);
+
   // A rule to auto-classify supermarkets, then run it.
   const rule = await post("/api/rules", {
     name: "Supermarkets → Groceries",
@@ -211,6 +222,65 @@ async function main() {
     enabled: true,
   });
   await post(`/api/rules/${merchantRule.id}/run`, {});
+
+  // A rule recognising internal bank transfers by their statement wording, then run it.
+  const transferRule = await post("/api/rules", {
+    name: "Internal bank transfers → Transfers",
+    expression: "contains(lower(description), 'mb transfer')",
+    set_category_id: transfers,
+    overwrite_manual: false,
+    stop_on_match: false,
+    priority: 2,
+    enabled: true,
+  });
+  await post(`/api/rules/${transferRule.id}/run`, {});
+
+  // A rule recognising bank-paid interest, then run it.
+  const interestRule = await post("/api/rules", {
+    name: "Bank interest received → Income",
+    expression: "contains(lower(description), 'cr.int')",
+    set_category_id: income,
+    overwrite_manual: false,
+    stop_on_match: false,
+    priority: 3,
+    enabled: true,
+  });
+  await post(`/api/rules/${interestRule.id}/run`, {});
+
+  // A rule recognising a named merchant not worth a full custom-merchant entry, then run it.
+  const parkingRule = await post("/api/rules", {
+    name: "Orikan → Transport",
+    expression: "contains(lower(description), 'orikan')",
+    set_category_id: transport,
+    overwrite_manual: false,
+    stop_on_match: false,
+    priority: 4,
+    enabled: true,
+  });
+  await post(`/api/rules/${parkingRule.id}/run`, {});
+
+  const subscriptionRule = await post("/api/rules", {
+    name: "Twinkl → Entertainment",
+    expression: "contains(lower(description), 'twinkl')",
+    set_category_id: fun,
+    overwrite_manual: false,
+    stop_on_match: false,
+    priority: 5,
+    enabled: true,
+  });
+  await post(`/api/rules/${subscriptionRule.id}/run`, {});
+
+  // A rule recognising foreign-transaction fee line items, then run it.
+  const fxFeeRule = await post("/api/rules", {
+    name: "Offshore FX fee → Bank fees",
+    expression: "contains(lower(description), 'offshoreservicemargins')",
+    set_category_id: bankFees,
+    overwrite_manual: false,
+    stop_on_match: false,
+    priority: 6,
+    enabled: true,
+  });
+  await post(`/api/rules/${fxFeeRule.id}/run`, {});
 
   // A cron: the house appreciates 3%/yr, applied monthly.
   const cron = await post("/api/crons", {

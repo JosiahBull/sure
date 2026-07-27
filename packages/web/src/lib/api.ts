@@ -53,7 +53,7 @@ const PALETTE = [
   "#c44fe9", "#eb5429", "#61c9ea", "#805dee", "#6ad28a",
 ];
 export function colorFor(key: string | number | null | undefined, fallbackIndex = 0): string {
-  if (key === null || key === undefined) return "#64748b";
+  if (key === null || key === undefined) return "#737373"; // Category::UNCATEGORIZED_COLOR
   const s = String(key);
   let h = fallbackIndex;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;

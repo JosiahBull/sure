@@ -191,10 +191,13 @@
   let hovered = $state<(number | null)[]>([null, null]);
 
   // Jump to the transactions page filtered to this category (its whole subtree) over the
-  // overview's current range. A null id (the uncategorised slice) filters by range only.
-  function goToCategory(categoryId: number | null | undefined) {
+  // overview's current range. A null id (the uncategorised slice) filters by range only —
+  // `kind` still narrows it to income or outgoings, since a null category alone can't tell
+  // an uncategorised income transaction from an uncategorised expense one.
+  function goToCategory(categoryId: number | null | undefined, kind?: "income" | "expense") {
     const p = new URLSearchParams();
     if (categoryId != null) p.set("category", String(categoryId));
+    if (kind) p.set("type", kind);
     p.set("range", filters.range);
     navigate(`/transactions?${p.toString()}`);
   }
@@ -252,7 +255,7 @@
               centerLabel="total"
               active={hovered[pi]}
               onhover={(i) => (hovered[pi] = i)}
-              onselect={(i) => goToCategory(panel.slices[i].categoryId)}
+              onselect={(i) => goToCategory(panel.slices[i].categoryId, pi === 0 ? "expense" : "income")}
               format={money0}
             />
             <ul class="legend grow">
@@ -266,7 +269,7 @@
                     onpointerleave={() => (hovered[pi] = null)}
                     onfocus={() => (hovered[pi] = si)}
                     onblur={() => (hovered[pi] = null)}
-                    onclick={() => goToCategory(s.categoryId)}
+                    onclick={() => goToCategory(s.categoryId, pi === 0 ? "expense" : "income")}
                     title="View {s.label} transactions"
                   >
                     <span class="row" style="gap:8px;min-width:0">

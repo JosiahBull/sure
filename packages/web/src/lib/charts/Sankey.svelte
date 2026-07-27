@@ -24,8 +24,10 @@
     height?: number;
     /** Formats a minor-unit value for the hover tooltip. */
     format?: (minor: number) => string;
-    /** Called when a category node/link is clicked (null = uncategorised). */
-    onselect?: (categoryId: number | null) => void;
+    /** Called when a category node/link is clicked (categoryId null = uncategorised;
+     * kind distinguishes an uncategorised-income click from an uncategorised-expense one,
+     * which would otherwise be indistinguishable. */
+    onselect?: (categoryId: number | null, kind: "income" | "expense") => void;
   } = $props();
 
   const W = 760;
@@ -129,8 +131,9 @@
   // category id, or 0 for uncategorised. `center`/`savings` aren't category nodes.
   const isCat = (id: string) => id.startsWith("in:") || id.startsWith("out:");
   const catKey = (id: string) => Number(id.slice(id.indexOf(":") + 1));
+  const catKind = (id: string): "income" | "expense" => (id.startsWith("in:") ? "income" : "expense");
   const fmt = (v: number) => (format ? format(v) : String(v));
-  const emit = (key: number) => onselect?.(key === 0 ? null : key);
+  const emit = (id: string) => onselect?.(catKey(id) === 0 ? null : catKey(id), catKind(id));
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function nodeActive(n: any): boolean {
@@ -185,7 +188,7 @@
   function keyNode(e: KeyboardEvent, n: any) {
     if (isCat(n.id) && (e.key === "Enter" || e.key === " ")) {
       e.preventDefault();
-      emit(catKey(n.id));
+      emit(n.id);
     }
   }
 </script>
@@ -222,7 +225,7 @@
           onpointerenter={(e) => enterLink(l, i, e)}
           onpointermove={moveTip}
           onpointerleave={leave}
-          onclick={() => cat && emit(catKey(cat.id))}
+          onclick={() => cat && emit(cat.id)}
         />
       {/each}
       {#each graph.nodes as n}
@@ -242,7 +245,7 @@
           onpointerleave={leave}
           onfocus={() => (hovered = { t: "node", id: n.id })}
           onblur={leave}
-          onclick={() => clickable && emit(catKey(n.id))}
+          onclick={() => clickable && emit(n.id)}
           onkeydown={(e) => keyNode(e, n)}
         >
           <path d={nodePath(n)} fill={nodeColor(n)} />

@@ -30,6 +30,23 @@
   const inSettings = $derived(activePath.startsWith("/settings/"));
   const railActivePath = $derived(inSettings ? "/settings/accounts" : activePath);
 
+  // Breadcrumb trail: top-level pages are "Home > {page}"; settings pages are
+  // "Home > Settings > {subpage}" — labels mirror SettingsNav's groups.
+  const SETTINGS_LABELS: Record<string, string> = {
+    "/settings/accounts": "Accounts",
+    "/settings/providers": "Bank sync",
+    "/settings/preferences": "Preferences",
+    "/settings/appearance": "Appearance",
+    "/settings/scheduled": "Scheduled adjustments",
+    "/settings/categories": "Categories",
+    "/settings/rules": "Rules",
+    "/settings/merchants": "Merchants",
+  };
+  const crumbs = $derived.by(() => {
+    if (inSettings) return ["Settings", SETTINGS_LABELS[activePath] ?? ""];
+    return [NAV.find((n) => n.path === activePath)?.label ?? ""];
+  });
+
   const Page = $derived.by(() => {
     switch (activePath) {
       case "/transactions":
@@ -95,45 +112,60 @@
   </aside>
 
   <div class="main-col">
-    <div class="subbar row spread">
-      <button
-        type="button"
-        class="btn btn-sm icon-btn"
-        onclick={() => (panelCollapsed = !panelCollapsed)}
-        title={panelCollapsed ? "Show accounts panel" : "Hide accounts panel"}
-        aria-label="Toggle accounts panel"
-      >
-        <Icon name="panel-left" size={16} />
-      </button>
-      {#if showFilters}
+    <div class="subbar">
+      <div class="subbar-inner row spread">
         <div class="row" style="gap:10px">
-          {#if filters.custom}
-            <button
-              class="btn zoom-out"
-              onclick={() => (filters.custom = null)}
-              title="Clear the zoomed range and return to the selected preset"
-            >
-              ⤢ Reset zoom
-            </button>
-          {/if}
-          <select
-            class="select"
-            style="width:auto"
-            bind:value={filters.range}
-            onchange={() => (filters.custom = null)}
-            aria-label="Time range"
+          <button
+            type="button"
+            class="btn btn-sm icon-btn"
+            onclick={() => (panelCollapsed = !panelCollapsed)}
+            title={panelCollapsed ? "Show accounts panel" : "Hide accounts panel"}
+            aria-label="Toggle accounts panel"
           >
-            {#each RANGES as r}
-              <option value={r.key}>{r.label}</option>
+            <Icon name="panel-left" size={16} />
+          </button>
+          <nav class="breadcrumb row" style="gap:6px" aria-label="Breadcrumb">
+            <a href="#/" class="crumb-link">Home</a>
+            {#each crumbs as c, i}
+              <Icon name="chevron-right" size={13} />
+              {#if i === crumbs.length - 1}
+                <span class="crumb-current">{c}</span>
+              {:else}
+                <span class="crumb-link">{c}</span>
+              {/if}
             {/each}
-          </select>
-          <label class="switch" title="Include one-off transactions">
-            <input type="checkbox" bind:checked={filters.includeOneOff} />
-            <span class="track"></span>
-            <span>One-off</span>
-          </label>
+          </nav>
         </div>
-      {/if}
+        {#if showFilters}
+          <div class="row" style="gap:10px">
+            {#if filters.custom}
+              <button
+                class="btn zoom-out"
+                onclick={() => (filters.custom = null)}
+                title="Clear the zoomed range and return to the selected preset"
+              >
+                ⤢ Reset zoom
+              </button>
+            {/if}
+            <select
+              class="select"
+              style="width:auto"
+              bind:value={filters.range}
+              onchange={() => (filters.custom = null)}
+              aria-label="Time range"
+            >
+              {#each RANGES as r}
+                <option value={r.key}>{r.label}</option>
+              {/each}
+            </select>
+            <label class="switch" title="Include one-off transactions">
+              <input type="checkbox" bind:checked={filters.includeOneOff} />
+              <span class="track"></span>
+              <span>One-off</span>
+            </label>
+          </div>
+        {/if}
+      </div>
     </div>
 
     <main class="container" style="padding-top:20px">
@@ -249,6 +281,9 @@
     flex: 1 1 auto;
     min-width: 0;
   }
+  /* Full-bleed bar (background spans the whole main column), but its content is capped and
+     centred at the same --maxw as .container below, so the breadcrumb/filters line up with
+     the page content instead of hugging the far edges on wide viewports. */
   .subbar {
     position: sticky;
     top: 0;
@@ -256,6 +291,10 @@
     background: var(--topbar-bg);
     backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--border);
+  }
+  .subbar-inner {
+    max-width: var(--maxw);
+    margin: 0 auto;
     padding: 10px 16px;
   }
   .icon-btn {
@@ -265,5 +304,19 @@
     padding: 6px 11px;
     font-size: 13px;
     white-space: nowrap;
+  }
+  .breadcrumb {
+    font-size: 13.5px;
+    color: var(--text-faint);
+  }
+  .crumb-link {
+    color: var(--text-muted);
+  }
+  a.crumb-link:hover {
+    color: var(--text);
+  }
+  .crumb-current {
+    color: var(--text);
+    font-weight: 600;
   }
 </style>
