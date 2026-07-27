@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, formatMoney, formatDate, colorFor, type Schemas } from "../lib/api";
+  import { api, formatMoney, formatDate, formatDateLong, colorFor, type Schemas } from "../lib/api";
+  import { ICONS } from "../lib/icons";
   import { RANGES, activeRange, filters, type RangeKey } from "../lib/state.svelte";
   import { router } from "../lib/router.svelte";
   import Icon from "../lib/Icon.svelte";
@@ -23,6 +24,16 @@
   const paramType = params.get("type");
   const paramRange = params.get("range");
   const paramAnchor = num(params.get("at"));
+  // Shareable-link params (mirroring the reference's q[start_date]/q[end_date]/q[categories]/
+  // per_page/page): an explicit start+end sets a custom window; page-size and page restore
+  // the exact paginated slice; the search text and tab round-trip too.
+  const isDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  const paramStart = params.get("start");
+  const paramEnd = params.get("end");
+  const paramSearch = params.get("q") ?? "";
+  const paramPage = num(params.get("page"));
+  const paramPerPage = num(params.get("per_page"));
+  const paramTab = params.get("tab");
 
   type Tx = Schemas["Transaction"];
   type Account = Schemas["Account"];
@@ -39,19 +50,13 @@
   let accountId = $state<number | "">(paramAccount ?? "");
   let categoryId = $state<number | "">(paramCategory ?? "");
   let typeFilter = $state<TypeFilter>(isTypeFilter(paramType) ? paramType : "");
-  let search = $state("");
+  let search = $state(paramSearch);
 
+  // The list only renders in its default newest-first date order now (the reference's grouped
+  // view); the sort keys stay fixed at date/desc, which keeps the day-group headers valid.
   type SortKey = "date" | "description" | "category" | "amount";
-  let sortKey = $state<SortKey>("date");
-  let sortDir = $state<"asc" | "desc">("desc");
-  function toggleSort(key: SortKey) {
-    if (sortKey === key) sortDir = sortDir === "asc" ? "desc" : "asc";
-    else {
-      sortKey = key;
-      sortDir = key === "date" || key === "amount" ? "desc" : "asc";
-    }
-  }
-  const sortArrow = (key: SortKey) => (sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : "");
+  const sortKey = $state<SortKey>("date");
+  const sortDir = $state<"asc" | "desc">("desc");
   // Time range / one-off are the header's shared filters (App.svelte), not page-local —
   // deep links still get to steer them, though: an explicit `?range=` wins, and a
   // deep-linked transaction/account (which implies "show me everything relevant", not
@@ -59,7 +64,10 @@
   // Runs once per navigation here (this page remounts fresh on every route change), so
   // it behaves like the one-time default the local state used to be, without fighting
   // the user's choice on every subsequent render.
-  if (isRangeKey(paramRange)) {
+  if (isDate(paramStart) && isDate(paramEnd)) {
+    // An explicit shared window wins over any preset range.
+    filters.custom = { from: paramStart, to: paramEnd };
+  } else if (isRangeKey(paramRange)) {
     filters.range = paramRange;
     filters.custom = null;
   } else if (highlightId != null || paramAccount != null) {
@@ -69,7 +77,7 @@
 
   // Matches the reference's "Transactions / Upcoming" tab bar. We don't project recurring/
   // upcoming transactions yet, so that panel is an honest empty state rather than faked data.
-  let activeTab = $state<"transactions" | "upcoming">("transactions");
+  let activeTab = $state<"transactions" | "upcoming">(paramTab === "upcoming" ? "upcoming" : "transactions");
 
   let showAdd = $state(false);
   let form = $state({
@@ -145,7 +153,9 @@
       const vb = sortValue(b, sortKey);
       if (va < vb) return -dir;
       if (va > vb) return dir;
-      return 0;
+      // Stable within a day: ascending id (import order), matching the reference's intra-day
+      // ordering so grouped days read oldest-entered first.
+      return a.id - b.id;
     });
   });
 
@@ -192,8 +202,8 @@
   // Numbered pagination (matching the reference app) over the already-loaded, filtered/sorted
   // set — rows per page is user-choosable, like the reference's page-size select.
   const PAGE_SIZES = [10, 20, 30, 50, 100];
-  let pageSize = $state(20);
-  let page = $state(1); // 1-indexed
+  let pageSize = $state(paramPerPage && PAGE_SIZES.includes(paramPerPage) ? paramPerPage : 50);
+  let page = $state(paramPage && paramPage > 0 ? paramPage : 1); // 1-indexed
   const pageCount = $derived(Math.max(1, Math.ceil(sortedFiltered.length / pageSize)));
   const paged = $derived(sortedFiltered.slice((page - 1) * pageSize, page * pageSize));
   // The reference nests each day as its own two-tier card (a subtle outer wrapper holding a
@@ -225,11 +235,24 @@
     return out;
   });
 
-  function writePageAnchorToUrl() {
-    const p = new URLSearchParams(router.path.split("?")[1] ?? "");
+  // Reflect the whole filter/paging state into the hash query so the URL is a shareable link
+  // (the reference keeps its filters — categories, date window, page, per_page — in the URL for
+  // exactly this reason). Kept in sync on every relevant change below.
+  function syncUrl() {
+    const p = new URLSearchParams();
+    if (categoryId !== "") p.set("category", String(categoryId));
+    if (accountId !== "") p.set("account", String(accountId));
+    if (typeFilter) p.set("type", typeFilter);
+    if (filters.custom) {
+      p.set("start", filters.custom.from);
+      p.set("end", filters.custom.to);
+    }
+    if (search.trim()) p.set("q", search.trim());
+    if (activeTab !== "transactions") p.set("tab", activeTab);
+    if (pageSize !== 50) p.set("per_page", String(pageSize));
+    if (page > 1) p.set("page", String(page));
     const anchorTx = paged[0]?.id;
-    if (anchorTx == null) p.delete("at");
-    else p.set("at", String(anchorTx));
+    if (anchorTx != null) p.set("at", String(anchorTx));
     const base = router.path.split("?")[0];
     const qs = p.toString();
     history.replaceState(null, "", `#${base}${qs ? "?" + qs : ""}`);
@@ -250,8 +273,10 @@
   // Persist the current page's leading transaction to `?at=` so a refresh resumes on the same
   // page. Guarded on didInitPage so this doesn't clobber a still-pending deep-link resolution.
   $effect(() => {
+    // Depend on the full filter/paging surface so the shareable URL tracks every change.
     page;
-    if (didInitPage) writePageAnchorToUrl();
+    void [categoryId, accountId, typeFilter, filters.custom?.from, filters.custom?.to, search, activeTab, pageSize];
+    if (didInitPage) syncUrl();
   });
 
   // Filters/sort/page-size changing what's in the list makes the current page meaningless —
@@ -274,9 +299,29 @@
   let showFilterPanel = $state(false);
   let filterPanelEl = $state<HTMLElement | null>(null);
   let filterBtnEl = $state<HTMLElement | null>(null);
-  const activeFilterCount = $derived(
-    (accountId !== "" ? 1 : 0) + (categoryId !== "" ? 1 : 0) + (typeFilter !== "" ? 1 : 0),
-  );
+  const hasIcon = (name: string | null | undefined): name is keyof typeof ICONS =>
+    !!name && name in ICONS;
+
+  // The removable filter "chips" shown under the search bar — one per active filter, each with
+  // its own clear action. Mirrors the reference's start_date/end_date/categories/… badge row.
+  type Chip = { key: string; icon?: keyof typeof ICONS; label: string; clear: () => void };
+  const activeChips = $derived.by<Chip[]>(() => {
+    const chips: Chip[] = [];
+    if (filters.custom) {
+      const { from, to } = filters.custom;
+      chips.push({ key: "start", icon: "calendar", label: `on or after ${from}`, clear: () => (filters.custom = null) });
+      chips.push({ key: "end", icon: "calendar", label: `on or before ${to}`, clear: () => (filters.custom = null) });
+    }
+    if (categoryId !== "")
+      chips.push({ key: "category", label: categoryName.get(categoryId) ?? "Category", clear: () => (categoryId = "") });
+    if (accountId !== "")
+      chips.push({ key: "account", label: accountName.get(accountId) ?? "Account", clear: () => (accountId = "") });
+    if (typeFilter)
+      chips.push({ key: "type", label: typeFilter === "income" ? "Income" : "Expense", clear: () => (typeFilter = "") });
+    if (search.trim())
+      chips.push({ key: "q", icon: "search", label: `"${search.trim()}"`, clear: () => (search = "") });
+    return chips;
+  });
   $effect(() => {
     if (!showFilterPanel) return;
     function onDocClick(e: MouseEvent) {
@@ -418,11 +463,6 @@
   const setCategory = (t: Tx, cat: number | "") =>
     saveTx(t, { category_id: cat === "" ? null : cat });
 
-  async function del(t: Tx) {
-    await api.DELETE("/api/transactions/{id}", { params: { path: { id: t.id } } });
-    loadTx();
-  }
-
   // ---- Bulk selection & actions ----
   // Selected transaction ids. Reassigned (never mutated in place) on every change so
   // Svelte's reactivity picks it up — a plain Set isn't deeply reactive. Selection is by
@@ -489,6 +529,7 @@
   }
 </script>
 
+<div class="tx-page">
 <div class="row spread wrap" style="margin-bottom:14px;gap:10px">
   <h1 style="font-size:20px;font-weight:500">Transactions</h1>
   <div class="row" style="gap:8px">
@@ -512,8 +553,12 @@
         </div>
       {/if}
     </div>
-    <button class="btn btn-primary btn-sm" onclick={() => (showAdd = !showAdd)}>
-      {showAdd ? "Close" : "+ New transaction"}
+    <a class="btn btn-sm import-btn" href="#/settings/rules" title="Import">
+      <Icon name="download" size={16} />
+      Import
+    </a>
+    <button class="btn btn-primary btn-sm new-tx-btn" onclick={() => (showAdd = !showAdd)}>
+      {#if showAdd}Close{:else}<Icon name="plus" size={16} />New transaction{/if}
     </button>
   </div>
 </div>
@@ -599,8 +644,11 @@
   </section>
 {:else}
 <section class="card">
-  <div class="row" style="gap:10px;margin-bottom:12px">
-    <input class="input grow" placeholder="Search transactions ..." bind:value={search} />
+  <div class="row" style="gap:8px;margin-bottom:16px">
+    <div class="search-box grow">
+      <Icon name="search" size={18} />
+      <input class="search-input" placeholder="Search transactions ..." bind:value={search} />
+    </div>
     <div class="filter-wrap">
       <button
         type="button"
@@ -609,8 +657,8 @@
         onclick={() => (showFilterPanel = !showFilterPanel)}
         aria-expanded={showFilterPanel}
       >
-        <Icon name="sliders-horizontal" size={14} />
-        Filter{#if activeFilterCount > 0}<span class="filter-badge">{activeFilterCount}</span>{/if}
+        <Icon name="list-filter" size={16} />
+        Filter
       </button>
       {#if showFilterPanel}
         <div class="filter-panel" bind:this={filterPanelEl}>
@@ -638,6 +686,20 @@
     </div>
   </div>
 
+  {#if activeChips.length > 0}
+    <ul class="chip-row">
+      {#each activeChips as chip (chip.key)}
+        <li class="chip">
+          {#if chip.icon}<Icon name={chip.icon} size={16} />{/if}
+          <span class="chip-label">{chip.label}</span>
+          <button type="button" class="chip-x" aria-label="Remove filter" onclick={chip.clear}>
+            <Icon name="x" size={16} />
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+
   {#if loading && txns.length === 0}
     <div class="row" style="justify-content:center;padding:30px"><span class="spinner"></span></div>
   {:else if sortedFiltered.length === 0}
@@ -651,21 +713,21 @@
          description to zero width. -->
     <div style="overflow-x:auto">
     <div class="tx-head">
-      <span class="tx-check">
-        <input
-          type="checkbox"
-          aria-label="Select all transactions"
-          title={allSelected ? "Clear selection" : "Select all"}
-          checked={allSelected}
-          indeterminate={someSelected}
-          onchange={toggleAll}
-        />
-      </span>
-      <button class="col-btn" onclick={() => toggleSort("date")}>Date{sortArrow("date")}</button>
-      <button class="col-btn grow" onclick={() => toggleSort("description")}>Transaction{sortArrow("description")}</button>
-      <button class="col-btn" onclick={() => toggleSort("category")}>Category{sortArrow("category")}</button>
-      <button class="col-btn amount" onclick={() => toggleSort("amount")}>Amount{sortArrow("amount")}</button>
-      <span class="tx-del" aria-hidden="true"></span>
+      <div class="th-tx">
+        <span class="tx-check">
+          <input
+            type="checkbox"
+            aria-label="Select all transactions"
+            title={allSelected ? "Clear selection" : "Select all"}
+            checked={allSelected}
+            indeterminate={someSelected}
+            onchange={toggleAll}
+          />
+        </span>
+        <span class="col-label">transaction</span>
+      </div>
+      <span class="th-cat col-label">Category label</span>
+      <span class="th-amt col-label">Amount</span>
     </div>
     <div class="tx-list" class:grouped>
       {#if grouped}
@@ -673,9 +735,23 @@
           {@const day = dayGroups.get(g.dateKey)}
           <div class="day-group">
             <div class="day-head">
-              <span class="day-date">{formatDate(g.rows[0].posted_at)}</span>
-              <span class="small">· {day?.count ?? 0}</span>
-              <span class="tabular grow" style="text-align:right" class:pos={(day?.net ?? 0) >= 0}>
+              <div class="day-head-left">
+                <span class="tx-check">
+                  <input
+                    type="checkbox"
+                    aria-label="Select this day's transactions"
+                    checked={g.rows.every((t) => selected.has(t.id))}
+                    onchange={(e) => {
+                      const on = e.currentTarget.checked;
+                      const next = new Set(selected);
+                      for (const t of g.rows) on ? next.add(t.id) : next.delete(t.id);
+                      selected = next;
+                    }}
+                  />
+                </span>
+                <span class="day-date">{formatDateLong(g.rows[0].posted_at)} · {day?.count ?? 0}</span>
+              </div>
+              <span class="day-total tabular" class:pos={(day?.net ?? 0) >= 0}>
                 {formatMoney(day?.net ?? 0, statCurrency)}
               </span>
             </div>
@@ -695,7 +771,8 @@
     </div>
 
     {#snippet row(t: Tx)}
-      {@const name = txName(t)}
+      {@const title = t.description || txName(t) || "—"}
+      {@const merchant = merchantName.get(t.merchant_id ?? -1) ?? t.merchant ?? ""}
       {@const cat = t.category_id != null ? catById.get(t.category_id) : null}
       {@const cc = cat ? (cat.color ?? colorFor(cat.parent_id ?? cat.id)) : colorFor(null)}
       <div
@@ -704,42 +781,49 @@
         class:highlight={t.id === highlightId}
         class:selected={selected.has(t.id)}
       >
-        <label class="tx-check">
-          <input
-            type="checkbox"
-            aria-label="Select transaction"
-            checked={selected.has(t.id)}
-            onchange={(e) => toggleOne(t.id, e.currentTarget.checked)}
-          />
-        </label>
-        <span class="avatar">{(name || "?").charAt(0).toUpperCase()}</span>
-        <div class="tx-main">
-          <div class="tx-name-row">
-            <span class="ell tx-name">{name || t.description || "—"}</span>
-            {#if t.is_one_off}<span class="badge">one-off</span>{/if}
-            {#if t.linked_transaction_id}<span class="badge">⇄ transfer</span>{/if}
+        <div class="tx-name-cell">
+          <label class="tx-check">
+            <input
+              type="checkbox"
+              aria-label="Select transaction"
+              checked={selected.has(t.id)}
+              onchange={(e) => toggleOne(t.id, e.currentTarget.checked)}
+            />
+          </label>
+          <span class="avatar">{title.charAt(0).toUpperCase()}</span>
+          <div class="tx-main">
+            <div class="tx-name-row">
+              <span class="ell tx-name">{title}</span>
+              {#if t.is_one_off}<span class="badge">one-off</span>{/if}
+              {#if t.linked_transaction_id}<span class="badge">⇄ transfer</span>{/if}
+            </div>
+            <span class="tx-sub ell">
+              {#if merchant}{merchant} • {/if}{accountName.get(t.account_id) ?? "—"}{grouped ? "" : ` · ${formatDate(t.posted_at)}`}
+            </span>
           </div>
-          <span class="small faint ell">
-            {accountName.get(t.account_id) ?? "—"}{grouped ? "" : ` · ${formatDate(t.posted_at)}`}
-          </span>
         </div>
-        <div class="cat-pill" style="--c:{cc}">
-          {#if cat?.icon}<span class="pill-icon">{cat.icon}</span>{/if}
-          <span class="ell">{cat?.name ?? "Uncategorised"}</span>
-          <select
-            class="pill-select"
-            aria-label="Category"
-            value={t.category_id ?? ""}
-            onchange={(e) => setCategory(t, e.currentTarget.value === "" ? "" : Number(e.currentTarget.value))}
-          >
-            <option value="">— none —</option>
-            {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
-          </select>
+        <div class="cat-cell">
+          <div class="cat-pill" style="--c:{cc}">
+            {#if hasIcon(cat?.icon)}
+              <span class="pill-icon"><Icon name={cat.icon} size={16} /></span>
+            {:else if cat?.icon}
+              <span class="pill-icon">{cat.icon}</span>
+            {/if}
+            <span class="ell">{cat?.name ?? "Uncategorised"}</span>
+            <select
+              class="pill-select"
+              aria-label="Category"
+              value={t.category_id ?? ""}
+              onchange={(e) => setCategory(t, e.currentTarget.value === "" ? "" : Number(e.currentTarget.value))}
+            >
+              <option value="">— none —</option>
+              {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+            </select>
+          </div>
         </div>
-        <span class="tx-amount tabular" class:pos={t.amount_minor >= 0}>
+        <span class="amt-cell tabular" class:pos={t.amount_minor >= 0}>
           {formatMoney(t.amount_minor, currencyOf.get(t.account_id) ?? t.currency_code)}
         </span>
-        <button class="btn btn-sm btn-danger tx-del" title="Delete" onclick={() => del(t)}>✕</button>
       </div>
     {/snippet}
 
@@ -803,6 +887,7 @@
     {#if bulkBusy}<span class="spinner" style="margin-left:4px"></span>{/if}
   </div>
 {/if}
+</div>
 
 <style>
   /* ---- Stat card -------------------------------------------------------------- */
@@ -911,19 +996,6 @@
     position: relative;
     flex: 0 0 auto;
   }
-  .filter-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 4px;
-    border-radius: 999px;
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-size: 11px;
-    font-weight: 650;
-  }
   .filter-panel {
     position: absolute;
     top: calc(100% + 6px);
@@ -1001,33 +1073,94 @@
     color: var(--text-faint);
   }
 
-  /* Column-label bar; the labels are sort buttons that drop to the flat table. */
-  .tx-head {
+  /* ---- Search box + filter chips ---------------------------------------------- */
+  .search-box {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
     padding: 8px 12px;
-    border-radius: var(--r);
-    background: var(--surface-2);
-    color: var(--text-faint);
-    min-width: 480px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    color: var(--text-muted);
+    background: var(--surface);
   }
-  .col-btn {
+  .search-box:focus-within {
+    border-color: var(--text-muted);
+  }
+  .search-input {
     all: unset;
-    cursor: pointer;
-    font-size: 11.5px;
-    font-weight: 550;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-  .col-btn:hover {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 14px;
     color: var(--text);
   }
-  .col-btn.amount {
-    text-align: right;
-    width: 110px;
-    flex: 0 0 auto;
+  .search-input::placeholder {
+    color: var(--text-muted);
+  }
+  .chip-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    list-style: none;
+    margin: 0 0 16px;
+    padding: 0;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 6px 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 14px;
+    color: var(--text);
+  }
+  .chip :global(svg) {
+    color: var(--text-muted);
+  }
+  .chip-x {
+    all: unset;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-muted);
+    border-radius: 999px;
+  }
+  .chip-x:hover {
+    color: var(--text);
+  }
+
+  /* ---- Column-label bar (a static inset header, matching the reference) -------- */
+  .tx-head {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    align-items: center;
+    padding: 12px 20px;
+    margin-bottom: 16px;
+    border-radius: var(--r);
+    background: var(--surface-2);
+    color: var(--text-muted);
+    min-width: 480px;
+  }
+  .th-tx {
+    grid-column: span 8;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .th-cat {
+    grid-column: span 2;
+  }
+  .th-amt {
+    grid-column: span 2;
+    justify-self: end;
+  }
+  .col-label {
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    white-space: nowrap;
   }
 
   .tx-list {
@@ -1035,7 +1168,7 @@
     flex-direction: column;
   }
   .tx-list.grouped {
-    gap: 20px;
+    gap: 24px;
   }
   /* Each day is its own two-tier card — a subtle inset wrapper (day-group) holding a
      brighter, shadowed card of rows (day-rows) — matching the reference exactly rather
@@ -1047,14 +1180,23 @@
   }
   .day-head {
     display: flex;
-    align-items: baseline;
-    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
     padding: 8px 16px;
     font-size: 12px;
-    font-weight: 550;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    font-weight: 500;
     color: var(--text-muted);
+  }
+  .day-head-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .day-date {
+    text-transform: uppercase;
+  }
+  .day-total {
+    font-weight: 500;
   }
   .day-rows {
     background: var(--surface);
@@ -1063,11 +1205,11 @@
   }
 
   .tx-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
     align-items: center;
-    gap: 12px;
-    padding: 8px 12px;
-    border-radius: var(--r);
+    padding: 16px;
+    border-radius: var(--r-sm);
     border: 1px solid transparent;
     min-width: 480px;
   }
@@ -1083,25 +1225,76 @@
     animation: tx-flash 1.8s ease-out;
   }
 
+  .tx-name-cell {
+    grid-column: span 8;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-width: 0;
+  }
+  .cat-cell {
+    grid-column: span 2;
+    min-width: 0;
+    display: flex;
+  }
+  .amt-cell {
+    grid-column: span 2;
+    justify-self: end;
+    text-align: right;
+    white-space: nowrap;
+    font-weight: 500;
+    font-size: 14px;
+  }
+
   .tx-check {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
   }
+  /* Light, rounded checkbox matching the reference's `checkbox--light` — a subtle grey box
+     at rest, filled on select. */
   .tx-check input {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    border-radius: 6px;
+    border: 1.5px solid color-mix(in srgb, var(--text) 13%, transparent);
+    background: var(--surface);
     cursor: pointer;
-    vertical-align: middle;
+    flex: 0 0 auto;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .tx-check input:hover {
+    border-color: color-mix(in srgb, var(--text) 32%, transparent);
+  }
+  .tx-check input:checked {
+    background-color: var(--accent);
+    border-color: var(--accent);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+    background-size: 12px;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+  .tx-check input:indeterminate {
+    background-color: var(--accent);
+    border-color: var(--accent);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3.5' stroke-linecap='round'%3E%3Cpath d='M5 12h14'/%3E%3C/svg%3E");
+    background-size: 12px;
+    background-position: center;
+    background-repeat: no-repeat;
   }
   .avatar {
     flex: 0 0 auto;
-    width: 34px;
-    height: 34px;
+    width: 36px;
+    height: 36px;
     border-radius: 50%;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font-size: 14px;
-    font-weight: 650;
+    font-weight: 600;
     background: var(--surface-2);
     color: var(--text-muted);
   }
@@ -1110,7 +1303,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 2px;
   }
   .tx-name-row {
     display: flex;
@@ -1119,7 +1312,16 @@
     min-width: 0;
   }
   .tx-name {
-    font-weight: 550;
+    font-weight: 500;
+    font-size: 14px;
+    line-height: 1.3;
+    color: var(--text);
+  }
+  .tx-sub {
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.3;
+    color: var(--text-muted);
   }
   .ell {
     overflow: hidden;
@@ -1131,22 +1333,22 @@
      <select> laid transparently on top, so the native picker still drives setCategory. */
   .cat-pill {
     position: relative;
-    flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    max-width: 190px;
-    padding: 5px 12px;
+    gap: 4px;
+    max-width: 100%;
+    padding: 4px 6px;
     border-radius: 999px;
-    border: 1px solid color-mix(in oklab, var(--c) 20%, transparent);
-    font-size: 13px;
-    font-weight: 550;
+    border: 1px solid color-mix(in oklab, var(--c) 10%, transparent);
+    font-size: 14px;
+    font-weight: 500;
     color: var(--c);
     background: color-mix(in oklab, var(--c) 10%, transparent);
     cursor: pointer;
   }
   .cat-pill .pill-icon {
     flex: 0 0 auto;
+    display: inline-flex;
     line-height: 1;
   }
   .pill-select {
@@ -1160,16 +1362,6 @@
     opacity: 0;
     cursor: pointer;
     appearance: none;
-  }
-  .tx-amount {
-    flex: 0 0 auto;
-    width: 110px;
-    text-align: right;
-    white-space: nowrap;
-    font-weight: 550;
-  }
-  .tx-del {
-    flex: 0 0 auto;
   }
 
   /* Floating bulk-action bar, centred near the bottom of the viewport. */

@@ -9,7 +9,9 @@ export type { Schemas };
 export function formatMoney(minor: number, currency = "NZD", decimals = 2): string {
   const major = minor / 10 ** decimals;
   try {
-    return new Intl.NumberFormat("en-NZ", {
+    // en-US so a non-USD currency keeps its disambiguating prefix (NZ$1,652.59, A$…) the way
+    // the reference app formats money — en-NZ would collapse NZD to a bare "$".
+    return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency,
       maximumFractionDigits: decimals,
@@ -33,6 +35,13 @@ export function formatDate(iso: string): string {
   const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("en-NZ", { day: "numeric", month: "short", year: "numeric" });
+}
+
+/** Long, day-group heading form, e.g. "June 30, 2026" (the reference's :long format). */
+export function formatDateLong(iso: string): string {
+  const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 }
 
 /** Unwrap an openapi-fetch result, throwing a readable error on failure. */
