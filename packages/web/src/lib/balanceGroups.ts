@@ -62,3 +62,71 @@ export function groupByKind(
 
   return { groups, totalMinor };
 }
+
+// --- Higher-level classification groups (Cash / Investment / Property / …) --------------
+// The reference sidebar buckets accounts into a handful of human classes rather than the raw
+// per-kind list, in a fixed order (assets first, then debts). Each account kind maps to one.
+const CLASS_GROUPS: { key: string; label: string; kinds: string[] }[] = [
+  { key: "cash", label: "Cash", kinds: ["bank", "cash", "savings"] },
+  { key: "investment", label: "Investment", kinds: ["shares_nz", "shares_us", "shares_private", "brokerage"] },
+  { key: "property", label: "Property", kinds: ["real_estate"] },
+  { key: "vehicle", label: "Vehicle", kinds: ["vehicle"] },
+  { key: "other_asset", label: "Other assets", kinds: ["asset"] },
+  { key: "credit", label: "Credit cards", kinds: ["credit_card", "revolving_credit"] },
+  { key: "loans", label: "Loans", kinds: ["mortgage", "student_loan", "loan"] },
+  { key: "other_liability", label: "Other liabilities", kinds: ["liability"] },
+];
+const CLASS_OF = new Map<string, { key: string; label: string; order: number }>();
+CLASS_GROUPS.forEach((g, order) => g.kinds.forEach((k) => CLASS_OF.set(k, { key: g.key, label: g.label, order })));
+const classOf = (kind: string) => CLASS_OF.get(kind) ?? { key: "other_asset", label: "Other assets", order: 4 };
+
+export interface ClassGroup {
+  key: string;
+  label: string;
+  totalMinor: number;
+  /** Change in the group's value over the active period (current − period-start), signed. */
+  changeMinor: number;
+  /** changeMinor as a % of the period-start value; null when there's no baseline to divide by. */
+  changePct: number | null;
+  accounts: Schemas["AccountBalance"][];
+}
+
+/**
+ * Group accounts into the reference's classification buckets and, given a per-account baseline
+ * (values as of the period start), compute each group's signed change and change-%. Mirrors the
+ * sidebar's "value + coloured %" rows.
+ */
+export function groupByClass(
+  accounts: Schemas["AccountBalance"][],
+  tab: PanelTab,
+  baseline: Map<number, number>,
+): { groups: ClassGroup[]; totalMinor: number } {
+  const rows = accounts.filter((a) => inTab(a, tab));
+  const totalMinor = rows.reduce((sum, a) => sum + a.value_minor, 0);
+
+  const byClass = new Map<string, Schemas["AccountBalance"][]>();
+  for (const a of rows) {
+    const c = classOf(a.kind).key;
+    const list = byClass.get(c);
+    if (list) list.push(a);
+    else byClass.set(c, [a]);
+  }
+
+  const groups: ClassGroup[] = Array.from(byClass.entries()).map(([key, groupAccounts]) => {
+    const total = groupAccounts.reduce((sum, a) => sum + a.value_minor, 0);
+    const base = groupAccounts.reduce((sum, a) => sum + (baseline.get(a.account_id) ?? 0), 0);
+    const changeMinor = total - base;
+    return {
+      key,
+      label: classOf(groupAccounts[0].kind).label,
+      totalMinor: total,
+      changeMinor,
+      changePct: base !== 0 ? (changeMinor / Math.abs(base)) * 100 : null,
+      accounts: groupAccounts,
+    };
+  });
+  // Fixed reference order (assets first, then debts), not by value.
+  groups.sort((a, b) => classOf(a.accounts[0].kind).order - classOf(b.accounts[0].kind).order);
+
+  return { groups, totalMinor };
+}

@@ -15,12 +15,15 @@
 
   let {
     account = null,
+    initialKind = null,
     currencies,
     accounts,
     onsave,
     oncancel,
   }: {
     account?: Schemas["Account"] | null;
+    /** Pre-selected kind when creating a new account (e.g. picked from the New-account menu). */
+    initialKind?: Schemas["AccountKind"] | null;
     currencies: Schemas["Currency"][];
     accounts: Schemas["Account"][];
     onsave: () => void;
@@ -32,7 +35,7 @@
   const editing = !!initial;
 
   let name = $state(initial?.name ?? "");
-  let kind = $state<Schemas["AccountKind"]>(initial?.kind ?? "bank");
+  let kind = $state<Schemas["AccountKind"]>(untrack(() => initial?.kind ?? initialKind ?? "bank"));
   let currency = $state(initial?.currency_code ?? "NZD");
   let institution = $state(initial?.institution ?? "");
   let raw = $state<Record<string, string>>(metadataToRaw(initial?.metadata));
