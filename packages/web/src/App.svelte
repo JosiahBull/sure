@@ -293,9 +293,11 @@
     border-bottom: 1px solid var(--border);
   }
   .subbar-inner {
-    max-width: var(--maxw);
+    /* Match .container: full-bleed with the same fluid side padding so the breadcrumb/filters
+       line up with the page content below. */
+    max-width: none;
     margin: 0 auto;
-    padding: 10px 16px;
+    padding: 10px clamp(16px, 2.8vw, 40px);
   }
   .icon-btn {
     padding: 6px 8px;

@@ -148,9 +148,11 @@ button {
   min-height: 100dvh;
 }
 .container {
-  max-width: var(--maxw);
+  /* Full-bleed like the reference app — the main content fills the column rather than being
+     capped and centred, with fluid side padding (≈40px on desktop, tighter on mobile). */
+  max-width: none;
   margin: 0 auto;
-  padding: 0 16px calc(48px + env(safe-area-inset-bottom));
+  padding: 0 clamp(16px, 2.8vw, 40px) calc(48px + env(safe-area-inset-bottom));
 }
 .row {
   display: flex;
