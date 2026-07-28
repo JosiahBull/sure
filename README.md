@@ -56,7 +56,9 @@ on old devices.
 Flat pnpm + Cargo workspace under `packages/`. The backend follows a ports-and-adapters
 (hexagonal) shape — an application core depending only on trait ports, with the web
 framework and the database wired in as adapters at the edges — see
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning and the interface choices.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning and the interface choices,
+and [docs/HTTP.md](docs/HTTP.md) for what the HTTP boundary does around them (caching,
+compression, HTTP/2, rate limiting).
 
 ```
 packages/
@@ -151,6 +153,11 @@ WEB_DIR=packages/web/dist DATABASE_URL=sqlite:data/sure.db ./target/release/sure
 
 Configuration via env: `DATABASE_URL` (default `sqlite:data/sure.db`), `BIND_ADDR`
 (default `127.0.0.1:8080`), `WEB_DIR` (serve the SPA when set), `RUST_LOG`.
+
+The HTTP layer — cache directives, compression, h2c, and the abuse guards — is described
+in [docs/HTTP.md](docs/HTTP.md), along with every env var that tunes it. The defaults are
+the intended settings; the most likely one to change is `CORS_ALLOWED_ORIGINS` if you serve
+the app from a different hostname than `sure.bullfamilies.com`.
 
 For the Akahu bank-feed provider (NZ accounts + transactions), set `AKAHU_APP_TOKEN` and
 `AKAHU_USER_TOKEN` (from your Akahu personal-app dashboard) — without these, "akahu" still

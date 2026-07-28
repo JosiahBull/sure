@@ -4,6 +4,7 @@
 //! `sure-dal` or `sqlx` — that split is the point of this crate.
 
 pub mod config;
+pub mod http;
 
 use std::sync::Arc;
 
@@ -137,11 +138,18 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     ));
     scheduler.spawn();
 
-    let state = build_state(pool, registry, stock_price_provider);
-    let app = sure_api::build_app(state, config.web_dir.as_deref());
+    let state = build_state(pool.clone(), registry, stock_price_provider);
+    let app = sure_api::build_app(state, config.web_dir.as_deref(), &config.api);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "sure-api listening");
-    axum::serve(listener, app.into_make_service()).await?;
+    // Returns once every connection has drained (or the grace period expired), so closing
+    // the pool below can't cut a write short. See `http` for why this isn't `axum::serve`.
+    http::serve(listener, app, config.http).await?;
+
+    // SQLite checkpoints the WAL on the last connection closing; doing it here rather than
+    // letting the process exit is what keeps a container restart from leaving one behind.
+    tracing::info!("closing the database pool");
+    pool.close().await;
     Ok(())
 }

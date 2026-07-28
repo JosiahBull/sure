@@ -14,6 +14,7 @@ use serde::Deserialize;
 use sure_core::AccountKind;
 use utoipa::IntoParams;
 
+use crate::config::Limits;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -31,11 +32,6 @@ const BROKERAGE_LIST_DIVIDENDS: &str = "brokerage.list_dividends";
 const BROKERAGE_IMPORT: &str = "brokerage.import";
 const BROKERAGE_REVALUE: &str = "brokerage.revalue";
 const BROKERAGE_BACKFILL: &str = "brokerage.backfill";
-
-/// A generous cap for the zip upload — a personal export with logos is well under this,
-/// but it's scoped to just the import route rather than raised globally (every other
-/// route keeps axum's 2 MB default).
-const IMPORT_BODY_LIMIT: usize = 50 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
@@ -352,7 +348,7 @@ pub async fn backfill(
     Ok(Json(BackfillResult { days }))
 }
 
-pub fn router() -> Router<AppState> {
+pub fn router(limits: &Limits) -> Router<AppState> {
     Router::new()
         .route("/accounts/{id}/brokerage", get(snapshot))
         .route(
@@ -366,7 +362,7 @@ pub fn router() -> Router<AppState> {
         .route("/accounts/{id}/brokerage/dividends", get(list_dividends))
         .route(
             "/accounts/{id}/brokerage/import",
-            post(import).layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT)),
+            post(import).layer(DefaultBodyLimit::max(limits.max_import_body_bytes)),
         )
         .route("/accounts/{id}/brokerage/revalue", post(revalue))
         .route("/accounts/{id}/brokerage/backfill", post(backfill))

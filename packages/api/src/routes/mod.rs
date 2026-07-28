@@ -1,5 +1,6 @@
 use axum::Router;
 
+use crate::config::Limits;
 use crate::state::AppState;
 
 pub mod accounts;
@@ -21,7 +22,11 @@ pub mod transactions;
 pub mod valuations;
 
 /// The full API surface, mounted under `/api`.
-pub fn router() -> Router<AppState> {
+///
+/// `limits` is threaded through for the two routes that override the global request-body
+/// cap — a Sharesies export zip and a config snapshot are both legitimately far larger
+/// than anything else the API accepts.
+pub fn router(limits: &Limits) -> Router<AppState> {
     let api = health::router()
         .merge(currencies::router())
         .merge(settings::router())
@@ -33,9 +38,9 @@ pub fn router() -> Router<AppState> {
         .merge(rules::router())
         .merge(crons::router())
         .merge(equity::router())
-        .merge(brokerage::router())
+        .merge(brokerage::router(limits))
         .merge(providers::router())
-        .merge(snapshot::router())
+        .merge(snapshot::router(limits))
         .merge(reports::router())
         .merge(stock_prices::router())
         .merge(forecast::router());

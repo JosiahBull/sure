@@ -311,11 +311,19 @@ pub use sure_providers as providers;  // crate::providers::{Registry, Transactio
 `AppState` (defined in `state.rs`) is the injection point: every field is either an
 `Arc<Service>` (the five logic-heavy services) or `Arc<dyn Port>` (a `sure_app::ports`
 trait object for a thin-CRUD aggregate) — both types `sure-app` defines, so the struct
-itself never names `sure_dal`. `build_app(state, web_dir)` assembles the router, the
-OpenAPI JSON endpoint, CORS, and the telemetry layers around whatever `AppState` it's
-handed; it's called both by `sure-server`'s `serve()` and by the e2e harness (with a
+itself never names `sure_dal`. `build_app(state, web_dir, &ApiConfig)` assembles the
+router, the OpenAPI JSON endpoint, and the middleware stack around whatever `AppState`
+it's handed; it's called both by `sure-server`'s `serve()` and by the e2e harness (with a
 fresh `AppState` built the same way production does), so there's no separate "test app"
 that could drift from production.
+
+Five sibling modules make up that stack, each a thin layer over the routes:
+`cache` (the route→cache-policy/deadline table), `etag` (weak validators and `304`s),
+`limits` (per-client rate limiting, the in-flight ceiling, the shared error envelope),
+`security` (security headers and the CORS allowlist), and `telemetry` (the request span
+and error normalisation). `config` holds their tunables as plain data with `Default` —
+**it parses no environment**, because reading the environment is a concern of *running*
+the server. See [HTTP.md](HTTP.md) for what each layer does and why it sits where it does.
 
 ### `sure-server` — the composition root
 A thin crate with exactly one job: own `main`, and be the only place a concrete adapter
@@ -340,16 +348,25 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let pool = sure_dal::connect(&config.database_url).await?;
     sure_dal::migrate(&pool).await?;
     // …build a second SqliteStore + SystemClock, register the scheduler tasks…
-    let app = sure_api::build_app(build_state(pool), config.web_dir.as_deref());
-    axum::serve(listener, app.into_make_service()).await
+    let app = sure_api::build_app(build_state(pool.clone()), config.web_dir.as_deref(), &config.api);
+    http::serve(listener, app, config.http).await?;   // drains before returning
+    pool.close().await;
+    Ok(())
 }
 ```
 
-`Config` (env parsing for `DATABASE_URL`/`BIND_ADDR`/`WEB_DIR`) lives here too, for the
-same reason: it's a concern of *running* the server, not of the routes themselves. The
-crate's only binary, `sure-api`, is what `Dockerfile`/`package.json`/CI actually build and
-run — the name predates the split and was kept unchanged so nothing downstream (the
-Docker `ENTRYPOINT`, `packages/api-tests`' spawned-binary path) needed to change.
+`Config` (all environment parsing — `DATABASE_URL`/`BIND_ADDR`/`WEB_DIR` plus the HTTP
+tunables it hands to `sure-api` as an `ApiConfig`) lives here too, for the same reason:
+it's a concern of *running* the server, not of the routes themselves. The crate's only
+binary, `sure-api`, is what `Dockerfile`/`package.json`/CI actually build and run — the
+name predates the split and was kept unchanged so nothing downstream (the Docker
+`ENTRYPOINT`, `packages/api-tests`' spawned-binary path) needed to change.
+
+The `http` module owns the TCP accept loop instead of calling `axum::serve`, because the
+connection-level guards — a slowloris timeout, a connection ceiling, HTTP/2 stream limits,
+and a graceful drain — are all settings on hyper's connection builder, which `axum::serve`
+constructs internally and never exposes. Draining before `pool.close()` is what stops a
+container restart from cutting a SQLite write short. See [HTTP.md](HTTP.md).
 
 ## Why this shape, and how it grows
 

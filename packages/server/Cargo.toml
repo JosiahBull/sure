@@ -15,6 +15,9 @@ sure-providers = { workspace = true }
 sure-scheduler = { workspace = true }
 sure-api = { workspace = true }
 axum = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 tokio = { workspace = true }
+tower = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

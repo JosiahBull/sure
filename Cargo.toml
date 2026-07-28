@@ -18,10 +18,41 @@ repository = ""
 
 # Shared dependency versions so the api crate and the e2e test crate stay in lockstep.
 [workspace.dependencies]
-axum = { version = "0.8", features = ["macros"] }
+# `http2` is NOT an axum default feature; without it hyper's auto-detecting connection
+# builder never sees the HTTP/2 preface and the server is HTTP/1.1-only. Enabling it gives
+# prior-knowledge h2c, which is what a reverse proxy configured to talk HTTP/2 to its
+# origin needs. Browsers still only get h2/h3 from whatever terminates TLS in front.
+axum = { version = "0.8", features = ["macros", "http2"] }
 tokio = { version = "1", features = ["full"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "cors", "fs"] }
+# `util` for `ServiceExt::map_request` — the accept loop uses it to adapt hyper's
+# `Request<Incoming>` to the `Request<axum::body::Body>` the router wants.
+tower = { version = "0.5", features = ["util"] }
+# `hyper`/`hyper-util` are named directly by `sure-server`'s accept loop, which replaces
+# `axum::serve` so the connection-level abuse guards (header-read timeout, buffer caps, h2
+# stream caps, connection ceiling, graceful drain) are actually reachable — `axum::serve`
+# builds its hyper `Builder` internally and exposes none of them. See packages/server/src/http.rs.
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = [
+    "server-auto",
+    "server-graceful",
+    "service",
+    "tokio",
+    "http1",
+    "http2",
+] }
+tower-http = { version = "0.6", features = [
+    "trace",
+    "cors",
+    "fs",
+    # Response compression. br/gzip/zstd only: deflate is strictly worse than gzip and no
+    # client asks for it alone. Request *de*compression is deliberately absent — it has no
+    # decompressed-size cap, which would turn the config-import route into a zip-bomb target.
+    "compression-br",
+    "compression-gzip",
+    "compression-zstd",
+    "set-header",
+    "catch-panic",
+] }
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "sqlite",

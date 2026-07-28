@@ -2,10 +2,11 @@
 //! The data model + all SQL live in `sure_dal::snapshot`, behind the `SnapshotRepo` port;
 //! these handlers only marshal the blob through it.
 
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::{Json, Router};
 use serde_json::Value;
 
+use crate::config::Limits;
 use crate::error::AppResult;
 use crate::state::AppState;
 
@@ -42,9 +43,12 @@ pub async fn import(State(st): State<AppState>, Json(body): Json<Value>) -> AppR
     Ok(Json(st.snapshot.import(body).await?))
 }
 
-pub fn router() -> Router<AppState> {
+pub fn router(limits: &Limits) -> Router<AppState> {
     use axum::routing::{get, post};
-    Router::new()
-        .route("/config/export", get(export))
-        .route("/config/import", post(import))
+    Router::new().route("/config/export", get(export)).route(
+        "/config/import",
+        // The matching export is a full database dump, so the global 2 MB body cap
+        // would make a snapshot round trip fail on any established ledger.
+        post(import).layer(DefaultBodyLimit::max(limits.max_snapshot_body_bytes)),
+    )
 }

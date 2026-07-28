@@ -71,7 +71,8 @@ RUN cargo build --release --locked -p sure-server --bin sure-api
 # ---- Runtime ------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 # ca-certificates: outbound TLS for providers. curl: HEALTHCHECK. tini: PID-1 signal
-# handling + zombie reaping (the server has no graceful-shutdown handler of its own).
+# handling + zombie reaping — it forwards SIGTERM to sure-api, which drains in-flight
+# requests and closes the SQLite pool itself before exiting (see docs/HTTP.md).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl tini \
  && rm -rf /var/lib/apt/lists/* \
