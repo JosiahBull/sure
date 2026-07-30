@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -28,6 +29,42 @@ pub struct Config {
     /// transfer linking) runs at all. On outside tests — see `serve` for why the e2e suite
     /// turns it off.
     pub background_tasks: bool,
+}
+
+/// Fold a `.env` file into the process environment, before anything reads it, and return
+/// the file that was used.
+///
+/// Variables already present in the real environment always win: a `.env` is a
+/// convenience for local runs, not an override of what a shell, a container, or the test
+/// harness deliberately set. Nothing here is required — with no file, every value falls
+/// back to the defaults below.
+///
+/// `SURE_ENV_FILE` decides where it comes from:
+/// - **unset** — search the working directory and its parents for `.env`, and do nothing
+///   if there isn't one. Walking up is what lets `pnpm dev` find the repo-root file from
+///   whichever package directory a command happens to run in.
+/// - **a path** — load exactly that file. Being explicit and wrong should be loud, so a
+///   missing file is an error here where an absent `.env` is not.
+/// - **empty** — skip entirely. For callers that need a hermetic environment; the API e2e
+///   suite sets this so it can assert on the errors an *unconfigured* provider returns.
+///
+/// Unlike an unparseable *value* (which warns and falls back to the default), an
+/// unparseable *file* stops startup: it loads line by line, so continuing would run with
+/// half the file applied and no way to tell which half.
+pub fn load_dotenv() -> anyhow::Result<Option<PathBuf>> {
+    match std::env::var("SURE_ENV_FILE") {
+        Ok(path) if path.trim().is_empty() => Ok(None),
+        Ok(path) => {
+            dotenvy::from_path(&path)
+                .map_err(|err| anyhow::anyhow!("SURE_ENV_FILE={path}: {err}"))?;
+            Ok(Some(PathBuf::from(path)))
+        }
+        Err(_) => match dotenvy::dotenv() {
+            Ok(path) => Ok(Some(path)),
+            Err(err) if err.not_found() => Ok(None),
+            Err(err) => Err(anyhow::anyhow!("failed to load .env: {err}")),
+        },
+    }
 }
 
 impl Config {

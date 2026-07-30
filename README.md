@@ -111,6 +111,17 @@ Open http://localhost:5173. To load demo data into the dev database:
 pnpm seed                # posts realistic data to http://127.0.0.1:8080
 ```
 
+### Configuration
+
+Everything has a working default, so none of this is needed to start. For what you do set,
+copy [`.env.example`](.env.example) to `.env` (gitignored) — the backend loads it on
+startup, searching the working directory and its parents, so `pnpm dev`, `cargo run`, and
+the release binary all find the repo-root file wherever they're run from. Real environment
+variables win over the file; `SURE_ENV_FILE` points at a different path, or set it empty to
+load nothing (the test suites do this, so a developer's tokens can't reach them). The vars
+themselves are listed under [Production](#production-single-binary) and in
+[docs/HTTP.md](docs/HTTP.md).
+
 ## Commands
 
 | Command | What it does |
@@ -151,7 +162,9 @@ pnpm build
 WEB_DIR=packages/web/dist DATABASE_URL=sqlite:data/sure.db ./target/release/sure-api
 ```
 
-Configuration via env: `DATABASE_URL` (default `sqlite:data/sure.db`), `BIND_ADDR`
+Configuration via env — or via a `.env` beside the binary or above it, which the server
+loads on startup unless `SURE_ENV_FILE` says otherwise (see
+[Configuration](#configuration)): `DATABASE_URL` (default `sqlite:data/sure.db`), `BIND_ADDR`
 (default `127.0.0.1:8080`), `WEB_DIR` (serve the SPA when set), `RUST_LOG`,
 `BACKGROUND_TASKS` (set to `off` to stop the scheduler — exchange rates, provider polling,
 stock prices, transfer linking — from running; the API e2e suite does this so a task
@@ -163,7 +176,8 @@ the intended settings; the most likely one to change is `CORS_ALLOWED_ORIGINS` i
 the app from a different hostname than `sure.bullfamilies.com`.
 
 For the Akahu bank-feed provider (NZ accounts + transactions), set `AKAHU_APP_TOKEN` and
-`AKAHU_USER_TOKEN` (from your Akahu personal-app dashboard) — without these, "akahu" still
+`AKAHU_USER_TOKEN` in the environment or in `.env` (from your Akahu personal-app
+dashboard) — without these, "akahu" still
 appears as a provider kind but discovery/sync fail with a clear error naming the missing
 var. No OAuth redirect flow is implemented; these are the static tokens Akahu issues
 directly for personal-app use.

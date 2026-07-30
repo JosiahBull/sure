@@ -34,6 +34,10 @@ export default async function globalSetup() {
     cwd: repoRoot,
     env: {
       ...process.env,
+      // The backend otherwise searches upward from `cwd` for a `.env` — and `cwd` is the
+      // repo root. Whatever a developer keeps in theirs must not reach a suite whose
+      // screenshots assert on exact numbers. Empty = don't load one.
+      SURE_ENV_FILE: "",
       DATABASE_URL: `sqlite:${dbPath}`,
       WEB_DIR: path.join(webDir, "dist"),
       BIND_ADDR: `127.0.0.1:${PORT}`,

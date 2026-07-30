@@ -20,4 +20,5 @@ hyper-util = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
 anyhow = { workspace = true }
+dotenvy = { workspace = true }
 tracing = { workspace = true }

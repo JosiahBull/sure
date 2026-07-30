@@ -63,6 +63,10 @@ export async function startServer(env: Record<string, string> = {}): Promise<Sta
   const proc = spawn(BIN, [], {
     env: {
       ...envWithoutAkahu,
+      // ...and stripping them is only sufficient if the backend does not go and read a
+      // `.env` of its own: it searches upward from the working directory, which from here
+      // is the repo root, where a developer's real tokens live. Empty = don't load one.
+      SURE_ENV_FILE: "",
       DATABASE_URL: `sqlite:${path.join(dir, "test.db")}`,
       BIND_ADDR: `127.0.0.1:${port}`,
       RUST_LOG: "error",

@@ -75,6 +75,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 utoipa = { version = "5", features = ["axum_extras", "chrono", "decimal", "preserve_order"] }
 thiserror = "2"
 anyhow = "1"
+# Local-run convenience only: the server loads a `.env` so `pnpm dev` / `cargo run` pick up
+# provider tokens without the caller exporting them. Real env vars always win — see
+# `sure_server::config::load_dotenv`.
+dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Only used to name sqlx's `log_statements` level filter; sqlx's logging itself is
