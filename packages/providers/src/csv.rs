@@ -16,7 +16,7 @@ impl TransactionProvider for CsvProvider {
     }
 
     fn description(&self) -> &'static str {
-        "Import from CSV text (columns: date, amount, description, [merchant], [external_id], [currency])"
+        "Paste or upload rows exported from your bank as CSV"
     }
 
     fn accepts_payload(&self) -> bool {

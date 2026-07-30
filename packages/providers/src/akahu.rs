@@ -34,7 +34,7 @@ impl TransactionProvider for AkahuProvider {
     }
 
     fn description(&self) -> &'static str {
-        "NZ bank accounts & transactions via Akahu (requires AKAHU_APP_TOKEN / AKAHU_USER_TOKEN)"
+        "New Zealand bank accounts, balances and transactions, connected through Akahu"
     }
 
     fn supports_account_discovery(&self) -> bool {

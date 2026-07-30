@@ -46,7 +46,7 @@ impl ExchangeRateProvider for FrankfurterProvider {
     }
 
     fn description(&self) -> &'static str {
-        "Free, keyless ECB reference rates via the Frankfurter API (frankfurter.dev)"
+        "Daily exchange rates, sourced from European Central Bank reference rates"
     }
 
     async fn fetch_rates(&self, base: &str) -> anyhow::Result<Vec<ExchangeRateQuote>> {

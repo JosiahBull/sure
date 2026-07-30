@@ -121,7 +121,7 @@ impl StockPriceProvider for YahooFinanceProvider {
     }
 
     fn description(&self) -> &'static str {
-        "Free, keyless daily prices via Yahoo Finance's chart endpoint"
+        "Daily closing prices for listed shares and funds, from Yahoo Finance"
     }
 
     async fn fetch_daily_prices(
