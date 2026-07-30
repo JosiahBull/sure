@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { DEMO_TODAY } from "./demo-date";
+
 const PORT = 8099;
 const BASE = `http://127.0.0.1:${PORT}`;
 
@@ -36,6 +38,10 @@ export default async function globalSetup() {
       WEB_DIR: path.join(webDir, "dist"),
       BIND_ADDR: `127.0.0.1:${PORT}`,
       RUST_LOG: "warn",
+      // Screenshots can only be stable if the seeded data is. The scheduler's first check
+      // runs on startup, so the exchange-rate and stock-price tasks would fetch live
+      // figures and rewrite the numbers these snapshots assert on.
+      BACKGROUND_TASKS: "off",
     },
     stdio: "ignore",
     detached: true,
@@ -59,10 +65,11 @@ export default async function globalSetup() {
   }
   if (!up) throw new Error("backend did not become ready on " + BASE);
 
-  // Seed demo data.
+  // Seed demo data, dated against the suite's pinned "today" rather than the real one so
+  // the screenshots stay byte-identical whatever day they run on.
   execSync("node scripts/seed.mjs", {
     cwd: repoRoot,
-    env: { ...process.env, BASE },
+    env: { ...process.env, BASE, SEED_TODAY: DEMO_TODAY },
     stdio: "inherit",
   });
 

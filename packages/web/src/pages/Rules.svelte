@@ -393,7 +393,10 @@
                   aria-label="Show changes"
                 >▸</button>
               {/if}
-              {formatDate(run.created_at)}
+              <!-- Wrapped so the visual suite can mask it: `created_at` is stamped by the
+                   database's own clock, so it is the one thing on this page that can't be
+                   pinned to a fixed date. -->
+              <span class="run-when">{formatDate(run.created_at)}</span>
             </td>
             <td>
               {#if run.kind === "all"}All rules

@@ -2,6 +2,23 @@
 // Usage: BASE=http://127.0.0.1:8080 node scripts/seed.mjs
 const BASE = process.env.BASE ?? "http://127.0.0.1:8080";
 
+// Every date below is derived from this one instant, so `SEED_TODAY=YYYY-MM-DD` makes the
+// whole data set reproducible — which is what lets the web visual suite pin it and get
+// byte-identical screenshots on any day (see packages/web/tests/demo-date.ts). Unset, it
+// means now, so a normal `pnpm seed` still produces data that looks current.
+// Normalised to midday UTC either way, so the calendar date can't shift under a ±13h local
+// offset: an explicit SEED_TODAY is read as that date, and an absent one means whatever
+// date it is *locally*, not in UTC (those differ for half of every day in NZ).
+const TODAY = process.env.SEED_TODAY
+  ? new Date(`${process.env.SEED_TODAY}T12:00:00Z`)
+  : (() => {
+      const local = new Date();
+      return new Date(Date.UTC(local.getFullYear(), local.getMonth(), local.getDate(), 12));
+    })();
+if (Number.isNaN(TODAY.getTime())) {
+  throw new Error(`SEED_TODAY is not a YYYY-MM-DD date: ${process.env.SEED_TODAY}`);
+}
+
 async function api(method, path, body) {
   const res = await fetch(`${BASE}${path}`, {
     method,
@@ -19,11 +36,11 @@ const put = (p, b) => api("PUT", p, b);
 function iso(d) {
   return d.toISOString().slice(0, 10);
 }
+// Built from calendar components rather than `setMonth` then `setDate`: stepping the month
+// first off a 29th–31st overflows into the following month (June 31 → July 1), which
+// silently moved a month's data around depending on what day the seed happened to run.
 function monthsAgo(n, day = 1) {
-  const d = new Date();
-  d.setMonth(d.getMonth() - n);
-  d.setDate(day);
-  return iso(d);
+  return iso(new Date(Date.UTC(TODAY.getUTCFullYear(), TODAY.getUTCMonth() - n, day, 12)));
 }
 function monthsAhead(n, day = 1) {
   return monthsAgo(-n, day);

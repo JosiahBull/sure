@@ -26,5 +26,10 @@ export default defineConfig({
     hasTouch: true,
     // The PWA service worker would cache responses and make tests flaky.
     serviceWorkers: "block",
+    // Dates are formatted by the platform, so an unpinned locale/zone would render them
+    // differently per machine — and a zone west of UTC would shift the seeded dates by a
+    // day. NZ to match the app's own NZD/NZ framing.
+    locale: "en-NZ",
+    timezoneId: "Pacific/Auckland",
   },
 });

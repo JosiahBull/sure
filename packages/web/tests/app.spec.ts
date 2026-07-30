@@ -1,4 +1,7 @@
-import { test, expect, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+
+import { DEMO_WHEN } from "./demo-date";
+import { test, expect } from "./fixtures";
 
 async function goto(page: Page, route: string) {
   await page.goto(`/#${route}`);
@@ -27,6 +30,17 @@ test("rules lists the seeded rule and its audit run", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Audit log" })).toBeVisible();
   // The seed ran the rule, so the audit log lists a run under its rule's name.
   await expect(page.locator("table tbody")).toContainText("Supermarkets → Groceries");
+  // The audit log's "When" is stamped by SQLite's own clock when the seed runs the rules —
+  // the one date on the page that neither SEED_TODAY nor the fixed browser clock reaches.
+  // Rewritten to the pinned date rather than masked, for two reasons: `.table` sizes its
+  // columns from their content, so a different-length date is free to move everything
+  // beside it — a shift no mask over the cell itself would contain — and a real date keeps
+  // the snapshot showing what the page actually looks like, where a mask would leave a
+  // block of colour. The column's contents stay covered textually, here and in
+  // rules-builder.spec.ts.
+  await page
+    .locator("table tbody .run-when")
+    .evaluateAll((els, when) => els.forEach((el) => (el.textContent = when)), DEMO_WHEN);
   await expect(page).toHaveScreenshot("rules.png", { fullPage: true });
 });
 
@@ -74,7 +88,7 @@ test("preferences settings page exposes config backup", async ({ page }) => {
 
 test("can add a transaction and see it in the list", async ({ page }) => {
   await goto(page, "/transactions");
-  await page.getByRole("button", { name: "+ Add" }).click();
+  await page.getByRole("button", { name: "New transaction" }).click();
   await page.getByPlaceholder("-12.50").fill("-42.50");
   await page.getByLabel("Description").fill("Playwright test coffee");
   await page.getByRole("button", { name: "Save transaction" }).click();

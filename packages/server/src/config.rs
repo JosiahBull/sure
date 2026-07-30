@@ -24,6 +24,10 @@ pub struct Config {
     pub api: ApiConfig,
     /// Connection-level abuse guards and the shutdown grace period.
     pub http: HttpConfig,
+    /// Whether the background scheduler (exchange rates, provider polling, stock prices,
+    /// transfer linking) runs at all. On outside tests — see `serve` for why the e2e suite
+    /// turns it off.
+    pub background_tasks: bool,
 }
 
 impl Config {
@@ -86,6 +90,7 @@ impl Config {
             web_dir,
             api,
             http,
+            background_tasks: flag("BACKGROUND_TASKS", true),
         })
     }
 }

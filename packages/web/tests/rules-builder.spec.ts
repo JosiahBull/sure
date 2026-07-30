@@ -1,4 +1,6 @@
-import { test, expect, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+
+import { test, expect } from "./fixtures";
 
 async function goto(page: Page, route: string) {
   await page.goto(`/#${route}`);

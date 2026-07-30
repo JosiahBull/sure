@@ -1,4 +1,6 @@
-import { test, expect, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+
+import { test, expect } from "./fixtures";
 
 async function goto(page: Page, route: string) {
   await page.goto(`/#${route}`);
@@ -52,17 +54,25 @@ test("clicking an account jumps to its filtered transactions", async ({ page }) 
   await expect(page).toHaveURL(/#\/transactions\?account=\d+$/);
   await expect(page.getByRole("heading", { name: "Transactions" })).toBeVisible();
 
+  // The account/category/type selects now live in a dropdown behind the Filter button,
+  // so open it to read what the deep-link preselected.
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
   const accountFilter = page.getByLabel("Filter by account");
   await expect(accountFilter).not.toHaveValue(""); // not "All accounts"
   const selectedLabel = await accountFilter.locator("option:checked").textContent();
   expect(selectedLabel).toBe("Everyday");
+  // Dismiss it again — the panel is a dropdown and would cover the rows asserted below.
+  await page.keyboard.press("Escape");
 
   // Every visible row belongs to the filtered account — not a mix. The default
-  // (date-sorted) view groups rows by day as ".tx-row" divs, not a <table>; the account
-  // name is the small faint line under the description.
-  const accountCells = page.locator(".tx-row .small.faint.ell");
-  await expect(accountCells.first()).toBeVisible();
-  const distinctAccounts = new Set(await accountCells.allTextContents());
+  // (date-sorted) view groups rows by day as ".tx-row" divs, not a <table>, and the row's
+  // secondary line reads "[merchant • ]account", so the part after the last bullet is the
+  // account name (the day-grouped view leaves the date to the group header).
+  const subLines = page.locator(".tx-row .tx-sub");
+  await expect(subLines.first()).toBeVisible();
+  const distinctAccounts = new Set(
+    (await subLines.allTextContents()).map((t) => t.split("•").pop()!.trim()),
+  );
   expect([...distinctAccounts]).toEqual(["Everyday"]);
 });
 

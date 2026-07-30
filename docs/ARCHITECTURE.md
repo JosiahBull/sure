@@ -347,7 +347,8 @@ fn build_state(db: Db) -> sure_api::State {
 pub async fn serve(config: Config) -> anyhow::Result<()> {
     let pool = sure_dal::connect(&config.database_url).await?;
     sure_dal::migrate(&pool).await?;
-    // …build a second SqliteStore + SystemClock, register the scheduler tasks…
+    // …build a second SqliteStore + SystemClock, register the scheduler tasks
+    // (skipped entirely when BACKGROUND_TASKS=off, as the e2e suite sets)…
     let app = sure_api::build_app(build_state(pool.clone()), config.web_dir.as_deref(), &config.api);
     http::serve(listener, app, config.http).await?;   // drains before returning
     pool.close().await;
@@ -355,8 +356,8 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
 }
 ```
 
-`Config` (all environment parsing — `DATABASE_URL`/`BIND_ADDR`/`WEB_DIR` plus the HTTP
-tunables it hands to `sure-api` as an `ApiConfig`) lives here too, for the same reason:
+`Config` (all environment parsing — `DATABASE_URL`/`BIND_ADDR`/`WEB_DIR`/`BACKGROUND_TASKS`
+plus the HTTP tunables it hands to `sure-api` as an `ApiConfig`) lives here too, for the same reason:
 it's a concern of *running* the server, not of the routes themselves. The crate's only
 binary, `sure-api`, is what `Dockerfile`/`package.json`/CI actually build and run — the
 name predates the split and was kept unchanged so nothing downstream (the Docker

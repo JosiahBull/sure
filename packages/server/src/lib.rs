@@ -89,54 +89,61 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let pool = sure_dal::connect(&config.database_url).await?;
     sure_dal::migrate(&pool).await?;
 
-    let task_state = Arc::new(sure_dal::scheduled_tasks::SqliteTaskStateStore::new(
-        pool.clone(),
-    ));
-    let mut scheduler =
-        sure_scheduler::Scheduler::new(task_state, std::time::Duration::from_secs(60));
-
     // The concrete provider adapters, built once here (the composition root is the only
     // crate that names them) and shared between the scheduled tasks and the HTTP handlers.
     let registry: Arc<dyn ProviderRegistry> = Arc::new(sure_providers::Registry::new());
     let stock_price_provider: Arc<dyn StockPriceProvider> =
         Arc::new(sure_providers::YahooFinanceProvider::new());
 
-    // One store + clock for the scheduled tasks' ports (a separate instance from the one
-    // `build_state` builds for the HTTP handlers — both are stateless wrappers around
-    // clones of the same pool, so there's nothing to share).
-    let store = Arc::new(SqliteStore::new(pool.clone()));
-    let clock = Arc::new(SystemClock);
-    let sync = Arc::new(SyncService::new(
-        store.clone(),
-        store.clone(),
-        store.clone(),
-        registry.clone(),
-        clock.clone(),
-    ));
+    // Opt-out (`BACKGROUND_TASKS=off`) because the scheduler's first check runs
+    // immediately, so every never-run task fires during startup: the API e2e suite turns
+    // it off so the provider poll — which records a sync row per enabled provider — can't
+    // race a test's own fixtures, and so no test reaches the exchange-rate or stock-price
+    // APIs over the network.
+    if config.background_tasks {
+        let task_state = Arc::new(sure_dal::scheduled_tasks::SqliteTaskStateStore::new(
+            pool.clone(),
+        ));
+        let mut scheduler =
+            sure_scheduler::Scheduler::new(task_state, std::time::Duration::from_secs(60));
 
-    scheduler.register(Box::new(
-        sure_app::tasks::exchange_rates::ExchangeRateTask::new(
+        // One store + clock for the scheduled tasks' ports (a separate instance from the one
+        // `build_state` builds for the HTTP handlers — both are stateless wrappers around
+        // clones of the same pool, so there's nothing to share).
+        let store = Arc::new(SqliteStore::new(pool.clone()));
+        let clock = Arc::new(SystemClock);
+        let sync = Arc::new(SyncService::new(
             store.clone(),
-            Arc::new(sure_providers::FrankfurterProvider::new()),
-        ),
-    ));
-    scheduler.register(Box::new(
-        sure_app::tasks::provider_poll::ProviderPollTask::new(
+            store.clone(),
             store.clone(),
             registry.clone(),
-            sync,
-        ),
-    ));
-    scheduler.register(Box::new(sure_app::stock_prices::StockPriceTask::new(
-        store.clone(),
-        store.clone(),
-        clock,
-        stock_price_provider.clone(),
-    )));
-    scheduler.register(Box::new(
-        sure_app::tasks::transfer_link::TransferLinkTask::new(store),
-    ));
-    scheduler.spawn();
+            clock.clone(),
+        ));
+
+        scheduler.register(Box::new(
+            sure_app::tasks::exchange_rates::ExchangeRateTask::new(
+                store.clone(),
+                Arc::new(sure_providers::FrankfurterProvider::new()),
+            ),
+        ));
+        scheduler.register(Box::new(
+            sure_app::tasks::provider_poll::ProviderPollTask::new(
+                store.clone(),
+                registry.clone(),
+                sync,
+            ),
+        ));
+        scheduler.register(Box::new(sure_app::stock_prices::StockPriceTask::new(
+            store.clone(),
+            store.clone(),
+            clock,
+            stock_price_provider.clone(),
+        )));
+        scheduler.register(Box::new(
+            sure_app::tasks::transfer_link::TransferLinkTask::new(store),
+        ));
+        scheduler.spawn();
+    }
 
     let state = build_state(pool.clone(), registry, stock_price_provider);
     let app = sure_api::build_app(state, config.web_dir.as_deref(), &config.api);

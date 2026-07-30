@@ -66,6 +66,11 @@ export async function startServer(env: Record<string, string> = {}): Promise<Sta
       DATABASE_URL: `sqlite:${path.join(dir, "test.db")}`,
       BIND_ADDR: `127.0.0.1:${port}`,
       RUST_LOG: "error",
+      // No background scheduler. Its first check runs immediately, so the provider poll
+      // would record an extra "error" sync row for any enabled provider a test just
+      // created — a race the provider specs lost intermittently — and the exchange-rate
+      // and stock-price tasks would hit their live upstreams from every test.
+      BACKGROUND_TASKS: "off",
       ...env,
     },
     stdio: "ignore",

@@ -1,4 +1,6 @@
-import { test, expect, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+
+import { test, expect } from "./fixtures";
 
 async function goto(page: Page, route: string) {
   await page.goto(`/#${route}`);
@@ -32,7 +34,10 @@ test("clicking a pie segment opens transactions filtered to that category and ra
   const pie = page.locator(".card", { hasText: "Where money went" });
   await pie.locator('svg .seg[aria-label="Housing"]').dispatchEvent("click");
 
-  await expect(page).toHaveURL(/#\/transactions\?category=\d+&range=last_12m/);
+  // The deep-link carries the pie's own side of the ledger as `type` alongside the
+  // category and the overview's range — an uncategorised slice has only `type` to tell
+  // income from outgoings, so it's always sent.
+  await expect(page).toHaveURL(/#\/transactions\?category=\d+&type=expense&range=last_12m/);
   await expect(page.locator(".tx-row").first()).toBeVisible();
 });
 
@@ -83,6 +88,7 @@ test("clicking a sankey category node opens its filtered transactions", async ({
   const flow = page.locator(".card", { hasText: "Money flow" });
   await flow.locator("g.node", { hasText: "Housing" }).dispatchEvent("click");
 
-  await expect(page).toHaveURL(/#\/transactions\?category=\d+&range=last_12m/);
+  // Same deep-link shape as the pie: the node's kind rides along as `type`.
+  await expect(page).toHaveURL(/#\/transactions\?category=\d+&type=expense&range=last_12m/);
   await expect(page.locator(".tx-row").first()).toBeVisible();
 });

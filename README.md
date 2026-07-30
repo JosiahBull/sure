@@ -152,7 +152,10 @@ WEB_DIR=packages/web/dist DATABASE_URL=sqlite:data/sure.db ./target/release/sure
 ```
 
 Configuration via env: `DATABASE_URL` (default `sqlite:data/sure.db`), `BIND_ADDR`
-(default `127.0.0.1:8080`), `WEB_DIR` (serve the SPA when set), `RUST_LOG`.
+(default `127.0.0.1:8080`), `WEB_DIR` (serve the SPA when set), `RUST_LOG`,
+`BACKGROUND_TASKS` (set to `off` to stop the scheduler — exchange rates, provider polling,
+stock prices, transfer linking — from running; the API e2e suite does this so a task
+firing on startup can't race a test).
 
 The HTTP layer — cache directives, compression, h2c, and the abuse guards — is described
 in [docs/HTTP.md](docs/HTTP.md), along with every env var that tunes it. The defaults are
