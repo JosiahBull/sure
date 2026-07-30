@@ -105,6 +105,11 @@ pnpm gen:client          # build the OpenAPI spec + generate the typed client
 pnpm dev                 # api on :8080, web dev server on :5173 (proxies /api)
 ```
 
+Vite doesn't start until the backend answers `/api/health`, so on a cold build the web
+pane sits quiet while cargo works rather than serving a SPA whose every request dies in
+the proxy with `ECONNREFUSED`. `pnpm dev:web` on its own skips the wait, for when a
+backend is already running.
+
 Open http://localhost:5173. To load demo data into the dev database:
 
 ```bash
@@ -126,7 +131,7 @@ themselves are listed under [Production](#production-single-binary) and in
 
 | Command | What it does |
 | --- | --- |
-| `pnpm dev` | Run backend + Vite dev server together |
+| `pnpm dev` | Run backend + Vite dev server together (Vite waits for the backend) |
 | `pnpm gen:client` | Regenerate the OpenAPI spec and the typed client |
 | `pnpm build` | Generate client, build the release backend, build the SPA |
 | `pnpm seed` | Seed a running backend with demo data |
