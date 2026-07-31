@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use sure_core::StockPrice;
 use sure_core::{
-    AppError, AppResult, BrokerageActivity30d, BrokerageSnapshot, Position, WalletBalance,
+    AppError, AppResult, BrokerageActivity30d, BrokerageSnapshot, LotKind, Position, WalletBalance,
 };
 
 use crate::fx::Fx;
@@ -313,15 +313,18 @@ fn market_value_minor(quantity: f64, close: &str, dp: i32) -> Option<i64> {
 /// (no remaining position) or no lot ever carried a price (nothing to base a cost on) —
 /// the caller treats both as "no return%".
 ///
-/// - A buy (or a priced `corporate` row — e.g. a DRIP) adds `quantity × unit_price` (scaled
-///   to minor units via `fx.dp`) plus `fee_minor` to cost, and `quantity` to the running
-///   total.
-/// - A sell reduces cost proportionally to the fraction of the current position it exits
-///   (average-cost realizes the rest as gain/loss, which this doesn't track — only the
-///   remaining unrealized basis matters for `return_pct`).
-/// - An unpriced `corporate` row (a split/bonus issue — no real per-share price) is a
-///   quantity-only adjustment: total cost held doesn't change, just how many shares it's
-///   spread across.
+/// - [`LotKind::Sell`] reduces cost proportionally to the fraction of the current
+///   position it exits (average-cost realizes the rest as gain/loss, which this doesn't
+///   track — only the remaining unrealized basis matters for `return_pct`).
+/// - [`LotKind::Buy`] and [`LotKind::Corporate`] are handled identically, keyed off
+///   whether the row has a price rather than off `kind` itself: a buy (almost) always
+///   carries one, and a `corporate` row does too when it's something like a DRIP dividend
+///   reinvestment — in both cases real money bought real shares, so it adds
+///   `quantity × unit_price` (scaled to minor units via `fx.dp`) plus `fee_minor` to cost,
+///   and `quantity` to the running total. An unpriced row (a `corporate` stock
+///   split/bonus issue — or, in principle, a `buy` with no recorded price) is a
+///   quantity-only adjustment instead: total cost held doesn't change, just how many
+///   shares it's spread across.
 fn cost_basis_by_ticker(lots: &[CostLotRow], fx: &Fx) -> HashMap<(String, String), Option<i64>> {
     struct Running {
         qty: f64,
@@ -337,21 +340,25 @@ fn cost_basis_by_ticker(lots: &[CostLotRow], fx: &Fx) -> HashMap<(String, String
             cost_minor: 0.0,
             ever_priced: false,
         });
-        if lot.kind == "sell" {
-            if r.qty > 0.0 {
-                let frac_sold = (-lot.quantity / r.qty).clamp(0.0, 1.0);
-                r.cost_minor -= r.cost_minor * frac_sold;
+        match lot.kind {
+            LotKind::Sell => {
+                if r.qty > 0.0 {
+                    let frac_sold = (-lot.quantity / r.qty).clamp(0.0, 1.0);
+                    r.cost_minor -= r.cost_minor * frac_sold;
+                }
+                r.qty += lot.quantity;
             }
-            r.qty += lot.quantity;
-        } else if let Some(price) = lot.unit_price {
-            // buy, or a priced corporate action (DRIP).
-            let dp = fx.dp(&lot.currency_code);
-            r.cost_minor += lot.quantity * price * 10f64.powi(dp) + lot.fee_minor as f64;
-            r.qty += lot.quantity;
-            r.ever_priced = true;
-        } else {
-            // unpriced corporate action (split/bonus issue): quantity-only.
-            r.qty += lot.quantity;
+            LotKind::Buy | LotKind::Corporate => match lot.unit_price {
+                Some(price) => {
+                    let dp = fx.dp(&lot.currency_code);
+                    r.cost_minor += lot.quantity * price * 10f64.powi(dp) + lot.fee_minor as f64;
+                    r.qty += lot.quantity;
+                    r.ever_priced = true;
+                }
+                None => {
+                    r.qty += lot.quantity;
+                }
+            },
         }
     }
 
@@ -753,7 +760,13 @@ mod tests {
         assert_eq!(valuations.rows.lock().unwrap().len(), 1);
     }
 
-    fn lot(ticker: &str, qty: f64, price: Option<f64>, fee_minor: i64, kind: &str) -> CostLotRow {
+    fn lot(
+        ticker: &str,
+        qty: f64,
+        price: Option<f64>,
+        fee_minor: i64,
+        kind: LotKind,
+    ) -> CostLotRow {
         CostLotRow {
             ticker: ticker.to_string(),
             exchange: "NZX".to_string(),
@@ -761,7 +774,7 @@ mod tests {
             quantity: qty,
             unit_price: price,
             fee_minor,
-            kind: kind.to_string(),
+            kind,
         }
     }
 
@@ -786,8 +799,8 @@ mod tests {
         // Buy 10 @ $5.00 + $2 fee => $52.00 cost. Selling 4 (40% of the position) removes
         // 40% of that cost, leaving the other 6 shares at the same average per-share cost.
         let lots = vec![
-            lot("MEL", 10.0, Some(5.00), 200, "buy"),
-            lot("MEL", -4.0, None, 0, "sell"),
+            lot("MEL", 10.0, Some(5.00), 200, LotKind::Buy),
+            lot("MEL", -4.0, None, 0, LotKind::Sell),
         ];
         let basis = cost_basis_by_ticker(&lots, &fx);
         assert_eq!(basis[&("MEL".to_string(), "NZX".to_string())], Some(3120));
@@ -797,9 +810,9 @@ mod tests {
     async fn cost_basis_is_none_once_fully_exited() {
         let fx = nzd_fx().await;
         let lots = vec![
-            lot("MEL", 10.0, Some(5.00), 200, "buy"),
-            lot("MEL", -4.0, None, 0, "sell"),
-            lot("MEL", -6.0, None, 0, "sell"),
+            lot("MEL", 10.0, Some(5.00), 200, LotKind::Buy),
+            lot("MEL", -4.0, None, 0, LotKind::Sell),
+            lot("MEL", -6.0, None, 0, LotKind::Sell),
         ];
         let basis = cost_basis_by_ticker(&lots, &fx);
         assert_eq!(basis[&("MEL".to_string(), "NZX".to_string())], None);
@@ -811,8 +824,8 @@ mod tests {
         // A 2-for-1 split (or bonus issue): total cost held doesn't change, only how many
         // shares it's spread across.
         let lots = vec![
-            lot("FPH", 10.0, Some(5.00), 0, "buy"),
-            lot("FPH", 10.0, None, 0, "corporate"),
+            lot("FPH", 10.0, Some(5.00), 0, LotKind::Buy),
+            lot("FPH", 10.0, None, 0, LotKind::Corporate),
         ];
         let basis = cost_basis_by_ticker(&lots, &fx);
         assert_eq!(basis[&("FPH".to_string(), "NZX".to_string())], Some(5000));
@@ -823,8 +836,8 @@ mod tests {
         let fx = nzd_fx().await;
         // e.g. a dividend reinvestment (DRIP): a real per-share price, adds to cost.
         let lots = vec![
-            lot("AIA", 10.0, Some(5.00), 0, "buy"),
-            lot("AIA", 2.0, Some(5.10), 0, "corporate"),
+            lot("AIA", 10.0, Some(5.00), 0, LotKind::Buy),
+            lot("AIA", 2.0, Some(5.10), 0, LotKind::Corporate),
         ];
         let basis = cost_basis_by_ticker(&lots, &fx);
         assert_eq!(
@@ -838,7 +851,7 @@ mod tests {
         let fx = nzd_fx().await;
         // Only an unpriced corporate action ever touched this ticker (e.g. a spin-off share
         // received with no recorded price) — nothing to base a cost on.
-        let lots = vec![lot("SPUN", 5.0, None, 0, "corporate")];
+        let lots = vec![lot("SPUN", 5.0, None, 0, LotKind::Corporate)];
         let basis = cost_basis_by_ticker(&lots, &fx);
         assert_eq!(basis[&("SPUN".to_string(), "NZX".to_string())], None);
     }

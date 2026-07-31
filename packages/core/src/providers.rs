@@ -4,6 +4,40 @@ use utoipa::ToSchema;
 
 use crate::types::{AccountKind, SaveAccount};
 
+/// Whether a sync attempt succeeded. Stored as `provider_syncs.status` (plain `TEXT`).
+/// Named `SyncOutcome` rather than `SyncStatus` so `SyncOutcome::Ok` doesn't shadow
+/// `Result::Ok` at use sites.
+#[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncOutcome {
+    Ok,
+    Error,
+}
+
+impl SyncOutcome {
+    /// The stored/wire representation (snake_case) — matches
+    /// `#[serde(rename_all = "snake_case")]`. Used by the DAL to bind this as a plain
+    /// `TEXT` column without `sure-core` needing an `sqlx` dependency.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SyncOutcome::Ok => "ok",
+            SyncOutcome::Error => "error",
+        }
+    }
+}
+
+impl std::str::FromStr for SyncOutcome {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "ok" => SyncOutcome::Ok,
+            "error" => SyncOutcome::Error,
+            other => return Err(format!("unknown sync outcome '{other}'")),
+        })
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Provider {
     pub id: i64,
@@ -88,7 +122,7 @@ pub struct ProviderSync {
     pub provider_id: i64,
     pub imported: i64,
     pub skipped: i64,
-    pub status: String,
+    pub status: SyncOutcome,
     pub detail: Option<String>,
     pub created_at: String,
 }

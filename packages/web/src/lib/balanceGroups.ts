@@ -69,6 +69,9 @@ export function groupByKind(
 const CLASS_GROUPS: { key: string; label: string; kinds: string[] }[] = [
   { key: "cash", label: "Cash", kinds: ["bank", "cash", "savings"] },
   { key: "investment", label: "Investment", kinds: ["shares_nz", "shares_us", "shares_private", "brokerage"] },
+  // Crypto is an investment by class but the reference lists it as its own bucket, between
+  // Investment and Property (Accountable::TYPES) — and gives it its own colour, see KIND_STYLE.
+  { key: "crypto", label: "Crypto", kinds: ["crypto"] },
   { key: "property", label: "Property", kinds: ["real_estate"] },
   { key: "vehicle", label: "Vehicle", kinds: ["vehicle"] },
   { key: "other_asset", label: "Other assets", kinds: ["asset"] },
@@ -78,7 +81,10 @@ const CLASS_GROUPS: { key: string; label: string; kinds: string[] }[] = [
 ];
 const CLASS_OF = new Map<string, { key: string; label: string; order: number }>();
 CLASS_GROUPS.forEach((g, order) => g.kinds.forEach((k) => CLASS_OF.set(k, { key: g.key, label: g.label, order })));
-const classOf = (kind: string) => CLASS_OF.get(kind) ?? { key: "other_asset", label: "Other assets", order: 4 };
+// An unrecognised kind falls in with the catch-all assets bucket. Looked up rather than spelled
+// out, so inserting a group above it can't leave the fallback sorting at the wrong position.
+const FALLBACK_CLASS = CLASS_OF.get("asset")!;
+const classOf = (kind: string) => CLASS_OF.get(kind) ?? FALLBACK_CLASS;
 
 export interface ClassGroup {
   key: string;

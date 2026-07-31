@@ -2502,6 +2502,10 @@ export interface paths {
          * Link an upstream account (from [`discover_accounts`]) to a local account, creating it
          *     first if `new_account` is given rather than `existing_account_id`. Triggers an
          *     immediate best-effort sync so the account isn't empty until the next scheduled poll.
+         * @description A `new_account` here is validated as `ValidationMode::Linked` (see `sure_core`): a feed
+         *     reports a name, a kind and a currency, so the fields the account form insists on — a
+         *     mortgage's principal, a property's city — are not demanded of it. Sync fills in whatever
+         *     the upstream does report.
          */
         post: {
             parameters: {
@@ -2552,7 +2556,8 @@ export interface paths {
         /**
          * Link several upstream accounts to one local account at once (e.g. every currency wallet
          *     of a Sharesies brokerage account into a single Brokerage account). Creates the account
-         *     once, links every member, then best-effort syncs each. See [`LinkProviderGroup`].
+         *     once, links every member, then best-effort syncs each. See [`LinkProviderGroup`]; a
+         *     `new_account` is validated in `Linked` mode, as in [`link`].
          */
         post: {
             parameters: {
@@ -2862,7 +2867,10 @@ export interface paths {
                 query?: {
                     from?: string;
                     to?: string;
-                    /** @description Sampling interval: `month` (default), `week`, or `day`. */
+                    /**
+                     * @description Sampling interval: `month` (default), `week`, or `day`. An unrecognised value is a
+                     *     400, not a silent fall back to `month`.
+                     */
                     interval?: string;
                     currency?: string;
                 };
@@ -3916,9 +3924,8 @@ export interface components {
             /** Format: int64 */
             account_id: number;
             name: string;
-            kind: string;
-            /** @description cash | asset | investment | liability */
-            class: string;
+            kind: components["schemas"]["AccountKind"];
+            class: components["schemas"]["AccountClass"];
             currency_code: string;
             /** Format: int64 */
             value_minor: number;
@@ -3943,7 +3950,7 @@ export interface components {
          *     per-kind configuration lives in an account's `metadata`.
          * @enum {string}
          */
-        AccountKind: "cash" | "bank" | "savings" | "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan" | "vehicle" | "real_estate" | "shares_nz" | "shares_us" | "shares_private" | "brokerage" | "asset" | "liability";
+        AccountKind: "cash" | "bank" | "savings" | "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan" | "vehicle" | "real_estate" | "shares_nz" | "shares_us" | "shares_private" | "brokerage" | "crypto" | "asset" | "liability";
         /**
          * @description Typed configuration for an account. The variant (`profile`) is determined by the
          *     account's `kind`; see [`AccountMetadata::profile_for`].
@@ -3969,10 +3976,18 @@ export interface components {
         }) | (components["schemas"]["BrokerageMeta"] & {
             /** @enum {string} */
             profile: "brokerage";
+        }) | (components["schemas"]["CryptoMeta"] & {
+            /** @enum {string} */
+            profile: "crypto";
         }) | (components["schemas"]["GenericMeta"] & {
             /** @enum {string} */
             profile: "generic";
         });
+        /**
+         * @description The unit a property's floor/land area is recorded in.
+         * @enum {string}
+         */
+        AreaUnit: "sqft" | "sqm";
         /** @enum {string} */
         AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history";
         BackfillResult: {
@@ -4050,6 +4065,11 @@ export interface components {
          *     many tickers across many currencies plus cash wallets.
          */
         BrokerageMeta: {
+            /**
+             * @description Finer-grained classification (e.g. `401k`, `kiwisaver`, `roth_ira`); the curated
+             *     option list — and the tax treatment derived from it — lives in the web layer.
+             */
+            subtype?: string | null;
             /** @description Broker or platform (e.g. Sharesies, Hatch, IBKR). */
             broker?: string | null;
             url?: string | null;
@@ -4109,8 +4129,7 @@ export interface components {
              * @description Parent category for nesting; `null` for a top-level category.
              */
             parent_id?: number | null;
-            /** @description `income` | `expense` | `transfer`. Transfers are excluded from spend reports. */
-            kind: string;
+            kind: components["schemas"]["CategoryKind"];
             color?: string | null;
             icon?: string | null;
             /** Format: int64 */
@@ -4124,6 +4143,12 @@ export interface components {
             income: components["schemas"]["CategoryTotal"][];
             expense: components["schemas"]["CategoryTotal"][];
         };
+        /**
+         * @description A category's flow direction. Stored as `categories.kind` (a plain `TEXT` column).
+         *     Transfers are excluded from spend reports (see `sure_app::reports::is_transfer`).
+         * @enum {string}
+         */
+        CategoryKind: "income" | "expense" | "transfer";
         /**
          * @description A category plus its nested children, for rendering the category tree.
          *
@@ -4153,7 +4178,7 @@ export interface components {
             name: string;
             /** Format: int64 */
             account_id: number;
-            kind: string;
+            kind: components["schemas"]["CronKind"];
             /** Format: int64 */
             rate_bps?: number | null;
             /** Format: int64 */
@@ -4169,13 +4194,19 @@ export interface components {
             created_at: string;
             updated_at: string;
         };
+        /**
+         * @description What a scheduled adjustment does each period. Stored as `crons.kind` /
+         *     `cron_runs.kind` (plain `TEXT` columns).
+         * @enum {string}
+         */
+        CronKind: "appreciation" | "depreciation" | "interest" | "fixed_transaction";
         CronRun: {
             /** Format: int64 */
             id: number;
             /** Format: int64 */
             cron_id: number;
             period: string;
-            kind: string;
+            kind: components["schemas"]["CronKind"];
             /** Format: int64 */
             valuation_id?: number | null;
             /** Format: int64 */
@@ -4187,6 +4218,21 @@ export interface components {
             /** Format: int64 */
             applied: number;
             runs: components["schemas"]["CronRun"][];
+        };
+        /**
+         * @description Cryptocurrency held in a wallet or on an exchange. Unlike shares, the tax treatment
+         *     isn't implied by the subtype, so it's recorded explicitly.
+         */
+        CryptoMeta: {
+            /**
+             * @description Where the coins are held: `wallet` or `exchange`; the curated option list lives in
+             *     the web layer.
+             */
+            subtype?: string | null;
+            tax_treatment?: null | components["schemas"]["TaxTreatment"];
+            /** @description A link to the exchange or block explorer. */
+            url?: string | null;
+            notes?: string | null;
         };
         Currency: {
             /** @description ISO 4217 code (or a user code for private assets), e.g. `NZD`. */
@@ -4202,6 +4248,11 @@ export interface components {
         };
         /** @description Bank / cash / savings / card accounts. */
         DepositoryMeta: {
+            /**
+             * @description Finer-grained classification within the kind (e.g. `checking`, `savings`, `hsa`);
+             *     the curated option list lives in the web layer.
+             */
+            subtype?: string | null;
             /** @description Account or card number (store a masked value if you like, e.g. `••4321`). */
             account_number?: string | null;
             /**
@@ -4212,6 +4263,25 @@ export interface components {
              *     providers that report a live limit (e.g. Akahu); editable manually otherwise.
              */
             credit_limit_minor?: number | null;
+            /**
+             * Format: int64
+             * @description The smallest amount payable each statement cycle, in minor units — for a
+             *     `credit_card`/`revolving_credit` account.
+             */
+            minimum_payment_minor?: number | null;
+            /**
+             * Format: int64
+             * @description Annual percentage rate in basis points (e.g. 15.99% = 1599) — for a
+             *     `credit_card`/`revolving_credit` account.
+             */
+            apr_bps?: number | null;
+            /** @description ISO-8601 date the card expires. */
+            expiration_date?: string | null;
+            /**
+             * Format: int64
+             * @description The yearly fee charged for holding the card, in minor units.
+             */
+            annual_fee_minor?: number | null;
             /** @description A link to online banking or the statement portal. */
             url?: string | null;
             notes?: string | null;
@@ -4404,7 +4474,7 @@ export interface components {
             unit_price?: number | null;
             /** Format: int64 */
             fee_minor: number;
-            kind: string;
+            kind: components["schemas"]["LotKind"];
             external_id?: string | null;
             provider?: string | null;
             created_at: string;
@@ -4458,6 +4528,11 @@ export interface components {
         };
         /** @description A generic loan (personal loan, student loan, vehicle financing, ...). */
         LoanMeta: {
+            /**
+             * @description Finer-grained classification (e.g. `mortgage`, `student`, `auto`); the curated
+             *     option list lives in the web layer.
+             */
+            subtype?: string | null;
             lender?: string | null;
             /**
              * Format: int64
@@ -4472,6 +4547,7 @@ export interface components {
              * @description Annual interest rate in basis points (e.g. 8.90% = 890).
              */
             interest_rate_bps?: number | null;
+            rate_type?: null | components["schemas"]["RateType"];
             /**
              * Format: int64
              * @description Overall loan term, in months.
@@ -4482,6 +4558,11 @@ export interface components {
             url?: string | null;
             notes?: string | null;
         };
+        /**
+         * @description What kind of ledger entry a `holdings` row is. Stored as `holdings.kind` (plain `TEXT`).
+         * @enum {string}
+         */
+        LotKind: "buy" | "sell" | "corporate";
         /**
          * @description A reusable payee. Custom merchants are unique by name (case-insensitive) and can
          *     carry a suggested default category.
@@ -4496,6 +4577,11 @@ export interface components {
             created_at: string;
             updated_at: string;
         };
+        /**
+         * @description The unit a vehicle's odometer reading is recorded in.
+         * @enum {string}
+         */
+        MileageUnit: "mi" | "km";
         /** @description A mortgage secured against a property (link it with `secured_by_account_id`). */
         MortgageMeta: {
             lender?: string | null;
@@ -4624,7 +4710,37 @@ export interface components {
         };
         /** @description Real estate. */
         PropertyMeta: {
-            address?: string | null;
+            /**
+             * @description Finer-grained classification (e.g. `single_family_home`, `condominium`); the
+             *     curated option list lives in the web layer.
+             */
+            subtype?: string | null;
+            /**
+             * @description Street address. Aliased to the legacy `address` key so rows written before the
+             *     address was broken into components keep deserialising.
+             */
+            address_line1?: string | null;
+            /** @description Unit / apartment / floor, if any. */
+            address_line2?: string | null;
+            /** @description Town or city. */
+            city?: string | null;
+            /** @description State, province or region. */
+            region?: string | null;
+            /** @description Postal / ZIP code. */
+            postal_code?: string | null;
+            /** @description Country. */
+            country?: string | null;
+            /**
+             * Format: int64
+             * @description The year the dwelling was built.
+             */
+            year_built?: number | null;
+            /**
+             * Format: int64
+             * @description Floor area, expressed in `area_unit`s.
+             */
+            area_value?: number | null;
+            area_unit?: null | components["schemas"]["AreaUnit"];
             /** @description ISO-8601 date the property was purchased. */
             purchase_date?: string | null;
             /**
@@ -4695,7 +4811,7 @@ export interface components {
             imported: number;
             /** Format: int64 */
             skipped: number;
-            status: string;
+            status: components["schemas"]["SyncOutcome"];
             detail?: string | null;
             created_at: string;
         };
@@ -4792,7 +4908,7 @@ export interface components {
             id: number;
             /** Format: int64 */
             rule_id?: number | null;
-            kind: string;
+            kind: components["schemas"]["RuleRunKind"];
             /** Format: int64 */
             matched: number;
             /** Format: int64 */
@@ -4800,6 +4916,12 @@ export interface components {
             undone: boolean;
             created_at: string;
         };
+        /**
+         * @description Whether a run evaluated one rule or every enabled rule. Stored as `rule_runs.kind`
+         *     (plain `TEXT`).
+         * @enum {string}
+         */
+        RuleRunKind: "single" | "all";
         RunResult: {
             /** Format: int64 */
             run_id: number;
@@ -4840,12 +4962,27 @@ export interface components {
             archived?: boolean;
             /** Format: int64 */
             sort_order?: number;
+            /**
+             * Format: int64
+             * @description The balance the account starts with, in minor units, signed with the app's usual
+             *     convention (a liability is negative). Seeded into the ledger as part of creating the
+             *     account — the balance can never go missing because a follow-up request failed, which
+             *     is what the previous create-then-seed flow risked.
+             *
+             *     Optional on the DTO only because this is the PUT body too; the create path requires
+             *     it (paired with `opening_balance_date`) for every kind but `brokerage`, whose value
+             *     comes from its holdings ledger, and the update path refuses it — afterwards the
+             *     balance is edited through transactions/valuations.
+             */
+            opening_balance_minor?: number | null;
+            /** @description The date `opening_balance_minor` applies from (ISO-8601). */
+            opening_balance_date?: string | null;
         };
         SaveCategory: {
             name: string;
             /** Format: int64 */
             parent_id?: number | null;
-            kind?: string;
+            kind?: components["schemas"]["CategoryKind"];
             color?: string | null;
             icon?: string | null;
             /** Format: int64 */
@@ -4855,7 +4992,7 @@ export interface components {
             name: string;
             /** Format: int64 */
             account_id: number;
-            kind: string;
+            kind: components["schemas"]["CronKind"];
             /** Format: int64 */
             rate_bps?: number | null;
             /** Format: int64 */
@@ -4934,7 +5071,7 @@ export interface components {
             unit_price?: number | null;
             /** Format: int64 */
             fee_minor?: number;
-            kind?: string;
+            kind?: components["schemas"]["LotKind"];
         };
         SaveMerchant: {
             name: string;
@@ -4986,7 +5123,7 @@ export interface components {
             /** Format: int64 */
             account_id: number;
             name: string;
-            kind: string;
+            kind: components["schemas"]["AccountKind"];
             /**
              * Format: int64
              * @description Amount owed, in the report currency (positive).
@@ -5007,6 +5144,11 @@ export interface components {
         };
         /** @description Share / equity holdings (NZ, US, or private). */
         SharesMeta: {
+            /**
+             * @description Finer-grained classification (e.g. `401k`, `kiwisaver`, `roth_ira`); the curated
+             *     option list — and the tax treatment derived from it — lives in the web layer.
+             */
+            subtype?: string | null;
             /** @description Broker or platform (e.g. Sharesies, Hatch, IBKR). */
             broker?: string | null;
             ticker?: string | null;
@@ -5031,10 +5173,23 @@ export interface components {
             /** @description When this row was fetched (ISO-8601 timestamp, UTC). */
             fetched_at: string;
         };
+        /**
+         * @description Whether a sync attempt succeeded. Stored as `provider_syncs.status` (plain `TEXT`).
+         *     Named `SyncOutcome` rather than `SyncStatus` so `SyncOutcome::Ok` doesn't shadow
+         *     `Result::Ok` at use sites.
+         * @enum {string}
+         */
+        SyncOutcome: "ok" | "error";
         SyncRequest: {
             /** @description Inline data for payload-based providers (e.g. CSV text). */
             payload?: string | null;
         };
+        /**
+         * @description How gains on a holding are taxed. Not stored for share/brokerage accounts, where it
+         *     is derived from the account's `subtype` instead.
+         * @enum {string}
+         */
+        TaxTreatment: "taxable" | "tax_deferred" | "tax_exempt";
         Transaction: {
             /** Format: int64 */
             id: number;
@@ -5115,16 +5270,30 @@ export interface components {
              */
             value_minor: number;
             currency_code: string;
-            source: string;
+            source: components["schemas"]["ValuationSource"];
             note?: string | null;
             created_at: string;
         };
+        /**
+         * @description Where a valuation's value came from. Stored as `valuations.source` (a plain `TEXT`
+         *     column — see `0001_core.sql`, whose comment only lists `manual`/`cron`/`provider`;
+         *     `brokerage` (`sure_dal::valuations::upsert_from_brokerage`) and `equity`
+         *     (`sure_dal::equity::revalue`) are written too and belong here just the same).
+         * @enum {string}
+         */
+        ValuationSource: "manual" | "cron" | "provider" | "brokerage" | "equity";
         /** @description A vehicle. Attach financing as a separate loan account secured against it. */
         VehicleMeta: {
             make?: string | null;
             model?: string | null;
             /** Format: int64 */
             year?: number | null;
+            /**
+             * Format: int64
+             * @description Odometer reading, expressed in `mileage_unit`s.
+             */
+            mileage_value?: number | null;
+            mileage_unit?: null | components["schemas"]["MileageUnit"];
             /** @description Registration / licence plate. */
             plate?: string | null;
             /** @description A friendly name, e.g. "the wagon". */

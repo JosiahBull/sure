@@ -14,6 +14,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use sure_app::ports::{ProviderCategory, ProviderTransaction};
+use sure_core::{CategoryKind, LotKind};
 
 /// A resolved instrument from `lookup.json` (fund_id -> ticker/name/exchange/currency).
 #[derive(Debug, Clone)]
@@ -35,7 +36,7 @@ pub struct ParsedHolding {
     pub quantity: f64,
     pub unit_price: Option<f64>,
     pub fee_minor: i64,
-    pub kind: &'static str, // "buy" | "sell" | "corporate"
+    pub kind: LotKind,
     pub external_id: String,
 }
 
@@ -266,14 +267,14 @@ fn transfer_category() -> ProviderCategory {
     ProviderCategory {
         name: "Transfers".to_string(),
         group: None,
-        kind: Some("transfer".to_string()),
+        kind: Some(CategoryKind::Transfer),
     }
 }
 fn income_category(name: &str) -> ProviderCategory {
     ProviderCategory {
         name: name.to_string(),
         group: Some("Investment income".to_string()),
-        kind: Some("income".to_string()),
+        kind: Some(CategoryKind::Income),
     }
 }
 
@@ -303,7 +304,7 @@ fn wallet_category(reason: &str, detail_kind: &str) -> Option<ProviderCategory> 
         return Some(ProviderCategory {
             name: "Subscriptions".to_string(),
             group: None,
-            kind: Some("expense".to_string()),
+            kind: Some(CategoryKind::Expense),
         });
     }
     None
@@ -426,7 +427,11 @@ fn parse_activity_item(
                     // Attribute the whole order's fee to its first fill only, to avoid
                     // double-counting across multiple fills of the same order.
                     fee_minor: if idx == 0 { fee_minor } else { 0 },
-                    kind: if item.kind == "buy" { "buy" } else { "sell" },
+                    kind: if item.kind == "buy" {
+                        LotKind::Buy
+                    } else {
+                        LotKind::Sell
+                    },
                     external_id: format!("activity:{}:{}", item.id, trade.contract_note_number),
                 });
             }
@@ -455,7 +460,7 @@ fn parse_activity_item(
                 quantity: parse_f64(shares)?,
                 unit_price: item.share_price.as_deref().map(parse_f64).transpose()?,
                 fee_minor: 0,
-                kind: "corporate",
+                kind: LotKind::Corporate,
                 external_id: format!("corp:{}", item.id),
             });
         }
@@ -543,7 +548,7 @@ fn parse_activity_item(
                                 .map(parse_f64)
                                 .transpose()?,
                             fee_minor: 0,
-                            kind: "corporate",
+                            kind: LotKind::Corporate,
                             external_id: format!(
                                 "corp-unit:{}:{}",
                                 item.id,
@@ -557,7 +562,17 @@ fn parse_activity_item(
                 }
             }
         }
-        _ => {}
+        // `type` is Sharesies' own open-ended vocabulary (new activity types can appear
+        // upstream without warning), so a catch-all is the legitimate escape hatch here
+        // (CLAUDE.md rule 2) rather than a closed domain enum — but silently dropping an
+        // unrecognised one would lose real activity with no trace, so it's noted the same
+        // way a parse error on a *recognised* type already is (see `parse_activity`'s
+        // caller loop, which pushes the `Err` case's message here).
+        other => {
+            export
+                .warnings
+                .push(format!("activity {}: unrecognised type '{other}'", item.id));
+        }
     }
     Ok(())
 }
@@ -691,7 +706,7 @@ mod tests {
         assert_eq!(export.holdings.len(), 1);
         assert_eq!(export.holdings[0].ticker, "AIRRG");
         assert_eq!(export.holdings[0].quantity, 1274.518903);
-        assert_eq!(export.holdings[0].kind, "corporate");
+        assert_eq!(export.holdings[0].kind, LotKind::Corporate);
     }
 
     #[test]
@@ -707,6 +722,20 @@ mod tests {
     }
 
     #[test]
+    fn an_unrecognised_activity_type_is_skipped_with_a_warning_not_dropped_silently() {
+        let json = r#"[{
+            "id": "future-1", "type": "some_new_activity_type", "fund_id": "fund-aapl"
+        }]"#;
+        let mut export = SharesiesExport::default();
+        parse_activity(json.as_bytes(), &lookup_fixture(), &mut export).unwrap();
+        assert!(export.holdings.is_empty());
+        assert!(export.dividends.is_empty());
+        assert_eq!(export.warnings.len(), 1);
+        assert!(export.warnings[0].contains("future-1"));
+        assert!(export.warnings[0].contains("some_new_activity_type"));
+    }
+
+    #[test]
     fn wallet_transactions_categorize_transfers_and_income() {
         let json = r#"[
             {"amount": "-100.00", "currency": "nzd", "description": "Withdrawal", "reason": "holding funds for withdrawal", "key": "k1", "timestamp": {"$quantum": 1700000000000}, "detail": {"type": "withdrawal"}},
@@ -718,11 +747,11 @@ mod tests {
         // eligible for auto-linking to the bank side).
         let w = txns[0].category.as_ref().unwrap();
         assert_eq!(w.name, "Transfers");
-        assert_eq!(w.kind.as_deref(), Some("transfer"));
+        assert_eq!(w.kind, Some(CategoryKind::Transfer));
         // A dividend payout is real investment income.
         let d = txns[1].category.as_ref().unwrap();
         assert_eq!(d.name, "Dividends");
-        assert_eq!(d.kind.as_deref(), Some("income"));
+        assert_eq!(d.kind, Some(CategoryKind::Income));
         assert_eq!(txns[1].amount_minor, 2196);
     }
 
@@ -766,12 +795,12 @@ mod tests {
         assert_eq!(txns[1].currency_code.as_deref(), Some("NZD"));
         // Both legs are internal transfers, excluded from spend/income reports.
         assert_eq!(
-            txns[0].category.as_ref().unwrap().kind.as_deref(),
-            Some("transfer")
+            txns[0].category.as_ref().unwrap().kind,
+            Some(CategoryKind::Transfer)
         );
         assert_eq!(
-            txns[1].category.as_ref().unwrap().kind.as_deref(),
-            Some("transfer")
+            txns[1].category.as_ref().unwrap().kind,
+            Some(CategoryKind::Transfer)
         );
     }
 

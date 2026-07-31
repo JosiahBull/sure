@@ -30,8 +30,8 @@ use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
 
 use sure_core::{
-    AccountClass, AccountKind, AccountMetadata, AppResult, ForecastAssumption, ForecastEvent,
-    ForecastEventKind, ForecastTargetType,
+    AccountClass, AccountKind, AccountMetadata, AppResult, CategoryKind, CronKind,
+    ForecastAssumption, ForecastEvent, ForecastEventKind, ForecastTargetType, Interval,
 };
 
 use crate::fx::Fx;
@@ -228,12 +228,12 @@ impl ForecastService {
                 (c.account_id == a.id
                     && c.enabled
                     && matches!(
-                        c.kind.as_str(),
-                        "appreciation" | "depreciation" | "interest"
+                        c.kind,
+                        CronKind::Appreciation | CronKind::Depreciation | CronKind::Interest
                     ))
                 .then(|| {
                     let rate = c.rate_bps.unwrap_or(0);
-                    if c.kind == "depreciation" {
+                    if c.kind == CronKind::Depreciation {
                         -rate
                     } else {
                         rate
@@ -289,8 +289,10 @@ impl ForecastService {
 
         let mut out = Vec::new();
         for (id, kind) in cats.top_level_kinds() {
-            if kind != "income" && kind != "expense" {
-                continue; // transfer categories have no cash-flow assumption to make
+            match kind {
+                // Transfer categories have no cash-flow assumption to make.
+                CategoryKind::Transfer => continue,
+                CategoryKind::Income | CategoryKind::Expense => {}
             }
 
             let totals = category_monthly_totals(&spend, &cats, id, today, &fx);
@@ -648,7 +650,7 @@ impl ForecastService {
 /// `simulate` needs to know whether a category adds to or subtracts from cash flow.
 async fn source_kind_is_income(svc: &ForecastService, category_id: i64) -> AppResult<bool> {
     let cats = reports::Categories::load(svc.reports.as_ref()).await?;
-    Ok(cats.kind_of(category_id).as_deref() == Some("income"))
+    Ok(cats.kind_of(category_id) == Some(CategoryKind::Income))
 }
 
 // ---- simulation building blocks --------------------------------------------------
@@ -858,7 +860,15 @@ fn amortization_terms(metadata: &AccountMetadata) -> Option<(f64, i64, i64, Naiv
             l.term_months,
             l.start_date.as_deref(),
         ),
-        _ => return None,
+        // Every other profile has no amortisation schedule at all: the caller falls back
+        // to a trend/rate like a generic asset for these.
+        AccountMetadata::Depository(_)
+        | AccountMetadata::Property(_)
+        | AccountMetadata::Vehicle(_)
+        | AccountMetadata::Shares(_)
+        | AccountMetadata::Brokerage(_)
+        | AccountMetadata::Crypto(_)
+        | AccountMetadata::Generic(_) => return None,
     };
     let start_date = reports::parse_date(start?)?;
     Some((original? as f64, rate?, term?, start_date))
@@ -905,7 +915,7 @@ fn monthly_value_series(
     let Some(earliest) = earliest else {
         return Vec::new();
     };
-    reports::sample_dates(earliest, today, "month")
+    reports::sample_dates(earliest, today, Interval::Month)
         .into_iter()
         .map(|d| {
             let (value_minor, _) =
@@ -1145,7 +1155,7 @@ mod tests {
                 category_id: Some(1),
                 is_one_off: false,
                 linked_transaction_id: None,
-                account_kind: "bank".into(),
+                account_kind: AccountKind::Bank,
             },
             crate::ports::SpendTransaction {
                 posted_at: "2026-04-15".into(),
@@ -1154,11 +1164,11 @@ mod tests {
                 category_id: Some(1),
                 is_one_off: false,
                 linked_transaction_id: None,
-                account_kind: "bank".into(),
+                account_kind: AccountKind::Bank,
             },
         ];
         let mut cats = reports::Categories::default_for_test();
-        cats.insert_for_test(1, None, "Grooming", "expense");
+        cats.insert_for_test(1, None, "Grooming", CategoryKind::Expense);
         let fx = Fx::parity("NZD");
         let vals = category_monthly_totals(&spend, &cats, 1, d("2026-06-01"), &fx);
         // Jan, Feb, Mar, Apr, May: 5 months spanned, only Jan and Apr non-zero.
@@ -1589,7 +1599,7 @@ mod tests {
                     category_id: Some(10),
                     is_one_off: false,
                     linked_transaction_id: None,
-                    account_kind: "bank".into(),
+                    account_kind: AK::Bank,
                 });
                 cash.push(500_000);
             }
@@ -1599,7 +1609,7 @@ mod tests {
                 parent_id: None,
                 name: "Salary".into(),
                 color: None,
-                kind: "income".into(),
+                kind: CategoryKind::Income,
             }];
 
             let rt = tokio::runtime::Runtime::new().unwrap();

@@ -32,7 +32,18 @@ test("API reads are private and revalidated, never CDN-cacheable", async ({ serv
 
 test("mutations and sensitive reads are never stored", async ({ server, api }) => {
   const created = await api.POST("/api/accounts", {
-    body: { name: "x", kind: "bank", currency_code: "NZD", archived: false, sort_order: 0 },
+    // A bank account needs an institution and an opening balance to save at all; this test
+    // is about the response headers, so the values are the cheapest valid ones.
+    body: {
+      name: "x",
+      kind: "bank",
+      currency_code: "NZD",
+      institution: "ANZ",
+      archived: false,
+      sort_order: 0,
+      opening_balance_minor: 0,
+      opening_balance_date: "2020-01-01",
+    },
   });
   expect(created.response.status).toBe(201);
   expect(created.response.headers.get("cache-control")).toBe("no-store");

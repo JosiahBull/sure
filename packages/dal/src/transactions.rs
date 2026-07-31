@@ -488,6 +488,9 @@ async fn validate_category(db: &Db, category_id: Option<i64>) -> AppResult<()> {
     Ok(())
 }
 
+// `sqlx::Error` is `#[non_exhaustive]` upstream, so a catch-all is the only option here
+// (CLAUDE.md rule 2's escape hatch) — the arm above is exhaustive over our own types.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn map_fk(e: sqlx::Error) -> AppError {
     match e {
         sqlx::Error::Database(ref db) if db.is_foreign_key_violation() => {
@@ -519,11 +522,16 @@ mod tests {
             SaveAccount {
                 name: name.to_string(),
                 kind: AccountKind::Bank,
+                // A bank account requires an institution, and every create requires an
+                // opening balance; zero is the "started empty" case, which seeds no rows
+                // (see `accounts::insert`) and so leaves these tests' ledgers to themselves.
+                institution: Some("ANZ".to_string()),
                 currency_code: "NZD".to_string(),
-                institution: None,
                 metadata: None,
                 archived: false,
                 sort_order: 0,
+                opening_balance_minor: Some(0),
+                opening_balance_date: Some("2020-01-01".to_string()),
             },
         )
         .await
@@ -596,7 +604,7 @@ mod tests {
             db,
             sure_core::SaveCategory {
                 name: name.to_string(),
-                kind: "expense".to_string(),
+                kind: sure_core::CategoryKind::Expense,
                 parent_id: None,
                 color: None,
                 icon: None,

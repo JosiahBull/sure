@@ -17,14 +17,15 @@ use rust_decimal::Decimal;
 use serde_json::Value;
 
 use sure_core::{
-    Account, AccountEquity, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
-    CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, ForecastAssumption,
-    ForecastEvent, ForecastTargetType, HoldingLot, LinkProviderAccount, LinkProviderGroup,
-    LinkRequest, Merchant, NewCurrency, NewValuation, Provider, ProviderAccount, ProviderKind,
-    ProviderSync, Rule, RuleApplicationDetail, RuleRun, RunResult, SaveAccount, SaveCategory,
-    SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
-    SaveMerchant, SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice, Transaction,
-    TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
+    Account, AccountEquity, AccountKind, AppResult, BulkUpdate, Category, CategoryKind,
+    CategoryNode, Cron, CronRun, CronRunResult, Currency, DividendDetail, EquityExercise,
+    EquityGrant, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot,
+    LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind, Merchant, NewCurrency,
+    NewValuation, Provider, ProviderAccount, ProviderKind, ProviderSync, Rule,
+    RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
+    SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
+    SaveMerchant, SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice, SyncOutcome,
+    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
 };
 
 // ---- Clock ------------------------------------------------------------------
@@ -84,11 +85,11 @@ pub struct ProviderCategory {
     /// Broader grouping (e.g. "Lifestyle"), if the source has one — becomes that
     /// category's parent.
     pub group: Option<String>,
-    /// Flow direction hint (`"income"` | `"expense"` | `"transfer"`) applied when the
-    /// category is first created. Most enrichment is spending, so `None` defaults to
-    /// expense on the DAL side; a broker's dividend row sets `"income"`, an internal
-    /// wallet ↔ bank movement sets `"transfer"` so it's excluded from spend/income reports.
-    pub kind: Option<String>,
+    /// Flow direction hint applied when the category is first created. Most enrichment
+    /// is spending, so `None` defaults to expense on the DAL side; a broker's dividend
+    /// row sets `Income`, an internal wallet ↔ bank movement sets `Transfer` so it's
+    /// excluded from spend/income reports.
+    pub kind: Option<CategoryKind>,
 }
 
 /// Everything a provider needs to perform a sync. Cheap to copy (just references), so the
@@ -261,7 +262,7 @@ pub struct CostLotRow {
     pub quantity: f64,
     pub unit_price: Option<f64>,
     pub fee_minor: i64,
-    pub kind: String,
+    pub kind: LotKind,
 }
 
 /// Rolling 30-days-to-`as_of` activity — see [`sure_core::BrokerageActivity30d`].
@@ -306,7 +307,7 @@ pub struct AccountCurrency {
 pub struct ActiveAccount {
     pub id: i64,
     pub name: String,
-    pub kind: String,
+    pub kind: AccountKind,
     pub currency_code: String,
 }
 
@@ -323,7 +324,7 @@ pub struct AssetAccount {
 pub struct SecuredLiabilityAccount {
     pub id: i64,
     pub name: String,
-    pub kind: String,
+    pub kind: AccountKind,
     pub currency_code: String,
 }
 
@@ -351,7 +352,7 @@ pub struct ReportCategory {
     pub parent_id: Option<i64>,
     pub name: String,
     pub color: Option<String>,
-    pub kind: String,
+    pub kind: CategoryKind,
 }
 
 /// A transaction with the fields the spend reports (pie + sankey) filter and roll up.
@@ -363,7 +364,7 @@ pub struct SpendTransaction {
     pub category_id: Option<i64>,
     pub is_one_off: bool,
     pub linked_transaction_id: Option<i64>,
-    pub account_kind: String,
+    pub account_kind: AccountKind,
 }
 
 /// A transaction row denormalised for rule evaluation.
@@ -383,7 +384,7 @@ pub struct TxCtx {
     pub is_one_off: bool,
     pub categorized_by_rule_id: Option<i64>,
     pub account_name: String,
-    pub account_kind: String,
+    pub account_kind: AccountKind,
 }
 
 /// One decided change from a rule evaluation, ready to be persisted.
@@ -412,7 +413,7 @@ pub struct ImportRow {
     pub merchant: Option<String>,
     pub category_name: Option<String>,
     pub category_group: Option<String>,
-    pub category_kind: Option<String>,
+    pub category_kind: Option<CategoryKind>,
 }
 
 /// A parsed holding lot ready to persist (e.g. from a Sharesies export).
@@ -426,7 +427,7 @@ pub struct HoldingImport {
     pub quantity: f64,
     pub unit_price: Option<f64>,
     pub fee_minor: i64,
-    pub kind: String,
+    pub kind: LotKind,
     pub external_id: String,
 }
 
@@ -563,7 +564,7 @@ pub trait RuleRepo: Send + Sync {
     async fn persist_run(
         &self,
         rule_id: Option<i64>,
-        kind: &str,
+        kind: RuleRunKind,
         matched: i64,
         applications: Vec<PlannedApplication>,
     ) -> AppResult<RunResult>;
@@ -617,7 +618,7 @@ pub trait ProviderRepo: Send + Sync {
         provider_id: i64,
         imported: i64,
         skipped: i64,
-        status: &str,
+        status: SyncOutcome,
         detail: Option<&str>,
     ) -> AppResult<ProviderSync>;
 }

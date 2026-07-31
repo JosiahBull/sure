@@ -10,9 +10,9 @@ use crate::state::AppState;
 // Account kinds/classes + typed metadata come from sure-core; the data model lives there
 // too. Re-export so the OpenAPI paths (`crate::routes::accounts::*`) resolve.
 pub use sure_core::{
-    Account, AccountClass, AccountKind, AccountMetadata, BrokerageMeta, DepositoryMeta,
-    GenericMeta, LoanMeta, MortgageMeta, PropertyMeta, RateType, SaveAccount, SetSecuredBy,
-    SharesMeta, VehicleMeta,
+    Account, AccountClass, AccountKind, AccountMetadata, AreaUnit, BrokerageMeta, CryptoMeta,
+    DepositoryMeta, GenericMeta, LoanMeta, MileageUnit, MortgageMeta, PropertyMeta, RateType,
+    SaveAccount, SetSecuredBy, SharesMeta, TaxTreatment, VehicleMeta,
 };
 
 // OTEL span names for this module's handlers.

@@ -4,13 +4,22 @@
 //! contexts, then persists the changes the evaluator decided on.
 
 use sqlx::FromRow;
-use sure_core::{AppError, AppResult};
+use sure_core::{AccountKind, AppError, AppResult, RuleRunKind};
 pub use sure_core::{
     PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RunResult,
     SaveRule,
 };
 
 use crate::Db;
+
+/// Parse a stored `kind` TEXT column into the domain enum, exactly like
+/// `sure_dal::accounts::AccountRow`'s `TryFrom<AccountRow> for Account` does — every
+/// writer goes through `RuleRunKind::as_str`, so an unparseable value means the row
+/// came from something else entirely and deserves a real error, not a silent default.
+fn parse_kind(kind: String) -> AppResult<RuleRunKind> {
+    kind.parse()
+        .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
+}
 
 /// Columns needed to evaluate a rule against a transaction, denormalised for speed.
 pub const CTX_QUERY: &str =
@@ -41,9 +50,29 @@ pub struct RuleApplication {
     pub created_at: String,
 }
 
+/// The raw row shape for [`TxCtx`] — `account_kind` as stored, before parsing.
+#[derive(Debug, FromRow, Clone)]
+struct TxCtxRow {
+    id: i64,
+    account_id: i64,
+    posted_at: String,
+    amount_minor: i64,
+    currency_code: String,
+    decimal_places: i64,
+    description: String,
+    merchant: Option<String>,
+    merchant_id: Option<i64>,
+    notes: Option<String>,
+    category_id: Option<i64>,
+    is_one_off: bool,
+    categorized_by_rule_id: Option<i64>,
+    account_name: String,
+    account_kind: String,
+}
+
 /// A transaction row denormalised for rule evaluation. The API crate reads these
 /// fields to build the Zen context; the DAL only loads them.
-#[derive(Debug, FromRow, Clone)]
+#[derive(Debug, Clone)]
 pub struct TxCtx {
     pub id: i64,
     pub account_id: i64,
@@ -59,7 +88,37 @@ pub struct TxCtx {
     pub is_one_off: bool,
     pub categorized_by_rule_id: Option<i64>,
     pub account_name: String,
-    pub account_kind: String,
+    pub account_kind: AccountKind,
+}
+
+impl TryFrom<TxCtxRow> for TxCtx {
+    type Error = AppError;
+
+    fn try_from(r: TxCtxRow) -> AppResult<Self> {
+        // Same rule as `sure_dal::accounts::AccountRow`: every writer goes through
+        // `AccountKind::as_str`, so an unparseable value is a real error, not a default.
+        let account_kind: AccountKind = r
+            .account_kind
+            .parse()
+            .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))?;
+        Ok(TxCtx {
+            account_kind,
+            id: r.id,
+            account_id: r.account_id,
+            posted_at: r.posted_at,
+            amount_minor: r.amount_minor,
+            currency_code: r.currency_code,
+            decimal_places: r.decimal_places,
+            description: r.description,
+            merchant: r.merchant,
+            merchant_id: r.merchant_id,
+            notes: r.notes,
+            category_id: r.category_id,
+            is_one_off: r.is_one_off,
+            categorized_by_rule_id: r.categorized_by_rule_id,
+            account_name: r.account_name,
+        })
+    }
 }
 
 /// One decided change from an evaluation, ready to be persisted by [`persist_run`].
@@ -221,7 +280,12 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 /// Load every transaction's evaluation context.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn load_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
-    Ok(sqlx::query_as::<_, TxCtx>(CTX_QUERY).fetch_all(db).await?)
+    sqlx::query_as::<_, TxCtxRow>(CTX_QUERY)
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .map(TxCtx::try_from)
+        .collect()
 }
 
 /// Persist a run: insert the run row, apply each decided change (updating the
@@ -232,14 +296,14 @@ pub async fn load_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
 pub async fn persist_run(
     db: &Db,
     rule_id: Option<i64>,
-    kind: &str,
+    kind: RuleRunKind,
     matched: i64,
     applications: Vec<PlannedApplication>,
 ) -> AppResult<RunResult> {
     let mut txn = db.begin().await?;
     let run_id = sqlx::query("INSERT INTO rule_runs (rule_id, kind) VALUES (?1,?2)")
         .bind(rule_id)
-        .bind(kind)
+        .bind(kind.as_str())
         .execute(&mut *txn)
         .await?
         .last_insert_rowid();
@@ -304,17 +368,19 @@ struct RuleRunRow {
     created_at: String,
 }
 
-impl From<RuleRunRow> for RuleRun {
-    fn from(r: RuleRunRow) -> Self {
-        RuleRun {
+impl TryFrom<RuleRunRow> for RuleRun {
+    type Error = AppError;
+
+    fn try_from(r: RuleRunRow) -> AppResult<Self> {
+        Ok(RuleRun {
+            kind: parse_kind(r.kind)?,
             id: r.id,
             rule_id: r.rule_id,
-            kind: r.kind,
             matched: r.matched,
             changed: r.changed,
             undone: r.undone,
             created_at: r.created_at,
-        }
+        })
     }
 }
 
@@ -358,14 +424,12 @@ impl From<RuleApplicationDetailRow> for RuleApplicationDetail {
 /// List rule runs (most recent first) — the audit trail.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_runs(db: &Db) -> AppResult<Vec<RuleRun>> {
-    Ok(
-        sqlx::query_as::<_, RuleRunRow>("SELECT * FROM rule_runs ORDER BY id DESC")
-            .fetch_all(db)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-    )
+    sqlx::query_as::<_, RuleRunRow>("SELECT * FROM rule_runs ORDER BY id DESC")
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .map(RuleRun::try_from)
+        .collect()
 }
 
 /// The per-transaction changes made by a run, each joined to its transaction's current

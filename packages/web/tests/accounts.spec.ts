@@ -35,11 +35,14 @@ test("an asset with secured debts is blocked from deletion, naming the debts", a
 
 test("Institution shows for banks but not shares (which use a broker)", async ({ page }) => {
   await goto(page, "/settings/accounts");
-  // Shares: a broker/platform field, no Institution.
+  // Shares: a broker/platform field is prominent. Institution is still offered — every kind
+  // does, see `offersInstitution` — but it isn't identifying for a share holding (the broker
+  // is), so it's tucked inside the collapsed "Additional details" disclosure rather than left
+  // out of the form entirely.
   await page.locator(".acct", { hasText: "Sharesies (US)" }).getByRole("button", { name: "Edit" }).click();
   await expect(page.getByLabel("Broker / platform")).toBeVisible();
-  await expect(page.getByLabel("Institution", { exact: true })).toHaveCount(0);
-  // Bank: Institution is present.
+  await expect(page.getByLabel("Institution", { exact: true })).not.toBeVisible();
+  // Bank: Institution is prominent, in the main row.
   await page.locator(".acct", { hasText: "Everyday" }).getByRole("button", { name: "Edit" }).click();
   await expect(page.getByLabel("Institution", { exact: true })).toBeVisible();
 });

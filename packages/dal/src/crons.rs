@@ -2,17 +2,19 @@
 
 use chrono::{Datelike, NaiveDate, Utc};
 use sqlx::{FromRow, SqliteConnection};
-use sure_core::{AppError, AppResult};
-pub use sure_core::{Cron, CronRun, CronRunResult, SaveCron};
+use sure_core::{AppError, AppResult, ValuationSource};
+pub use sure_core::{Cron, CronKind, CronRun, CronRunResult, SaveCron};
 
 use crate::Db;
 
-const KINDS: [&str; 4] = [
-    "appreciation",
-    "depreciation",
-    "interest",
-    "fixed_transaction",
-];
+/// Parse a stored `kind` TEXT column into the domain enum, exactly like
+/// `sure_dal::accounts::AccountRow`'s `TryFrom<AccountRow> for Account` does — every
+/// writer goes through `CronKind::as_str`, so an unparseable value means the row came
+/// from something else entirely and deserves a real error, not a silent default.
+fn parse_kind(kind: String) -> AppResult<CronKind> {
+    kind.parse()
+        .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
+}
 
 #[derive(Debug, FromRow)]
 struct CronRow {
@@ -32,13 +34,15 @@ struct CronRow {
     updated_at: String,
 }
 
-impl From<CronRow> for Cron {
-    fn from(r: CronRow) -> Self {
-        Cron {
+impl TryFrom<CronRow> for Cron {
+    type Error = AppError;
+
+    fn try_from(r: CronRow) -> AppResult<Self> {
+        Ok(Cron {
+            kind: parse_kind(r.kind)?,
             id: r.id,
             name: r.name,
             account_id: r.account_id,
-            kind: r.kind,
             rate_bps: r.rate_bps,
             amount_minor: r.amount_minor,
             category_id: r.category_id,
@@ -49,7 +53,7 @@ impl From<CronRow> for Cron {
             enabled: r.enabled,
             created_at: r.created_at,
             updated_at: r.updated_at,
-        }
+        })
     }
 }
 
@@ -65,44 +69,44 @@ struct CronRunRow {
     created_at: String,
 }
 
-impl From<CronRunRow> for CronRun {
-    fn from(r: CronRunRow) -> Self {
-        CronRun {
+impl TryFrom<CronRunRow> for CronRun {
+    type Error = AppError;
+
+    fn try_from(r: CronRunRow) -> AppResult<Self> {
+        Ok(CronRun {
+            kind: parse_kind(r.kind)?,
             id: r.id,
             cron_id: r.cron_id,
             period: r.period,
-            kind: r.kind,
             valuation_id: r.valuation_id,
             transaction_id: r.transaction_id,
             detail: r.detail,
             created_at: r.created_at,
-        }
+        })
     }
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Cron>> {
-    Ok(
-        sqlx::query_as::<_, CronRow>("SELECT * FROM crons ORDER BY id")
-            .fetch_all(db)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-    )
+    sqlx::query_as::<_, CronRow>("SELECT * FROM crons ORDER BY id")
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .map(Cron::try_from)
+        .collect()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveCron) -> AppResult<Cron> {
     validate(&input)?;
-    Ok(sqlx::query_as::<_, CronRow>(
+    sqlx::query_as::<_, CronRow>(
         "INSERT INTO crons (name, account_id, kind, rate_bps, amount_minor, category_id,
             day_of_month, start_date, enabled)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) RETURNING *",
     )
     .bind(input.name.trim())
     .bind(input.account_id)
-    .bind(&input.kind)
+    .bind(input.kind.as_str())
     .bind(input.rate_bps)
     .bind(input.amount_minor)
     .bind(input.category_id)
@@ -112,13 +116,13 @@ pub async fn create(db: &Db, input: SaveCron) -> AppResult<Cron> {
     .fetch_one(db)
     .await
     .map_err(map_fk)?
-    .into())
+    .try_into()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveCron) -> AppResult<Cron> {
     validate(&input)?;
-    Ok(sqlx::query_as::<_, CronRow>(
+    sqlx::query_as::<_, CronRow>(
         "UPDATE crons SET name=?2, account_id=?3, kind=?4, rate_bps=?5, amount_minor=?6,
             category_id=?7, day_of_month=?8, start_date=?9, enabled=?10,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -127,7 +131,7 @@ pub async fn update(db: &Db, id: i64, input: SaveCron) -> AppResult<Cron> {
     .bind(id)
     .bind(input.name.trim())
     .bind(input.account_id)
-    .bind(&input.kind)
+    .bind(input.kind.as_str())
     .bind(input.rate_bps)
     .bind(input.amount_minor)
     .bind(input.category_id)
@@ -138,7 +142,7 @@ pub async fn update(db: &Db, id: i64, input: SaveCron) -> AppResult<Cron> {
     .await
     .map_err(map_fk)?
     .ok_or(AppError::NotFound("cron"))?
-    .into())
+    .try_into()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -155,15 +159,13 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_runs(db: &Db, cron_id: i64) -> AppResult<Vec<CronRun>> {
-    Ok(sqlx::query_as::<_, CronRunRow>(
-        "SELECT * FROM cron_runs WHERE cron_id=?1 ORDER BY period DESC",
-    )
-    .bind(cron_id)
-    .fetch_all(db)
-    .await?
-    .into_iter()
-    .map(Into::into)
-    .collect())
+    sqlx::query_as::<_, CronRunRow>("SELECT * FROM cron_runs WHERE cron_id=?1 ORDER BY period DESC")
+        .bind(cron_id)
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .map(CronRun::try_from)
+        .collect()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -190,8 +192,8 @@ pub async fn run_all(db: &Db, to: Option<&str>) -> AppResult<CronRunResult> {
             .fetch_all(db)
             .await?
             .into_iter()
-            .map(Into::into)
-            .collect();
+            .map(Cron::try_from)
+            .collect::<AppResult<_>>()?;
     let mut all = Vec::new();
     let mut conn = db.acquire().await?;
     for cron in crons {
@@ -210,7 +212,7 @@ pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<()> {
         .fetch_optional(db)
         .await?
         .ok_or(AppError::NotFound("cron run"))?
-        .into();
+        .try_into()?;
     let mut txn = db.begin().await?;
     if let Some(vid) = run.valuation_id {
         sqlx::query("DELETE FROM valuations WHERE id=?1")
@@ -280,6 +282,11 @@ async fn apply_cron(
     Ok(created)
 }
 
+/// Dispatches a due period to the right engine. Naming every [`CronKind`] variant here
+/// — rather than the previous `if kind == "fixed_transaction" { .. } .. if kind ==
+/// "depreciation" { shrink } else { grow }` — is the fix for a real bug: that shape
+/// silently *appreciated* any kind it didn't specifically recognise. An exhaustive
+/// match means a future cron kind must say which way it goes, or the build breaks.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn apply_period(
     conn: &mut SqliteConnection,
@@ -287,35 +294,58 @@ async fn apply_period(
     period: NaiveDate,
 ) -> AppResult<Option<CronRun>> {
     let period_s = period.to_string();
-    if cron.kind == "fixed_transaction" {
-        let amount = cron.amount_minor.unwrap_or(0);
-        let ccy = sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
-            .bind(cron.account_id)
-            .fetch_one(&mut *conn)
-            .await?;
-        let tx_id = sqlx::query_scalar::<_, i64>(
-            "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code, description, category_id)
-             VALUES (?1,?2,?3,?4,?5,?6) RETURNING id",
-        )
+    match cron.kind {
+        CronKind::FixedTransaction => apply_fixed_transaction(conn, cron, &period_s).await,
+        // Interest compounds a loan/mortgage balance upward exactly like appreciation
+        // grows an asset's.
+        CronKind::Appreciation | CronKind::Interest => {
+            apply_valuation_cron(conn, cron, &period_s, 1.0).await
+        }
+        CronKind::Depreciation => apply_valuation_cron(conn, cron, &period_s, -1.0).await,
+    }
+}
+
+async fn apply_fixed_transaction(
+    conn: &mut SqliteConnection,
+    cron: &Cron,
+    period_s: &str,
+) -> AppResult<Option<CronRun>> {
+    let amount = cron.amount_minor.unwrap_or(0);
+    let ccy = sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
         .bind(cron.account_id)
-        .bind(&period_s)
-        .bind(amount)
-        .bind(&ccy)
-        .bind(cron.name.trim())
-        .bind(cron.category_id)
         .fetch_one(&mut *conn)
         .await?;
-        return Ok(Some(
-            record_run(conn, cron, &period_s, None, Some(tx_id), None).await?,
-        ));
-    }
+    let tx_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code, description, category_id)
+         VALUES (?1,?2,?3,?4,?5,?6) RETURNING id",
+    )
+    .bind(cron.account_id)
+    .bind(period_s)
+    .bind(amount)
+    .bind(&ccy)
+    .bind(cron.name.trim())
+    .bind(cron.category_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(Some(
+        record_run(conn, cron, period_s, None, Some(tx_id), None).await?,
+    ))
+}
 
+/// Grow (`sign = 1.0`) or shrink (`sign = -1.0`) the account's latest valuation by
+/// `cron.rate_bps` annually, compounded monthly.
+async fn apply_valuation_cron(
+    conn: &mut SqliteConnection,
+    cron: &Cron,
+    period_s: &str,
+    sign: f64,
+) -> AppResult<Option<CronRun>> {
     let latest = sqlx::query_scalar::<_, i64>(
         "SELECT value_minor FROM valuations WHERE account_id=?1 AND as_of <= ?2
          ORDER BY as_of DESC, id DESC LIMIT 1",
     )
     .bind(cron.account_id)
-    .bind(&period_s)
+    .bind(period_s)
     .fetch_optional(&mut *conn)
     .await?;
     let Some(latest) = latest else {
@@ -323,7 +353,7 @@ async fn apply_period(
             record_run(
                 conn,
                 cron,
-                &period_s,
+                period_s,
                 None,
                 None,
                 Some("no base valuation".into()),
@@ -332,12 +362,8 @@ async fn apply_period(
         ));
     };
 
-    let r = cron.rate_bps.unwrap_or(0) as f64 / 10_000.0;
-    let monthly = if cron.kind == "depreciation" {
-        (1.0 - r).powf(1.0 / 12.0)
-    } else {
-        (1.0 + r).powf(1.0 / 12.0)
-    };
+    let r = sign * (cron.rate_bps.unwrap_or(0) as f64 / 10_000.0);
+    let monthly = (1.0 + r).powf(1.0 / 12.0);
     let new_value = (latest as f64 * monthly).round() as i64;
     let ccy = sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
         .bind(cron.account_id)
@@ -345,17 +371,18 @@ async fn apply_period(
         .await?;
     let val_id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
-         VALUES (?1,?2,?3,?4,'cron',?5) RETURNING id",
+         VALUES (?1,?2,?3,?4,?5,?6) RETURNING id",
     )
     .bind(cron.account_id)
-    .bind(&period_s)
+    .bind(period_s)
     .bind(new_value)
     .bind(&ccy)
+    .bind(ValuationSource::Cron.as_str())
     .bind(cron.name.trim())
     .fetch_one(&mut *conn)
     .await?;
     Ok(Some(
-        record_run(conn, cron, &period_s, Some(val_id), None, None).await?,
+        record_run(conn, cron, period_s, Some(val_id), None, None).await?,
     ))
 }
 
@@ -368,36 +395,31 @@ async fn record_run(
     transaction_id: Option<i64>,
     detail: Option<String>,
 ) -> AppResult<CronRun> {
-    Ok(sqlx::query_as::<_, CronRunRow>(
+    sqlx::query_as::<_, CronRunRow>(
         "INSERT INTO cron_runs (cron_id, period, kind, valuation_id, transaction_id, detail)
          VALUES (?1,?2,?3,?4,?5,?6) RETURNING *",
     )
     .bind(cron.id)
     .bind(period)
-    .bind(&cron.kind)
+    .bind(cron.kind.as_str())
     .bind(valuation_id)
     .bind(transaction_id)
     .bind(detail)
     .fetch_one(&mut *conn)
     .await?
-    .into())
+    .try_into()
 }
 
 fn validate(input: &SaveCron) -> AppResult<()> {
     if input.name.trim().is_empty() {
         return Err(AppError::validation("cron name is required"));
     }
-    if !KINDS.contains(&input.kind.as_str()) {
-        return Err(AppError::validation(format!(
-            "kind must be one of {KINDS:?}"
-        )));
-    }
-    if input.kind == "fixed_transaction" && input.amount_minor.is_none() {
+    if input.kind == CronKind::FixedTransaction && input.amount_minor.is_none() {
         return Err(AppError::validation(
             "fixed_transaction requires amount_minor",
         ));
     }
-    if input.kind != "fixed_transaction" && input.rate_bps.is_none() {
+    if input.kind != CronKind::FixedTransaction && input.rate_bps.is_none() {
         return Err(AppError::validation("valuation crons require rate_bps"));
     }
     if parse_date(&input.start_date).is_none() {
@@ -408,14 +430,12 @@ fn validate(input: &SaveCron) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn fetch(db: &Db, id: i64) -> AppResult<Cron> {
-    Ok(
-        sqlx::query_as::<_, CronRow>("SELECT * FROM crons WHERE id=?1")
-            .bind(id)
-            .fetch_optional(db)
-            .await?
-            .ok_or(AppError::NotFound("cron"))?
-            .into(),
-    )
+    sqlx::query_as::<_, CronRow>("SELECT * FROM crons WHERE id=?1")
+        .bind(id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound("cron"))?
+        .try_into()
 }
 
 fn parse_date(s: &str) -> Option<NaiveDate> {
@@ -436,6 +456,9 @@ fn period_date(year: i32, month: u32, day_of_month: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(year, month, day_of_month.min(last_day)).unwrap()
 }
 
+// `sqlx::Error` is `#[non_exhaustive]` upstream, so a catch-all is the only option here
+// (CLAUDE.md rule 2's escape hatch) — the arm above is exhaustive over our own types.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn map_fk(e: sqlx::Error) -> AppError {
     match e {
         sqlx::Error::Database(ref db) if db.is_foreign_key_violation() => {

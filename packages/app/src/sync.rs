@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use sure_core::{AppError, AppResult, Provider, ProviderSync};
+use sure_core::{AppError, AppResult, Provider, ProviderSync, SyncOutcome};
 
 use crate::ports::{
     AccountRepo, Clock, ImportRow, ProviderRegistry, ProviderRepo, SyncContext, ValuationRepo,
@@ -62,7 +62,7 @@ impl SyncService {
             Err(e) => {
                 let _ = self
                     .providers
-                    .record_sync(id, 0, 0, "error", Some(&e.to_string()))
+                    .record_sync(id, 0, 0, SyncOutcome::Error, Some(&e.to_string()))
                     .await?;
                 return Err(AppError::validation(format!("sync failed: {e}")));
             }
@@ -79,7 +79,7 @@ impl SyncService {
                 description: t.description,
                 merchant: t.merchant,
                 category_name: t.category.as_ref().map(|c| c.name.clone()),
-                category_kind: t.category.as_ref().and_then(|c| c.kind.clone()),
+                category_kind: t.category.as_ref().and_then(|c| c.kind),
                 category_group: t.category.and_then(|c| c.group),
             })
             .collect();
@@ -171,7 +171,7 @@ impl SyncService {
 
         self.providers.update_last_synced(id).await?;
         self.providers
-            .record_sync(id, imported, skipped, "ok", None)
+            .record_sync(id, imported, skipped, SyncOutcome::Ok, None)
             .await
     }
 }

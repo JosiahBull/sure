@@ -11,8 +11,8 @@ use crate::error::AppResult;
 use crate::state::AppState;
 
 pub use sure_core::{
-    PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RunResult,
-    SaveRule,
+    PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RuleRunKind,
+    RunResult, SaveRule,
 };
 
 // OTEL span names for this module's handlers.
@@ -130,7 +130,7 @@ pub async fn run_one(
     Path(id): Path<i64>,
 ) -> AppResult<Json<RunResult>> {
     let rule = st.rules.get(id).await?;
-    let result = st.rules.run(&[rule], Some(id), "single").await?;
+    let result = st.rules.run(&[rule], Some(id), RuleRunKind::Single).await?;
     Ok(Json(result))
 }
 
@@ -146,7 +146,7 @@ pub async fn run_one(
 )]
 pub async fn run_all(State(st): State<AppState>) -> AppResult<Json<RunResult>> {
     let rules = st.rules.enabled_rules().await?;
-    let result = st.rules.run(&rules, None, "all").await?;
+    let result = st.rules.run(&rules, None, RuleRunKind::All).await?;
     Ok(Json(result))
 }
 

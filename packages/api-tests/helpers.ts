@@ -1,25 +1,119 @@
 import { expect } from "@playwright/test";
 import type { Schemas, SureClient } from "../client/src/index";
 
-/** Create an account, asserting success, and return it. Fills the required flags. */
+type AccountKind = Schemas["SaveAccount"]["kind"];
+type CategoryKind = NonNullable<Schemas["SaveCategory"]["kind"]>;
+
+/**
+ * The metadata each kind now *requires* — see `AccountMetadata::validate_for` in sure-core.
+ * Kinds absent here need none: our `kind` already says what a depository subtype would, and
+ * "other asset"/"other liability" are deliberately free-form.
+ *
+ * Values are only there to be valid; a spec that cares about a field passes its own, which
+ * wins over these (see {@link createAccount}).
+ */
+const REQUIRED_METADATA: Partial<Record<AccountKind, Record<string, unknown>>> = {
+  real_estate: {
+    profile: "property",
+    subtype: "single_family_home",
+    address_line1: "12 Rimu Street",
+    city: "Wellington",
+    country: "New Zealand",
+  },
+  vehicle: { profile: "vehicle", make: "Toyota", model: "RAV4", year: 2021 },
+  mortgage: {
+    profile: "mortgage",
+    lender: "ASB",
+    original_amount_minor: 48_500_000,
+    interest_rate_bps: 549,
+    rate_type: "fixed",
+  },
+  loan: {
+    profile: "loan",
+    subtype: "other",
+    lender: "MTF Finance",
+    original_amount_minor: 1_500_000,
+    interest_rate_bps: 890,
+  },
+  student_loan: {
+    profile: "loan",
+    subtype: "student",
+    lender: "StudyLink",
+    original_amount_minor: 3_000_000,
+    interest_rate_bps: 0,
+  },
+  // Only the revolving kinds carry a limit.
+  credit_card: { profile: "depository", credit_limit_minor: 1_000_000 },
+  revolving_credit: { profile: "depository", credit_limit_minor: 5_000_000 },
+  // A listed holding is priced by (ticker, exchange); an unlisted one has neither.
+  shares_nz: { profile: "shares", broker: "Sharesies", ticker: "MEL", exchange: "NZX" },
+  shares_us: { profile: "shares", broker: "Sharesies", ticker: "VOO", exchange: "NYSE Arca" },
+  shares_private: { profile: "shares", broker: "Carta" },
+  brokerage: { profile: "brokerage", broker: "Sharesies" },
+  crypto: { profile: "crypto", subtype: "wallet", tax_treatment: "taxable" },
+};
+
+/** The kinds whose account-level institution is required. */
+const INSTITUTION_REQUIRED: AccountKind[] = ["bank", "savings", "credit_card", "revolving_credit"];
+
+/**
+ * Create an account, asserting success, and return it.
+ *
+ * Saving an account means answering for its kind's identifying fields — and, on create, its
+ * opening balance. Rather than have every spec restate a lender or broker it doesn't care
+ * about, this fills in the required set per kind ({@link REQUIRED_METADATA}) underneath
+ * whatever the caller passes, so a spec asserting on metadata still gets exactly what it
+ * asked for. The opening balance defaults to zero, which deliberately seeds no ledger row,
+ * leaving each spec's own transactions/valuations the only ones present.
+ */
 export async function createAccount(
   api: SureClient,
   name: string,
-  kind: Schemas["SaveAccount"]["kind"],
+  kind: AccountKind,
   currency = "NZD",
-  extra: { metadata?: Schemas["AccountMetadata"]; institution?: string } = {}
+  extra: {
+    metadata?: Schemas["AccountMetadata"];
+    institution?: string;
+    opening_balance_minor?: number;
+    opening_balance_date?: string;
+  } = {}
 ) {
+  const { metadata, institution, ...openingBalance } = extra;
+  // A brokerage account is the one kind with no opening balance: its value comes from the
+  // holdings ledger.
+  const openingBalanceDefaults =
+    kind === "brokerage" ? {} : { opening_balance_minor: 0, opening_balance_date: "2020-01-01" };
   const { data, response } = await api.POST("/api/accounts", {
-    body: { name, kind, currency_code: currency, archived: false, sort_order: 0, ...extra },
+    body: {
+      name,
+      kind,
+      currency_code: currency,
+      archived: false,
+      sort_order: 0,
+      institution: institution ?? (INSTITUTION_REQUIRED.includes(kind) ? "ANZ" : undefined),
+      metadata: withRequiredMetadata(kind, metadata),
+      ...openingBalanceDefaults,
+      ...openingBalance,
+    },
   });
   expect(response.status, "create account").toBe(201);
   return data!;
 }
 
+function withRequiredMetadata(kind: AccountKind, provided?: Schemas["AccountMetadata"]) {
+  const required = REQUIRED_METADATA[kind];
+  if (!required) return provided;
+  const merged: Record<string, unknown> = { ...required, ...provided };
+  // `address` is the legacy alias of `address_line1` — the same serde field, so a spec
+  // writing the old key must not also be handed the new one (serde rejects both at once).
+  if (provided && "address" in provided) delete merged.address_line1;
+  return merged as Schemas["AccountMetadata"];
+}
+
 export async function createCategory(
   api: SureClient,
   name: string,
-  kind = "expense",
+  kind: CategoryKind = "expense",
   parentId: number | null = null
 ) {
   const { data, response } = await api.POST("/api/categories", {

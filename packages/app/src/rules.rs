@@ -11,7 +11,8 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use sure_core::{
-    AppError, AppResult, PreviewMatch, PreviewRequest, Rule, RulePreview, RunResult, SaveRule,
+    AppError, AppResult, PreviewMatch, PreviewRequest, Rule, RulePreview, RuleRunKind, RunResult,
+    SaveRule,
 };
 
 use crate::ports::{PlannedApplication, RuleRepo, TxCtx};
@@ -94,7 +95,7 @@ impl RuleService {
         &self,
         rules: &[Rule],
         rule_id: Option<i64>,
-        kind: &str,
+        kind: RuleRunKind,
     ) -> AppResult<RunResult> {
         let rows = self.rules.load_contexts().await?;
         let mut matched = 0i64;
@@ -221,7 +222,11 @@ fn build_context(row: &TxCtx, cur: &Current) -> Value {
     obj.insert("currency".into(), json!(row.currency_code));
     obj.insert("account_id".into(), json!(row.account_id));
     obj.insert("account".into(), json!(row.account_name));
-    obj.insert("account_kind".into(), json!(row.account_kind));
+    // The Zen engine only understands plain JSON values, so this is the deliberate
+    // exception (CLAUDE.md rule 1) where `AccountKind` is rendered to its wire string
+    // rather than staying the enum — an external expression-evaluator payload, not
+    // domain storage, and it happens exactly once, right here.
+    obj.insert("account_kind".into(), json!(row.account_kind.as_str()));
     obj.insert(
         "category_id".into(),
         cur.category_id.map(|v| json!(v)).unwrap_or(Value::Null),
@@ -277,7 +282,7 @@ pub fn validate_expression(expression: &str) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use sure_core::{RuleApplicationDetail, RuleRun};
+    use sure_core::{AccountKind, RuleApplicationDetail, RuleRun};
 
     use super::*;
 
@@ -297,7 +302,7 @@ mod tests {
             is_one_off: false,
             categorized_by_rule_id: None,
             account_name: "Everyday".to_string(),
-            account_kind: "bank".to_string(),
+            account_kind: AccountKind::Bank,
         }
     }
 
@@ -332,7 +337,7 @@ mod tests {
         async fn persist_run(
             &self,
             rule_id: Option<i64>,
-            _kind: &str,
+            _kind: RuleRunKind,
             matched: i64,
             applications: Vec<PlannedApplication>,
         ) -> AppResult<RunResult> {
@@ -379,7 +384,7 @@ mod tests {
         let svc = RuleService::new(repo);
         let r = rule(1, "merchant == \"The Roastery\"", 42);
 
-        let result = svc.run(&[r], Some(1), "single").await.unwrap();
+        let result = svc.run(&[r], Some(1), RuleRunKind::Single).await.unwrap();
 
         assert_eq!(result.matched, 2); // both rows share the same merchant
         assert_eq!(result.changed, 2); // both were uncategorized, so both changed
@@ -394,7 +399,7 @@ mod tests {
         let mut r = rule(1, "merchant == \"The Roastery\"", 42);
         r.overwrite_manual = false;
 
-        let result = svc.run(&[r], Some(1), "single").await.unwrap();
+        let result = svc.run(&[r], Some(1), RuleRunKind::Single).await.unwrap();
 
         assert_eq!(result.matched, 1);
         assert_eq!(result.changed, 0); // manual category left untouched

@@ -16,6 +16,18 @@ edition = "2021"
 license = "MIT"
 repository = ""
 
+[workspace.lints.rust]
+# (no new rustc lints yet — clippy carries this rule)
+
+[workspace.lints.clippy]
+# CLAUDE.md rule 2, direct enforcement: a `_` or `variant | _` arm over an enum is a hard
+# error. Every legitimate use (an external #[non_exhaustive] enum) needs `#[allow(..)]`
+# with a comment, per the CLAUDE.md rule — that's the intended friction.
+wildcard_enum_match_arm = "deny"
+# Complements the above: catches `Foo::A | _ =>` where naming the one remaining variant
+# instead of `_` is just as short.
+match_wildcard_for_single_variants = "deny"
+
 # Shared dependency versions so the api crate and the e2e test crate stay in lockstep.
 [workspace.dependencies]
 # `http2` is NOT an axum default feature; without it hyper's auto-detecting connection

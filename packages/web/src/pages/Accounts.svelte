@@ -150,9 +150,9 @@
                   <button class="btn btn-sm" onclick={() => ((editing = editing === a.account_id ? null : a.account_id), (showAdd = false))}>
                     {editing === a.account_id ? "Close" : "Edit"}
                   </button>
-                  {#if a.kind === "shares_private" || a.kind === "brokerage" || a.class === "asset"}
+                  {#if a.kind === "shares_private" || a.kind === "brokerage" || a.kind === "crypto" || a.class === "asset"}
                     <button class="btn btn-sm" onclick={() => (expanded = expanded === a.account_id ? null : a.account_id)}>
-                      {expanded === a.account_id ? "Hide" : a.kind === "brokerage" ? "Holdings" : "Equity"}
+                      {expanded === a.account_id ? "Hide" : a.kind === "brokerage" ? "Holdings" : a.kind === "crypto" ? "Value" : "Equity"}
                     </button>
                   {/if}
                   <button class="btn btn-sm btn-danger" aria-label="Delete {a.name}" onclick={() => askDelete(a.account_id)}>✕</button>

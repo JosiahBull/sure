@@ -15,14 +15,16 @@
   let delError = $state<string | null>(null);
   let busy = $state(false);
 
+  type CategoryKind = Schemas["CategoryKind"];
+
   // Add/edit form fields (one form open at a time, so a single set of state is fine).
   let fName = $state("");
-  let fKind = $state("expense");
+  let fKind = $state<CategoryKind>("expense");
   let fParent = $state<number | "">("");
   let fColor = $state("");
   let fIcon = $state("");
 
-  const KINDS = [
+  const KINDS: { value: CategoryKind; label: string }[] = [
     { value: "income", label: "Income" },
     { value: "expense", label: "Expense" },
     { value: "transfer", label: "Transfer" },

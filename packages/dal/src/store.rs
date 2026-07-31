@@ -22,10 +22,10 @@ use sure_core::{
     CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, ForecastAssumption,
     ForecastEvent, ForecastTargetType, HoldingLot, LinkProviderAccount, LinkProviderGroup,
     LinkRequest, Merchant, NewCurrency, NewValuation, Provider, ProviderSync, Rule,
-    RuleApplicationDetail, RuleRun, RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise,
-    SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot, SaveMerchant,
-    SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice, Transaction, TransferRequest,
-    TxQuery, UpdateSettings, Valuation, VestingStatus,
+    RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
+    SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
+    SaveMerchant, SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice, SyncOutcome,
+    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
 };
 
 use crate::Db;
@@ -148,7 +148,7 @@ impl BrokerageRepo for SqliteStore {
                 quantity: l.quantity,
                 unit_price: l.unit_price,
                 fee_minor: l.fee_minor,
-                kind: l.kind,
+                kind: l.kind, // already `sure_core::LotKind`, parsed in the DAL
             })
             .collect())
     }
@@ -210,7 +210,7 @@ impl BrokerageRepo for SqliteStore {
                 merchant: r.merchant.clone(),
                 category_name: r.category_name.clone(),
                 category_group: r.category_group.clone(),
-                category_kind: r.category_kind.clone(),
+                category_kind: r.category_kind,
             })
             .collect();
         let holdings: Vec<crate::brokerage::HoldingImport> = holdings
@@ -224,7 +224,7 @@ impl BrokerageRepo for SqliteStore {
                 quantity: h.quantity,
                 unit_price: h.unit_price,
                 fee_minor: h.fee_minor,
-                kind: h.kind.clone(),
+                kind: h.kind,
                 external_id: h.external_id.clone(),
             })
             .collect();
@@ -384,7 +384,7 @@ impl RuleRepo for SqliteStore {
                 is_one_off: r.is_one_off,
                 categorized_by_rule_id: r.categorized_by_rule_id,
                 account_name: r.account_name,
-                account_kind: r.account_kind,
+                account_kind: r.account_kind, // already `sure_core::AccountKind`, parsed in the DAL
             })
             .collect())
     }
@@ -392,7 +392,7 @@ impl RuleRepo for SqliteStore {
     async fn persist_run(
         &self,
         rule_id: Option<i64>,
-        kind: &str,
+        kind: RuleRunKind,
         matched: i64,
         applications: Vec<PlannedApplication>,
     ) -> AppResult<RunResult> {
@@ -518,7 +518,7 @@ impl ReportRepo for SqliteStore {
                 category_id: t.category_id,
                 is_one_off: t.is_one_off,
                 linked_transaction_id: t.linked_transaction_id,
-                account_kind: t.account_kind,
+                account_kind: t.account_kind, // already `sure_core::AccountKind`, parsed in the DAL
             })
             .collect())
     }
@@ -534,7 +534,7 @@ impl ReportRepo for SqliteStore {
             .map(|a| ActiveAccount {
                 id: a.id,
                 name: a.name,
-                kind: a.kind,
+                kind: a.kind, // already `sure_core::AccountKind`, parsed in the DAL
                 currency_code: a.currency_code,
             })
             .collect())
@@ -556,7 +556,7 @@ impl ReportRepo for SqliteStore {
             .map(|l| SecuredLiabilityAccount {
                 id: l.id,
                 name: l.name,
-                kind: l.kind,
+                kind: l.kind, // already `sure_core::AccountKind`, parsed in the DAL
                 currency_code: l.currency_code,
             })
             .collect())
@@ -619,7 +619,7 @@ impl ProviderRepo for SqliteStore {
                 merchant: r.merchant.clone(),
                 category_name: r.category_name.clone(),
                 category_group: r.category_group.clone(),
-                category_kind: r.category_kind.clone(),
+                category_kind: r.category_kind,
             })
             .collect();
         crate::providers::import_transactions(
@@ -641,7 +641,7 @@ impl ProviderRepo for SqliteStore {
         provider_id: i64,
         imported: i64,
         skipped: i64,
-        status: &str,
+        status: SyncOutcome,
         detail: Option<&str>,
     ) -> AppResult<ProviderSync> {
         crate::providers::record_sync(&self.db, provider_id, imported, skipped, status, detail)

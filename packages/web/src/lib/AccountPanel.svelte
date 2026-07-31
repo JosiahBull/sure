@@ -87,8 +87,10 @@
       {#each grouped.groups as g (g.key)}
         <li>
           <button type="button" class="kind-row" onclick={() => toggleGroup(g.key)}>
-            <span class="row" style="gap:6px;min-width:0">
-              <Icon name={expandedGroups.has(g.key) ? "chevron-down" : "chevron-right"} size={14} />
+            <!-- Chevron/label spacing matches the reference sidebar's group row exactly: a 20px
+                 chevron with gap-3 (12px), inside .kind-row's 12px padding. -->
+            <span class="row" style="gap:12px;min-width:0">
+              <Icon name={expandedGroups.has(g.key) ? "chevron-down" : "chevron-right"} size={20} />
               <span class="ell">{g.label}</span>
             </span>
             <span class="col" style="align-items:flex-end;flex:none">
@@ -176,7 +178,9 @@
     align-items: center;
     gap: 10px;
     width: 100%;
-    padding: 8px;
+    /* 12px horizontal like every other sidebar row (and like the reference's ghost DS::Link),
+       so this row's glyph lines up with the group chevrons below it rather than sitting 4px left. */
+    padding: 8px 12px;
     margin-bottom: 6px;
     border-radius: var(--r-sm);
     color: var(--text);
@@ -203,6 +207,9 @@
   .kind-row,
   .acct-row {
     all: unset;
+    /* `all: unset` also resets box-sizing to content-box, so width:100% + the horizontal
+       padding below would overflow the panel's right edge (and crowd the value against it). */
+    box-sizing: border-box;
     display: flex;
     align-items: center;
     justify-content: space-between;

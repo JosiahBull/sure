@@ -2,20 +2,13 @@ use std::collections::HashMap;
 
 use serde_json::json;
 use sqlx::FromRow;
-use sure_core::{AppError, AppResult};
+use sure_core::{AppError, AppResult, CategoryKind, SyncOutcome};
 pub use sure_core::{
     LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderSync, SaveProvider,
     SyncRequest,
 };
 
-use crate::accounts::AccountRow;
 use crate::Db;
-
-/// New categories created from a provider's own classification default to "expense" —
-/// most enrichment is spend-side (Akahu's NZFCC categories have no income group). A row
-/// can override this via `ImportRow::category_kind` (a broker's dividend row → "income",
-/// an internal wallet ↔ bank movement → "transfer").
-const IMPORTED_CATEGORY_KIND: &str = "expense";
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_category(
@@ -24,7 +17,7 @@ async fn resolve_category(
     group_cache: &mut HashMap<String, i64>,
     name: &str,
     group: Option<&str>,
-    kind: &str,
+    kind: CategoryKind,
 ) -> AppResult<i64> {
     let key = (name.to_string(), group.map(str::to_string));
     if let Some(&id) = category_cache.get(&key) {
@@ -110,10 +103,10 @@ pub struct ImportRow {
     /// left uncategorized. `category_group` becomes that category's parent.
     pub category_name: Option<String>,
     pub category_group: Option<String>,
-    /// Flow direction for a newly-created category (`"income"` | `"expense"` |
-    /// `"transfer"`); `None` defaults to expense. Only affects creation — an existing
-    /// category keeps its kind.
-    pub category_kind: Option<String>,
+    /// Flow direction for a newly-created category; `None` defaults to expense (most
+    /// enrichment is spend-side). Only affects creation — an existing category keeps
+    /// its kind.
+    pub category_kind: Option<CategoryKind>,
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -184,44 +177,33 @@ pub async fn link(db: &Db, input: LinkProviderAccount) -> AppResult<Provider> {
     }
 
     // The currency-existence check reads the pool directly (mirrors `transactions::unlink`
-    // fetching outside the transaction); it's a plain lookup, not a mutation.
+    // fetching outside the transaction); it's a plain lookup, not a mutation. `Linked` mode
+    // asks only for what an upstream feed can actually know — see `ValidationMode`.
     let new_account_metadata = match &input.new_account {
-        Some(a) => Some(crate::accounts::validate(db, a).await?),
+        Some(a) => Some(crate::accounts::validate(db, a, crate::accounts::Write::Linked).await?),
         None => None,
     };
 
     let mut tx = db.begin().await?;
 
-    let account_id = if let (Some(new_account), Some(metadata)) =
-        (&input.new_account, &new_account_metadata)
-    {
-        let row = sqlx::query_as::<_, AccountRow>(
-            "INSERT INTO accounts (name, kind, currency_code, institution, metadata, archived, sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING *",
-        )
-        .bind(new_account.name.trim())
-        .bind(new_account.kind.as_str())
-        .bind(new_account.currency_code.trim().to_uppercase())
-        .bind(&new_account.institution)
-        .bind(metadata)
-        .bind(new_account.archived)
-        .bind(new_account.sort_order)
-        .fetch_one(&mut *tx)
-        .await?;
-        row.id
-    } else {
-        let id = input
-            .existing_account_id
-            .expect("validated exactly-one above");
-        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE id=?1")
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await?;
-        if exists == 0 {
-            return Err(AppError::NotFound("account"));
-        }
-        id
-    };
+    let account_id =
+        if let (Some(new_account), Some(metadata)) = (&input.new_account, &new_account_metadata) {
+            crate::accounts::insert(&mut tx, new_account, metadata)
+                .await?
+                .id
+        } else {
+            let id = input
+                .existing_account_id
+                .expect("validated exactly-one above");
+            let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE id=?1")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+            if exists == 0 {
+                return Err(AppError::NotFound("account"));
+            }
+            id
+        };
 
     let config = json!({ "external_account_id": input.external_id }).to_string();
     let row = sqlx::query_as::<_, ProviderRow>(
@@ -257,42 +239,30 @@ pub async fn link_group(db: &Db, input: LinkProviderGroup) -> AppResult<Vec<Prov
     }
 
     let new_account_metadata = match &input.new_account {
-        Some(a) => Some(crate::accounts::validate(db, a).await?),
+        Some(a) => Some(crate::accounts::validate(db, a, crate::accounts::Write::Linked).await?),
         None => None,
     };
 
     let mut tx = db.begin().await?;
 
-    let account_id = if let (Some(new_account), Some(metadata)) =
-        (&input.new_account, &new_account_metadata)
-    {
-        let row = sqlx::query_as::<_, AccountRow>(
-            "INSERT INTO accounts (name, kind, currency_code, institution, metadata, archived, sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING *",
-        )
-        .bind(new_account.name.trim())
-        .bind(new_account.kind.as_str())
-        .bind(new_account.currency_code.trim().to_uppercase())
-        .bind(&new_account.institution)
-        .bind(metadata)
-        .bind(new_account.archived)
-        .bind(new_account.sort_order)
-        .fetch_one(&mut *tx)
-        .await?;
-        row.id
-    } else {
-        let id = input
-            .existing_account_id
-            .expect("validated exactly-one above");
-        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE id=?1")
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await?;
-        if exists == 0 {
-            return Err(AppError::NotFound("account"));
-        }
-        id
-    };
+    let account_id =
+        if let (Some(new_account), Some(metadata)) = (&input.new_account, &new_account_metadata) {
+            crate::accounts::insert(&mut tx, new_account, metadata)
+                .await?
+                .id
+        } else {
+            let id = input
+                .existing_account_id
+                .expect("validated exactly-one above");
+            let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE id=?1")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+            if exists == 0 {
+                return Err(AppError::NotFound("account"));
+            }
+            id
+        };
 
     let mut providers = Vec::with_capacity(input.members.len());
     for member in &input.members {
@@ -371,7 +341,7 @@ pub async fn import_transactions(
                     &mut group_cache,
                     name,
                     t.category_group.as_deref(),
-                    t.category_kind.as_deref().unwrap_or(IMPORTED_CATEGORY_KIND),
+                    t.category_kind.unwrap_or_default(),
                 )
                 .await?,
             ),
@@ -422,6 +392,16 @@ pub async fn update_last_synced(db: &Db, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+/// Parse a stored `status` TEXT column into the domain enum, exactly like
+/// `sure_dal::accounts::AccountRow`'s `TryFrom<AccountRow> for Account` does — every
+/// writer goes through `SyncOutcome::as_str`, so an unparseable value means the row
+/// came from something else entirely and deserves a real error, not a silent default.
+fn parse_status(status: String) -> AppResult<SyncOutcome> {
+    status
+        .parse()
+        .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
+}
+
 #[derive(Debug, FromRow)]
 struct ProviderSyncRow {
     id: i64,
@@ -433,17 +413,19 @@ struct ProviderSyncRow {
     created_at: String,
 }
 
-impl From<ProviderSyncRow> for ProviderSync {
-    fn from(r: ProviderSyncRow) -> Self {
-        ProviderSync {
+impl TryFrom<ProviderSyncRow> for ProviderSync {
+    type Error = AppError;
+
+    fn try_from(r: ProviderSyncRow) -> AppResult<Self> {
+        Ok(ProviderSync {
+            status: parse_status(r.status)?,
             id: r.id,
             provider_id: r.provider_id,
             imported: r.imported,
             skipped: r.skipped,
-            status: r.status,
             detail: r.detail,
             created_at: r.created_at,
-        }
+        })
     }
 }
 
@@ -453,36 +435,40 @@ pub async fn record_sync(
     provider_id: i64,
     imported: i64,
     skipped: i64,
-    status: &str,
+    status: SyncOutcome,
     detail: Option<&str>,
 ) -> AppResult<ProviderSync> {
-    Ok(sqlx::query_as::<_, ProviderSyncRow>(
+    sqlx::query_as::<_, ProviderSyncRow>(
         "INSERT INTO provider_syncs (provider_id, imported, skipped, status, detail)
          VALUES (?1,?2,?3,?4,?5) RETURNING *",
     )
     .bind(provider_id)
     .bind(imported)
     .bind(skipped)
-    .bind(status)
+    .bind(status.as_str())
     .bind(detail)
     .fetch_one(db)
     .await?
-    .into())
+    .try_into()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_syncs(db: &Db, provider_id: i64) -> AppResult<Vec<ProviderSync>> {
-    Ok(sqlx::query_as::<_, ProviderSyncRow>(
+    sqlx::query_as::<_, ProviderSyncRow>(
         "SELECT * FROM provider_syncs WHERE provider_id=?1 ORDER BY id DESC",
     )
     .bind(provider_id)
     .fetch_all(db)
     .await?
     .into_iter()
-    .map(Into::into)
-    .collect())
+    .map(ProviderSync::try_from)
+    .collect()
 }
 
+// `sqlx::Error` is `#[non_exhaustive]` upstream, so a catch-all is the only option here
+// (CLAUDE.md rule 2's escape hatch) — every other arm above is exhaustive over our own
+// types.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn map_fk(e: sqlx::Error) -> AppError {
     match e {
         sqlx::Error::Database(ref db) if db.is_foreign_key_violation() => {
@@ -508,7 +494,25 @@ mod tests {
         pool
     }
 
+    /// An input a *person* could have submitted: complete enough for the account form's
+    /// rules, so the same helper works whether a test links it or creates it outright.
     fn new_account_input(name: &str) -> sure_core::SaveAccount {
+        sure_core::SaveAccount {
+            name: name.to_string(),
+            kind: AccountKind::Bank,
+            currency_code: "NZD".to_string(),
+            institution: Some("ANZ".to_string()),
+            metadata: None,
+            archived: false,
+            sort_order: 0,
+            opening_balance_minor: Some(0),
+            opening_balance_date: Some("2020-01-01".to_string()),
+        }
+    }
+
+    /// What the link path actually receives: a name, a kind and a currency, because that is
+    /// all an upstream feed reports — no institution, no metadata, no opening balance.
+    fn discovered_account_input(name: &str) -> sure_core::SaveAccount {
         sure_core::SaveAccount {
             name: name.to_string(),
             kind: AccountKind::Bank,
@@ -517,6 +521,8 @@ mod tests {
             metadata: None,
             archived: false,
             sort_order: 0,
+            opening_balance_minor: None,
+            opening_balance_date: None,
         }
     }
 
@@ -543,6 +549,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(account.name, "Everyday");
+    }
+
+    /// The link path runs `ValidationMode::Linked`, which asks only for what a feed can
+    /// know. A bank account created by hand needs an institution and an opening balance;
+    /// a discovered one supplies neither, and must still link — and still read back.
+    #[tokio::test]
+    async fn links_an_account_a_feed_could_only_partly_describe() {
+        let db = test_db().await;
+        let provider = link(
+            &db,
+            LinkProviderAccount {
+                kind: "akahu".to_string(),
+                external_id: "acc_789".to_string(),
+                name: "Everyday".to_string(),
+                new_account: Some(discovered_account_input("Everyday")),
+                existing_account_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let account = crate::accounts::get(&db, provider.account_id)
+            .await
+            .unwrap();
+        assert_eq!(account.institution, None);
+        assert!(matches!(
+            account.metadata,
+            sure_core::AccountMetadata::Depository(_)
+        ));
     }
 
     #[tokio::test]
@@ -627,9 +662,17 @@ mod tests {
             kind: AccountKind::Brokerage,
             currency_code: "NZD".to_string(),
             institution: Some("Sharesies".to_string()),
-            metadata: None,
+            metadata: Some(sure_core::AccountMetadata::Brokerage(
+                sure_core::BrokerageMeta {
+                    broker: Some("Sharesies".to_string()),
+                    ..Default::default()
+                },
+            )),
             archived: false,
             sort_order: 0,
+            // The one kind with no opening balance — its value comes from the holdings ledger.
+            opening_balance_minor: None,
+            opening_balance_date: None,
         }
     }
 
@@ -809,7 +852,7 @@ mod tests {
             sure_core::SaveCategory {
                 name: "cafes and restaurants".to_string(),
                 parent_id: None,
-                kind: "expense".to_string(),
+                kind: sure_core::CategoryKind::Expense,
                 color: None,
                 icon: None,
                 sort_order: 0,
@@ -863,7 +906,7 @@ mod tests {
             sure_core::SaveCategory {
                 name: "My Own Coffee Budget".to_string(),
                 parent_id: None,
-                kind: "expense".to_string(),
+                kind: sure_core::CategoryKind::Expense,
                 color: None,
                 icon: None,
                 sort_order: 0,

@@ -131,6 +131,10 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+// `sqlx::Error` is `#[non_exhaustive]` upstream, so a catch-all is the only option here
+// (CLAUDE.md rule 2's escape hatch) — every other arm above is exhaustive over our own
+// types.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn unique_or_fk(e: sqlx::Error) -> AppError {
     match e {
         sqlx::Error::Database(ref db) if db.is_unique_violation() => {

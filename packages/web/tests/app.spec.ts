@@ -46,7 +46,9 @@ test("rules lists the seeded rule and its audit run", async ({ page }) => {
 
 test("accounts show share vesting and property paid-off %", async ({ page }) => {
   await goto(page, "/settings/accounts");
-  await expect(page.getByText("Family Home")).toBeVisible();
+  // Exact: the row's own summary line now reads "Single Family Home · Wellington" (the
+  // property's subtype), which a substring match would tie with the account name.
+  await expect(page.getByText("Family Home", { exact: true })).toBeVisible();
   await expect(page.getByText("Home Loan", { exact: true })).toBeVisible();
 
   // Private-shares equity (vesting).
@@ -102,10 +104,22 @@ test("can create an account with typed metadata via the form", async ({ page }) 
   await goto(page, "/settings/accounts");
   await page.getByRole("button", { name: "+ Add account" }).click();
 
-  await page.getByLabel("Type").selectOption("vehicle");
+  // By role with an exact name: a plain getByLabel("Type") would also match the profile's own
+  // "Subtype" select, and getByLabel(…, { exact: true }) matches neither — a wrapping <label>'s
+  // accessible name picks up the selected <option>'s text ("Type Bank"), which the role-based
+  // accessible-name computation for the control itself does not.
+  await page.getByRole("combobox", { name: "Type", exact: true }).selectOption("vehicle");
   await page.getByLabel("Name", { exact: true }).fill("Test Van");
+
+  // Make/model/year identify a vehicle and are required, as is a starting value — the server
+  // seeds that as the account's first valuation, so it can't be left for a second request.
   await page.getByLabel("Make", { exact: true }).fill("Ford");
   await page.getByLabel("Model", { exact: true }).fill("Transit");
+  await page.getByLabel("Year", { exact: true }).fill("2019");
+  await page.getByLabel("Estimated value", { exact: true }).fill("28500");
+
+  // Identifiers rather than setup, so they live behind the collapsed disclosure.
+  await page.getByText("Additional details").click();
   await page.getByLabel("Nickname", { exact: true }).fill("Vanny");
   await page.getByLabel("Plate", { exact: true }).fill("VAN999");
   await page.getByRole("button", { name: "Create" }).click();

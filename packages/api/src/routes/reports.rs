@@ -8,9 +8,10 @@
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use sure_core::{AccountClass, AccountKind};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 // ---- query params --------------------------------------------------------
@@ -51,19 +52,31 @@ impl From<&ReportQuery> for sure_app::reports::ReportQuery {
 pub struct NetWorthQuery {
     pub from: Option<String>,
     pub to: Option<String>,
-    /// Sampling interval: `month` (default), `week`, or `day`.
+    /// Sampling interval: `month` (default), `week`, or `day`. An unrecognised value is a
+    /// 400, not a silent fall back to `month`.
     pub interval: Option<String>,
     pub currency: Option<String>,
 }
 
-impl From<&NetWorthQuery> for sure_app::reports::NetWorthQuery {
-    fn from(q: &NetWorthQuery) -> Self {
-        sure_app::reports::NetWorthQuery {
+impl TryFrom<&NetWorthQuery> for sure_app::reports::NetWorthQuery {
+    type Error = AppError;
+
+    /// The HTTP edge `interval` is parsed into the domain enum right here: a query string
+    /// is the "one legal place a domain value is text" (CLAUDE.md rule 1), and an
+    /// unparseable value is rejected outright rather than defaulting.
+    fn try_from(q: &NetWorthQuery) -> Result<Self, Self::Error> {
+        let interval = q
+            .interval
+            .as_deref()
+            .map(str::parse::<sure_core::Interval>)
+            .transpose()
+            .map_err(|e: String| AppError::bad_request(e))?;
+        Ok(sure_app::reports::NetWorthQuery {
             from: q.from.clone(),
             to: q.to.clone(),
-            interval: q.interval.clone(),
+            interval,
             currency: q.currency.clone(),
-        }
+        })
     }
 }
 
@@ -157,7 +170,7 @@ impl From<sure_app::reports::SankeyNode> for SankeyNode {
         SankeyNode {
             id: n.id,
             label: n.label,
-            kind: n.kind,
+            kind: n.kind.as_str().to_string(),
         }
     }
 }
@@ -200,9 +213,8 @@ impl From<sure_app::reports::SankeyGraph> for SankeyGraph {
 pub struct AccountBalance {
     pub account_id: i64,
     pub name: String,
-    pub kind: String,
-    /// cash | asset | investment | liability
-    pub class: String,
+    pub kind: AccountKind,
+    pub class: AccountClass,
     pub currency_code: String,
     pub value_minor: i64,
 }
@@ -243,7 +255,7 @@ impl From<sure_app::reports::BalancesReport> for BalancesReport {
 pub struct SecuredLiability {
     pub account_id: i64,
     pub name: String,
-    pub kind: String,
+    pub kind: AccountKind,
     /// Amount owed, in the report currency (positive).
     pub balance_minor: i64,
 }
@@ -309,7 +321,8 @@ pub async fn net_worth(
     State(st): State<AppState>,
     Query(q): Query<NetWorthQuery>,
 ) -> AppResult<Json<NetWorthSeries>> {
-    Ok(Json(st.reports.net_worth(&(&q).into()).await?.into()))
+    let query: sure_app::reports::NetWorthQuery = (&q).try_into()?;
+    Ok(Json(st.reports.net_worth(&query).await?.into()))
 }
 
 /// Income/expense totals per top-level category for the period.

@@ -6,6 +6,45 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// What kind of ledger entry a `holdings` row is. Stored as `holdings.kind` (plain `TEXT`).
+#[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum LotKind {
+    Buy,
+    Sell,
+    /// A corporate action: a split/bonus issue (unpriced, quantity-only) or something
+    /// like a DRIP dividend reinvestment (priced, treated like a buy) — see
+    /// `sure_app::brokerage::cost_basis_by_ticker`, which is the one place that
+    /// distinguishes the two.
+    Corporate,
+}
+
+impl LotKind {
+    /// The stored/wire representation (snake_case) — matches
+    /// `#[serde(rename_all = "snake_case")]`. Used by the DAL to bind this as a plain
+    /// `TEXT` column without `sure-core` needing an `sqlx` dependency.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LotKind::Buy => "buy",
+            LotKind::Sell => "sell",
+            LotKind::Corporate => "corporate",
+        }
+    }
+}
+
+impl std::str::FromStr for LotKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "buy" => LotKind::Buy,
+            "sell" => LotKind::Sell,
+            "corporate" => LotKind::Corporate,
+            other => return Err(format!("unknown lot kind '{other}'")),
+        })
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct HoldingLot {
     pub id: i64,
@@ -18,7 +57,7 @@ pub struct HoldingLot {
     pub quantity: f64,
     pub unit_price: Option<f64>,
     pub fee_minor: i64,
-    pub kind: String,
+    pub kind: LotKind,
     pub external_id: Option<String>,
     pub provider: Option<String>,
     pub created_at: String,
@@ -41,10 +80,10 @@ pub struct SaveHoldingLot {
     #[serde(default)]
     pub fee_minor: i64,
     #[serde(default = "manual_kind")]
-    pub kind: String,
+    pub kind: LotKind,
 }
-fn manual_kind() -> String {
-    "buy".to_string()
+fn manual_kind() -> LotKind {
+    LotKind::Buy
 }
 
 /// A ticker position as of a date: quantity currently held, its latest known price, and

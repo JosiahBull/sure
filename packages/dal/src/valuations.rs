@@ -1,6 +1,6 @@
 use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
-pub use sure_core::{NewValuation, Valuation};
+pub use sure_core::{NewValuation, Valuation, ValuationSource};
 
 use crate::Db;
 
@@ -16,33 +16,43 @@ struct ValuationRow {
     created_at: String,
 }
 
-impl From<ValuationRow> for Valuation {
-    fn from(r: ValuationRow) -> Self {
-        Valuation {
+impl TryFrom<ValuationRow> for Valuation {
+    type Error = AppError;
+
+    fn try_from(r: ValuationRow) -> AppResult<Self> {
+        // The column has no CHECK constraint (sqlite's is limited), but every writer
+        // goes through `ValuationSource::as_str`, so a value that doesn't parse means
+        // the row was written by something else entirely — surface it as a real error
+        // rather than panicking the request.
+        let source: ValuationSource = r
+            .source
+            .parse()
+            .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))?;
+        Ok(Valuation {
             id: r.id,
             account_id: r.account_id,
             as_of: r.as_of,
             value_minor: r.value_minor,
             currency_code: r.currency_code,
-            source: r.source,
+            source,
             note: r.note,
             created_at: r.created_at,
-        }
+        })
     }
 }
 
 /// List an account's valuations, newest first.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_for_account(db: &Db, account_id: i64) -> AppResult<Vec<Valuation>> {
-    Ok(sqlx::query_as::<_, ValuationRow>(
+    sqlx::query_as::<_, ValuationRow>(
         "SELECT * FROM valuations WHERE account_id=?1 ORDER BY as_of DESC, id DESC",
     )
     .bind(account_id)
     .fetch_all(db)
     .await?
     .into_iter()
-    .map(Into::into)
-    .collect())
+    .map(Valuation::try_from)
+    .collect()
 }
 
 /// Record a valuation for an account, defaulting the currency to the account's.
@@ -60,18 +70,19 @@ pub async fn create(db: &Db, account_id: i64, input: NewValuation) -> AppResult<
         .filter(|s| !s.is_empty())
         .map(|s| s.to_uppercase())
         .unwrap_or(account_ccy);
-    Ok(sqlx::query_as::<_, ValuationRow>(
+    sqlx::query_as::<_, ValuationRow>(
         "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
-         VALUES (?1, ?2, ?3, ?4, 'manual', ?5) RETURNING *",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING *",
     )
     .bind(account_id)
     .bind(input.as_of.trim())
     .bind(input.value_minor)
     .bind(currency)
+    .bind(ValuationSource::Manual.as_str())
     .bind(&input.note)
     .fetch_one(db)
     .await?
-    .into())
+    .try_into()
 }
 
 /// Record (or refresh, if one already exists for this account today) a provider-sourced
@@ -86,9 +97,9 @@ pub async fn upsert_from_provider(
     value_minor: i64,
     currency_code: &str,
 ) -> AppResult<Valuation> {
-    Ok(sqlx::query_as::<_, ValuationRow>(
+    sqlx::query_as::<_, ValuationRow>(
         "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source)
-         VALUES (?1, ?2, ?3, ?4, 'provider')
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(account_id, as_of) WHERE source='provider' DO UPDATE SET
             value_minor = excluded.value_minor, currency_code = excluded.currency_code
          RETURNING *",
@@ -97,9 +108,13 @@ pub async fn upsert_from_provider(
     .bind(as_of)
     .bind(value_minor)
     .bind(currency_code)
+    // The partial unique index's predicate (`0010_provider_valuations.sql`) is a fixed
+    // part of the schema and can't take a bound parameter, so it stays a literal — but
+    // it must always match this bound value.
+    .bind(ValuationSource::Provider.as_str())
     .fetch_one(db)
     .await?
-    .into())
+    .try_into()
 }
 
 /// Record (or refresh, if one already exists for this account today) a brokerage-computed
@@ -116,9 +131,9 @@ pub async fn upsert_from_brokerage(
     value_minor: i64,
     currency_code: &str,
 ) -> AppResult<Valuation> {
-    Ok(sqlx::query_as::<_, ValuationRow>(
+    sqlx::query_as::<_, ValuationRow>(
         "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source)
-         VALUES (?1, ?2, ?3, ?4, 'brokerage')
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(account_id, as_of) WHERE source='brokerage' DO UPDATE SET
             value_minor = excluded.value_minor, currency_code = excluded.currency_code
          RETURNING *",
@@ -127,9 +142,13 @@ pub async fn upsert_from_brokerage(
     .bind(as_of)
     .bind(value_minor)
     .bind(currency_code)
+    // The partial unique index's predicate (`0012_brokerage.sql`) is a fixed part of
+    // the schema and can't take a bound parameter, so it stays a literal — but it must
+    // always match this bound value.
+    .bind(ValuationSource::Brokerage.as_str())
     .fetch_one(db)
     .await?
-    .into())
+    .try_into()
 }
 
 /// Delete a valuation.
@@ -169,9 +188,22 @@ mod tests {
                 kind: AccountKind::Mortgage,
                 currency_code: "NZD".to_string(),
                 institution: None,
-                metadata: None,
+                // A mortgage's required metadata (see `AccountMetadata::validate_for`); none
+                // of it matters to these tests, which are about the valuations themselves.
+                metadata: Some(sure_core::AccountMetadata::Mortgage(
+                    sure_core::MortgageMeta {
+                        lender: Some("ASB".to_string()),
+                        original_amount_minor: Some(48_500_000),
+                        interest_rate_bps: Some(549),
+                        rate_type: Some(sure_core::RateType::Fixed),
+                        ..Default::default()
+                    },
+                )),
                 archived: false,
                 sort_order: 0,
+                // Zero seeds no valuation, leaving the ones each test writes on their own.
+                opening_balance_minor: Some(0),
+                opening_balance_date: Some("2020-01-01".to_string()),
             },
         )
         .await
@@ -188,7 +220,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.value_minor, -47_921_483);
-        assert_eq!(first.source, "provider");
+        assert_eq!(first.source, ValuationSource::Provider);
 
         // A second sync the same day refreshes the same row rather than adding a new one.
         let second = upsert_from_provider(&db, account_id, "2026-07-18", -55_360_000, "NZD")

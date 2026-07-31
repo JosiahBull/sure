@@ -26,6 +26,13 @@ test("net worth combines cash flows and valuations", async ({ api }) => {
   expect(last.liabilities_minor).toBe(-50_000_000);
 });
 
+test("an unrecognised net-worth interval is rejected, not silently defaulted", async ({ api }) => {
+  const { response } = await api.GET("/api/reports/net-worth", {
+    params: { query: { interval: "fortnightly" } },
+  });
+  expect(response.status).toBe(400);
+});
+
 test("net worth converts foreign-currency holdings (seeded via import)", async ({ api }) => {
   // No public fx-rate endpoint yet, so seed a rate + USD holding through config import —
   // which also exercises the snapshot restore path. 1 NZD = 0.6 USD => $600 USD = $1000 NZD.

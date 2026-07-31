@@ -2,11 +2,20 @@
   import { onMount } from "svelte";
   import { api, formatDate, type Schemas } from "../lib/api";
 
+  type CronKind = Schemas["CronKind"];
+
   let accounts = $state<Schemas["Account"][]>([]);
   let crons = $state<Schemas["Cron"][]>([]);
   let error = $state<string | null>(null);
 
-  let cf = $state({
+  let cf = $state<{
+    name: string;
+    account_id: number;
+    kind: CronKind;
+    rate: string;
+    amount: string;
+    start_date: string;
+  }>({
     name: "",
     account_id: 0,
     kind: "appreciation",

@@ -5,7 +5,7 @@ use sqlx::FromRow;
 pub use sure_core::{
     AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
 };
-use sure_core::{AppError, AppResult};
+use sure_core::{AppError, AppResult, ValuationSource};
 
 use crate::Db;
 
@@ -264,12 +264,14 @@ pub async fn revalue(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<Account
     let equity = account_equity(db, id, as_of).await?;
     sqlx::query(
         "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
-         VALUES (?1,?2,?3,?4,'equity','equity revaluation')",
+         VALUES (?1,?2,?3,?4,?5,?6)",
     )
     .bind(id)
     .bind(&equity.as_of)
     .bind(equity.total_intrinsic_minor)
     .bind(&equity.currency_code)
+    .bind(ValuationSource::Equity.as_str())
+    .bind("equity revaluation")
     .execute(db)
     .await?;
     Ok(equity)

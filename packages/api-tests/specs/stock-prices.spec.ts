@@ -22,9 +22,27 @@ test("404s for a non-shares account kind", async ({ api }) => {
 });
 
 test("404s for a shares account with no ticker set", async ({ api }) => {
-  const acc = await createAccount(api, "Meridian", "shares_nz");
+  // A listed holding can't be *created* without a ticker any more, so the only way to hold
+  // one is the provider-link path, which validates in `ValidationMode::Linked` — exactly the
+  // state a discovered account is in before its first sync fills anything in.
+  const linked = await api.POST("/api/providers/link", {
+    body: {
+      kind: "akahu",
+      external_id: "acc_no_ticker",
+      name: "Akahu — Meridian",
+      new_account: {
+        name: "Meridian",
+        kind: "shares_nz",
+        currency_code: "NZD",
+        archived: false,
+        sort_order: 0,
+      },
+    },
+  });
+  expect(linked.response.status).toBe(201);
+
   const { response } = await api.GET("/api/accounts/{id}/stock-price", {
-    params: { path: { id: acc.id } },
+    params: { path: { id: linked.data!.account_id } },
   });
   expect(response.status).toBe(404);
 });

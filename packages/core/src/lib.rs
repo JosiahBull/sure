@@ -19,10 +19,10 @@ pub mod valuations;
 
 pub use brokerage::{
     BrokerageActivity30d, BrokerageImportResult, BrokerageSnapshot, Dividend, DividendDetail,
-    DividendWithholding, HoldingLot, Position, SaveHoldingLot, WalletBalance,
+    DividendWithholding, HoldingLot, LotKind, Position, SaveHoldingLot, WalletBalance,
 };
-pub use categories::{Category, CategoryNode, SaveCategory};
-pub use crons::{Cron, CronRun, CronRunResult, SaveCron};
+pub use categories::{Category, CategoryKind, CategoryNode, SaveCategory};
+pub use crons::{Cron, CronKind, CronRun, CronRunResult, SaveCron};
 pub use currencies::{Currency, NewCurrency};
 pub use equity::{
     AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
@@ -35,11 +35,11 @@ pub use forecast::{
 pub use merchants::{Merchant, SaveMerchant};
 pub use providers::{
     LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderAccount,
-    ProviderKind, ProviderSync, SaveProvider, SyncRequest,
+    ProviderKind, ProviderSync, SaveProvider, SyncOutcome, SyncRequest,
 };
 pub use rules::{
-    PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RunResult,
-    SaveRule,
+    PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RuleRunKind,
+    RunResult, SaveRule,
 };
 pub use settings::{Settings, UpdateSettings};
 pub use stock_prices::StockPrice;
@@ -48,8 +48,8 @@ pub use transactions::{
     TxQuery,
 };
 pub use types::{
-    class_of, Account, AccountClass, AccountKind, AccountMetadata, BrokerageMeta, DepositoryMeta,
-    GenericMeta, LoanMeta, MortgageMeta, PropertyMeta, RateType, SaveAccount, SetSecuredBy,
-    SharesMeta, VehicleMeta,
+    Account, AccountClass, AccountKind, AccountMetadata, AreaUnit, BrokerageMeta, CryptoMeta,
+    DepositoryMeta, GenericMeta, Interval, LoanMeta, MileageUnit, MortgageMeta, PropertyMeta,
+    RateType, SaveAccount, SetSecuredBy, SharesMeta, TaxTreatment, ValidationMode, VehicleMeta,
 };
-pub use valuations::{NewValuation, Valuation};
+pub use valuations::{NewValuation, Valuation, ValuationSource};

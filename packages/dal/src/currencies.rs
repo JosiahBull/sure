@@ -65,16 +65,23 @@ pub async fn delete(db: &Db, code: &str) -> AppResult<()> {
         .bind(code.trim().to_uppercase())
         .execute(db)
         .await
-        .map_err(|e| match e {
-            sqlx::Error::Database(ref d) if d.is_foreign_key_violation() => {
-                AppError::conflict("currency is in use and cannot be deleted")
-            }
-            other => AppError::from(other),
-        })?;
+        .map_err(map_fk)?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound("currency"));
     }
     Ok(())
+}
+
+// `sqlx::Error` is `#[non_exhaustive]` upstream, so a catch-all is the only option here
+// (CLAUDE.md rule 2's escape hatch) — the arm above is exhaustive over our own types.
+#[allow(clippy::wildcard_enum_match_arm)]
+fn map_fk(e: sqlx::Error) -> AppError {
+    match e {
+        sqlx::Error::Database(ref d) if d.is_foreign_key_violation() => {
+            AppError::conflict("currency is in use and cannot be deleted")
+        }
+        other => AppError::from(other),
+    }
 }
 
 #[tracing::instrument(level = "debug", skip_all)]

@@ -9,7 +9,7 @@ use axum::{Json, Router};
 
 pub use sure_core::{
     LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderAccount,
-    ProviderKind, ProviderSync, SaveProvider, SyncRequest,
+    ProviderKind, ProviderSync, SaveProvider, SyncOutcome, SyncRequest,
 };
 
 // OTEL span names for this module's handlers.
@@ -123,6 +123,11 @@ pub async fn create(
 /// Link an upstream account (from [`discover_accounts`]) to a local account, creating it
 /// first if `new_account` is given rather than `existing_account_id`. Triggers an
 /// immediate best-effort sync so the account isn't empty until the next scheduled poll.
+///
+/// A `new_account` here is validated as `ValidationMode::Linked` (see `sure_core`): a feed
+/// reports a name, a kind and a currency, so the fields the account form insists on — a
+/// mortgage's principal, a property's city — are not demanded of it. Sync fills in whatever
+/// the upstream does report.
 #[utoipa::path(post, path = "/api/providers/link", tag = "providers", request_body = LinkProviderAccount,
     responses((status = 201, body = Provider), (status = 422, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
@@ -158,7 +163,8 @@ pub async fn link(
 
 /// Link several upstream accounts to one local account at once (e.g. every currency wallet
 /// of a Sharesies brokerage account into a single Brokerage account). Creates the account
-/// once, links every member, then best-effort syncs each. See [`LinkProviderGroup`].
+/// once, links every member, then best-effort syncs each. See [`LinkProviderGroup`]; a
+/// `new_account` is validated in `Linked` mode, as in [`link`].
 #[utoipa::path(post, path = "/api/providers/link-group", tag = "providers", request_body = LinkProviderGroup,
     responses((status = 201, body = [Provider]), (status = 422, body = crate::error::ErrorBody)))]
 #[tracing::instrument(

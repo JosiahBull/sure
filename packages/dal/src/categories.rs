@@ -1,10 +1,17 @@
 use sqlx::{FromRow, SqlitePool};
 use sure_core::{AppError, AppResult};
-pub use sure_core::{Category, CategoryNode, SaveCategory};
+pub use sure_core::{Category, CategoryKind, CategoryNode, SaveCategory};
 
 use crate::Db;
 
-const KINDS: [&str; 3] = ["income", "expense", "transfer"];
+/// Parse a stored `kind` TEXT column into the domain enum, exactly like
+/// `sure_dal::accounts::AccountRow`'s `TryFrom<AccountRow> for Account` does — every
+/// writer goes through `CategoryKind::as_str`, so an unparseable value means the row
+/// came from something else entirely and deserves a real error, not a silent default.
+fn parse_kind(kind: String) -> AppResult<CategoryKind> {
+    kind.parse()
+        .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
+}
 
 #[derive(Debug, FromRow)]
 struct CategoryRow {
@@ -18,18 +25,20 @@ struct CategoryRow {
     created_at: String,
 }
 
-impl From<CategoryRow> for Category {
-    fn from(r: CategoryRow) -> Self {
-        Category {
+impl TryFrom<CategoryRow> for Category {
+    type Error = AppError;
+
+    fn try_from(r: CategoryRow) -> AppResult<Self> {
+        Ok(Category {
+            kind: parse_kind(r.kind)?,
             id: r.id,
             name: r.name,
             parent_id: r.parent_id,
-            kind: r.kind,
             color: r.color,
             icon: r.icon,
             sort_order: r.sort_order,
             created_at: r.created_at,
-        }
+        })
     }
 }
 
@@ -50,40 +59,40 @@ pub async fn tree(db: &Db) -> AppResult<Vec<CategoryNode>> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveCategory) -> AppResult<Category> {
     validate(db, &input, None).await?;
-    Ok(sqlx::query_as::<_, CategoryRow>(
+    sqlx::query_as::<_, CategoryRow>(
         "INSERT INTO categories (name, parent_id, kind, color, icon, sort_order)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING *",
     )
     .bind(input.name.trim())
     .bind(input.parent_id)
-    .bind(&input.kind)
+    .bind(input.kind.as_str())
     .bind(&input.color)
     .bind(&input.icon)
     .bind(input.sort_order)
     .fetch_one(db)
     .await?
-    .into())
+    .try_into()
 }
 
 /// Replace a category.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveCategory) -> AppResult<Category> {
     validate(db, &input, Some(id)).await?;
-    Ok(sqlx::query_as::<_, CategoryRow>(
+    sqlx::query_as::<_, CategoryRow>(
         "UPDATE categories SET name=?2, parent_id=?3, kind=?4, color=?5, icon=?6, sort_order=?7
          WHERE id=?1 RETURNING *",
     )
     .bind(id)
     .bind(input.name.trim())
     .bind(input.parent_id)
-    .bind(&input.kind)
+    .bind(input.kind.as_str())
     .bind(&input.color)
     .bind(&input.icon)
     .bind(input.sort_order)
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound("category"))?
-    .into())
+    .try_into()
 }
 
 /// Find an existing category by name (case-insensitive, scoped to the given parent) or
@@ -96,7 +105,7 @@ pub async fn find_or_create(
     db: &Db,
     name: &str,
     parent_id: Option<i64>,
-    kind: &str,
+    kind: CategoryKind,
 ) -> AppResult<Category> {
     let name = name.trim();
     let existing: Option<Category> = match parent_id {
@@ -107,27 +116,29 @@ pub async fn find_or_create(
         .bind(pid)
         .fetch_optional(db)
         .await?
-        .map(Into::into),
+        .map(Category::try_from)
+        .transpose()?,
         None => sqlx::query_as::<_, CategoryRow>(
             "SELECT * FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id IS NULL",
         )
         .bind(name)
         .fetch_optional(db)
         .await?
-        .map(Into::into),
+        .map(Category::try_from)
+        .transpose()?,
     };
     if let Some(existing) = existing {
         return Ok(existing);
     }
-    Ok(sqlx::query_as::<_, CategoryRow>(
+    sqlx::query_as::<_, CategoryRow>(
         "INSERT INTO categories (name, parent_id, kind) VALUES (?1, ?2, ?3) RETURNING *",
     )
     .bind(name)
     .bind(parent_id)
-    .bind(kind)
+    .bind(kind.as_str())
     .fetch_one(db)
     .await?
-    .into())
+    .try_into()
 }
 
 /// Delete a category. Child categories and transaction links cascade per schema
@@ -146,25 +157,18 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn all_categories(db: &SqlitePool) -> AppResult<Vec<Category>> {
-    Ok(
-        sqlx::query_as::<_, CategoryRow>("SELECT * FROM categories ORDER BY sort_order, name")
-            .fetch_all(db)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-    )
+    sqlx::query_as::<_, CategoryRow>("SELECT * FROM categories ORDER BY sort_order, name")
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .map(Category::try_from)
+        .collect()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn validate(db: &SqlitePool, input: &SaveCategory, id: Option<i64>) -> AppResult<()> {
     if input.name.trim().is_empty() {
         return Err(AppError::validation("category name is required"));
-    }
-    if !KINDS.contains(&input.kind.as_str()) {
-        return Err(AppError::validation(format!(
-            "kind must be one of {KINDS:?}"
-        )));
     }
     if let Some(parent) = input.parent_id {
         if Some(parent) == id {

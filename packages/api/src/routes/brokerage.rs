@@ -20,7 +20,7 @@ use crate::state::AppState;
 
 pub use sure_core::{
     BrokerageActivity30d, BrokerageImportResult, BrokerageSnapshot, Dividend, DividendDetail,
-    DividendWithholding, HoldingLot, Position, SaveHoldingLot, WalletBalance,
+    DividendWithholding, HoldingLot, LotKind, Position, SaveHoldingLot, WalletBalance,
 };
 
 // OTEL span names for this module's handlers.
@@ -205,7 +205,7 @@ pub async fn import(
             description: t.description,
             merchant: t.merchant,
             category_name: t.category.as_ref().map(|c| c.name.clone()),
-            category_kind: t.category.as_ref().and_then(|c| c.kind.clone()),
+            category_kind: t.category.as_ref().and_then(|c| c.kind),
             category_group: t.category.and_then(|c| c.group),
         })
         .collect();
@@ -221,7 +221,7 @@ pub async fn import(
             quantity: h.quantity,
             unit_price: h.unit_price,
             fee_minor: h.fee_minor,
-            kind: h.kind.to_string(),
+            kind: h.kind,
             external_id: h.external_id,
         })
         .collect();

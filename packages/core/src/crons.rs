@@ -4,12 +4,57 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// What a scheduled adjustment does each period. Stored as `crons.kind` /
+/// `cron_runs.kind` (plain `TEXT` columns).
+#[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum CronKind {
+    /// Grow the account's latest valuation by `rate_bps` annually (e.g. property, shares).
+    Appreciation,
+    /// Shrink the account's latest valuation by `rate_bps` annually (e.g. a vehicle).
+    Depreciation,
+    /// Grow a loan/mortgage balance by `rate_bps` annually.
+    Interest,
+    /// Post a fixed `amount_minor` transaction every period.
+    FixedTransaction,
+}
+
+impl CronKind {
+    /// The stored/wire representation (snake_case) — matches
+    /// `#[serde(rename_all = "snake_case")]`. Used by the DAL to bind this as a plain
+    /// `TEXT` column without `sure-core` needing an `sqlx` dependency.
+    pub fn as_str(self) -> &'static str {
+        use CronKind::*;
+        match self {
+            Appreciation => "appreciation",
+            Depreciation => "depreciation",
+            Interest => "interest",
+            FixedTransaction => "fixed_transaction",
+        }
+    }
+}
+
+impl std::str::FromStr for CronKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use CronKind::*;
+        Ok(match s {
+            "appreciation" => Appreciation,
+            "depreciation" => Depreciation,
+            "interest" => Interest,
+            "fixed_transaction" => FixedTransaction,
+            other => return Err(format!("unknown cron kind '{other}'")),
+        })
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Cron {
     pub id: i64,
     pub name: String,
     pub account_id: i64,
-    pub kind: String,
+    pub kind: CronKind,
     pub rate_bps: Option<i64>,
     pub amount_minor: Option<i64>,
     pub category_id: Option<i64>,
@@ -26,7 +71,7 @@ pub struct Cron {
 pub struct SaveCron {
     pub name: String,
     pub account_id: i64,
-    pub kind: String,
+    pub kind: CronKind,
     #[serde(default)]
     pub rate_bps: Option<i64>,
     #[serde(default)]
@@ -48,7 +93,7 @@ pub struct CronRun {
     pub id: i64,
     pub cron_id: i64,
     pub period: String,
-    pub kind: String,
+    pub kind: CronKind,
     pub valuation_id: Option<i64>,
     pub transaction_id: Option<i64>,
     pub detail: Option<String>,

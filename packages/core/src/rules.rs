@@ -4,6 +4,39 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// Whether a run evaluated one rule or every enabled rule. Stored as `rule_runs.kind`
+/// (plain `TEXT`).
+#[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleRunKind {
+    Single,
+    All,
+}
+
+impl RuleRunKind {
+    /// The stored/wire representation (snake_case) — matches
+    /// `#[serde(rename_all = "snake_case")]`. Used by the DAL to bind this as a plain
+    /// `TEXT` column without `sure-core` needing an `sqlx` dependency.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuleRunKind::Single => "single",
+            RuleRunKind::All => "all",
+        }
+    }
+}
+
+impl std::str::FromStr for RuleRunKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "single" => RuleRunKind::Single,
+            "all" => RuleRunKind::All,
+            other => return Err(format!("unknown rule run kind '{other}'")),
+        })
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct Rule {
     pub id: i64,
@@ -57,7 +90,7 @@ fn default_true() -> bool {
 pub struct RuleRun {
     pub id: i64,
     pub rule_id: Option<i64>,
-    pub kind: String,
+    pub kind: RuleRunKind,
     pub matched: i64,
     pub changed: i64,
     pub undone: bool,

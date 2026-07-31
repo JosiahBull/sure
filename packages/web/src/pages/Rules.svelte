@@ -21,7 +21,7 @@
   const ACCOUNT_KINDS = [
     "cash", "bank", "savings", "credit_card", "revolving_credit", "mortgage",
     "student_loan", "loan", "vehicle", "real_estate", "shares_nz", "shares_us",
-    "shares_private", "asset", "liability",
+    "shares_private", "brokerage", "crypto", "asset", "liability",
   ];
 
   let rules = $state<Rule[]>([]);

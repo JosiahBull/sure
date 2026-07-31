@@ -4,10 +4,19 @@
 //! module is pure persistence, mirroring the split used by `equity`.
 
 use sqlx::FromRow;
-use sure_core::{AppError, AppResult};
+use sure_core::{AppError, AppResult, LotKind};
 pub use sure_core::{Dividend, DividendDetail, DividendWithholding, HoldingLot, SaveHoldingLot};
 
 use crate::Db;
+
+/// Parse a stored `kind` TEXT column into the domain enum, exactly like
+/// `sure_dal::accounts::AccountRow`'s `TryFrom<AccountRow> for Account` does — every
+/// writer goes through `LotKind::as_str`, so an unparseable value means the row came
+/// from something else entirely and deserves a real error, not a silent default.
+fn parse_kind(kind: String) -> AppResult<LotKind> {
+    kind.parse()
+        .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
+}
 
 #[derive(Debug, FromRow)]
 struct HoldingLotRow {
@@ -27,9 +36,12 @@ struct HoldingLotRow {
     created_at: String,
 }
 
-impl From<HoldingLotRow> for HoldingLot {
-    fn from(r: HoldingLotRow) -> Self {
-        HoldingLot {
+impl TryFrom<HoldingLotRow> for HoldingLot {
+    type Error = AppError;
+
+    fn try_from(r: HoldingLotRow) -> AppResult<Self> {
+        Ok(HoldingLot {
+            kind: parse_kind(r.kind)?,
             id: r.id,
             account_id: r.account_id,
             ticker: r.ticker,
@@ -40,11 +52,10 @@ impl From<HoldingLotRow> for HoldingLot {
             quantity: r.quantity,
             unit_price: r.unit_price,
             fee_minor: r.fee_minor,
-            kind: r.kind,
             external_id: r.external_id,
             provider: r.provider,
             created_at: r.created_at,
-        }
+        })
     }
 }
 
@@ -52,15 +63,15 @@ impl From<HoldingLotRow> for HoldingLot {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_holdings(db: &Db, account_id: i64) -> AppResult<Vec<HoldingLot>> {
-    Ok(sqlx::query_as::<_, HoldingLotRow>(
+    sqlx::query_as::<_, HoldingLotRow>(
         "SELECT * FROM holdings WHERE account_id=?1 ORDER BY date(trade_date), id",
     )
     .bind(account_id)
     .fetch_all(db)
     .await?
     .into_iter()
-    .map(Into::into)
-    .collect())
+    .map(HoldingLot::try_from)
+    .collect()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -76,7 +87,7 @@ pub async fn create_holding(
     if input.quantity == 0.0 {
         return Err(AppError::validation("quantity must be non-zero"));
     }
-    Ok(sqlx::query_as::<_, HoldingLotRow>(
+    sqlx::query_as::<_, HoldingLotRow>(
         "INSERT INTO holdings
             (account_id, ticker, exchange, name, currency_code, trade_date, quantity,
              unit_price, fee_minor, kind)
@@ -91,11 +102,11 @@ pub async fn create_holding(
     .bind(input.quantity)
     .bind(input.unit_price)
     .bind(input.fee_minor)
-    .bind(&input.kind)
+    .bind(input.kind.as_str())
     .fetch_one(db)
     .await
     .map_err(map_fk)?
-    .into())
+    .try_into()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -214,8 +225,20 @@ pub struct PositionRow {
     pub quantity: f64,
 }
 
-/// One lot, reduced to what the average-cost-basis walk needs (see `sure_api::brokerage`).
+/// The raw row shape for [`CostLotRow`] — `kind` as stored, before parsing.
 #[derive(Debug, FromRow, Clone)]
+struct CostLotRowRaw {
+    ticker: String,
+    exchange: String,
+    currency_code: String,
+    quantity: f64,
+    unit_price: Option<f64>,
+    fee_minor: i64,
+    kind: String,
+}
+
+/// One lot, reduced to what the average-cost-basis walk needs (see `sure_api::brokerage`).
+#[derive(Debug, Clone)]
 pub struct CostLotRow {
     pub ticker: String,
     pub exchange: String,
@@ -223,14 +246,30 @@ pub struct CostLotRow {
     pub quantity: f64,
     pub unit_price: Option<f64>,
     pub fee_minor: i64,
-    pub kind: String,
+    pub kind: LotKind,
+}
+
+impl TryFrom<CostLotRowRaw> for CostLotRow {
+    type Error = AppError;
+
+    fn try_from(r: CostLotRowRaw) -> AppResult<Self> {
+        Ok(CostLotRow {
+            kind: parse_kind(r.kind)?,
+            ticker: r.ticker,
+            exchange: r.exchange,
+            currency_code: r.currency_code,
+            quantity: r.quantity,
+            unit_price: r.unit_price,
+            fee_minor: r.fee_minor,
+        })
+    }
 }
 
 /// Every lot up to `as_of`, ordered per-ticker by trade date — the cost-basis walk needs
 /// them in that order and groups them by `(ticker, exchange)` itself.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn lots_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<CostLotRow>> {
-    Ok(sqlx::query_as::<_, CostLotRow>(
+    sqlx::query_as::<_, CostLotRowRaw>(
         "SELECT ticker, exchange, currency_code, quantity, unit_price, fee_minor, kind
          FROM holdings
          WHERE account_id=?1 AND date(trade_date) <= date(?2)
@@ -239,7 +278,10 @@ pub async fn lots_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<Cos
     .bind(account_id)
     .bind(as_of)
     .fetch_all(db)
-    .await?)
+    .await?
+    .into_iter()
+    .map(CostLotRow::try_from)
+    .collect()
 }
 
 /// Rolling 30-days-to-`as_of` activity: an exact trade count, plus a heuristic
@@ -383,7 +425,7 @@ pub struct HoldingImport {
     pub quantity: f64,
     pub unit_price: Option<f64>,
     pub fee_minor: i64,
-    pub kind: String,
+    pub kind: LotKind,
     pub external_id: String,
 }
 
@@ -467,7 +509,7 @@ pub async fn import_export(
         .bind(h.quantity)
         .bind(h.unit_price)
         .bind(h.fee_minor)
-        .bind(&h.kind)
+        .bind(h.kind.as_str())
         .bind(&h.external_id)
         .bind(provider_tag)
         .execute(&mut *tx)
@@ -523,6 +565,9 @@ pub async fn import_export(
     Ok(counts)
 }
 
+// `sqlx::Error` is `#[non_exhaustive]` upstream, so a catch-all is the only option here
+// (CLAUDE.md rule 2's escape hatch) — the arm above is exhaustive over our own types.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn map_fk(e: sqlx::Error) -> AppError {
     match e {
         sqlx::Error::Database(ref db) if db.is_foreign_key_violation() => {
@@ -556,9 +601,16 @@ mod tests {
                 kind: AccountKind::Brokerage,
                 currency_code: "NZD".to_string(),
                 institution: Some("Sharesies".to_string()),
-                metadata: Some(AccountMetadata::Brokerage(BrokerageMeta::default())),
+                metadata: Some(AccountMetadata::Brokerage(BrokerageMeta {
+                    broker: Some("Sharesies".to_string()),
+                    ..Default::default()
+                })),
                 archived: false,
                 sort_order: 0,
+                // A brokerage account is the one kind with no opening balance: its value is
+                // computed from the holdings ledger these tests populate.
+                opening_balance_minor: None,
+                opening_balance_date: None,
             },
         )
         .await
@@ -576,7 +628,7 @@ mod tests {
             quantity: qty,
             unit_price: Some(1.0),
             fee_minor: 0,
-            kind: "buy".to_string(),
+            kind: LotKind::Buy,
             external_id: external_id.to_string(),
         }
     }

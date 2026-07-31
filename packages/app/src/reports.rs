@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate};
 
-use sure_core::AppResult;
+use sure_core::{AccountClass, AccountKind, AppResult, CategoryKind, Interval};
 
 use crate::fx::Fx;
 use crate::ports::{Clock, FxRatesRepo, ReportRepo, SpendTransaction};
@@ -35,8 +35,9 @@ pub struct ReportQuery {
 pub struct NetWorthQuery {
     pub from: Option<String>,
     pub to: Option<String>,
-    /// Sampling interval: `month` (default), `week`, or `day`.
-    pub interval: Option<String>,
+    /// Sampling interval; defaults to [`Interval::Month`]. Parsed at the HTTP edge
+    /// (`sure-api`'s `routes::reports`), so an unrecognised value never reaches here.
+    pub interval: Option<Interval>,
     pub currency: Option<String>,
 }
 
@@ -74,12 +75,33 @@ pub struct CategoryBreakdown {
     pub expense: Vec<CategoryTotal>,
 }
 
+/// Which side of the money-flow graph a node represents. Built directly (never parsed
+/// from external text, so no `FromStr`); `as_str` renders it to the wire DTO's plain
+/// `String` field once, in `sure-api`'s `From<SankeyNode>` impl.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SankeyNodeKind {
+    Income,
+    Center,
+    Expense,
+    Savings,
+}
+
+impl SankeyNodeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SankeyNodeKind::Income => "income",
+            SankeyNodeKind::Center => "center",
+            SankeyNodeKind::Expense => "expense",
+            SankeyNodeKind::Savings => "savings",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct SankeyNode {
     pub id: String,
     pub label: String,
-    /// `income` | `center` | `expense` | `savings`.
-    pub kind: String,
+    pub kind: SankeyNodeKind,
 }
 
 #[derive(Debug)]
@@ -100,9 +122,8 @@ pub struct SankeyGraph {
 pub struct AccountBalance {
     pub account_id: i64,
     pub name: String,
-    pub kind: String,
-    /// cash | asset | investment | liability
-    pub class: String,
+    pub kind: AccountKind,
+    pub class: AccountClass,
     pub currency_code: String,
     pub value_minor: i64,
 }
@@ -119,7 +140,7 @@ pub struct BalancesReport {
 pub struct SecuredLiability {
     pub account_id: i64,
     pub name: String,
-    pub kind: String,
+    pub kind: AccountKind,
     /// Amount owed, in the report currency (positive).
     pub balance_minor: i64,
 }
@@ -217,21 +238,21 @@ pub(crate) fn account_value_at(
     (balance, currency.to_string())
 }
 
-pub(crate) fn sample_dates(from: NaiveDate, to: NaiveDate, interval: &str) -> Vec<NaiveDate> {
+pub(crate) fn sample_dates(from: NaiveDate, to: NaiveDate, interval: Interval) -> Vec<NaiveDate> {
     if to < from {
         return vec![to];
     }
     let mut out = Vec::new();
     match interval {
-        "day" | "week" => {
-            let step = if interval == "week" { 7 } else { 1 };
+        Interval::Day | Interval::Week => {
+            let step = if interval == Interval::Week { 7 } else { 1 };
             let mut d = from;
             while d < to && out.len() < 400 {
                 out.push(d);
                 d += chrono::Duration::days(step);
             }
         }
-        _ => {
+        Interval::Month => {
             // month-ends within the window
             let (mut y, mut m) = (from.year(), from.month());
             while out.len() < 600 {
@@ -257,23 +278,12 @@ pub(crate) fn sample_dates(from: NaiveDate, to: NaiveDate, interval: &str) -> Ve
     out
 }
 
-fn class_of(kind: &str) -> &'static str {
-    match kind {
-        "cash" | "bank" | "savings" => "cash",
-        "credit_card" | "revolving_credit" | "mortgage" | "student_loan" | "loan" | "liability" => {
-            "liability"
-        }
-        "shares_nz" | "shares_us" | "shares_private" | "brokerage" => "investment",
-        _ => "asset",
-    }
-}
-
 /// Mortgage and brokerage accounts carry the instrument's own bookkeeping — loan
 /// drawdowns/amortisation, trades/FX — not household income or spending. Unlike
 /// `credit_card`/`revolving_credit`, which are everyday transaction accounts, these two
 /// kinds should never feed the income/expense report, one-off toggle or not.
-pub(crate) fn is_excluded_from_spend(account_kind: &str) -> bool {
-    matches!(account_kind, "mortgage" | "brokerage")
+pub(crate) fn is_excluded_from_spend(kind: AccountKind) -> bool {
+    matches!(kind, AccountKind::Mortgage | AccountKind::Brokerage)
 }
 
 // ---- category lookups (shared by pie + sankey) ----------------------------
@@ -282,7 +292,7 @@ pub(crate) struct Categories {
     parents: HashMap<i64, Option<i64>>,
     names: HashMap<i64, String>,
     colors: HashMap<i64, Option<String>>,
-    kinds: HashMap<i64, String>,
+    kinds: HashMap<i64, CategoryKind>,
 }
 
 impl Categories {
@@ -315,20 +325,17 @@ impl Categories {
     }
 
     pub(crate) fn is_transfer(&self, id: i64) -> bool {
-        self.kinds
-            .get(&id)
-            .map(|k| k == "transfer")
-            .unwrap_or(false)
+        self.kinds.get(&id) == Some(&CategoryKind::Transfer)
     }
 
-    /// Every top-level (no parent) category id and its flow `kind` ('income'|'expense'
-    /// |'transfer') — the granularity the forecast's category assumptions resolve at,
-    /// matching `category_breakdown`'s own top-level roll-up.
-    pub(crate) fn top_level_kinds(&self) -> Vec<(i64, String)> {
+    /// Every top-level (no parent) category id and its flow `kind` — the granularity the
+    /// forecast's category assumptions resolve at, matching `category_breakdown`'s own
+    /// top-level roll-up.
+    pub(crate) fn top_level_kinds(&self) -> Vec<(i64, CategoryKind)> {
         self.parents
             .iter()
             .filter(|(_, parent)| parent.is_none())
-            .filter_map(|(id, _)| self.kinds.get(id).map(|k| (*id, k.clone())))
+            .filter_map(|(id, _)| self.kinds.get(id).map(|k| (*id, *k)))
             .collect()
     }
 
@@ -336,8 +343,8 @@ impl Categories {
         self.names.get(&id).cloned().unwrap_or_else(|| "?".into())
     }
 
-    pub(crate) fn kind_of(&self, id: i64) -> Option<String> {
-        self.kinds.get(&id).cloned()
+    pub(crate) fn kind_of(&self, id: i64) -> Option<CategoryKind> {
+        self.kinds.get(&id).copied()
     }
 }
 
@@ -359,12 +366,12 @@ impl Categories {
         id: i64,
         parent_id: Option<i64>,
         name: &str,
-        kind: &str,
+        kind: CategoryKind,
     ) {
         self.parents.insert(id, parent_id);
         self.names.insert(id, name.to_string());
         self.colors.insert(id, None);
-        self.kinds.insert(id, kind.to_string());
+        self.kinds.insert(id, kind);
     }
 }
 
@@ -416,7 +423,7 @@ pub(crate) async fn load_spend(
             if t.linked_transaction_id.is_some() {
                 return false;
             }
-            if is_excluded_from_spend(&t.account_kind) {
+            if is_excluded_from_spend(t.account_kind) {
                 return false;
             }
             if !include_one_off && t.is_one_off {
@@ -527,7 +534,7 @@ impl ReportService {
             .or(earliest)
             .unwrap_or_else(|| to - chrono::Duration::days(365));
 
-        let sample_dates = sample_dates(from, to, q.interval.as_deref().unwrap_or("month"));
+        let sample_dates = sample_dates(from, to, q.interval.unwrap_or(Interval::Month));
 
         let mut points = Vec::with_capacity(sample_dates.len());
         for date in sample_dates {
@@ -654,7 +661,7 @@ impl ReportService {
         let mut nodes = vec![SankeyNode {
             id: "center".into(),
             label: "Cash flow".into(),
-            kind: "center".into(),
+            kind: SankeyNodeKind::Center,
         }];
         let mut links = Vec::new();
 
@@ -665,7 +672,7 @@ impl ReportService {
             nodes.push(SankeyNode {
                 id: id.clone(),
                 label: label(*key),
-                kind: "income".into(),
+                kind: SankeyNodeKind::Income,
             });
             links.push(SankeyLink {
                 source: id,
@@ -681,7 +688,7 @@ impl ReportService {
             nodes.push(SankeyNode {
                 id: id.clone(),
                 label: label(*key),
-                kind: "expense".into(),
+                kind: SankeyNodeKind::Expense,
             });
             links.push(SankeyLink {
                 source: "center".into(),
@@ -695,7 +702,7 @@ impl ReportService {
             nodes.push(SankeyNode {
                 id: "savings".into(),
                 label: "Savings".into(),
-                kind: "savings".into(),
+                kind: SankeyNodeKind::Savings,
             });
             links.push(SankeyLink {
                 source: "center".into(),
@@ -732,8 +739,8 @@ impl ReportService {
             out.push(AccountBalance {
                 account_id: a.id,
                 name: a.name.clone(),
-                kind: a.kind.clone(),
-                class: class_of(&a.kind).to_string(),
+                kind: a.kind,
+                class: a.kind.class(),
                 currency_code: ccy,
                 value_minor,
             });
@@ -782,7 +789,7 @@ impl ReportService {
             liabilities.push(SecuredLiability {
                 account_id: l.id,
                 name: l.name.clone(),
-                kind: l.kind.clone(),
+                kind: l.kind,
                 balance_minor: fx.base_minor(debt),
             });
         }
