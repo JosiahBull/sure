@@ -18,6 +18,7 @@ pub mod rules;
 pub mod settings;
 pub mod snapshot;
 pub mod stock_prices;
+pub mod student_loan;
 pub mod transactions;
 pub mod valuations;
 
@@ -43,6 +44,7 @@ pub fn router(limits: &Limits) -> Router<AppState> {
         .merge(snapshot::router(limits))
         .merge(reports::router())
         .merge(stock_prices::router())
+        .merge(student_loan::router(limits))
         .merge(forecast::router());
     Router::new().nest("/api", api)
 }

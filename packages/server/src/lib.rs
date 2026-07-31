@@ -133,6 +133,17 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
                 sync,
             ),
         ));
+        // After the provider poll, so a balance-only account's freshly-written valuation is
+        // already there to be differenced (though only *closed* days are derived, so the
+        // ordering is a convenience rather than a correctness requirement).
+        scheduler.register(Box::new(
+            sure_app::tasks::balance_delta::BalanceDeltaTask::new(
+                store.clone(),
+                store.clone(),
+                store.clone(),
+                clock.clone(),
+            ),
+        ));
         scheduler.register(Box::new(sure_app::stock_prices::StockPriceTask::new(
             store.clone(),
             store.clone(),

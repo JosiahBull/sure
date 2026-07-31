@@ -12,6 +12,7 @@
   import EquityPanel from "../lib/EquityPanel.svelte";
   import PropertyPanel from "../lib/PropertyPanel.svelte";
   import BrokeragePanel from "../lib/BrokeragePanel.svelte";
+  import StudentLoanPanel from "../lib/StudentLoanPanel.svelte";
   import { navigate } from "../lib/router.svelte";
   import { balances, refresh as refreshBalances } from "../lib/balances.svelte";
 
@@ -150,9 +151,17 @@
                   <button class="btn btn-sm" onclick={() => ((editing = editing === a.account_id ? null : a.account_id), (showAdd = false))}>
                     {editing === a.account_id ? "Close" : "Edit"}
                   </button>
-                  {#if a.kind === "shares_private" || a.kind === "brokerage" || a.kind === "crypto" || a.class === "asset"}
+                  {#if a.kind === "shares_private" || a.kind === "brokerage" || a.kind === "crypto" || a.kind === "student_loan" || a.class === "asset"}
                     <button class="btn btn-sm" onclick={() => (expanded = expanded === a.account_id ? null : a.account_id)}>
-                      {expanded === a.account_id ? "Hide" : a.kind === "brokerage" ? "Holdings" : a.kind === "crypto" ? "Value" : "Equity"}
+                      {expanded === a.account_id
+                        ? "Hide"
+                        : a.kind === "brokerage"
+                          ? "Holdings"
+                          : a.kind === "crypto"
+                            ? "Value"
+                            : a.kind === "student_loan"
+                              ? "Import"
+                              : "Equity"}
                     </button>
                   {/if}
                   <button class="btn btn-sm btn-danger" aria-label="Delete {a.name}" onclick={() => askDelete(a.account_id)}>✕</button>
@@ -177,6 +186,8 @@
                 <BrokeragePanel accountId={a.account_id} onchange={load} />
               {:else if a.kind === "shares_private"}
                 <EquityPanel accountId={a.account_id} onchange={load} />
+              {:else if a.kind === "student_loan"}
+                <StudentLoanPanel accountId={a.account_id} onchange={load} />
               {:else}
                 <PropertyPanel accountId={a.account_id} onchange={load} />
               {/if}

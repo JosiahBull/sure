@@ -43,6 +43,13 @@ on old devices.
   (dedupes on re-sync). Providers that expose credentialed APIs can also discover
   upstream accounts and link them to a new or existing local account — see the Akahu
   (NZ open banking) implementation, which additionally auto-syncs on a schedule.
+- **Bulk file imports** for sources with no usable API: a Sharesies export zip
+  (holdings, dividends, wallet ledger) and myIR student-loan exports (reconciling
+  several overlapping download windows into one ledger). Both are idempotent, so
+  re-uploading costs nothing — see [docs/STUDENT-LOAN.md](docs/STUDENT-LOAN.md).
+- **Balance-only accounts get a ledger anyway**: where an upstream reports a balance
+  but no transactions (an IR student loan), a daily task differences the balance
+  series into transactions, so week-to-week movement is visible.
 
 **Reports & UI**
 - Net-worth line over time, income/expense donut per category, and a **Sankey**
