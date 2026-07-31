@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "concurrently -n api,web -c blue,magenta --kill-others-on-fail \"pnpm dev:api\" \"node scripts/wait-for-backend.mjs && pnpm dev:web\"",
     "clean": "bash scripts/clean.sh",
-    "dev:api": "cargo run -p sure-server --bin sure-api",
+    "dev:api": "node scripts/dev-api.mjs",
+    "dev:api:once": "cargo run -p sure-server --bin sure-api",
     "dev:web": "pnpm --filter @sure/web dev",
     "build": "pnpm gen:client && cargo build --release && pnpm --filter @sure/web build",
     "gen:openapi": "cargo run -p sure-api --bin gen-openapi -- packages/client/openapi.json",

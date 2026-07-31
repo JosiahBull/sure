@@ -110,6 +110,14 @@ pane sits quiet while cargo works rather than serving a SPA whose every request 
 the proxy with `ECONNREFUSED`. `pnpm dev:web` on its own skips the wait, for when a
 backend is already running.
 
+The backend reloads on save, like the SPA does: `pnpm dev:api` watches every crate for
+changes to `.rs`, `Cargo.toml`, `Cargo.lock`, a migration, or `.env`, then rebuilds and
+restarts the API ([`scripts/dev-api.mjs`](scripts/dev-api.mjs)). It builds *before* it
+stops the old process and keeps that process running if the build fails, so a compile
+error leaves the last working backend serving the SPA instead of dropping it — fix the
+error and the next save picks up where it left off. `pnpm dev:api:once` is the plain
+`cargo run`, for when you want a single build and no watcher.
+
 Open http://localhost:5173. To load demo data into the dev database:
 
 ```bash
@@ -131,7 +139,9 @@ themselves are listed under [Production](#production-single-binary) and in
 
 | Command | What it does |
 | --- | --- |
-| `pnpm dev` | Run backend + Vite dev server together (Vite waits for the backend) |
+| `pnpm dev` | Run backend + Vite dev server together (Vite waits for the backend; both reload on save) |
+| `pnpm dev:api` | Backend only, rebuilding and restarting on every Rust/migration/`.env` change |
+| `pnpm dev:api:once` | Backend only, built and run once (`cargo run`, no watcher) |
 | `pnpm gen:client` | Regenerate the OpenAPI spec and the typed client |
 | `pnpm build` | Generate client, build the release backend, build the SPA |
 | `pnpm seed` | Seed a running backend with demo data |
