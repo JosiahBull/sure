@@ -18,45 +18,50 @@ const WORKBOOK_RELS = `<?xml version="1.0"?><Relationships xmlns="http://schemas
 /** One `(date, transaction, amount-as-IR-signs-it)` row. */
 type Row = [string, string, string];
 
-/**
- * A myIR export: the preamble (account id + the window it is authoritative for), the header
- * row, then the transactions. Dates are written as text rather than number-formatted
- * serials — the parser accepts both, and the serial path is covered by its unit tests.
- */
-function exportXlsx(accountId: string, from: string, to: string, rows: Row[]): string {
-  const cells = (values: string[], r: number) =>
+const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+
+function sheetXml(grid: string[][]): string {
+  const row = (values: string[], r: number) =>
     `<row r="${r}">` +
     values
       .map(
         (v, c) =>
-          `<c r="${String.fromCharCode(65 + c)}${r}" t="inlineStr"><is><t>${v}</t></is></c>`
+          `<c r="${String.fromCharCode(65 + c)}${r}" t="inlineStr"><is><t>${escape(v)}</t></is></c>`
       )
       .join("") +
     `</row>`;
-
-  const grid: string[][] = [
-    ["Account ID:", accountId],
-    ["From:", from],
-    ["To:", to],
-    ["Period ending", "Account type", "Date", "Transaction", "Amount"],
-    ...rows.map(([date, txn, amount]) => ["2026-03-31", "Student loan", date, txn, amount]),
-  ];
-
   return (
     `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>` +
-    grid.map((row, i) => cells(row, i + 1)).join("") +
+    grid.map((cells, i) => row(cells, i + 1)).join("") +
     `</sheetData></worksheet>`
   );
 }
 
-function xlsx(accountId: string, from: string, to: string, rows: Row[]): ArrayBuffer {
+/** A workbook wrapping an arbitrary grid — for the malformed-input cases. */
+function xlsxFromGrid(grid: string[][]): ArrayBuffer {
   return makeZip({
     "[Content_Types].xml": CONTENT_TYPES,
     "_rels/.rels": ROOT_RELS,
     "xl/workbook.xml": WORKBOOK,
     "xl/_rels/workbook.xml.rels": WORKBOOK_RELS,
-    "xl/worksheets/sheet1.xml": exportXlsx(accountId, from, to, rows),
+    "xl/worksheets/sheet1.xml": sheetXml(grid),
   });
+}
+
+/**
+ * A well-formed myIR export: the preamble (account id + the window it is authoritative for),
+ * the header row, then the transactions. Dates are written as text rather than
+ * number-formatted serials — the parser accepts both, and the serial path (what a real
+ * export uses) is covered by its unit tests.
+ */
+function xlsx(accountId: string, from: string, to: string, rows: Row[]): ArrayBuffer {
+  return xlsxFromGrid([
+    ["Account ID:", accountId],
+    ["From:", from],
+    ["To:", to],
+    ["Period ending", "Account type", "Date", "Transaction", "Amount"],
+    ...rows.map(([date, txn, amount]) => ["2026-03-31", "Student loan", date, txn, amount]),
+  ]);
 }
 
 const SLS = "012-345-678-SLS004";
@@ -201,9 +206,237 @@ test("uploading to a non-student-loan account is refused", async ({ api, server 
   expect((await res.json()).error.message).toContain("not a student loan");
 });
 
+// ---- malformed input --------------------------------------------------------------------
+//
+// Every one of these has to come back as a clean 422 naming the problem. The endpoint takes
+// an arbitrary uploaded file, so "the parser panicked" or "the process ran out of memory" are
+// both failures of the same kind: the request must fail, not the server.
+
 test("a non-spreadsheet upload fails cleanly", async ({ api, server }) => {
   const acc = await createAccount(api, "Student loan", "student_loan");
   const res = await upload(server.baseURL, acc.id, new TextEncoder().encode("nope").buffer);
   expect(res.status).toBe(422);
   expect((await res.json()).error.message).toContain("could not read export");
+});
+
+test("an empty upload fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  const res = await upload(server.baseURL, acc.id, new ArrayBuffer(0));
+  expect(res.status).toBe(422);
+});
+
+test("a truncated zip fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  const whole = xlsx(SLS, "2024-07-31", "2026-07-31", [
+    ["2025-04-14", "Repayment deduction", "-400.00"],
+  ]);
+  // Half a file — the central directory the reader needs is simply not there.
+  const res = await upload(server.baseURL, acc.id, whole.slice(0, Math.floor(whole.byteLength / 2)));
+  expect(res.status).toBe(422);
+  expect((await res.json()).error.message).toContain("could not read export");
+});
+
+test("a zip that is not a workbook fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  // Structurally a valid zip, but nothing calamine can open as a workbook.
+  const res = await upload(server.baseURL, acc.id, makeZip({ "notes.txt": "hello" }));
+  expect(res.status).toBe(422);
+});
+
+test("a workbook with no sheets fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  const noSheets = makeZip({
+    "[Content_Types].xml": CONTENT_TYPES,
+    "_rels/.rels": ROOT_RELS,
+    "xl/workbook.xml": `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets/></workbook>`,
+    "xl/_rels/workbook.xml.rels": WORKBOOK_RELS,
+  });
+  const res = await upload(server.baseURL, acc.id, noSheets);
+  expect(res.status).toBe(422);
+});
+
+test("a sheet with no header row fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  const sheet =
+    `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>` +
+    `<row r="1"><c r="A1" t="inlineStr"><is><t>Something else entirely</t></is></c></row>` +
+    `</sheetData></worksheet>`;
+  const res = await upload(
+    server.baseURL,
+    acc.id,
+    makeZip({
+      "[Content_Types].xml": CONTENT_TYPES,
+      "_rels/.rels": ROOT_RELS,
+      "xl/workbook.xml": WORKBOOK,
+      "xl/_rels/workbook.xml.rels": WORKBOOK_RELS,
+      "xl/worksheets/sheet1.xml": sheet,
+    })
+  );
+  expect(res.status).toBe(422);
+  expect((await res.json()).error.message).toContain("Period ending");
+});
+
+test("a missing column fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  const res = await upload(
+    server.baseURL,
+    acc.id,
+    xlsxFromGrid([
+      ["Account ID:", SLS],
+      ["From:", "2024-07-31"],
+      ["To:", "2026-07-31"],
+      ["Period ending", "Account type", "Date", "Transaction"], // no Amount
+    ])
+  );
+  expect(res.status).toBe(422);
+  expect((await res.json()).error.message).toContain("Amount");
+});
+
+test("a missing preamble field fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  const grid = [
+    ["Account ID:", SLS],
+    ["From:", "2024-07-31"],
+    // no To:
+    ["Period ending", "Account type", "Date", "Transaction", "Amount"],
+    ["2026-03-31", "Student loan", "2025-04-14", "Repayment deduction", "-400.00"],
+  ];
+  const res = await upload(server.baseURL, acc.id, xlsxFromGrid(grid));
+  expect(res.status).toBe(422);
+  expect((await res.json()).error.message).toContain("'to'");
+});
+
+test("a non-numeric amount fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  const res = await upload(
+    server.baseURL,
+    acc.id,
+    xlsx(SLS, "2024-07-31", "2026-07-31", [["2025-04-14", "Repayment deduction", "not a number"]])
+  );
+  expect(res.status).toBe(422);
+  expect((await res.json()).error.message).toContain("as an amount");
+});
+
+test("an out-of-range amount fails cleanly rather than wrapping", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  // Well past i64 minor units — this must be refused, never silently truncated into a
+  // plausible-looking balance.
+  const res = await upload(
+    server.baseURL,
+    acc.id,
+    xlsx(SLS, "2024-07-31", "2026-07-31", [
+      ["2025-04-14", "Repayment deduction", "999999999999999999999999999"],
+    ])
+  );
+  expect(res.status).toBe(422);
+});
+
+test("an unreadable date fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  const res = await upload(
+    server.baseURL,
+    acc.id,
+    xlsx(SLS, "2024-07-31", "2026-07-31", [["not a date", "Repayment deduction", "-400.00"]])
+  );
+  expect(res.status).toBe(422);
+  expect((await res.json()).error.message).toContain("as a date");
+});
+
+// ---- size ------------------------------------------------------------------------------
+
+test("a zip bomb is refused without expanding it", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  // ~17 MB of zeros deflates to a few kilobytes. The HTTP body limit cannot see this coming;
+  // only a ceiling on what the upload expands *to* stops it.
+  const bomb = makeZip({ "bomb.xlsx": new Uint8Array(17 * 1024 * 1024) }, { deflate: true });
+  expect(bomb.byteLength).toBeLessThan(200_000);
+
+  const started = Date.now();
+  const res = await upload(server.baseURL, acc.id, bomb);
+  expect(res.status).toBe(422);
+  expect((await res.json()).error.message).toMatch(/over the limit|expands/);
+  // It must refuse on the declared size, not after inflating 17 MB.
+  expect(Date.now() - started).toBeLessThan(5_000);
+});
+
+test("a bomb hidden inside a workbook's sheet is refused", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  // Passes as a single bare .xlsx, so the outer entry check never sees it; the sheet part is
+  // what expands. calamine has no ceiling of its own, so this is caught before it gets there.
+  const bomb = makeZip(
+    {
+      "[Content_Types].xml": CONTENT_TYPES,
+      "xl/worksheets/sheet1.xml": new Uint8Array(17 * 1024 * 1024).fill(32),
+    },
+    { deflate: true }
+  );
+  expect(bomb.byteLength).toBeLessThan(200_000);
+
+  const res = await upload(server.baseURL, acc.id, bomb);
+  expect(res.status).toBe(422);
+  expect((await res.json()).error.message).toContain("decompressed");
+});
+
+test("too many workbooks in one upload are refused", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  const one = xlsx(SLS, "2024-07-31", "2026-07-31", []);
+  const files: Record<string, Uint8Array> = {};
+  for (let i = 0; i <= 64; i++) files[`export-${i}.xlsx`] = new Uint8Array(one);
+
+  const res = await upload(server.baseURL, acc.id, makeZip(files));
+  expect(res.status).toBe(422);
+  expect((await res.json()).error.message).toContain("at most");
+});
+
+test("a body over the size limit is rejected by the server, not the parser", async ({
+  api,
+  server,
+}) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  // The route carries the shared import body limit (50 MB). Past it the request never
+  // reaches the handler at all.
+  const res = await upload(server.baseURL, acc.id, new ArrayBuffer(51 * 1024 * 1024));
+  expect(res.status).toBe(413);
+});
+
+test("a large but honest export imports, and stays fast", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  // One row per day for eight years. Reconciliation asks each workbook about each day, so
+  // this is the shape that used to be quadratic.
+  const rows: Row[] = [];
+  const start = Date.UTC(2010, 0, 1);
+  for (let i = 0; i < 3_000; i++) {
+    const day = new Date(start + i * 86_400_000).toISOString().slice(0, 10);
+    rows.push([day, "Living costs", "222.00"]);
+  }
+
+  const started = Date.now();
+  const res = await upload(server.baseURL, acc.id, xlsx(SLS, "2009-01-01", "2020-01-01", rows));
+  expect(res.status).toBe(200);
+  const result = await res.json();
+  expect(result.imported).toBe(3_000);
+  expect(Date.now() - started).toBeLessThan(30_000);
+
+  // And the whole thing still dedupes on a re-upload.
+  expect((await (await upload(server.baseURL, acc.id, xlsx(SLS, "2009-01-01", "2020-01-01", rows))).json()).imported).toBe(0);
+});
+
+test("a one-row export imports", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  const res = await upload(
+    server.baseURL,
+    acc.id,
+    xlsx(SLS, "2024-07-31", "2026-07-31", [["2025-04-14", "Payment", "-11.11"]])
+  );
+  expect(res.status).toBe(200);
+  expect((await res.json()).imported).toBe(1);
+});
+
+test("an export with no transactions at all is accepted as empty", async ({ api, server }) => {
+  const acc = await createAccount(api, "Student loan", "student_loan");
+  const res = await upload(server.baseURL, acc.id, xlsx(SLS, "2024-07-31", "2026-07-31", []));
+  expect(res.status).toBe(200);
+  const result = await res.json();
+  expect(result.imported).toBe(0);
+  expect(result.covered_from).toBe("2024-07-31");
 });

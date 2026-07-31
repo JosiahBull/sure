@@ -19,7 +19,7 @@
 //! lands the right way round (it is reported through [`MyIrExport::warnings`] so it gets a
 //! human glance rather than silent trust).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{Cursor, Read};
 
 use calamine::{Data, Reader, Xlsx};
@@ -50,14 +50,34 @@ const KNOWN_TRANSACTIONS: [&str; 9] = [
     "Transfer",
 ];
 
+/// Ceilings on what an upload may expand to. A myIR export is tens of kilobytes and a
+/// handful of them covers a whole loan, so these are orders of magnitude above any honest
+/// upload — they exist so a hostile one fails fast instead of exhausting memory or CPU.
+/// The HTTP body limit bounds what arrives; these bound what it turns into, which is the
+/// part a zip bomb attacks.
+mod limits {
+    /// Workbooks per upload.
+    pub const ENTRIES: usize = 64;
+    /// Uncompressed bytes for any single entry, and across the whole upload.
+    pub const ENTRY_BYTES: u64 = 16 * 1024 * 1024;
+    pub const TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+    /// Transaction rows per workbook. Twenty years of weekly drawdowns is ~1,000.
+    pub const ROWS: usize = 100_000;
+}
+
 /// One parsed export file, with the window it is authoritative for.
+///
+/// Rows are indexed by day rather than kept as a flat list: reconciliation asks "what does
+/// this export say about day D" once per day per file, and a linear scan there made both
+/// the agreement check and the merge quadratic in row count — which a single large but
+/// otherwise valid workbook could exploit.
 #[derive(Debug, Clone)]
 struct Workbook {
     name: String,
     account_id: String,
     window_from: NaiveDate,
     window_to: NaiveDate,
-    rows: Vec<Row>,
+    by_day: BTreeMap<NaiveDate, Vec<Row>>,
 }
 
 impl Workbook {
@@ -65,8 +85,12 @@ impl Workbook {
         self.window_from <= day && day <= self.window_to
     }
 
-    fn rows_on(&self, day: NaiveDate) -> impl Iterator<Item = &Row> {
-        self.rows.iter().filter(move |r| r.date == day)
+    fn rows_on(&self, day: NaiveDate) -> &[Row] {
+        self.by_day.get(&day).map_or(&[], Vec::as_slice)
+    }
+
+    fn days(&self) -> impl Iterator<Item = NaiveDate> + '_ {
+        self.by_day.keys().copied()
     }
 }
 
@@ -187,16 +211,72 @@ fn read_workbooks(bytes: &[u8]) -> anyhow::Result<Vec<Workbook>> {
 
     // An .xlsx is itself a zip, so a bare workbook simply has no .xlsx entries inside it.
     if entries.is_empty() {
+        check_expansion("the upload", bytes)?;
         return Ok(vec![read_workbook("export.xlsx", bytes)?]);
     }
 
+    if entries.len() > limits::ENTRIES {
+        anyhow::bail!(
+            "upload holds {} .xlsx files; at most {} are read at once",
+            entries.len(),
+            limits::ENTRIES
+        );
+    }
+
     let mut out = Vec::new();
+    let mut total = 0u64;
     for name in entries {
+        let mut entry = archive.by_name(&name)?;
+        // Two independent bounds, because each covers the other's blind spot: the declared
+        // size is free to check but a crafted archive can lie about it, and `take` caps what
+        // is actually written no matter what the header claimed.
+        if entry.size() > limits::ENTRY_BYTES {
+            anyhow::bail!("{name} expands to {} bytes, over the limit", entry.size());
+        }
+        total = total.saturating_add(entry.size());
+        if total > limits::TOTAL_BYTES {
+            anyhow::bail!(
+                "the upload expands to more than {} bytes",
+                limits::TOTAL_BYTES
+            );
+        }
+
         let mut buf = Vec::new();
-        archive.by_name(&name)?.read_to_end(&mut buf)?;
+        let read = (&mut entry)
+            .take(limits::ENTRY_BYTES + 1)
+            .read_to_end(&mut buf)?;
+        if read as u64 > limits::ENTRY_BYTES {
+            anyhow::bail!("{name} expands past the {} byte limit", limits::ENTRY_BYTES);
+        }
+        drop(entry);
+
+        check_expansion(&name, &buf)?;
         out.push(read_workbook(&name, &buf)?);
     }
     Ok(out)
+}
+
+/// Reject a workbook whose *parts* would expand past the limit before handing it to
+/// calamine, which decompresses the sheet XML without a ceiling of its own. An `.xlsx` is a
+/// zip, so a few kilobytes of upload can declare gigabytes of `sheet1.xml`.
+fn check_expansion(label: &str, workbook: &[u8]) -> anyhow::Result<()> {
+    let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(workbook)) else {
+        return Ok(()); // not a zip at all — calamine will reject it with a clearer message
+    };
+    let mut total = 0u64;
+    for i in 0..archive.len() {
+        let Ok(part) = archive.by_index(i) else {
+            continue;
+        };
+        total = total.saturating_add(part.size());
+        if total > limits::ENTRY_BYTES {
+            anyhow::bail!(
+                "{label} expands to more than {} bytes once decompressed",
+                limits::ENTRY_BYTES
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Pull the preamble and the transaction table out of one workbook.
@@ -266,7 +346,8 @@ fn read_workbook(name: &str, bytes: &[u8]) -> anyhow::Result<Workbook> {
         column("Amount")?,
     );
 
-    let mut rows = Vec::new();
+    let mut by_day: BTreeMap<NaiveDate, Vec<Row>> = BTreeMap::new();
+    let mut count = 0usize;
     for (offset, raw) in sheet.rows().skip(header_at + 1).enumerate() {
         let date_cell = raw.get(i_date);
         let amount = cell_text(raw.get(i_amount));
@@ -275,15 +356,21 @@ fn read_workbook(name: &str, bytes: &[u8]) -> anyhow::Result<Workbook> {
         }
         let where_ = format!("row {}", header_at + offset + 2);
 
+        count += 1;
+        if count > limits::ROWS {
+            anyhow::bail!("{name}: more than {} transaction rows", limits::ROWS);
+        }
+
         let account_type = cell_text(raw.get(i_type));
         if account_type != EXPECTED_ACCOUNT_TYPE {
             anyhow::bail!("{name}: {where_} has account type '{account_type}', not a student loan");
         }
-        rows.push(Row {
+        let row = Row {
             date: parse_cell_day(date_cell, name, &where_)?,
             description: cell_text(raw.get(i_txn)),
             ir_minor: parse_minor(&amount, name, &where_)?,
-        });
+        };
+        by_day.entry(row.date).or_default().push(row);
     }
 
     Ok(Workbook {
@@ -291,7 +378,7 @@ fn read_workbook(name: &str, bytes: &[u8]) -> anyhow::Result<Workbook> {
         account_id,
         window_from,
         window_to,
-        rows,
+        by_day,
     })
 }
 
@@ -319,7 +406,15 @@ fn parse_day(text: &str, file: &str, where_: &str) -> anyhow::Result<NaiveDate> 
         .map_err(|_| anyhow::anyhow!("{file}: {where_}: cannot read '{text}' as a date"))
 }
 
+/// Beyond this an amount isn't a student-loan movement, it's bad data. Bounding it here also
+/// means the sign flip in [`parse_export`] can never overflow: negating `i64::MIN` panics.
+const MAX_ABS_MINOR: i64 = 1_000_000_000_000_00;
+
 /// Exact 2-dp minor units. Decimal, not float — `329.36` must not land as `32935`.
+///
+/// Every step is checked. A spreadsheet cell is arbitrary user input, and `Decimal`'s
+/// multiply *panics* on overflow rather than returning an error, which turned a hostile
+/// amount into a 500 instead of the 422 it should be.
 fn parse_minor(text: &str, file: &str, where_: &str) -> anyhow::Result<i64> {
     let cleaned: String = text
         .chars()
@@ -328,10 +423,18 @@ fn parse_minor(text: &str, file: &str, where_: &str) -> anyhow::Result<i64> {
     let value: Decimal = cleaned
         .parse()
         .map_err(|_| anyhow::anyhow!("{file}: {where_}: cannot read '{text}' as an amount"))?;
-    (value * Decimal::from(100))
+    let out_of_range = || anyhow::anyhow!("{file}: {where_}: amount '{text}' is out of range");
+
+    let minor = value
+        .checked_mul(Decimal::from(100))
+        .ok_or_else(out_of_range)?
         .round()
         .to_i64()
-        .ok_or_else(|| anyhow::anyhow!("{file}: {where_}: amount '{text}' is out of range"))
+        .ok_or_else(out_of_range)?;
+    if !(-MAX_ABS_MINOR..=MAX_ABS_MINOR).contains(&minor) {
+        return Err(out_of_range());
+    }
+    Ok(minor)
 }
 
 // --------------------------------------------------------------------------------------
@@ -352,12 +455,12 @@ fn check_invariants(workbooks: &[Workbook]) -> anyhow::Result<()> {
     // 2. Rows inside their own window, or the window metadata isn't trustworthy and checks
     //    3 and 4 rest on sand.
     for w in workbooks {
-        for row in &w.rows {
-            if !w.covers(row.date) {
+        for day in w.days() {
+            if !w.covers(day) {
                 anyhow::bail!(
                     "{}: row dated {} is outside its window {}..{}",
                     w.name,
-                    row.date,
+                    day,
                     w.window_from,
                     w.window_to
                 );
@@ -411,21 +514,15 @@ fn check_invariants(workbooks: &[Workbook]) -> anyhow::Result<()> {
 }
 
 /// Every day any export has a row for, ascending.
-fn sorted_days(workbooks: &[Workbook]) -> Vec<NaiveDate> {
-    let mut days: Vec<NaiveDate> = workbooks
-        .iter()
-        .flat_map(|w| w.rows.iter().map(|r| r.date))
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    days.sort_unstable();
-    days
+fn sorted_days(workbooks: &[Workbook]) -> BTreeSet<NaiveDate> {
+    workbooks.iter().flat_map(Workbook::days).collect()
 }
 
 /// A day's rows reduced to a comparable, order-independent shape.
 fn signature(workbook: &Workbook, day: NaiveDate) -> Vec<(i64, String)> {
     let mut rows: Vec<(i64, String)> = workbook
         .rows_on(day)
+        .iter()
         .map(|r| (r.ir_minor, r.description.clone()))
         .collect();
     rows.sort();
@@ -443,8 +540,8 @@ fn merge(workbooks: &[Workbook]) -> Vec<Row> {
 
     let mut out = Vec::new();
     for day in sorted_days(workbooks) {
-        if let Some(source) = ordered.iter().find(|w| w.rows_on(day).next().is_some()) {
-            out.extend(source.rows_on(day).cloned());
+        if let Some(source) = ordered.iter().find(|w| !w.rows_on(day).is_empty()) {
+            out.extend(source.rows_on(day).iter().cloned());
         }
     }
     out
@@ -928,6 +1025,126 @@ mod tests {
         let out = parse_export(&xlsx(grid), None).unwrap();
         assert_eq!(out.covered_from.as_deref(), Some("2024-07-31"));
         assert_eq!(out.transactions[0].amount_minor, 400_00);
+    }
+
+    /// Build a zip whose entries are deflated, so a test can make something that is small on
+    /// the wire and enormous once expanded.
+    fn deflated(files: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (name, body) in files {
+                zip.start_file(*name, opts).unwrap();
+                zip.write_all(body).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    /// A zip bomb: kilobytes on the wire, far more than the ceiling once expanded. The HTTP
+    /// body limit can't see this — only a bound on what the upload turns into can.
+    #[test]
+    fn a_zip_bomb_entry_is_refused() {
+        let bomb = deflated(&[("bomb.xlsx", vec![0u8; (limits::ENTRY_BYTES + 1) as usize])]);
+        assert!(
+            bomb.len() < 200_000,
+            "fixture should be small on the wire, was {}",
+            bomb.len()
+        );
+
+        let err = parse_export(&bomb, None).unwrap_err();
+        assert!(err.to_string().contains("over the limit"), "{err}");
+    }
+
+    /// The same attack one level down: a workbook small enough to pass the entry check whose
+    /// *sheet* expands without bound. calamine has no ceiling of its own, so this has to be
+    /// caught before the bytes reach it.
+    #[test]
+    fn a_workbook_whose_sheet_expands_hugely_is_refused() {
+        let huge_sheet = deflated(&[
+            ("[Content_Types].xml", b"<Types/>".to_vec()),
+            (
+                "xl/worksheets/sheet1.xml",
+                vec![b' '; (limits::ENTRY_BYTES + 1) as usize],
+            ),
+        ]);
+        assert!(huge_sheet.len() < 200_000);
+
+        let err = parse_export(&huge_sheet, None).unwrap_err();
+        assert!(err.to_string().contains("once decompressed"), "{err}");
+    }
+
+    #[test]
+    fn too_many_workbooks_are_refused() {
+        let one = export(ACCT, "2024-07-31", "2026-07-31", &[]);
+        let files: Vec<(String, Vec<u8>)> = (0..=limits::ENTRIES)
+            .map(|i| (format!("export-{i}.xlsx"), one.clone()))
+            .collect();
+        let bundle = bundle(
+            &files
+                .iter()
+                .map(|(n, b)| (n.as_str(), b.clone()))
+                .collect::<Vec<_>>(),
+        );
+
+        let err = parse_export(&bundle, None).unwrap_err();
+        assert!(err.to_string().contains("at most"), "{err}");
+    }
+
+    /// A genuinely large export must still parse — and quickly. Reconciliation asks each
+    /// workbook about each day, so the row index matters here: the flat scan it replaced was
+    /// quadratic, which a single big-but-valid upload was enough to trip.
+    #[test]
+    fn a_large_but_honest_export_parses() {
+        let rows: Vec<(String, &str, &str)> = (0..3_000)
+            .map(|i| {
+                let day = d("2010-01-01") + Duration::days(i);
+                (iso(day), "Living costs", "222.00")
+            })
+            .collect();
+        let borrowed: Vec<(&str, &str, &str)> =
+            rows.iter().map(|(a, b, c)| (a.as_str(), *b, *c)).collect();
+
+        let out = parse_export(&export(ACCT, "2009-01-01", "2020-01-01", &borrowed), None).unwrap();
+
+        assert_eq!(out.transactions.len(), 3_000);
+        assert_eq!(out.transactions[0].amount_minor, -222_00);
+        assert_eq!(
+            out.transactions
+                .iter()
+                .map(|t| &t.external_id)
+                .collect::<HashSet<_>>()
+                .len(),
+            3_000
+        );
+    }
+
+    /// A spreadsheet cell is arbitrary input. `Decimal`'s multiply panics on overflow, so
+    /// each of these used to take down the parse with a 500 rather than a clean rejection.
+    #[test]
+    fn an_absurd_amount_is_rejected_not_panicked_on() {
+        for amount in [
+            "999999999999999999999999999", // overflows on the ×100
+            "-999999999999999999999999999",
+            "79228162514264337593543950335", // Decimal::MAX
+            "12345678901234567.89",          // parses, but past any sane balance
+        ] {
+            let bytes = export(
+                ACCT,
+                "2024-07-31",
+                "2026-07-31",
+                &[("2025-04-14", "Repayment deduction", amount)],
+            );
+            let err = parse_export(&bytes, None).unwrap_err();
+            assert!(
+                err.to_string().contains("out of range")
+                    || err.to_string().contains("as an amount"),
+                "{amount}: {err}"
+            );
+        }
     }
 
     #[test]
