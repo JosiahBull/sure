@@ -127,6 +127,24 @@ pub struct ProviderSync {
     pub created_at: String,
 }
 
+/// Result of a myIR student-loan export upload (`POST
+/// /api/accounts/{id}/student-loan/import`). Mirrors [`ProviderSync`]'s imported/skipped
+/// counts, plus what the exports covered — the window is the useful part, because the
+/// balance reconstruction is only trustworthy back to the earliest date the ledger reaches.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StudentLoanImportResult {
+    pub imported: i64,
+    pub skipped: i64,
+    /// The SLS account the exports were for, echoed back so a wrong upload is obvious.
+    pub account_id: String,
+    /// The union of every uploaded export's window.
+    pub covered_from: Option<String>,
+    pub covered_to: Option<String>,
+    /// Non-fatal observations — an unfamiliar transaction type, rows held back by the
+    /// balance-delta cutover.
+    pub warnings: Vec<String>,
+}
+
 /// An upstream account surfaced by a provider that supports account discovery
 /// (see `sure_app::ports::TransactionProvider::list_accounts`) — not yet linked to a
 /// local `Account`. Surfaced by `GET /provider-kinds/{kind}/accounts`. Lives here, with

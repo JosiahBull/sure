@@ -9,12 +9,18 @@
 //! `sure-app` never depends back on it. To add a bank/broker integration, implement the
 //! relevant port trait and (for a transaction source) add it to [`Registry::new`].
 
+// Money is stored in minor units and written with a `dollars_cents` digit grouping
+// (e.g. `114_269_63` == $114,269.63); clippy's grouping lint fights that convention.
+// Same allow, same reason, as `sure-dal`/`sure-app`/`sure-api`.
+#![allow(clippy::inconsistent_digit_grouping)]
+
 use sure_app::ports::{ProviderRegistry, TransactionProvider};
 use sure_core::ProviderKind;
 
 pub mod akahu;
 pub mod csv;
 pub mod frankfurter;
+pub mod myir;
 pub mod sharesies;
 pub mod yahoo_finance;
 

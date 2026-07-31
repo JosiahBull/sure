@@ -1,0 +1,951 @@
+//! Parses myIR "TAP SLS Transactions" exports into normalized student-loan transactions.
+//! Pure parsing only — no DB, no `TransactionProvider` impl, since there's exactly one
+//! implementation of this ever (see `docs/ARCHITECTURE.md`'s "plain functions where
+//! polymorphism isn't real"), mirroring [`crate::sharesies`]. `sure-api` takes the upload,
+//! calls [`parse_export`], and persists the result via `sure_dal::providers`.
+//!
+//! myIR caps a single export at about two years, so reaching a loan's origination takes
+//! several downloads whose windows overlap. Rather than importing each separately and
+//! leaning on the database to dedupe, [`parse_export`] takes them all at once — a zip of
+//! `.xlsx` files, or one bare `.xlsx` — and reconciles them into a single ledger. That
+//! ordering matters: the cross-file checks in [`check_invariants`] can only be made while
+//! every export is in hand, and each describes a failure the database could not detect
+//! afterwards.
+//!
+//! The one substantive transformation is the **sign**. IR writes its ledger with a debt
+//! increase positive; Sure stores a liability's balance negative, so a repayment — which
+//! *reduces* the debt — has to become a positive transaction. Every row is negated, with
+//! no per-type special-casing, so a transaction type this parser has never seen still
+//! lands the right way round (it is reported through [`MyIrExport::warnings`] so it gets a
+//! human glance rather than silent trust).
+
+use std::collections::{HashMap, HashSet};
+use std::io::{Cursor, Read};
+
+use calamine::{Data, Reader, Xlsx};
+use chrono::{Duration, NaiveDate};
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
+
+use sure_app::ports::ProviderTransaction;
+
+/// Every row in an SLS export should carry this account type. Anything else means the
+/// download came from a different myIR view and may mix in another tax type, which must
+/// never be summed into a student loan's ledger.
+const EXPECTED_ACCOUNT_TYPE: &str = "Student loan";
+
+/// Transaction description stems seen in real exports. Not a filter — an unrecognised
+/// label is still imported, under the same sign rule — but it is surfaced as a warning so
+/// a new kind of movement gets looked at before it is trusted. Stems, because IR appends
+/// detail to some of them ("Compulsory course fee - University of Auckland").
+const KNOWN_TRANSACTIONS: [&str; 9] = [
+    "Repayment deduction",
+    "Living costs",
+    "Payment",
+    "Course related costs",
+    "Compulsory course fee",
+    "Establishment fee",
+    "Administration fee",
+    "Direct credit refund",
+    "Transfer",
+];
+
+/// One parsed export file, with the window it is authoritative for.
+#[derive(Debug, Clone)]
+struct Workbook {
+    name: String,
+    account_id: String,
+    window_from: NaiveDate,
+    window_to: NaiveDate,
+    rows: Vec<Row>,
+}
+
+impl Workbook {
+    fn covers(&self, day: NaiveDate) -> bool {
+        self.window_from <= day && day <= self.window_to
+    }
+
+    fn rows_on(&self, day: NaiveDate) -> impl Iterator<Item = &Row> {
+        self.rows.iter().filter(move |r| r.date == day)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Row {
+    date: NaiveDate,
+    description: String,
+    /// Signed minor units exactly as IR writes them: positive *increases* what you owe.
+    ir_minor: i64,
+}
+
+/// The reconciled result of every export in one upload.
+#[derive(Debug, Default, Clone)]
+pub struct MyIrExport {
+    pub transactions: Vec<ProviderTransaction>,
+    /// The SLS account the exports are for, for display.
+    pub account_id: String,
+    /// The union of every export's window — what this ledger is complete for.
+    pub covered_from: Option<String>,
+    pub covered_to: Option<String>,
+    /// Non-fatal observations worth a human glance.
+    pub warnings: Vec<String>,
+}
+
+/// Parse an upload into one reconciled ledger.
+///
+/// Accepts either a zip of `.xlsx` exports or a single bare `.xlsx` — an xlsx *is* a zip,
+/// so the two are told apart by looking for `.xlsx` entries inside, rather than by trusting
+/// a filename or a content type.
+///
+/// `until`, when set, drops rows on or after that date: the seam against
+/// `sure_app::tasks::balance_delta`, which derives everything from there onward out of the
+/// daily balance feed. Without it the two would both post the same movement.
+pub fn parse_export(bytes: &[u8], until: Option<NaiveDate>) -> anyhow::Result<MyIrExport> {
+    let workbooks = read_workbooks(bytes)?;
+    let Some(first) = workbooks.first() else {
+        anyhow::bail!("no myIR .xlsx exports found in the upload");
+    };
+    check_invariants(&workbooks)?;
+
+    let merged = merge(&workbooks);
+    let ids = external_ids(&merged);
+    let mut warnings = Vec::new();
+
+    let mut unknown: Vec<&str> = merged
+        .iter()
+        .map(|r| r.description.as_str())
+        .filter(|d| !KNOWN_TRANSACTIONS.iter().any(|k| d.starts_with(k)))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    unknown.sort_unstable();
+    if !unknown.is_empty() {
+        warnings.push(format!(
+            "transaction types not seen before, imported under the usual sign rule — check \
+             them against the balance: {}",
+            unknown.join(", ")
+        ));
+    }
+
+    let mut transactions = Vec::new();
+    let mut held_back = 0;
+    for (row, external_id) in merged.iter().zip(ids) {
+        if until.is_some_and(|cutoff| row.date >= cutoff) {
+            held_back += 1;
+            continue;
+        }
+        transactions.push(ProviderTransaction {
+            external_id,
+            // Midday UTC matches every other `posted_at` this app writes, so an imported row
+            // sorts sensibly against a derived one on the same day.
+            posted_at: format!("{}T12:00:00+00:00", iso(row.date)),
+            // The sign flip — see the module docs.
+            amount_minor: -row.ir_minor,
+            currency_code: Some("NZD".to_string()),
+            description: row.description.clone(),
+            merchant: None,
+            category: None,
+        });
+    }
+    if held_back > 0 {
+        let cutoff = until.map(iso).unwrap_or_default();
+        warnings.push(format!(
+            "{held_back} row(s) on/after {cutoff} were not imported — from that date this \
+             account's movements are derived from its balance feed"
+        ));
+    }
+
+    Ok(MyIrExport {
+        transactions,
+        account_id: first.account_id.clone(),
+        covered_from: workbooks.iter().map(|w| w.window_from).min().map(iso),
+        covered_to: workbooks.iter().map(|w| w.window_to).max().map(iso),
+        warnings,
+    })
+}
+
+fn iso(d: NaiveDate) -> String {
+    d.format("%Y-%m-%d").to_string()
+}
+
+// --------------------------------------------------------------------------------------
+// reading
+// --------------------------------------------------------------------------------------
+
+fn read_workbooks(bytes: &[u8]) -> anyhow::Result<Vec<Workbook>> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|e| anyhow::anyhow!("upload is not a .zip or .xlsx file: {e}"))?;
+
+    let entries: Vec<String> = (0..archive.len())
+        .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+        .filter(|name| {
+            // Skip macOS's resource-fork shadows, which zipping a Finder selection includes
+            // and which are not readable workbooks.
+            name.to_lowercase().ends_with(".xlsx") && !name.starts_with("__MACOSX/")
+        })
+        .collect();
+
+    // An .xlsx is itself a zip, so a bare workbook simply has no .xlsx entries inside it.
+    if entries.is_empty() {
+        return Ok(vec![read_workbook("export.xlsx", bytes)?]);
+    }
+
+    let mut out = Vec::new();
+    for name in entries {
+        let mut buf = Vec::new();
+        archive.by_name(&name)?.read_to_end(&mut buf)?;
+        out.push(read_workbook(&name, &buf)?);
+    }
+    Ok(out)
+}
+
+/// Pull the preamble and the transaction table out of one workbook.
+///
+/// The preamble is what makes merging several exports safe: `Account ID` guards against
+/// mixing two different loans, and `From`/`To` are the authoritative window — a file is the
+/// authority for *every* day inside it, including days on which nothing happened.
+fn read_workbook(name: &str, bytes: &[u8]) -> anyhow::Result<Workbook> {
+    let mut xlsx: Xlsx<_> = calamine::open_workbook_from_rs(Cursor::new(bytes))
+        .map_err(|e| anyhow::anyhow!("{name}: not a readable .xlsx workbook: {e}"))?;
+    let sheet_name = xlsx
+        .sheet_names()
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("{name}: workbook has no sheets"))?;
+    let sheet = xlsx.worksheet_range(&sheet_name)?;
+
+    // Keep the preamble's values as typed cells rather than text: `From:`/`To:` carry a
+    // date number-format, so calamine hands them over as `DateTime` and their `to_string`
+    // is the raw Excel serial, not a date.
+    let mut labels: HashMap<String, Data> = HashMap::new();
+    let mut header_at = None;
+    for (i, row) in sheet.rows().enumerate() {
+        let first = cell_text(row.first());
+        if first.ends_with(':') && row.len() > 1 {
+            if let Some(value) = row.get(1) {
+                labels.insert(first.trim_end_matches(':').to_lowercase(), value.clone());
+            }
+        }
+        if first == "Period ending" {
+            header_at = Some(i);
+            break;
+        }
+    }
+    let header_at = header_at.ok_or_else(|| {
+        anyhow::anyhow!("{name}: no 'Period ending' header row — is this a TAP SLS export?")
+    })?;
+
+    let label = |key: &str| -> anyhow::Result<&Data> {
+        labels
+            .get(key)
+            .filter(|v| !cell_text(Some(v)).is_empty())
+            .ok_or_else(|| anyhow::anyhow!("{name}: preamble is missing '{key}'"))
+    };
+    let account_id = cell_text(Some(label("account id")?));
+    let window_from = parse_cell_day(Some(label("from")?), name, "preamble 'From'")?;
+    let window_to = parse_cell_day(Some(label("to")?), name, "preamble 'To'")?;
+    if window_to < window_from {
+        anyhow::bail!("{name}: preamble window {window_from}..{window_to} ends before it starts");
+    }
+
+    let header: Vec<String> = sheet
+        .rows()
+        .nth(header_at)
+        .map(|r| r.iter().map(|c| cell_text(Some(c))).collect())
+        .unwrap_or_default();
+    let column = |wanted: &str| -> anyhow::Result<usize> {
+        header
+            .iter()
+            .position(|h| h == wanted)
+            .ok_or_else(|| anyhow::anyhow!("{name}: header row has no '{wanted}' column"))
+    };
+    let (i_type, i_date, i_txn, i_amount) = (
+        column("Account type")?,
+        column("Date")?,
+        column("Transaction")?,
+        column("Amount")?,
+    );
+
+    let mut rows = Vec::new();
+    for (offset, raw) in sheet.rows().skip(header_at + 1).enumerate() {
+        let date_cell = raw.get(i_date);
+        let amount = cell_text(raw.get(i_amount));
+        if cell_text(date_cell).is_empty() || amount.is_empty() {
+            continue; // trailing blank rows — an export carries hundreds
+        }
+        let where_ = format!("row {}", header_at + offset + 2);
+
+        let account_type = cell_text(raw.get(i_type));
+        if account_type != EXPECTED_ACCOUNT_TYPE {
+            anyhow::bail!("{name}: {where_} has account type '{account_type}', not a student loan");
+        }
+        rows.push(Row {
+            date: parse_cell_day(date_cell, name, &where_)?,
+            description: cell_text(raw.get(i_txn)),
+            ir_minor: parse_minor(&amount, name, &where_)?,
+        });
+    }
+
+    Ok(Workbook {
+        name: name.to_string(),
+        account_id,
+        window_from,
+        window_to,
+        rows,
+    })
+}
+
+fn cell_text(cell: Option<&Data>) -> String {
+    match cell {
+        None | Some(Data::Empty) => String::new(),
+        Some(Data::String(s)) => s.trim().to_string(),
+        Some(other) => other.to_string().trim().to_string(),
+    }
+}
+
+/// A `Date` column arrives as `Data::DateTime` — calamine's `dates` feature resolves the
+/// cell's number format for us — but a re-saved export can carry the same value as text.
+fn parse_cell_day(cell: Option<&Data>, file: &str, where_: &str) -> anyhow::Result<NaiveDate> {
+    if let Some(Data::DateTime(dt)) = cell {
+        if let Some(day) = dt.as_datetime().map(|d| d.date()) {
+            return Ok(day);
+        }
+    }
+    parse_day(&cell_text(cell), file, where_)
+}
+
+fn parse_day(text: &str, file: &str, where_: &str) -> anyhow::Result<NaiveDate> {
+    NaiveDate::parse_from_str(text.get(..10).unwrap_or(text), "%Y-%m-%d")
+        .map_err(|_| anyhow::anyhow!("{file}: {where_}: cannot read '{text}' as a date"))
+}
+
+/// Exact 2-dp minor units. Decimal, not float — `329.36` must not land as `32935`.
+fn parse_minor(text: &str, file: &str, where_: &str) -> anyhow::Result<i64> {
+    let cleaned: String = text
+        .chars()
+        .filter(|c| !matches!(c, '$' | ',' | ' '))
+        .collect();
+    let value: Decimal = cleaned
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{file}: {where_}: cannot read '{text}' as an amount"))?;
+    (value * Decimal::from(100))
+        .round()
+        .to_i64()
+        .ok_or_else(|| anyhow::anyhow!("{file}: {where_}: amount '{text}' is out of range"))
+}
+
+// --------------------------------------------------------------------------------------
+// reconciliation
+// --------------------------------------------------------------------------------------
+
+/// Every check here is fatal, because each describes a failure the database cannot detect
+/// once the rows are in and the balance reconstruction would silently absorb.
+fn check_invariants(workbooks: &[Workbook]) -> anyhow::Result<()> {
+    // 1. One loan. A different SLS suffix is a different product, not more history.
+    let mut ids: Vec<&str> = workbooks.iter().map(|w| w.account_id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() > 1 {
+        anyhow::bail!("exports are for different accounts: {}", ids.join(", "));
+    }
+
+    // 2. Rows inside their own window, or the window metadata isn't trustworthy and checks
+    //    3 and 4 rest on sand.
+    for w in workbooks {
+        for row in &w.rows {
+            if !w.covers(row.date) {
+                anyhow::bail!(
+                    "{}: row dated {} is outside its window {}..{}",
+                    w.name,
+                    row.date,
+                    w.window_from,
+                    w.window_to
+                );
+            }
+        }
+    }
+
+    // 3. No gap in coverage. The dangerous one: a missing window looks exactly like a quiet
+    //    period with no activity, and nothing downstream can tell them apart.
+    let mut ordered: Vec<&Workbook> = workbooks.iter().collect();
+    ordered.sort_by_key(|w| (w.window_from, w.window_to));
+    let mut reach = ordered[0].window_to;
+    for w in &ordered[1..] {
+        if w.window_from > reach + Duration::days(1) {
+            anyhow::bail!(
+                "gap in coverage: nothing covers {} .. {}. Export that window from myIR and \
+                 include it in the upload.",
+                reach + Duration::days(1),
+                w.window_from - Duration::days(1)
+            );
+        }
+        reach = reach.max(w.window_to);
+    }
+
+    // 4. Overlapping windows must agree. Each file is authoritative for every day it
+    //    covers, so a disagreement means IR restated something — and because the import is
+    //    INSERT OR IGNORE with no update-on-conflict, a restated row would import
+    //    *alongside* the stale one and double-count. This check is the only defence.
+    for day in sorted_days(workbooks) {
+        let covering: Vec<&Workbook> = workbooks.iter().filter(|w| w.covers(day)).collect();
+        let Some(first) = covering.first() else {
+            continue;
+        };
+        let expected = signature(first, day);
+        for other in &covering[1..] {
+            let found = signature(other, day);
+            if found != expected {
+                anyhow::bail!(
+                    "exports disagree about {day}: {} has {:?}, {} has {:?}. Keep the rows from \
+                     the export with the newest 'as at', delete the superseded transaction, \
+                     then re-upload.",
+                    first.name,
+                    expected,
+                    other.name,
+                    found
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every day any export has a row for, ascending.
+fn sorted_days(workbooks: &[Workbook]) -> Vec<NaiveDate> {
+    let mut days: Vec<NaiveDate> = workbooks
+        .iter()
+        .flat_map(|w| w.rows.iter().map(|r| r.date))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    days.sort_unstable();
+    days
+}
+
+/// A day's rows reduced to a comparable, order-independent shape.
+fn signature(workbook: &Workbook, day: NaiveDate) -> Vec<(i64, String)> {
+    let mut rows: Vec<(i64, String)> = workbook
+        .rows_on(day)
+        .map(|r| (r.ir_minor, r.description.clone()))
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// The union of every export, ordered by date.
+///
+/// Safe to take each day's rows from whichever export sorts first, because
+/// [`check_invariants`] has already proved that every file covering that day reports
+/// exactly the same rows.
+fn merge(workbooks: &[Workbook]) -> Vec<Row> {
+    let mut ordered: Vec<&Workbook> = workbooks.iter().collect();
+    ordered.sort_by(|a, b| (a.window_from, &a.name).cmp(&(b.window_from, &b.name)));
+
+    let mut out = Vec::new();
+    for day in sorted_days(workbooks) {
+        if let Some(source) = ordered.iter().find(|w| w.rows_on(day).next().is_some()) {
+            out.extend(source.rows_on(day).cloned());
+        }
+    }
+    out
+}
+
+/// Content-derived, position-independent ids, so re-uploading an overlapping window
+/// produces byte-identical ids and the `(provider, external_id)` unique index dedupes.
+///
+/// The trailing counter disambiguates two genuinely identical rows on one day, and is
+/// counted over the *merged union*, never per file: numbering within a single export would
+/// give the same row different ids in different exports if a window boundary ever split a
+/// day, importing it twice.
+fn external_ids(rows: &[Row]) -> Vec<String> {
+    let mut seen: HashMap<(NaiveDate, i64, String), usize> = HashMap::new();
+    rows.iter()
+        .map(|r| {
+            let key = (r.date, r.ir_minor, slug(&r.description));
+            let n = seen.entry(key.clone()).or_default();
+            *n += 1;
+            format!("ir-sls:{}:{}:{}:{}", iso(key.0), key.1, key.2, n)
+        })
+        .collect()
+}
+
+fn slug(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.to_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    /// A cell in the synthetic workbook: text, or a date written the way a real export
+    /// writes it — an Excel serial carrying a date number-format.
+    enum Cell {
+        Text(String),
+        Date(NaiveDate),
+        Number(&'static str),
+    }
+    fn t(s: &str) -> Cell {
+        Cell::Text(s.to_string())
+    }
+
+    /// Build a minimal but real .xlsx. Faithful enough to exercise the path a myIR export
+    /// actually takes: dates arrive as serials resolved through the style table, not text.
+    fn xlsx(rows: Vec<Vec<Cell>>) -> Vec<u8> {
+        let mut sheet = String::from(
+            r#"<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
+        );
+        for (r, cells) in rows.iter().enumerate() {
+            sheet.push_str(&format!(r#"<row r="{}">"#, r + 1));
+            for (c, cell) in cells.iter().enumerate() {
+                let reference = format!("{}{}", (b'A' + c as u8) as char, r + 1);
+                match cell {
+                    Cell::Text(s) => sheet.push_str(&format!(
+                        r#"<c r="{reference}" t="inlineStr"><is><t>{}</t></is></c>"#,
+                        s.replace('&', "&amp;").replace('<', "&lt;")
+                    )),
+                    Cell::Number(n) => {
+                        sheet.push_str(&format!(r#"<c r="{reference}"><v>{n}</v></c>"#))
+                    }
+                    // Style index 1 is the date format declared in styles.xml below.
+                    Cell::Date(day) => {
+                        let serial = (*day - d("1899-12-30")).num_days();
+                        sheet.push_str(&format!(r#"<c r="{reference}" s="1"><v>{serial}</v></c>"#))
+                    }
+                }
+            }
+            sheet.push_str("</row>");
+        }
+        sheet.push_str("</sheetData></worksheet>");
+
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            let mut put = |name: &str, body: &str| {
+                zip.start_file(name, opts).unwrap();
+                zip.write_all(body.as_bytes()).unwrap();
+            };
+            put(
+                "[Content_Types].xml",
+                r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>"#,
+            );
+            put(
+                "_rels/.rels",
+                r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#,
+            );
+            put(
+                "xl/workbook.xml",
+                r#"<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Transactions" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            );
+            put(
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#,
+            );
+            put(
+                "xl/styles.xml",
+                r#"<?xml version="1.0"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font/></fonts><fills count="1"><fill/></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14" applyNumberFormat="1"/></cellXfs></styleSheet>"#,
+            );
+            put("xl/worksheets/sheet1.xml", &sheet);
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    /// One export: preamble, header, then `(date, transaction, ir_amount)` rows.
+    fn export(account: &str, from: &str, to: &str, rows: &[(&str, &str, &str)]) -> Vec<u8> {
+        let mut grid = vec![
+            vec![t("Account ID:"), t(account)],
+            // Date cells, not text: a real export number-formats these, so calamine hands
+            // them over as serials.
+            vec![t("From:"), Cell::Date(d(from))],
+            vec![t("To:"), Cell::Date(d(to))],
+            vec![t("")],
+            vec![t(
+                "Disclaimer: This information is correct as at 31-Jul-2026 12:08:50.",
+            )],
+            vec![
+                t("Period ending"),
+                t("Account type"),
+                t("Date"),
+                t("Transaction"),
+                t("Amount"),
+            ],
+        ];
+        for (date, txn, amount) in rows {
+            grid.push(vec![
+                t("2026-03-31"),
+                t(EXPECTED_ACCOUNT_TYPE),
+                Cell::Date(d(date)),
+                t(txn),
+                Cell::Number(Box::leak(amount.to_string().into_boxed_str())),
+            ]);
+        }
+        grid.push(vec![t(""), t(""), t(""), t(""), t("")]); // trailing blank, as real exports have
+        xlsx(grid)
+    }
+
+    fn bundle(files: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            for (name, body) in files {
+                zip.start_file(*name, opts).unwrap();
+                zip.write_all(body).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    const ACCT: &str = "012-345-678-SLS004";
+
+    /// The headline transformation: IR signs a debt increase positive, Sure signs a
+    /// liability's balance negative, so every row is negated. Get this backwards and years
+    /// of repayments invert on the net-worth line.
+    #[test]
+    fn ir_signs_are_flipped_for_a_liability() {
+        let bytes = export(
+            ACCT,
+            "2024-07-31",
+            "2026-07-31",
+            &[
+                ("2025-04-14", "Repayment deduction", "-400.00"),
+                ("2025-04-01", "Administration fee", "40"),
+                ("2025-03-10", "Living costs", "222.00"),
+            ],
+        );
+        let out = parse_export(&bytes, None).unwrap();
+
+        let by_desc: HashMap<&str, i64> = out
+            .transactions
+            .iter()
+            .map(|t| (t.description.as_str(), t.amount_minor))
+            .collect();
+        // A repayment reduces the debt -> positive on a liability.
+        assert_eq!(by_desc["Repayment deduction"], 400_00);
+        // A fee and a drawdown increase it -> negative.
+        assert_eq!(by_desc["Administration fee"], -40_00);
+        assert_eq!(by_desc["Living costs"], -222_00);
+        assert_eq!(out.account_id, ACCT);
+        assert_eq!(out.covered_from.as_deref(), Some("2024-07-31"));
+    }
+
+    /// A bare workbook and a zip of workbooks are both valid uploads, and an .xlsx is
+    /// itself a zip — so the two are told apart by content, not by filename.
+    #[test]
+    fn accepts_a_bare_xlsx_or_a_zip_of_them() {
+        let single = export(
+            ACCT,
+            "2024-07-31",
+            "2026-07-31",
+            &[("2025-04-14", "Payment", "-11.11")],
+        );
+        assert_eq!(parse_export(&single, None).unwrap().transactions.len(), 1);
+
+        let zipped = bundle(&[("exports/sls_2024_2026.xlsx", single.clone())]);
+        assert_eq!(parse_export(&zipped, None).unwrap().transactions.len(), 1);
+    }
+
+    /// Overlapping windows are the normal case, not an error: myIR caps an export at ~2
+    /// years, so reaching origination means re-downloading windows that overlap.
+    #[test]
+    fn overlapping_exports_merge_without_duplicating() {
+        // The windows overlap over 2023-07-31..2024-07-31, so both exports must report the
+        // shared row in it — and it must be imported once, not twice.
+        let shared = ("2024-01-15", "Repayment deduction", "-400.00");
+        let older = export(
+            ACCT,
+            "2022-07-31",
+            "2024-07-31",
+            &[("2023-06-01", "Living costs", "222.00"), shared],
+        );
+        let newer = export(
+            ACCT,
+            "2023-07-31",
+            "2026-07-31",
+            &[shared, ("2025-04-14", "Repayment deduction", "-400.00")],
+        );
+        let out = parse_export(&bundle(&[("a.xlsx", older), ("b.xlsx", newer)]), None).unwrap();
+
+        assert_eq!(out.transactions.len(), 3, "the shared row must appear once");
+        let ids: HashSet<&str> = out
+            .transactions
+            .iter()
+            .map(|t| t.external_id.as_str())
+            .collect();
+        assert_eq!(ids.len(), 3, "ids must be unique across the merged union");
+        assert_eq!(out.covered_from.as_deref(), Some("2022-07-31"));
+        assert_eq!(out.covered_to.as_deref(), Some("2026-07-31"));
+    }
+
+    /// Re-uploading the same export set must produce the same ids, or the unique
+    /// (provider, external_id) index can't absorb the repeat and every upload would
+    /// duplicate the whole ledger.
+    #[test]
+    fn ids_are_stable_across_uploads() {
+        let bytes = export(
+            ACCT,
+            "2024-07-31",
+            "2026-07-31",
+            &[("2025-04-14", "Repayment deduction", "-400.00")],
+        );
+        let first = parse_export(&bytes, None).unwrap();
+        let second = parse_export(&bytes, None).unwrap();
+        assert_eq!(
+            first.transactions[0].external_id,
+            second.transactions[0].external_id
+        );
+        assert_eq!(
+            first.transactions[0].external_id,
+            "ir-sls:2025-04-14:-40000:repayment-deduction:1"
+        );
+    }
+
+    /// Two genuinely identical rows on one day must not collapse into one id.
+    #[test]
+    fn identical_rows_on_one_day_get_distinct_ids() {
+        let bytes = export(
+            ACCT,
+            "2024-07-31",
+            "2026-07-31",
+            &[
+                ("2025-04-14", "Living costs", "222.00"),
+                ("2025-04-14", "Living costs", "222.00"),
+            ],
+        );
+        let out = parse_export(&bytes, None).unwrap();
+        assert_eq!(out.transactions.len(), 2);
+        assert_ne!(
+            out.transactions[0].external_id,
+            out.transactions[1].external_id
+        );
+    }
+
+    /// A missing window looks exactly like a quiet period once the rows are in the
+    /// database, so it has to be caught here or not at all.
+    #[test]
+    fn a_gap_between_windows_is_fatal() {
+        let a = export(
+            ACCT,
+            "2021-01-01",
+            "2022-01-01",
+            &[("2021-06-01", "Living costs", "10")],
+        );
+        let b = export(
+            ACCT,
+            "2022-01-03",
+            "2023-01-01",
+            &[("2022-06-01", "Living costs", "10")],
+        );
+        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)]), None).unwrap_err();
+        assert!(err.to_string().contains("gap in coverage"), "{err}");
+    }
+
+    /// Windows that merely touch are contiguous, not a gap.
+    #[test]
+    fn touching_windows_are_not_a_gap() {
+        let a = export(
+            ACCT,
+            "2021-01-01",
+            "2022-01-01",
+            &[("2021-06-01", "Living costs", "10")],
+        );
+        let b = export(
+            ACCT,
+            "2022-01-02",
+            "2023-01-01",
+            &[("2022-06-01", "Living costs", "10")],
+        );
+        assert!(parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)]), None).is_ok());
+    }
+
+    /// A restatement: the import is INSERT OR IGNORE with no update-on-conflict, so a
+    /// changed row would land beside the stale one and double-count.
+    #[test]
+    fn exports_that_disagree_about_an_overlapping_day_are_fatal() {
+        let a = export(
+            ACCT,
+            "2021-01-01",
+            "2023-01-01",
+            &[("2022-06-01", "Living costs", "100")],
+        );
+        let b = export(
+            ACCT,
+            "2022-01-01",
+            "2024-01-01",
+            &[("2022-06-01", "Living costs", "250")],
+        );
+        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)]), None).unwrap_err();
+        assert!(
+            err.to_string().contains("disagree about 2022-06-01"),
+            "{err}"
+        );
+    }
+
+    /// A row present in one export but missing from another that also covers that day is
+    /// the same class of failure as a changed amount.
+    #[test]
+    fn a_row_missing_from_one_overlapping_export_is_fatal() {
+        let a = export(
+            ACCT,
+            "2021-01-01",
+            "2023-01-01",
+            &[("2022-06-01", "Living costs", "100")],
+        );
+        let b = export(ACCT, "2022-01-01", "2024-01-01", &[]);
+        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)]), None).unwrap_err();
+        assert!(
+            err.to_string().contains("disagree about 2022-06-01"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn exports_for_different_loans_are_fatal() {
+        let a = export(
+            ACCT,
+            "2021-01-01",
+            "2023-01-01",
+            &[("2022-06-01", "Living costs", "10")],
+        );
+        let b = export("012-345-678-SLS009", "2021-01-01", "2023-01-01", &[]);
+        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)]), None).unwrap_err();
+        assert!(err.to_string().contains("different accounts"), "{err}");
+    }
+
+    /// Older windows carry drawdowns and fees this parser has never seen. They are still
+    /// imported — the sign rule is uniform — but they are called out for a human glance.
+    #[test]
+    fn an_unrecognised_transaction_type_is_imported_with_a_warning() {
+        let bytes = export(
+            ACCT,
+            "2024-07-31",
+            "2026-07-31",
+            &[("2025-04-14", "Voluntary repayment bonus", "-100")],
+        );
+        let out = parse_export(&bytes, None).unwrap();
+
+        assert_eq!(out.transactions.len(), 1, "it must not be dropped");
+        assert_eq!(out.transactions[0].amount_minor, 100_00);
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("Voluntary repayment bonus")),
+            "{:?}",
+            out.warnings
+        );
+    }
+
+    /// The seam against the balance-delta task: rows it will derive from the balance feed
+    /// must not also be imported here, or the same movement lands twice.
+    #[test]
+    fn rows_on_or_after_the_cutover_are_held_back() {
+        let bytes = export(
+            ACCT,
+            "2024-07-31",
+            "2026-08-31",
+            &[
+                ("2026-07-28", "Repayment deduction", "-500.00"),
+                ("2026-07-31", "Repayment deduction", "-500.00"),
+                ("2026-08-14", "Repayment deduction", "-500.00"),
+            ],
+        );
+        let out = parse_export(&bytes, Some(d("2026-07-31"))).unwrap();
+
+        assert_eq!(out.transactions.len(), 1);
+        assert!(out.transactions[0].posted_at.starts_with("2026-07-28"));
+        assert!(
+            out.warnings.iter().any(|w| w.contains("2 row(s)")),
+            "{:?}",
+            out.warnings
+        );
+    }
+
+    /// An export taken from the wrong myIR view could mix in another tax type, which must
+    /// never be summed into a student loan's ledger.
+    #[test]
+    fn a_foreign_account_type_is_fatal() {
+        let grid = vec![
+            vec![t("Account ID:"), t(ACCT)],
+            vec![t("From:"), t("2024-07-31")],
+            vec![t("To:"), t("2026-07-31")],
+            vec![
+                t("Period ending"),
+                t("Account type"),
+                t("Date"),
+                t("Transaction"),
+                t("Amount"),
+            ],
+            vec![
+                t("2026-03-31"),
+                t("Income tax"),
+                Cell::Date(d("2025-04-14")),
+                t("Payment"),
+                Cell::Number("-100"),
+            ],
+        ];
+        let err = parse_export(&xlsx(grid), None).unwrap_err();
+        assert!(err.to_string().contains("not a student loan"), "{err}");
+    }
+
+    /// A re-saved export can carry its preamble window as plain text rather than a
+    /// number-formatted serial; both have to read.
+    #[test]
+    fn a_text_preamble_window_still_reads() {
+        let grid = vec![
+            vec![t("Account ID:"), t(ACCT)],
+            vec![t("From:"), t("2024-07-31")],
+            vec![t("To:"), t("2026-07-31")],
+            vec![
+                t("Period ending"),
+                t("Account type"),
+                t("Date"),
+                t("Transaction"),
+                t("Amount"),
+            ],
+            vec![
+                t("2026-03-31"),
+                t(EXPECTED_ACCOUNT_TYPE),
+                Cell::Date(d("2025-04-14")),
+                t("Repayment deduction"),
+                Cell::Number("-400.00"),
+            ],
+        ];
+        let out = parse_export(&xlsx(grid), None).unwrap();
+        assert_eq!(out.covered_from.as_deref(), Some("2024-07-31"));
+        assert_eq!(out.transactions[0].amount_minor, 400_00);
+    }
+
+    #[test]
+    fn a_non_xlsx_upload_fails_clearly() {
+        let err = parse_export(b"this is not a spreadsheet", None).unwrap_err();
+        assert!(err.to_string().contains("not a .zip or .xlsx"), "{err}");
+    }
+
+    /// Amounts must not go near a float: 329.36 * 100 is 32935.999... in binary.
+    #[test]
+    fn amounts_are_exact_to_the_cent() {
+        let bytes = export(
+            ACCT,
+            "2024-07-31",
+            "2026-07-31",
+            &[("2024-08-14", "Repayment deduction", "-329.36")],
+        );
+        let out = parse_export(&bytes, None).unwrap();
+        assert_eq!(out.transactions[0].amount_minor, 329_36);
+    }
+}

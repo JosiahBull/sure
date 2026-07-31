@@ -831,6 +831,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/{id}/student-loan/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bulk-import myIR student-loan exports: a zip of `.xlsx` downloads, or a single bare
+         *     `.xlsx`. Idempotent — re-uploading the same exports imports nothing new, so overlapping
+         *     download windows are free.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            /** @description A myIR export .xlsx, or a .zip of them */
+            requestBody: {
+                content: {
+                    "application/zip": number[];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["StudentLoanImportResult"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}/valuations": {
         parameters: {
             query?: never;
@@ -5172,6 +5234,28 @@ export interface components {
             currency_code: string;
             /** @description When this row was fetched (ISO-8601 timestamp, UTC). */
             fetched_at: string;
+        };
+        /**
+         * @description Result of a myIR student-loan export upload (`POST
+         *     /api/accounts/{id}/student-loan/import`). Mirrors [`ProviderSync`]'s imported/skipped
+         *     counts, plus what the exports covered — the window is the useful part, because the
+         *     balance reconstruction is only trustworthy back to the earliest date the ledger reaches.
+         */
+        StudentLoanImportResult: {
+            /** Format: int64 */
+            imported: number;
+            /** Format: int64 */
+            skipped: number;
+            /** @description The SLS account the exports were for, echoed back so a wrong upload is obvious. */
+            account_id: string;
+            /** @description The union of every uploaded export's window. */
+            covered_from?: string | null;
+            covered_to?: string | null;
+            /**
+             * @description Non-fatal observations — an unfamiliar transaction type, rows held back by the
+             *     balance-delta cutover.
+             */
+            warnings: string[];
         };
         /**
          * @description Whether a sync attempt succeeded. Stored as `provider_syncs.status` (plain `TEXT`).

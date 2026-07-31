@@ -35,7 +35,7 @@ pub use forecast::{
 pub use merchants::{Merchant, SaveMerchant};
 pub use providers::{
     LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderAccount,
-    ProviderKind, ProviderSync, SaveProvider, SyncOutcome, SyncRequest,
+    ProviderKind, ProviderSync, SaveProvider, StudentLoanImportResult, SyncOutcome, SyncRequest,
 };
 pub use rules::{
     PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RuleRunKind,

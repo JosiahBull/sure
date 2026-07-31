@@ -278,12 +278,22 @@ pub(crate) fn sample_dates(from: NaiveDate, to: NaiveDate, interval: Interval) -
     out
 }
 
-/// Mortgage and brokerage accounts carry the instrument's own bookkeeping — loan
-/// drawdowns/amortisation, trades/FX — not household income or spending. Unlike
-/// `credit_card`/`revolving_credit`, which are everyday transaction accounts, these two
+/// Mortgage, student-loan and brokerage accounts carry the instrument's own bookkeeping —
+/// loan drawdowns/amortisation/repayments, trades/FX — not household income or spending.
+/// Unlike `credit_card`/`revolving_credit`, which are everyday transaction accounts, these
 /// kinds should never feed the income/expense report, one-off toggle or not.
+///
+/// A student loan is the sharpest case: on a liability a repayment is a *positive* amount
+/// (it moves the negative balance towards zero), so leaving it in would report years of
+/// repayments as household income. It can't be reported as an expense either — that would
+/// need the opposite sign, which is what the balance reconstruction in
+/// [`account_value_at`] depends on. Both the myIR import and the balance-delta task feed
+/// this account kind, so the exclusion has to live here rather than in either of them.
 pub(crate) fn is_excluded_from_spend(kind: AccountKind) -> bool {
-    matches!(kind, AccountKind::Mortgage | AccountKind::Brokerage)
+    matches!(
+        kind,
+        AccountKind::Mortgage | AccountKind::StudentLoan | AccountKind::Brokerage
+    )
 }
 
 // ---- category lookups (shared by pie + sankey) ----------------------------
@@ -903,5 +913,36 @@ mod tests {
             account_value_at(3, "NZD", d("2026-01-31"), &tx, &val).0,
             380_00
         );
+    }
+
+    /// The instrument-bookkeeping kinds stay out of the income/expense reports, while the
+    /// everyday transaction accounts — including the two *liability* ones — stay in. A
+    /// student loan's repayments are positive amounts on a liability, so dropping it from
+    /// this list would report them as household income.
+    #[test]
+    fn only_instrument_bookkeeping_kinds_are_excluded_from_spend() {
+        for kind in [
+            AccountKind::Mortgage,
+            AccountKind::StudentLoan,
+            AccountKind::Brokerage,
+        ] {
+            assert!(is_excluded_from_spend(kind), "{kind:?} should be excluded");
+        }
+        for kind in [
+            AccountKind::Bank,
+            AccountKind::Savings,
+            AccountKind::Cash,
+            AccountKind::CreditCard,
+            AccountKind::RevolvingCredit,
+            AccountKind::Loan,
+            AccountKind::Liability,
+            AccountKind::RealEstate,
+            AccountKind::SharesNz,
+        ] {
+            assert!(
+                !is_excluded_from_spend(kind),
+                "{kind:?} should not be excluded"
+            );
+        }
     }
 }

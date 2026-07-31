@@ -35,6 +35,10 @@ dist-ssr
 /sharesies-export-*/
 /sharesies-instruments-*/
 
+# Personal myIR student-loan exports (see docs/STUDENT-LOAN.md) — real transaction history,
+# never publish this
+/myir-export/
+
 # Env / editor
 .env
 .env.*
