@@ -19,6 +19,10 @@ pub struct Snapshot {
     pub exchange_rates: Vec<ExchangeRateRow>,
     pub categories: Vec<CategoryRow>,
     pub merchants: Vec<MerchantRow>,
+    /// The household. `#[serde(default)]` so a snapshot taken before people existed still
+    /// imports — as an empty household, which is exactly what it had.
+    #[serde(default)]
+    pub people: Vec<PersonRow>,
     pub accounts: Vec<AccountRow>,
     pub transactions: Vec<TransactionRow>,
     pub valuations: Vec<ValuationRow>,
@@ -83,6 +87,18 @@ pub struct MerchantRow {
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct PersonRow {
+    pub id: i64,
+    pub name: String,
+    pub color: Option<String>,
+    pub sort_order: i64,
+    #[serde(default)]
+    pub placeholder: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct AccountRow {
     pub id: i64,
     pub name: String,
@@ -93,8 +109,38 @@ pub struct AccountRow {
     pub archived: bool,
     pub sort_order: i64,
     pub secured_by_account_id: Option<i64>,
+    // Ownership travels as its two stored columns rather than the `Ownership` enum: a
+    // snapshot is a row-for-row copy of the database. Both default, so a snapshot from
+    // before accounts had owners still deserialises; `ownership_columns` is what decides
+    // where those rows land on the way back in.
+    #[serde(default)]
+    pub ownership: Option<String>,
+    #[serde(default)]
+    pub person_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl AccountRow {
+    /// Whether this row arrived without a usable owner — either from a pre-household
+    /// snapshot (no `ownership` at all) or carrying the `unattributed` state that 0016
+    /// removed. Both need the placeholder.
+    fn needs_placeholder_owner(&self) -> bool {
+        !matches!(self.ownership.as_deref(), Some("person") | Some("joint"))
+    }
+
+    /// The `(ownership, person_id)` pair to store, given the placeholder person's id (which
+    /// is present exactly when some row in this snapshot needed one).
+    fn ownership_columns(&self, placeholder_id: Option<i64>) -> (&str, Option<i64>) {
+        match (self.needs_placeholder_owner(), placeholder_id) {
+            (false, _) => (self.ownership.as_deref().unwrap_or("joint"), self.person_id),
+            (true, Some(id)) => ("person", Some(id)),
+            // Unreachable: the placeholder is created whenever any row needs it. Joint is
+            // the honest fallback rather than a panic on an import path — it names no
+            // individual, so it can't misattribute anyone's money.
+            (true, None) => ("joint", None),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
@@ -114,6 +160,13 @@ pub struct TransactionRow {
     pub external_id: Option<String>,
     pub categorized_by_rule_id: Option<i64>,
     pub merchant_id: Option<i64>,
+    // The per-transaction attribution override, as its two stored columns. Both default,
+    // so a snapshot from before transactions had one restores as "inherit the account's
+    // owner" — which is what those rows meant.
+    #[serde(default)]
+    pub ownership: Option<String>,
+    #[serde(default)]
+    pub person_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -298,6 +351,9 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         merchants: sqlx::query_as("SELECT * FROM merchants ORDER BY id")
             .fetch_all(db)
             .await?,
+        people: sqlx::query_as("SELECT * FROM people ORDER BY id")
+            .fetch_all(db)
+            .await?,
         accounts: sqlx::query_as("SELECT * FROM accounts ORDER BY id")
             .fetch_all(db)
             .await?,
@@ -366,7 +422,9 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         "crons",
         "rules",
         "merchants",
+        // After `accounts`, which references it.
         "accounts",
+        "people",
         "categories",
         "exchange_rates",
         "currencies",
@@ -394,14 +452,36 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             .bind(m.id).bind(&m.name).bind(m.category_id).bind(&m.note).bind(&m.created_at).bind(&m.updated_at)
             .execute(&mut *txn).await?;
     }
+    for p in &snap.people {
+        sqlx::query("INSERT INTO people (id, name, color, sort_order, placeholder, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)")
+            .bind(p.id).bind(&p.name).bind(&p.color).bind(p.sort_order).bind(p.placeholder).bind(&p.created_at).bind(&p.updated_at)
+            .execute(&mut *txn).await?;
+    }
+    // A snapshot taken before accounts had owners restores accounts that name nobody. Rather
+    // than refuse the import (the backup is still perfectly good data) or invent an owner,
+    // do exactly what the household-required migration does: stand a placeholder person up
+    // and hand it the orphans, so the invariant holds and the question stays visible.
+    let placeholder_id = if snap.accounts.iter().any(|a| a.needs_placeholder_owner()) {
+        Some(
+            sqlx::query_scalar::<_, i64>(
+                "INSERT INTO people (name, sort_order, placeholder) VALUES ('Unassigned', 0, 1)
+                 RETURNING id",
+            )
+            .fetch_one(&mut *txn)
+            .await?,
+        )
+    } else {
+        None
+    };
     for a in &snap.accounts {
-        sqlx::query("INSERT INTO accounts (id, name, kind, currency_code, institution, metadata, archived, sort_order, secured_by_account_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)")
-            .bind(a.id).bind(&a.name).bind(&a.kind).bind(&a.currency_code).bind(&a.institution).bind(&a.metadata).bind(a.archived).bind(a.sort_order).bind(a.secured_by_account_id).bind(&a.created_at).bind(&a.updated_at)
+        let (ownership, person_id) = a.ownership_columns(placeholder_id);
+        sqlx::query("INSERT INTO accounts (id, name, kind, currency_code, institution, metadata, archived, sort_order, secured_by_account_id, ownership, person_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)")
+            .bind(a.id).bind(&a.name).bind(&a.kind).bind(&a.currency_code).bind(&a.institution).bind(&a.metadata).bind(a.archived).bind(a.sort_order).bind(a.secured_by_account_id).bind(ownership).bind(person_id).bind(&a.created_at).bind(&a.updated_at)
             .execute(&mut *txn).await?;
     }
     for t in &snap.transactions {
-        sqlx::query("INSERT INTO transactions (id, account_id, posted_at, amount_minor, currency_code, description, merchant, notes, category_id, is_one_off, linked_transaction_id, provider, external_id, categorized_by_rule_id, merchant_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)")
-            .bind(t.id).bind(t.account_id).bind(&t.posted_at).bind(t.amount_minor).bind(&t.currency_code).bind(&t.description).bind(&t.merchant).bind(&t.notes).bind(t.category_id).bind(t.is_one_off).bind(t.linked_transaction_id).bind(&t.provider).bind(&t.external_id).bind(t.categorized_by_rule_id).bind(t.merchant_id).bind(&t.created_at).bind(&t.updated_at)
+        sqlx::query("INSERT INTO transactions (id, account_id, posted_at, amount_minor, currency_code, description, merchant, notes, category_id, is_one_off, linked_transaction_id, provider, external_id, categorized_by_rule_id, merchant_id, ownership, person_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)")
+            .bind(t.id).bind(t.account_id).bind(&t.posted_at).bind(t.amount_minor).bind(&t.currency_code).bind(&t.description).bind(&t.merchant).bind(&t.notes).bind(t.category_id).bind(t.is_one_off).bind(t.linked_transaction_id).bind(&t.provider).bind(&t.external_id).bind(t.categorized_by_rule_id).bind(t.merchant_id).bind(&t.ownership).bind(t.person_id).bind(&t.created_at).bind(&t.updated_at)
             .execute(&mut *txn).await?;
     }
     for v in &snap.valuations {
@@ -479,6 +559,7 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             "currencies": snap.currencies.len(),
             "categories": snap.categories.len(),
             "merchants": snap.merchants.len(),
+            "people": snap.people.len(),
             "accounts": snap.accounts.len(),
             "transactions": snap.transactions.len(),
             "valuations": snap.valuations.len(),

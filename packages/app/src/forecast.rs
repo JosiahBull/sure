@@ -363,7 +363,10 @@ impl ForecastService {
         let fx = Fx::load(self.fx.as_ref(), base).await?;
         let cats = reports::Categories::load(self.reports.as_ref()).await?;
         let from = today - chrono::Duration::days(31 * (CATEGORY_TREND_MONTHS + 1));
-        let spend = reports::load_spend(self.reports.as_ref(), &cats, from, today, false).await?;
+        // The whole household: a forecast projects the household's finances, and splitting
+        // it per person would need per-person income/expense assumptions that don't exist.
+        let spend =
+            reports::load_spend(self.reports.as_ref(), &cats, from, today, false, None).await?;
 
         let mut out = Vec::new();
         for (id, kind) in cats.top_level_kinds() {
@@ -1748,6 +1751,7 @@ mod tests {
                 is_one_off: false,
                 linked_transaction_id: None,
                 account_kind: AccountKind::Bank,
+                attribution: sure_core::Ownership::Joint,
             },
             crate::ports::SpendTransaction {
                 posted_at: "2026-04-15".into(),
@@ -1757,6 +1761,7 @@ mod tests {
                 is_one_off: false,
                 linked_transaction_id: None,
                 account_kind: AccountKind::Bank,
+                attribution: sure_core::Ownership::Joint,
             },
         ];
         let mut cats = reports::Categories::default_for_test();
@@ -2228,8 +2233,8 @@ mod tests {
         use async_trait::async_trait;
         use sure_core::{
             Account, AccountKind as AK, AccountMetadata as AM, Cron, CronRun, CronRunResult,
-            GenericMeta, LoanMeta, MortgageMeta, SaveAccount, SaveCron, SaveForecastAssumption,
-            SaveForecastEvent,
+            GenericMeta, LoanMeta, MortgageMeta, Ownership, SaveAccount, SaveCron,
+            SaveForecastAssumption, SaveForecastEvent,
         };
 
         use crate::ports::{
@@ -2257,6 +2262,16 @@ mod tests {
                 unreachable!()
             }
             async fn set_secured_by(&self, _id: i64, _target: Option<i64>) -> AppResult<Account> {
+                unreachable!()
+            }
+            async fn set_ownership(&self, _id: i64, _ownership: Ownership) -> AppResult<Account> {
+                unreachable!()
+            }
+            async fn set_ownership_bulk(
+                &self,
+                _ids: &[i64],
+                _ownership: Ownership,
+            ) -> AppResult<u64> {
                 unreachable!()
             }
             async fn list_shares_tickers(&self) -> AppResult<Vec<SharesTicker>> {
@@ -2419,6 +2434,7 @@ mod tests {
                 secured_by_account_id: None,
                 created_at: "2020-01-01T00:00:00Z".into(),
                 updated_at: "2020-01-01T00:00:00Z".into(),
+                ownership: sure_core::Ownership::Joint,
             }
         }
 
@@ -2456,6 +2472,7 @@ mod tests {
                 .map(|a| AccountCurrency {
                     id: a.id,
                     currency_code: a.currency_code.clone(),
+                    ownership: sure_core::Ownership::Joint,
                 })
                 .collect();
             ForecastService::new(
@@ -2558,6 +2575,7 @@ mod tests {
                     is_one_off: false,
                     linked_transaction_id: None,
                     account_kind: AK::Bank,
+                    attribution: sure_core::Ownership::Joint,
                 });
                 cash.push(500_000);
             }
@@ -2959,6 +2977,7 @@ mod tests {
                     is_one_off: false,
                     linked_transaction_id: None,
                     account_kind: AK::Bank,
+                    attribution: sure_core::Ownership::Joint,
                 });
             }
             let svc = make_service(

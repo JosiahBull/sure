@@ -36,6 +36,7 @@ test("404s for a shares account with no ticker set", async ({ api }) => {
         currency_code: "NZD",
         archived: false,
         sort_order: 0,
+        ownership: { kind: "joint" },
       },
     },
   });

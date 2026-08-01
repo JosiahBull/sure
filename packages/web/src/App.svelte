@@ -1,6 +1,7 @@
 <script lang="ts">
   import { router } from "./lib/router.svelte";
   import { filters, RANGES } from "./lib/state.svelte";
+  import { people, ensureLoaded as ensurePeopleLoaded, ownershipOptions } from "./lib/people.svelte";
   import Icon from "./lib/Icon.svelte";
   import AccountPanel from "./lib/AccountPanel.svelte";
   import SettingsNav from "./lib/SettingsNav.svelte";
@@ -8,6 +9,7 @@
   import Forecast from "./pages/Forecast.svelte";
   import Transactions from "./pages/Transactions.svelte";
   import Accounts from "./pages/Accounts.svelte";
+  import Household from "./pages/Household.svelte";
   import Rules from "./pages/Rules.svelte";
   import Categories from "./pages/Categories.svelte";
   import Merchants from "./pages/Merchants.svelte";
@@ -34,6 +36,7 @@
   // "Home > Settings > {subpage}" — labels mirror SettingsNav's groups.
   const SETTINGS_LABELS: Record<string, string> = {
     "/settings/accounts": "Accounts",
+    "/settings/household": "Household",
     "/settings/providers": "Bank sync",
     "/settings/preferences": "Preferences",
     "/settings/appearance": "Appearance",
@@ -55,6 +58,8 @@
         return Forecast;
       case "/settings/accounts":
         return Accounts;
+      case "/settings/household":
+        return Household;
       case "/settings/rules":
         return Rules;
       case "/settings/categories":
@@ -79,6 +84,9 @@
   const showFilters = $derived(activePath === "/" || activePath === "/transactions");
 
   let panelCollapsed = $state(false);
+
+  // The household drives the "whose money" filter; loaded once for the whole shell.
+  ensurePeopleLoaded();
 </script>
 
 <div class="shell" class:panel-collapsed={panelCollapsed}>
@@ -158,6 +166,17 @@
                 <option value={r.key}>{r.label}</option>
               {/each}
             </select>
+            {#if people.list.length > 1}
+              <select
+                class="select"
+                style="width:auto"
+                bind:value={filters.attributedTo}
+                aria-label="Whose money"
+              >
+                <option value="">Whole household</option>
+                {#each ownershipOptions() as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
+              </select>
+            {/if}
             <label class="switch" title="Include one-off transactions">
               <input type="checkbox" bind:checked={filters.includeOneOff} />
               <span class="track"></span>

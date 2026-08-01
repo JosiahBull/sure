@@ -2,14 +2,64 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
+use utoipa::IntoParams;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 pub use sure_core::{
-    BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,
-    TxQuery,
+    BulkDelete, BulkResult, BulkUpdate, LinkRequest, Ownership, SaveTransaction, Transaction,
+    TransferRequest, TxQuery,
 };
+
+/// The wire form of [`TxQuery`]. A twin, for one field: `attributed_to` arrives as text
+/// (`joint`, or a person id) and is parsed into the domain enum right here — the query
+/// string is the one legal place that value is a string (CLAUDE.md rule 1), and an
+/// unrecognised one is a 400 rather than a filter that silently matches everybody. Same
+/// shape and rationale as `routes::reports`'s `NetWorthQuery`.
+#[derive(Debug, Deserialize, IntoParams, Default)]
+#[into_params(parameter_in = Query)]
+pub struct TxQueryParams {
+    pub account_id: Option<i64>,
+    pub category_id: Option<i64>,
+    /// Inclusive lower bound on the transaction date (ISO-8601).
+    pub from: Option<String>,
+    /// Inclusive upper bound on the transaction date (ISO-8601).
+    pub to: Option<String>,
+    /// When false, one-off transactions are excluded. Defaults to true.
+    pub include_one_off: Option<bool>,
+    /// Case-insensitive substring match on description/merchant/notes.
+    pub search: Option<String>,
+    /// Whose transactions to show: `joint`, or a household member's id. Matches on the
+    /// *effective* attribution — a transaction's own override, or its account's owner.
+    pub attributed_to: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+impl TryFrom<TxQueryParams> for TxQuery {
+    type Error = AppError;
+
+    fn try_from(q: TxQueryParams) -> Result<Self, Self::Error> {
+        Ok(TxQuery {
+            attributed_to: q
+                .attributed_to
+                .as_deref()
+                .map(str::parse::<Ownership>)
+                .transpose()
+                .map_err(AppError::bad_request)?,
+            account_id: q.account_id,
+            category_id: q.category_id,
+            from: q.from,
+            to: q.to,
+            include_one_off: q.include_one_off,
+            search: q.search,
+            limit: q.limit,
+            offset: q.offset,
+        })
+    }
+}
 
 // OTEL span names for this module's handlers.
 const TRANSACTIONS_LIST: &str = "transactions.list";
@@ -24,8 +74,8 @@ const TRANSACTIONS_UNLINK: &str = "transactions.unlink";
 const TRANSACTIONS_CREATE_TRANSFER: &str = "transactions.create_transfer";
 
 /// List transactions, most recent first, with optional filters.
-#[utoipa::path(get, path = "/api/transactions", tag = "transactions", params(TxQuery),
-    responses((status = 200, body = [Transaction])))]
+#[utoipa::path(get, path = "/api/transactions", tag = "transactions", params(TxQueryParams),
+    responses((status = 200, body = [Transaction]), (status = 400, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = TRANSACTIONS_LIST,
     level = "debug",
@@ -36,9 +86,9 @@ const TRANSACTIONS_CREATE_TRANSFER: &str = "transactions.create_transfer";
 )]
 pub async fn list(
     State(st): State<AppState>,
-    Query(q): Query<TxQuery>,
+    Query(q): Query<TxQueryParams>,
 ) -> AppResult<Json<Vec<Transaction>>> {
-    Ok(Json(st.transactions.list(q).await?))
+    Ok(Json(st.transactions.list(q.try_into()?).await?))
 }
 
 /// Fetch one transaction.

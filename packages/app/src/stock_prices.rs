@@ -150,7 +150,7 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::ports::StockPriceQuote;
-    use sure_core::Account;
+    use sure_core::{Account, Ownership};
 
     use super::*;
     use crate::ports::SharesTicker;
@@ -301,6 +301,12 @@ mod tests {
         }
         async fn set_secured_by(&self, _id: i64, _target: Option<i64>) -> AppResult<Account> {
             unreachable!("StockPriceTask never mutates account metadata")
+        }
+        async fn set_ownership(&self, _id: i64, _ownership: Ownership) -> AppResult<Account> {
+            unreachable!("StockPriceTask never attributes accounts")
+        }
+        async fn set_ownership_bulk(&self, _ids: &[i64], _ownership: Ownership) -> AppResult<u64> {
+            unreachable!("StockPriceTask never attributes accounts")
         }
         async fn list_shares_tickers(&self) -> AppResult<Vec<SharesTicker>> {
             Ok(self.shares.clone())

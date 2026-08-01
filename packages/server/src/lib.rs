@@ -73,6 +73,7 @@ fn build_state(
         transactions: store.clone(),
         categories: store.clone(),
         merchants: store.clone(),
+        people: store.clone(),
         currencies: store.clone(),
         settings: store.clone(),
         valuations: store.clone(),

@@ -19,6 +19,9 @@ function saveBody(
     sort_order: 0,
     opening_balance_minor: 0,
     opening_balance_date: "2020-01-01",
+    // Every account names an owner; these specs are about metadata, and joint needs no
+    // person to exist.
+    ownership: { kind: "joint" },
     metadata: metadata as Schemas["AccountMetadata"],
     ...overrides,
   };
@@ -308,6 +311,7 @@ test("metadata whose profile does not match the kind is rejected", async ({ api 
       currency_code: "NZD",
       archived: false,
       sort_order: 0,
+      ownership: { kind: "joint" },
       metadata: { profile: "vehicle", make: "Toyota" } as Schemas["AccountMetadata"],
     },
   });
@@ -345,6 +349,7 @@ test("updating an account changes its typed metadata", async ({ api }) => {
       currency_code: "NZD",
       archived: false,
       sort_order: 0,
+      ownership: { kind: "joint" },
       metadata: {
         profile: "vehicle",
         make: "Toyota",
@@ -710,6 +715,7 @@ test("an account a provider linked without the required fields still reads back"
         currency_code: "NZD",
         archived: false,
         sort_order: 0,
+        ownership: { kind: "joint" },
       },
     },
   });
@@ -771,6 +777,7 @@ test("linking a mortgage still demands its amortisation terms", async ({ api }) 
           currency_code: "NZD",
           archived: false,
           sort_order: 0,
+          ownership: { kind: "joint" },
           ...(metadata ? { metadata } : {}),
         },
       },

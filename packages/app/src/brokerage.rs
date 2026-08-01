@@ -377,6 +377,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
+    use sure_core::Ownership;
+
     use crate::ports::StockPriceQuote;
     use async_trait::async_trait;
     use rust_decimal::Decimal;
@@ -405,6 +407,7 @@ mod tests {
             secured_by_account_id: None,
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
             updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+            ownership: Ownership::Joint,
         }
     }
 
@@ -430,6 +433,12 @@ mod tests {
         }
         async fn set_secured_by(&self, _id: i64, _target: Option<i64>) -> AppResult<Account> {
             unreachable!("BrokerageService never mutates account metadata")
+        }
+        async fn set_ownership(&self, _id: i64, _ownership: Ownership) -> AppResult<Account> {
+            unreachable!("BrokerageService never attributes accounts")
+        }
+        async fn set_ownership_bulk(&self, _ids: &[i64], _ownership: Ownership) -> AppResult<u64> {
+            unreachable!("BrokerageService never attributes accounts")
         }
         async fn list_shares_tickers(&self) -> AppResult<Vec<SharesTicker>> {
             unreachable!("BrokerageService never lists global tickers")

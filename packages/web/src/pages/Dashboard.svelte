@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, colorFor, type Schemas } from "../lib/api";
-  import { filters, activeRange } from "../lib/state.svelte";
+  import { filters, activeRange, attributionParam } from "../lib/state.svelte";
   import { navigate } from "../lib/router.svelte";
   import { Tween } from "svelte/motion";
   import { cubicOut } from "svelte/easing";
@@ -10,7 +10,8 @@
   import Sankey from "../lib/charts/Sankey.svelte";
   import WeightBar from "../lib/charts/WeightBar.svelte";
   import { balances, refresh as refreshBalances } from "../lib/balances.svelte";
-  import { groupByKind } from "../lib/balanceGroups";
+  import { groupByKind, groupByOwner } from "../lib/balanceGroups";
+  import { people } from "../lib/people.svelte";
   import Icon from "../lib/Icon.svelte";
 
   let nw = $state<Schemas["NetWorthSeries"] | null>(null);
@@ -34,14 +35,24 @@
     hoverIndex = null;
     const { from, to } = activeRange();
     const interval = intervalFor(from, to);
+    // Whose money these charts describe. Net worth filters *accounts* by owner; the
+    // category/flow reports filter *transactions* by effective attribution — see the
+    // domain query types for why those differ.
+    const attributed_to = attributionParam();
     try {
       const [a, b, s] = await Promise.all([
-        api.GET("/api/reports/net-worth", { params: { query: { from, to, interval } } }),
+        api.GET("/api/reports/net-worth", {
+          params: { query: { from, to, interval, attributed_to } },
+        }),
         api.GET("/api/reports/category-breakdown", {
-          params: { query: { from, to, include_one_off: filters.includeOneOff } },
+          params: {
+            query: { from, to, include_one_off: filters.includeOneOff, attributed_to },
+          },
         }),
         api.GET("/api/reports/sankey", {
-          params: { query: { from, to, include_one_off: filters.includeOneOff } },
+          params: {
+            query: { from, to, include_one_off: filters.includeOneOff, attributed_to },
+          },
         }),
       ]);
       nw = a.data ?? null;
@@ -60,6 +71,7 @@
     filters.range;
     filters.includeOneOff;
     filters.custom;
+    filters.attributedTo;
     load();
   });
 
@@ -77,6 +89,14 @@
   }
   const assetsGrouped = $derived(groupByKind(balances.data?.accounts ?? [], "assets"));
   const liabilitiesGrouped = $derived(groupByKind(balances.data?.accounts ?? [], "debts"));
+
+  /**
+   * Net worth split by owner. Account-level, so it comes off the same balances response the
+   * cards above use — and it is deliberately *not* driven by the header's "whose money"
+   * filter: this card's whole job is the side-by-side comparison, which filtering to one
+   * person would collapse.
+   */
+  const byOwner = $derived(groupByOwner(balances.data?.accounts ?? [], "all"));
   const investmentAccounts = $derived(
     (balances.data?.accounts ?? []).filter((a) => a.class === "investment")
   );
@@ -302,6 +322,34 @@
     </section>
   {/if}
 
+  {#if balances.data && people.list.length > 1 && byOwner.groups.length > 1}
+    <section class="card">
+      <div class="card-title">
+        <h2>Net worth by person</h2>
+        <span class="muted small tabular">
+          {formatMoney(byOwner.totalMinor, balances.data.currency)}
+        </span>
+      </div>
+      <div class="owner-cards">
+        {#each byOwner.groups as g (g.key)}
+          <div class="owner-card" style={g.color ? `--owner:${g.color}` : undefined}>
+            <span class="owner-name">{g.label}</span>
+            <span class="owner-total tabular" class:neg={g.totalMinor < 0}>
+              {formatMoney(g.totalMinor, balances.data.currency)}
+            </span>
+            <span class="muted small">
+              {g.accounts.length} account{g.accounts.length === 1 ? "" : "s"}
+            </span>
+          </div>
+        {/each}
+      </div>
+      <p class="muted small" style="margin:10px 2px 0">
+        Joint accounts are their own column rather than split in half — nothing in the data
+        says what the split is.
+      </p>
+    </section>
+  {/if}
+
   {#if balances.data && (assetsGrouped.groups.length || liabilitiesGrouped.groups.length)}
     <div class="grid two">
       {#each [{ title: "Assets", grouped: assetsGrouped }, { title: "Liabilities", grouped: liabilitiesGrouped }] as panel}
@@ -473,6 +521,37 @@
 {/if}
 
 <style>
+  /* One column per household member, plus joint. Wraps rather than scrolls: a household is
+     two or three people, not a table. */
+  .owner-cards {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .owner-card {
+    flex: 1 1 160px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--owner, var(--border));
+    border-radius: var(--r);
+    background: var(--surface-2);
+  }
+  .owner-name {
+    font-size: 13px;
+    font-weight: 650;
+    color: var(--owner, var(--text));
+  }
+  .owner-total {
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .owner-total.neg {
+    color: var(--negative);
+  }
+
   .cards {
     gap: 16px;
   }

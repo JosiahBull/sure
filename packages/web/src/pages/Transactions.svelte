@@ -2,9 +2,18 @@
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, formatDateLong, colorFor, type Schemas } from "../lib/api";
   import { ICONS } from "../lib/icons";
-  import { RANGES, activeRange, filters, type RangeKey } from "../lib/state.svelte";
+  import { RANGES, activeRange, attributionParam, filters, type RangeKey } from "../lib/state.svelte";
   import { router } from "../lib/router.svelte";
   import Icon from "../lib/Icon.svelte";
+  import {
+    people,
+    ensureLoaded as ensurePeopleLoaded,
+    ownershipLabel,
+    ownershipColor,
+    ownershipKey,
+    ownershipFromKey,
+    ownershipOptions,
+  } from "../lib/people.svelte";
 
   // Deep links via the hash query, read once at mount:
   //   ?tx=<id>        highlight & scroll to a transaction (from the rules audit log)
@@ -50,6 +59,13 @@
   let accountId = $state<number | "">(paramAccount ?? "");
   let categoryId = $state<number | "">(paramCategory ?? "");
   let typeFilter = $state<TypeFilter>(isTypeFilter(paramType) ? paramType : "");
+  // Whose transactions to show — an `ownershipKey` ("person:3" / "joint"), or "" for the
+  // whole household. Filtered on the server, since "effective attribution" needs the
+  // account join. Shared with the header control (and so with the dashboard), the same way
+  // the time range is: switching to one person should not silently mean something different
+  // one page over. A deep link still wins on arrival.
+  const paramOwner = params.get("owner");
+  if (paramOwner !== null) filters.attributedTo = paramOwner;
   let search = $state(paramSearch);
 
   // The list only renders in its default newest-first date order now (the reference's grouped
@@ -91,6 +107,17 @@
   });
 
   const accountName = $derived(new Map(accounts.map((a) => [a.id, a.name])));
+  const accountOwnership = $derived(new Map(accounts.map((a) => [a.id, a.ownership])));
+  /**
+   * Who a transaction belongs to: its own override, or — the usual case — its account's
+   * owner. Mirrors `sure_core::effective_ownership`; resolved here rather than sent per row
+   * because the page already holds every account.
+   */
+  function ownerOf(t: Tx): { ownership: Schemas["Ownership"]; inherited: boolean } | null {
+    const account = accountOwnership.get(t.account_id);
+    if (t.ownership) return { ownership: t.ownership, inherited: false };
+    return account ? { ownership: account, inherited: true } : null;
+  }
   const currencyOf = $derived(new Map(accounts.map((a) => [a.id, a.currency_code])));
   const categoryName = $derived(new Map(categories.map((c) => [c.id, c.name])));
   const merchantName = $derived(new Map(merchants.map((m) => [m.id, m.name])));
@@ -243,6 +270,7 @@
     if (categoryId !== "") p.set("category", String(categoryId));
     if (accountId !== "") p.set("account", String(accountId));
     if (typeFilter) p.set("type", typeFilter);
+    if (filters.attributedTo !== "") p.set("owner", filters.attributedTo);
     if (filters.custom) {
       p.set("start", filters.custom.from);
       p.set("end", filters.custom.to);
@@ -275,7 +303,7 @@
   $effect(() => {
     // Depend on the full filter/paging surface so the shareable URL tracks every change.
     page;
-    void [categoryId, accountId, typeFilter, filters.custom?.from, filters.custom?.to, search, activeTab, pageSize];
+    void [categoryId, accountId, typeFilter, filters.attributedTo, filters.custom?.from, filters.custom?.to, search, activeTab, pageSize];
     if (didInitPage) syncUrl();
   });
 
@@ -284,7 +312,7 @@
   // change here, so the current page survives it.)
   let prevFilterSig: string | null = null;
   $effect(() => {
-    const sig = `${accountId}|${categoryId}|${typeFilter}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}|${pageSize}`;
+    const sig = `${accountId}|${categoryId}|${typeFilter}|${filters.attributedTo}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}|${pageSize}`;
     if (prevFilterSig != null && sig !== prevFilterSig) {
       // The visible set changed, so a lingering selection could act on rows the user can
       // no longer see — clear it. (A same-filter reload, e.g. after a save, isn't a change.)
@@ -318,6 +346,12 @@
       chips.push({ key: "account", label: accountName.get(accountId) ?? "Account", clear: () => (accountId = "") });
     if (typeFilter)
       chips.push({ key: "type", label: typeFilter === "income" ? "Income" : "Expense", clear: () => (typeFilter = "") });
+    if (filters.attributedTo !== "")
+      chips.push({
+        key: "owner",
+        label: ownershipLabel(ownershipFromKey(filters.attributedTo)),
+        clear: () => (filters.attributedTo = ""),
+      });
     if (search.trim())
       chips.push({ key: "q", icon: "search", label: `"${search.trim()}"`, clear: () => (search = "") });
     return chips;
@@ -382,6 +416,8 @@
     const { from, to } = activeRange();
     const query: Record<string, unknown> = { from, to, include_one_off: filters.includeOneOff, limit: 2000 };
     if (accountId !== "") query.account_id = accountId;
+    const attributed_to = attributionParam();
+    if (attributed_to) query.attributed_to = attributed_to;
     // Category is filtered client-side (subtree-aware) in `sortedFiltered`, not on the server.
     const { data, error: e } = await api.GET("/api/transactions", { params: { query } });
     txns = data ?? [];
@@ -389,10 +425,13 @@
     loading = false;
   }
 
-  onMount(loadRefs);
+  onMount(async () => {
+    await Promise.all([loadRefs(), ensurePeopleLoaded()]);
+  });
   $effect(() => {
     // Category is filtered client-side, so it isn't a reload trigger.
     accountId;
+    filters.attributedTo;
     filters.includeOneOff;
     filters.range;
     filters.custom;
@@ -454,6 +493,11 @@
         notes: t.notes,
         category_id: t.category_id,
         is_one_off: t.is_one_off,
+        // Every field the row already has must be restated: this is a full-replace PUT, so
+        // anything omitted is cleared. `ownership` especially — an omitted attribution
+        // override reads as "follow the account", which would quietly undo a hand-set one
+        // every time an unrelated inline edit was made.
+        ownership: t.ownership,
         ...patch,
       },
     });
@@ -462,6 +506,10 @@
 
   const setCategory = (t: Tx, cat: number | "") =>
     saveTx(t, { category_id: cat === "" ? null : cat });
+
+  /** Attribute one transaction from its row. `inherit` drops the override. */
+  const setOwner = (t: Tx, key: string) =>
+    saveTx(t, { ownership: key === "inherit" ? null : ownershipFromKey(key) });
 
   // ---- Bulk selection & actions ----
   // Selected transaction ids. Reassigned (never mutated in place) on every change so
@@ -526,6 +574,18 @@
     e.currentTarget.value = "";
     if (v === "") return;
     bulkPatch({ merchant_id: v === "__clear__" ? null : Number(v) });
+  }
+  /**
+   * Attribute the selection. `inherit` sends an explicit `null`, which the API reads as
+   * "drop the override" — distinct from omitting the field, which leaves it untouched.
+   * Selecting a single row and using this is also how one transaction gets overridden;
+   * the row itself stays a read-only chip rather than growing a third inline picker.
+   */
+  function onBulkOwner(e: Event & { currentTarget: HTMLSelectElement }) {
+    const v = e.currentTarget.value;
+    e.currentTarget.value = "";
+    if (v === "") return;
+    bulkPatch({ ownership: v === "inherit" ? null : ownershipFromKey(v) });
   }
 </script>
 
@@ -681,6 +741,14 @@
               <option value="expense">Outgoings</option>
             </select>
           </label>
+          {#if people.list.length > 0}
+            <label class="field">Attributed to
+              <select class="select" aria-label="Filter by who it belongs to" bind:value={filters.attributedTo}>
+                <option value="">Whole household</option>
+                {#each ownershipOptions() as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
+              </select>
+            </label>
+          {/if}
         </div>
       {/if}
     </div>
@@ -796,6 +864,38 @@
               <span class="ell tx-name">{title}</span>
               {#if t.is_one_off}<span class="badge">one-off</span>{/if}
               {#if t.linked_transaction_id}<span class="badge">⇄ transfer</span>{/if}
+              {#if people.list.length > 0}
+                {@const owner = ownerOf(t)}
+                {#if owner}
+                  {@const c = ownershipColor(owner.ownership)}
+                  <!-- Faint when it simply follows the account, solid when this transaction
+                       was attributed by hand — so an override is visible at a glance. The
+                       real <select> sits transparently on top, same as the category pill. -->
+                  <span
+                    class="owner-chip"
+                    class:inherited={owner.inherited}
+                    style={c ? `--owner:${c}` : undefined}
+                    title={owner.inherited
+                      ? "Follows the account's owner — click to attribute this one differently"
+                      : `Attributed to ${ownershipLabel(owner.ownership)} on this transaction`}
+                  >
+                    {ownershipLabel(owner.ownership)}
+                    <select
+                      class="pill-select"
+                      aria-label="Attributed to"
+                      value={t.ownership ? ownershipKey(t.ownership) : "inherit"}
+                      onchange={(e) => setOwner(t, e.currentTarget.value)}
+                    >
+                      <!-- Named for what it does, not for a state: there is no
+                           "unattributed" — this hands the row back to its account. -->
+                      <option value="inherit">Follow the account</option>
+                      {#each ownershipOptions() as o (o.key)}
+                        <option value={o.key}>{o.label}</option>
+                      {/each}
+                    </select>
+                  </span>
+                {/if}
+              {/if}
             </div>
             <span class="tx-sub ell">
               {#if merchant}{merchant} • {/if}{accountName.get(t.account_id) ?? "—"}{grouped ? "" : ` · ${formatDate(t.posted_at)}`}
@@ -865,6 +965,20 @@
       <option value="__clear__">— clear —</option>
       {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
     </select>
+    {#if people.list.length > 0}
+      <select
+        class="select btn-sm"
+        aria-label="Attribute selected to"
+        onchange={onBulkOwner}
+        disabled={bulkBusy}
+      >
+        <option value="">Attribute to…</option>
+        {#each ownershipOptions() as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
+        <!-- Distinct from "not set": there is no such state. This drops the per-transaction
+             override so the rows go back to following their account. -->
+        <option value="inherit">Follow the account</option>
+      </select>
+    {/if}
     <select class="select btn-sm" aria-label="Set merchant for selected" onchange={onBulkMerchant} disabled={bulkBusy}>
       <option value="">Set merchant…</option>
       <option value="__clear__">— clear —</option>
@@ -1215,6 +1329,24 @@
   }
   .tx-row:hover {
     background: var(--hover);
+  }
+  .owner-chip {
+    position: relative;
+    flex: none;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--owner, var(--border));
+    color: var(--owner, var(--text-muted));
+    white-space: nowrap;
+  }
+  /* Inherited from the account: present, but not competing with the description. */
+  .owner-chip.inherited {
+    font-weight: 500;
+    border-style: dashed;
+    opacity: 0.72;
   }
   .tx-row.selected {
     background: color-mix(in srgb, var(--accent) 8%, transparent);

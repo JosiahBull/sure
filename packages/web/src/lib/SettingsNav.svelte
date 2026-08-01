@@ -6,6 +6,7 @@
       label: "General",
       items: [
         { path: "/settings/accounts", label: "Accounts" },
+        { path: "/settings/household", label: "Household" },
         { path: "/settings/providers", label: "Bank sync" },
         { path: "/settings/preferences", label: "Preferences" },
         { path: "/settings/appearance", label: "Appearance" },

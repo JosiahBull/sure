@@ -12,6 +12,7 @@ pub mod equity;
 pub mod forecast;
 pub mod health;
 pub mod merchants;
+pub mod people;
 pub mod providers;
 pub mod reports;
 pub mod rules;
@@ -33,6 +34,7 @@ pub fn router(limits: &Limits) -> Router<AppState> {
         .merge(settings::router())
         .merge(categories::router())
         .merge(merchants::router())
+        .merge(people::router())
         .merge(accounts::router())
         .merge(transactions::router())
         .merge(valuations::router())

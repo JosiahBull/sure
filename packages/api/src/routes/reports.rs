@@ -8,7 +8,7 @@
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use sure_core::{AccountClass, AccountKind};
+use sure_core::{AccountClass, AccountKind, Ownership};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::error::{AppError, AppResult};
@@ -34,17 +34,32 @@ pub struct ReportQuery {
     pub include_one_off: Option<bool>,
     /// Report currency; defaults to the configured base currency.
     pub currency: Option<String>,
+    /// Whose spending to report: `joint`, or a household member's id. Omitted reports the
+    /// whole household.
+    pub attributed_to: Option<String>,
 }
 
-impl From<&ReportQuery> for sure_app::reports::ReportQuery {
-    fn from(q: &ReportQuery) -> Self {
-        sure_app::reports::ReportQuery {
+impl TryFrom<&ReportQuery> for sure_app::reports::ReportQuery {
+    type Error = AppError;
+
+    fn try_from(q: &ReportQuery) -> Result<Self, Self::Error> {
+        Ok(sure_app::reports::ReportQuery {
+            attributed_to: parse_attribution(q.attributed_to.as_deref())?,
             from: q.from.clone(),
             to: q.to.clone(),
             include_one_off: q.include_one_off,
             currency: q.currency.clone(),
-        }
+        })
     }
+}
+
+/// Parse the `attributed_to` query param into the domain enum. Same rule as everywhere
+/// else this value crosses the wire: unrecognised is a 400, never a filter that quietly
+/// widens to the whole household.
+fn parse_attribution(raw: Option<&str>) -> AppResult<Option<Ownership>> {
+    raw.map(str::parse::<Ownership>)
+        .transpose()
+        .map_err(AppError::bad_request)
 }
 
 #[derive(Debug, Deserialize, IntoParams, Default)]
@@ -56,6 +71,9 @@ pub struct NetWorthQuery {
     /// 400, not a silent fall back to `month`.
     pub interval: Option<String>,
     pub currency: Option<String>,
+    /// Whose accounts to include: `joint`, or a household member's id. Omitted is the whole
+    /// household. Filters accounts, not transactions — see the domain type's doc comment.
+    pub attributed_to: Option<String>,
 }
 
 impl TryFrom<&NetWorthQuery> for sure_app::reports::NetWorthQuery {
@@ -72,6 +90,7 @@ impl TryFrom<&NetWorthQuery> for sure_app::reports::NetWorthQuery {
             .transpose()
             .map_err(|e: String| AppError::bad_request(e))?;
         Ok(sure_app::reports::NetWorthQuery {
+            attributed_to: parse_attribution(q.attributed_to.as_deref())?,
             from: q.from.clone(),
             to: q.to.clone(),
             interval,
@@ -217,11 +236,13 @@ pub struct AccountBalance {
     pub class: AccountClass,
     pub currency_code: String,
     pub value_minor: i64,
+    pub ownership: Ownership,
 }
 
 impl From<sure_app::reports::AccountBalance> for AccountBalance {
     fn from(a: sure_app::reports::AccountBalance) -> Self {
         AccountBalance {
+            ownership: a.ownership,
             account_id: a.account_id,
             name: a.name,
             kind: a.kind,
@@ -341,7 +362,10 @@ pub async fn category_breakdown(
     Query(q): Query<ReportQuery>,
 ) -> AppResult<Json<CategoryBreakdown>> {
     Ok(Json(
-        st.reports.category_breakdown(&(&q).into()).await?.into(),
+        st.reports
+            .category_breakdown(&(&q).try_into()?)
+            .await?
+            .into(),
     ))
 }
 
@@ -360,7 +384,7 @@ pub async fn sankey(
     State(st): State<AppState>,
     Query(q): Query<ReportQuery>,
 ) -> AppResult<Json<SankeyGraph>> {
-    Ok(Json(st.reports.sankey(&(&q).into()).await?.into()))
+    Ok(Json(st.reports.sankey(&(&q).try_into()?).await?.into()))
 }
 
 /// Current value of each (non-archived) account plus a base-currency total.
@@ -378,7 +402,7 @@ pub async fn balances(
     State(st): State<AppState>,
     Query(q): Query<ReportQuery>,
 ) -> AppResult<Json<BalancesReport>> {
-    Ok(Json(st.reports.balances(&(&q).into()).await?.into()))
+    Ok(Json(st.reports.balances(&(&q).try_into()?).await?.into()))
 }
 
 /// The equity position of an asset: its value, the liabilities secured against it,
@@ -400,7 +424,10 @@ pub async fn equity_position(
     Query(q): Query<ReportQuery>,
 ) -> AppResult<Json<EquityPosition>> {
     Ok(Json(
-        st.reports.equity_position(id, &(&q).into()).await?.into(),
+        st.reports
+            .equity_position(id, &(&q).try_into()?)
+            .await?
+            .into(),
     ))
 }
 

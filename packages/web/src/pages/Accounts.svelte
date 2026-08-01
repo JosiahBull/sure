@@ -15,6 +15,15 @@
   import StudentLoanPanel from "../lib/StudentLoanPanel.svelte";
   import { navigate } from "../lib/router.svelte";
   import { balances, refresh as refreshBalances } from "../lib/balances.svelte";
+  import {
+    people,
+    refresh as refreshPeople,
+    ownershipLabel,
+    ownershipColor,
+    ownershipOptions,
+    ownershipFromKey,
+    placeholders,
+  } from "../lib/people.svelte";
 
   let currencies = $state<Schemas["Currency"][]>([]);
   let accounts = $state<Schemas["Account"][]>([]);
@@ -37,8 +46,9 @@
 
   async function load() {
     loading = true;
-    const [, c, a] = await Promise.all([
+    const [, , c, a] = await Promise.all([
       refreshBalances(),
+      refreshPeople(),
       api.GET("/api/currencies", {}),
       api.GET("/api/accounts", {}),
     ]);
@@ -47,6 +57,38 @@
     loading = false;
   }
   onMount(load);
+
+  // Accounts predating the household feature were handed to a placeholder person, because the
+  // migration couldn't know whose they were and every account has to name someone. This is the
+  // prompt to resolve that; it disappears once the placeholder owns nothing (or is renamed,
+  // which is the other way of answering — "they were all mine").
+  const placeholderIds = $derived(new Set(placeholders().map((p) => p.id)));
+  const placeholderOwned = $derived(
+    accounts.filter((a) => a.ownership.kind === "person" && placeholderIds.has(a.ownership.person_id)),
+  );
+  let bulkOwner = $state("");
+  let bulkBusy = $state(false);
+  let bulkError = $state<string | null>(null);
+
+  async function attributePlaceholderAccounts() {
+    if (!bulkOwner || placeholderOwned.length === 0) return;
+    bulkBusy = true;
+    bulkError = null;
+    const { error: e } = await api.POST("/api/accounts/ownership", {
+      body: {
+        account_ids: placeholderOwned.map((a) => a.id),
+        ownership: ownershipFromKey(bulkOwner),
+      },
+    });
+    bulkBusy = false;
+    if (e) {
+      bulkError =
+        (e as { error?: { message?: string } }).error?.message ?? "Couldn't attribute these accounts.";
+      return;
+    }
+    bulkOwner = "";
+    load();
+  }
 
   const inClass = (cls: string) => (balances.data?.accounts ?? []).filter((a) => a.class === cls);
 
@@ -104,6 +146,41 @@
 
 {#if error}<div class="error-banner" style="margin-bottom:12px">{error}</div>{/if}
 
+{#if placeholderOwned.length > 0}
+  <div class="attribute-banner">
+    <div class="col" style="gap:2px;min-width:0">
+      <strong class="small"
+        >{placeholderOwned.length}
+        {placeholderOwned.length === 1 ? "account is" : "accounts are"} still owned by a placeholder</strong
+      >
+      <span class="small faint">
+        Attribute them all at once here, set each one from its Edit form, or rename the
+        placeholder on the Household page if they're all one person's.
+      </span>
+    </div>
+    <div class="row" style="gap:8px;margin-left:auto;flex-wrap:wrap">
+      <select
+        class="select"
+        bind:value={bulkOwner}
+        aria-label="Attribute the placeholder's accounts to"
+      >
+        <option value="">Choose an owner…</option>
+        {#each ownershipOptions().filter((o) => !placeholderIds.has(Number(o.key.slice(7)))) as o (o.key)}
+          <option value={o.key}>{o.label}</option>
+        {/each}
+      </select>
+      <button
+        class="btn btn-primary btn-sm"
+        disabled={!bulkOwner || bulkBusy}
+        onclick={attributePlaceholderAccounts}
+      >
+        {bulkBusy ? "Saving…" : `Attribute all ${placeholderOwned.length}`}
+      </button>
+    </div>
+    {#if bulkError}<div class="error-banner" style="flex-basis:100%">{bulkError}</div>{/if}
+  </div>
+{/if}
+
 {#if showAdd}
   <AccountForm {currencies} {accounts} onsave={saved} oncancel={() => (showAdd = false)} />
 {/if}
@@ -132,6 +209,20 @@
                 <div class="row" style="gap:8px;min-width:0">
                   <span class="ell">{a.name}</span>
                   <span class="badge">{kindLabel(a.kind)}</span>
+                  {#if full && people.list.length > 0}
+                    {@const color = ownershipColor(full.ownership)}
+                    {@const isPlaceholder =
+                      full.ownership.kind === "person" && placeholderIds.has(full.ownership.person_id)}
+                    <span
+                      class="badge owner"
+                      class:placeholder={isPlaceholder}
+                      style={color && !isPlaceholder
+                        ? `border-color:${color};color:${color}`
+                        : undefined}
+                    >
+                      {ownershipLabel(full.ownership)}
+                    </span>
+                  {/if}
                 </div>
                 {#if inst || summary}
                   <div class="small faint ell">
@@ -242,6 +333,26 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .owner {
+    border: 1px solid var(--border);
+    background: transparent;
+  }
+  /* The one badge that's a to-do rather than a fact — it reads as a gap, not a label. */
+  .owner.placeholder {
+    border-style: dashed;
+    color: var(--text-muted);
+  }
+  .attribute-banner {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+    border-radius: var(--r);
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
   }
   .confirm {
     margin: 2px 2px 12px;

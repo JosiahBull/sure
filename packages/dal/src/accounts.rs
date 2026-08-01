@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use sqlx::FromRow;
 pub use sure_core::{Account, SaveAccount, SetSecuredBy};
 use sure_core::{
-    AccountClass, AccountKind, AccountMetadata, AppError, AppResult, ValidationMode,
+    AccountClass, AccountKind, AccountMetadata, AppError, AppResult, Ownership, ValidationMode,
     ValuationSource,
 };
 
@@ -38,6 +38,8 @@ pub struct AccountRow {
     pub archived: bool,
     pub sort_order: i64,
     pub secured_by_account_id: Option<i64>,
+    pub ownership: String,
+    pub person_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -54,6 +56,12 @@ impl TryFrom<AccountRow> for Account {
             .kind
             .parse()
             .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))?;
+        // Same reasoning as `kind`: the two ownership columns are only ever written
+        // together, through `Ownership::as_parts` and a trigger that refuses any other
+        // combination, so a pair that doesn't reassemble means the row came from somewhere
+        // else entirely — an error, not a value to guess at.
+        let ownership = Ownership::from_stored(&r.ownership, r.person_id)
+            .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))?;
         Ok(Account {
             class: kind.class(),
             metadata: metadata_from_stored(kind, &r.metadata),
@@ -65,6 +73,7 @@ impl TryFrom<AccountRow> for Account {
             archived: r.archived,
             sort_order: r.sort_order,
             secured_by_account_id: r.secured_by_account_id,
+            ownership,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -237,6 +246,14 @@ pub(crate) async fn validate(db: &Db, input: &SaveAccount, write: Write) -> AppR
         problems.push("institution is required".to_string());
     }
     problems.extend(opening_balance_problems(input, write));
+    // Checked here rather than left to the FK so a form that names a person who has since
+    // been deleted gets the same field-level 422 as every other bad value, alongside
+    // whatever else is wrong with the save.
+    if let Ownership::Person { person_id } = input.ownership {
+        if !crate::people::exists(db, person_id).await? {
+            problems.push(format!("person {person_id} does not exist"));
+        }
+    }
     if !problems.is_empty() {
         return Err(AppError::validation(problems.join("; ")));
     }
@@ -346,9 +363,11 @@ pub(crate) async fn insert(
     input: &SaveAccount,
     metadata: &str,
 ) -> AppResult<Account> {
+    let (ownership, person_id) = input.ownership.as_parts();
     let row = sqlx::query_as::<_, AccountRow>(
-        "INSERT INTO accounts (name, kind, currency_code, institution, metadata, archived, sort_order)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING *",
+        "INSERT INTO accounts (name, kind, currency_code, institution, metadata, archived, sort_order,
+             ownership, person_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING *",
     )
     .bind(input.name.trim())
     .bind(input.kind.as_str())
@@ -357,6 +376,8 @@ pub(crate) async fn insert(
     .bind(metadata)
     .bind(input.archived)
     .bind(input.sort_order)
+    .bind(ownership)
+    .bind(person_id)
     .fetch_one(&mut **tx)
     .await?;
     let account: Account = row.try_into()?;
@@ -502,9 +523,13 @@ pub async fn create(db: &Db, input: SaveAccount) -> AppResult<Account> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveAccount) -> AppResult<Account> {
     let metadata = validate(db, &input, Write::Update).await?;
+    // Both columns move together in one statement, so there is no window where a row has an
+    // ownership discriminant that disagrees with its person_id.
+    let (ownership, person_id) = input.ownership.as_parts();
     let row = sqlx::query_as::<_, AccountRow>(
         "UPDATE accounts SET name=?2, kind=?3, currency_code=?4, institution=?5, metadata=?6,
-            archived=?7, sort_order=?8, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            archived=?7, sort_order=?8, ownership=?9, person_id=?10,
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id=?1 RETURNING *",
     )
     .bind(id)
@@ -515,6 +540,8 @@ pub async fn update(db: &Db, id: i64, input: SaveAccount) -> AppResult<Account> 
     .bind(metadata)
     .bind(input.archived)
     .bind(input.sort_order)
+    .bind(ownership)
+    .bind(person_id)
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound("account"))?;
@@ -573,6 +600,76 @@ pub async fn set_secured_by(db: &Db, id: i64, target: Option<i64>) -> AppResult<
     .await?
     .ok_or(AppError::NotFound("account"))?;
     row.try_into()
+}
+
+/// Attribute one account to a household member (or to the household, or to nobody).
+///
+/// Separate from `update` for the same reason `set_secured_by` is: it's a single-field
+/// change the SPA makes from a row's own control, and routing it through the full-replace
+/// PUT would mean re-sending — and re-validating — an entire account to move one dropdown.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn set_ownership(db: &Db, id: i64, ownership: Ownership) -> AppResult<Account> {
+    validate_ownership(db, ownership).await?;
+    let (ownership, person_id) = ownership.as_parts();
+    let row = sqlx::query_as::<_, AccountRow>(
+        "UPDATE accounts SET ownership=?2, person_id=?3,
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id=?1 RETURNING *",
+    )
+    .bind(id)
+    .bind(ownership)
+    .bind(person_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("account"))?;
+    row.try_into()
+}
+
+/// Attribute several accounts at once, returning how many were changed.
+///
+/// This is what clears the unattributed backlog after the household feature lands: every
+/// account that predates it starts out unattributed, and assigning them one PUT at a time
+/// would be dozens of round trips. All-or-nothing — a bad id fails the whole batch rather
+/// than leaving the caller to work out which half of its selection moved.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn set_ownership_bulk(db: &Db, ids: &[i64], ownership: Ownership) -> AppResult<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    validate_ownership(db, ownership).await?;
+    let (ownership_str, person_id) = ownership.as_parts();
+
+    let mut tx = db.begin().await?;
+    let mut affected = 0;
+    for id in ids {
+        let res = sqlx::query(
+            "UPDATE accounts SET ownership=?2, person_id=?3,
+                updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE id=?1",
+        )
+        .bind(id)
+        .bind(ownership_str)
+        .bind(person_id)
+        .execute(&mut *tx)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(AppError::NotFound("account"));
+        }
+        affected += res.rows_affected();
+    }
+    tx.commit().await?;
+    Ok(affected)
+}
+
+/// The person an [`Ownership::Person`] names has to exist — checked here so the caller gets
+/// a 422 naming the person rather than an FK violation from the `accounts` constraint.
+async fn validate_ownership(db: &Db, ownership: Ownership) -> AppResult<()> {
+    match ownership {
+        Ownership::Person { person_id } if !crate::people::exists(db, person_id).await? => Err(
+            AppError::validation(format!("person {person_id} does not exist")),
+        ),
+        Ownership::Person { .. } | Ownership::Joint => Ok(()),
+    }
 }
 
 /// Update just the credit-limit hint on a depository-profile account's metadata (used by
@@ -790,6 +887,8 @@ mod tests {
             sort_order: 0,
             opening_balance_minor: needs_opening_balance.then_some(0),
             opening_balance_date: needs_opening_balance.then(|| "2020-01-01".to_string()),
+            // These tests don't care who owns the account; joint needs no person row.
+            ownership: Ownership::Joint,
         }
     }
 
@@ -797,8 +896,12 @@ mod tests {
     /// predate a required field (and provider-linked ones, which only ever went through
     /// [`ValidationMode::Linked`]) actually look on disk.
     async fn insert_legacy(db: &Db, name: &str, kind: AccountKind, metadata: &str) -> i64 {
+        // `ownership` is set even here: the schema's triggers refuse a row without an owner
+        // however it's written, which is the point of them. What this bypasses is the
+        // *metadata* validation, which is what these tests are about.
         sqlx::query_scalar::<_, i64>(
-            "INSERT INTO accounts (name, kind, currency_code, metadata) VALUES (?1,?2,'NZD',?3)
+            "INSERT INTO accounts (name, kind, currency_code, metadata, ownership)
+             VALUES (?1,?2,'NZD',?3,'joint')
              RETURNING id",
         )
         .bind(name)
@@ -1860,5 +1963,189 @@ mod tests {
         assert_eq!(tickers[0].exchange, "nasdaq");
         assert_eq!(tickers[1].ticker, "MEL");
         assert_eq!(tickers[1].exchange, "nzx");
+    }
+
+    // --- household attribution ----------------------------------------------
+
+    async fn person(db: &Db, name: &str) -> i64 {
+        crate::people::create(
+            db,
+            sure_core::SavePerson {
+                name: name.to_string(),
+                color: None,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    /// The household-required migration leaves every database with someone in it, because
+    /// an account can no longer be created without a person (or `joint`) to attribute it to.
+    #[tokio::test]
+    async fn a_fresh_database_already_has_a_placeholder_person() {
+        let db = test_db().await;
+        let household = crate::people::list(&db).await.unwrap();
+        assert_eq!(household.len(), 1);
+        assert!(household[0].placeholder, "got {:?}", household[0]);
+    }
+
+    #[tokio::test]
+    async fn a_create_can_attribute_in_the_same_request() {
+        let db = test_db().await;
+        let alex = person(&db, "Alex").await;
+        let account = create(
+            &db,
+            SaveAccount {
+                ownership: Ownership::Person { person_id: alex },
+                ..valid("Everyday", AccountKind::Bank)
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(account.ownership, Ownership::Person { person_id: alex });
+    }
+
+    #[tokio::test]
+    async fn an_update_carries_the_owner_it_is_given() {
+        let db = test_db().await;
+        let alex = person(&db, "Alex").await;
+        let account = create(
+            &db,
+            SaveAccount {
+                ownership: Ownership::Person { person_id: alex },
+                ..valid("Everyday", AccountKind::Bank)
+            },
+        )
+        .await
+        .unwrap();
+
+        let updated = update(
+            &db,
+            account.id,
+            SaveAccount {
+                ownership: Ownership::Joint,
+                opening_balance_minor: None,
+                opening_balance_date: None,
+                ..valid("Everyday", AccountKind::Bank)
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(updated.ownership, Ownership::Joint);
+        // ...and the person_id column went with it, rather than lingering under a
+        // 'joint' discriminant (which wouldn't survive `Ownership::from_stored`).
+        let person_id =
+            sqlx::query_scalar::<_, Option<i64>>("SELECT person_id FROM accounts WHERE id = ?1")
+                .bind(account.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(person_id, None);
+    }
+
+    #[tokio::test]
+    async fn set_ownership_moves_an_account_across_every_state() {
+        let db = test_db().await;
+        let alex = person(&db, "Alex").await;
+        let sam = person(&db, "Sam").await;
+        let account = create(&db, valid("Everyday", AccountKind::Bank))
+            .await
+            .unwrap();
+
+        for target in [
+            Ownership::Person { person_id: alex },
+            Ownership::Person { person_id: sam },
+            Ownership::Joint,
+        ] {
+            let updated = set_ownership(&db, account.id, target).await.unwrap();
+            assert_eq!(updated.ownership, target);
+        }
+    }
+
+    #[tokio::test]
+    async fn attributing_to_someone_who_doesnt_exist_is_a_validation_error() {
+        let db = test_db().await;
+        let account = create(&db, valid("Everyday", AccountKind::Bank))
+            .await
+            .unwrap();
+
+        let err = set_ownership(&db, account.id, Ownership::Person { person_id: 404 })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+
+        // Same check on the create path, where it's reported alongside anything else wrong.
+        let err = create(
+            &db,
+            SaveAccount {
+                ownership: Ownership::Person { person_id: 404 },
+                ..valid("Other", AccountKind::Bank)
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn bulk_attribution_is_all_or_nothing() {
+        let db = test_db().await;
+        let alex = person(&db, "Alex").await;
+        let one = create(&db, valid("Everyday", AccountKind::Bank))
+            .await
+            .unwrap();
+        let two = create(&db, valid("Savings", AccountKind::Savings))
+            .await
+            .unwrap();
+
+        let affected = set_ownership_bulk(
+            &db,
+            &[one.id, two.id],
+            Ownership::Person { person_id: alex },
+        )
+        .await
+        .unwrap();
+        assert_eq!(affected, 2);
+        assert_eq!(
+            get(&db, two.id).await.unwrap().ownership,
+            Ownership::Person { person_id: alex }
+        );
+
+        // An id that doesn't exist rolls the whole batch back — the good ids in the same
+        // request keep the owner they had, rather than half the selection moving.
+        let err = set_ownership_bulk(&db, &[one.id, 9999], Ownership::Joint)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound("account")), "got {err:?}");
+        assert_eq!(
+            get(&db, one.id).await.unwrap().ownership,
+            Ownership::Person { person_id: alex }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_person_cannot_be_deleted_while_they_still_own_an_account() {
+        let db = test_db().await;
+        let alex = person(&db, "Alex").await;
+        let account = create(
+            &db,
+            SaveAccount {
+                ownership: Ownership::Person { person_id: alex },
+                ..valid("Everyday", AccountKind::Bank)
+            },
+        )
+        .await
+        .unwrap();
+
+        let err = crate::people::delete(&db, alex).await.unwrap_err();
+        assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
+
+        set_ownership(&db, account.id, Ownership::Joint)
+            .await
+            .unwrap();
+        crate::people::delete(&db, alex).await.unwrap();
     }
 }

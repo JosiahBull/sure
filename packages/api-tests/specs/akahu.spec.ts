@@ -68,6 +68,7 @@ test("linking a discovered account creates a new local account atomically", asyn
         currency_code: "NZD",
         archived: false,
         sort_order: 0,
+        ownership: { kind: "joint" },
       },
     },
   });
@@ -94,6 +95,7 @@ test("linking triggers an immediate sync attempt rather than waiting for the nex
         currency_code: "NZD",
         archived: false,
         sort_order: 0,
+        ownership: { kind: "joint" },
       },
     },
   });
@@ -142,7 +144,14 @@ test("linking requires exactly one of new_account or existing_account_id", async
       external_id: "acc_y",
       name: "y",
       existing_account_id: acc.id,
-      new_account: { name: "z", kind: "bank", currency_code: "NZD", archived: false, sort_order: 0 },
+      new_account: {
+        name: "z",
+        kind: "bank",
+        currency_code: "NZD",
+        archived: false,
+        sort_order: 0,
+        ownership: { kind: "joint" },
+      },
     },
   });
   expect(both.response.status).toBe(422);

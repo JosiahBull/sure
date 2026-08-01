@@ -11,6 +11,12 @@
     type MetaField,
   } from "./accountMeta";
   import { providerInitials, providerLabel } from "./providerMeta";
+  import {
+    ensureLoaded as ensurePeopleLoaded,
+    ownershipOptions,
+    ownershipFromKey,
+    defaultOwnershipKey,
+  } from "./people.svelte";
   import Icon from "./Icon.svelte";
 
   let {
@@ -36,6 +42,8 @@
     kind: Schemas["AccountKind"];
     currency: string;
     institution: string;
+    /** Who the new account belongs to (an `ownershipKey`); required, like every account. */
+    owner: string;
     /** Raw metadata inputs, same shape `AccountForm` keeps and `buildMetadata` consumes. */
     meta: Record<string, string>;
   };
@@ -58,7 +66,13 @@
   function metaComplete(f: LinkFormState): boolean {
     return requiredMetaFields(f).every((field) => (f.meta[field.key] ?? "").trim() !== "");
   }
-  type GroupFormState = { target: string; name: string; currency: string; institution: string };
+  type GroupFormState = {
+    target: string;
+    name: string;
+    currency: string;
+    institution: string;
+    owner: string;
+  };
 
   let discovered = $state<Schemas["ProviderAccount"][]>([]);
   let discovering = $state(false);
@@ -76,7 +90,9 @@
   const label = $derived(providerLabel(kind.kind));
 
   // A brokerage platform (e.g. Sharesies) surfaces one upstream account per currency
-  // wallet; group them by institution and link together into a single Brokerage account.
+  // wallet; group them and link together into a single Brokerage account. Keyed by
+  // authorisation *and* institution, not institution alone: two people who each connect
+  // their own Sharesies would otherwise have every wallet merged into one account.
   const brokerageGroups = $derived.by(() => {
     const groups = new Map<
       string,
@@ -84,7 +100,7 @@
     >();
     for (const a of discovered) {
       if (a.kind_hint !== "brokerage") continue;
-      const key = a.institution ?? a.external_id;
+      const key = `${a.authorisation_id ?? ""}:${a.institution ?? a.external_id}`;
       let g = groups.get(key);
       if (!g) {
         g = { key, institution: a.institution ?? null, members: [] };
@@ -97,12 +113,101 @@
   const singleAccounts = $derived(discovered.filter((a) => a.kind_hint !== "brokerage"));
   const rowCount = $derived(brokerageGroups.length + singleAccounts.length);
 
+  /**
+   * Discovery grouped by the upstream login it came through (`authorisation_id`).
+   *
+   * This is the only thing separating one household member's accounts from another's: a
+   * feed reports no holder name, and two people banking at the same place share an
+   * institution, a kind, and often an account *name* ("Emergency Fund" twice). Grouping by
+   * login turns "29 accounts, good luck" into "these 11 are one person's".
+   */
+  type LoginGroup = {
+    key: string;
+    institutions: string[];
+    brokerage: typeof brokerageGroups;
+    singles: Schemas["ProviderAccount"][];
+    count: number;
+  };
+  const loginGroups = $derived.by<LoginGroup[]>(() => {
+    const keyOf = (a: Schemas["ProviderAccount"]) => a.authorisation_id ?? "";
+    const groups = new Map<string, LoginGroup>();
+    const groupFor = (key: string) => {
+      let g = groups.get(key);
+      if (!g) {
+        g = { key, institutions: [], brokerage: [], singles: [], count: 0 };
+        groups.set(key, g);
+      }
+      return g;
+    };
+    for (const bg of brokerageGroups) {
+      const g = groupFor(keyOf(bg.members[0]));
+      g.brokerage.push(bg);
+      g.count++;
+    }
+    for (const a of singleAccounts) {
+      const g = groupFor(keyOf(a));
+      g.singles.push(a);
+      g.count++;
+    }
+    for (const g of groups.values()) {
+      const seen = new Set<string>();
+      for (const a of [...g.singles, ...g.brokerage.flatMap((b) => b.members)]) {
+        if (a.institution && !seen.has(a.institution)) {
+          seen.add(a.institution);
+          g.institutions.push(a.institution);
+        }
+      }
+    }
+    // Biggest first: the everyday-banking login is the one you came here to link.
+    return [...groups.values()].sort((a, b) => b.count - a.count);
+  });
+  /** Whether grouping tells the user anything — one login means it's just a heading. */
+  const showLoginGroups = $derived(loginGroups.length > 1);
+
+  /**
+   * External ids of accounts the *same* real account is exposed under twice — a joint
+   * account is visible from both holders' logins, with its own nickname in each. Linking
+   * both would sync one bank account into two Sure accounts and double it in net worth,
+   * which is worth a warning rather than a discovery.
+   */
+  const sharedExternalIds = $derived.by(() => {
+    const byNumber = new Map<string, Schemas["ProviderAccount"][]>();
+    for (const a of discovered) {
+      if (!a.account_number) continue;
+      const key = `${a.institution ?? ""}:${a.account_number}`;
+      byNumber.set(key, [...(byNumber.get(key) ?? []), a]);
+    }
+    const shared = new Set<string>();
+    for (const rows of byNumber.values()) {
+      if (new Set(rows.map((r) => r.authorisation_id ?? "")).size > 1) {
+        for (const r of rows) shared.add(r.external_id);
+      }
+    }
+    return shared;
+  });
+
+  /** Apply one owner to every not-yet-linked row in a login group, in one click. */
+  function setGroupOwner(g: LoginGroup, owner: string) {
+    for (const a of g.singles) {
+      const f = linkForms[a.external_id];
+      if (f) f.owner = owner;
+    }
+    for (const bg of g.brokerage) {
+      const f = groupForms[bg.key];
+      if (f) f.owner = owner;
+    }
+    groupOwner[g.key] = owner;
+  }
+  let groupOwner = $state<Record<string, string>>({});
+
   function apiErrorMessage(e: unknown, fallback: string): string {
     return (e as { error?: { message?: string } })?.error?.message ?? fallback;
   }
 
-  onMount(() => {
+  onMount(async () => {
     if (accounts.length) pf.account_id = accounts[0].id;
+    // The roster has to be in before `discover` seeds each row's owner default.
+    await ensurePeopleLoaded();
     if (kind.supports_account_discovery) discover();
   });
 
@@ -127,6 +232,7 @@
             name: a.institution ?? a.name,
             currency: baseCurrency,
             institution: a.institution ?? "",
+            owner: defaultOwnershipKey(),
           };
         } else {
           linkForms[a.external_id] ??= {
@@ -135,6 +241,10 @@
             kind: a.kind_hint,
             currency: a.currency_code,
             institution: a.institution ?? "",
+            // Whose account this is, is the one thing a feed can never tell us — and linking a
+            // partner's newly-connected accounts is the case this whole flow exists for, so it
+            // is asked here rather than left to a follow-up edit.
+            owner: defaultOwnershipKey(),
             // The lender is the one term the feed does know.
             meta: a.institution ? { lender: a.institution } : {},
           };
@@ -163,6 +273,7 @@
               metadata: buildMetadata(f.kind, f.meta),
               archived: false,
               sort_order: 0,
+              ownership: ownershipFromKey(f.owner),
             },
           }
         : {
@@ -203,6 +314,7 @@
               institution: f.institution.trim() || null,
               archived: false,
               sort_order: 0,
+              ownership: ownershipFromKey(f.owner),
             },
           }
         : { kind: kind.kind, members, existing_account_id: Number(f.target) };
@@ -295,10 +407,38 @@
           <div class="empty">No accounts found to link.</div>
         {:else}
           <p class="hint">
-            {rowCount} account{rowCount === 1 ? "" : "s"} found. Pick one to bring into Sure.
+            {rowCount} account{rowCount === 1 ? "" : "s"} found{showLoginGroups
+              ? `, across ${loginGroups.length} logins — one group per person who authorised them`
+              : ""}. Pick one to bring into Sure.
           </p>
 
-          {#each brokerageGroups as g (g.key)}
+          {#each loginGroups as lg, i (lg.key)}
+          {#if showLoginGroups}
+            <div class="login-head">
+              <div class="col" style="gap:2px;min-width:0">
+                <span class="login-title"
+                  >{lg.institutions.join(", ") || "Connection"} · login {i + 1}</span
+                >
+                <span class="meta"
+                  >{lg.count} account{lg.count === 1 ? "" : "s"} from one login — usually one
+                  person's, apart from any shared ones flagged below</span
+                >
+              </div>
+              <label class="field group-owner">
+                Owner for all
+                <select
+                  class="select"
+                  value={groupOwner[lg.key] ?? ""}
+                  onchange={(e) => setGroupOwner(lg, (e.currentTarget as HTMLSelectElement).value)}
+                >
+                  <option value="">Set each below…</option>
+                  {#each ownershipOptions() as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
+                </select>
+              </label>
+            </div>
+          {/if}
+
+          {#each lg.brokerage as g (g.key)}
             {@const f = groupForms[g.key]}
             {@const open = openRow === g.key}
             <div class="row-card" class:open>
@@ -343,6 +483,12 @@
                           {#each currencies as c (c.code)}<option value={c.code}>{c.code}</option>{/each}
                         </select>
                       </label>
+                      <label class="field">
+                        Owner
+                        <select class="select" bind:value={f.owner}>
+                          {#each ownershipOptions() as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
+                        </select>
+                      </label>
                     {/if}
                   </div>
                   <div class="actions">
@@ -359,7 +505,7 @@
             </div>
           {/each}
 
-          {#each singleAccounts as a (a.external_id)}
+          {#each lg.singles as a (a.external_id)}
             {@const f = linkForms[a.external_id]}
             {@const open = openRow === a.external_id}
             <div class="row-card" class:open>
@@ -369,12 +515,19 @@
                   <span class="meta ell">
                     {[
                       a.institution,
+                      // The account number is what tells two "Emergency Fund"s apart.
+                      a.account_number,
                       formatMoney(a.balance_minor, a.currency_code),
                       a.supports_transactions ? null : "balance only",
                     ]
                       .filter(Boolean)
                       .join(" · ")}
                   </span>
+                  {#if sharedExternalIds.has(a.external_id)}
+                    <span class="shared-flag">
+                      Also visible from another login — the same account. Link it once.
+                    </span>
+                  {/if}
                 </span>
                 <span class="cta">{open ? "Cancel" : "Link"}</span>
               </button>
@@ -406,6 +559,12 @@
                         Currency
                         <select class="select" bind:value={f.currency}>
                           {#each currencies as c (c.code)}<option value={c.code}>{c.code}</option>{/each}
+                        </select>
+                      </label>
+                      <label class="field">
+                        Owner
+                        <select class="select" bind:value={f.owner}>
+                          {#each ownershipOptions() as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
                         </select>
                       </label>
                       {#if showsInstitution(f.kind)}
@@ -458,6 +617,7 @@
                 </div>
               {/if}
             </div>
+          {/each}
           {/each}
         {/if}
       {/if}
@@ -627,6 +787,37 @@
   .meta {
     font-size: 12px;
     color: var(--text-faint);
+  }
+  /* One band per upstream login — the only thing that separates two people's accounts. */
+  .login-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 16px 0 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    background: var(--surface-2);
+  }
+  .login-head:first-of-type {
+    margin-top: 4px;
+  }
+  .login-title {
+    font-size: 13px;
+    font-weight: 650;
+  }
+  .group-owner {
+    margin-left: auto;
+    font-size: 12px;
+    min-width: 170px;
+  }
+  /* A joint account shows up under both holders' logins; linking both would sync one bank
+     account into two, and count it twice in net worth. */
+  .shared-flag {
+    font-size: 12px;
+    color: var(--negative);
+    font-weight: 600;
   }
   .cta {
     flex: none;

@@ -3,7 +3,7 @@
 //! graphs) lives in the API crate, which calls these loaders and crunches the numbers.
 
 use sqlx::FromRow;
-use sure_core::{AccountKind, AppError, AppResult, CategoryKind};
+use sure_core::{effective_ownership, AccountKind, AppError, AppResult, CategoryKind, Ownership};
 
 use crate::Db;
 
@@ -13,6 +13,13 @@ use crate::Db;
 /// from something else entirely and deserves a real error, not a silent default.
 fn parse_kind(kind: String) -> AppResult<AccountKind> {
     kind.parse()
+        .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
+}
+
+/// Reassemble an account's stored ownership pair, with the same strictness as
+/// `sure_dal::accounts` — a pair that doesn't reassemble is a real error, not a default.
+fn parse_ownership(ownership: String, person_id: Option<i64>) -> AppResult<Ownership> {
+    Ownership::from_stored(&ownership, person_id)
         .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
 }
 
@@ -33,9 +40,32 @@ pub struct ExchangeRate {
 
 /// An account and its currency (all accounts, including archived) — for net-worth history.
 #[derive(Debug, FromRow)]
+pub struct AccountCurrencyRow {
+    pub id: i64,
+    pub currency_code: String,
+    pub ownership: String,
+    pub person_id: Option<i64>,
+}
+
+/// An account and its currency, plus who it belongs to — the net-worth series filters the
+/// account set by person before walking any ledger.
+#[derive(Debug)]
 pub struct AccountCurrency {
     pub id: i64,
     pub currency_code: String,
+    pub ownership: Ownership,
+}
+
+impl TryFrom<AccountCurrencyRow> for AccountCurrency {
+    type Error = AppError;
+
+    fn try_from(r: AccountCurrencyRow) -> AppResult<Self> {
+        Ok(AccountCurrency {
+            ownership: parse_ownership(r.ownership, r.person_id)?,
+            id: r.id,
+            currency_code: r.currency_code,
+        })
+    }
 }
 
 /// The raw row shape for [`ActiveAccount`] — `kind` as stored, before parsing.
@@ -45,6 +75,8 @@ struct ActiveAccountRow {
     name: String,
     kind: String,
     currency_code: String,
+    ownership: String,
+    person_id: Option<i64>,
 }
 
 /// A non-archived account, for the current-balances report.
@@ -54,6 +86,7 @@ pub struct ActiveAccount {
     pub name: String,
     pub kind: AccountKind,
     pub currency_code: String,
+    pub ownership: Ownership,
 }
 
 impl TryFrom<ActiveAccountRow> for ActiveAccount {
@@ -62,6 +95,7 @@ impl TryFrom<ActiveAccountRow> for ActiveAccount {
     fn try_from(r: ActiveAccountRow) -> AppResult<Self> {
         Ok(ActiveAccount {
             kind: parse_kind(r.kind)?,
+            ownership: parse_ownership(r.ownership, r.person_id)?,
             id: r.id,
             name: r.name,
             currency_code: r.currency_code,
@@ -175,6 +209,11 @@ struct SpendTransactionRow {
     is_one_off: bool,
     linked_transaction_id: Option<i64>,
     account_kind: String,
+    // The transaction's own override (both NULL when it has none) and its account's owner.
+    tx_ownership: Option<String>,
+    tx_person_id: Option<i64>,
+    account_ownership: String,
+    account_person_id: Option<i64>,
 }
 
 /// A transaction with the fields the spend reports (pie + sankey) filter and roll up.
@@ -187,14 +226,29 @@ pub struct SpendTransaction {
     pub is_one_off: bool,
     pub linked_transaction_id: Option<i64>,
     pub account_kind: AccountKind,
+    /// Who this spending belongs to, already resolved: the transaction's own override, or
+    /// its account's owner. Resolved here so every spend report filters on one field
+    /// rather than each re-deriving the rule.
+    pub attribution: Ownership,
 }
 
 impl TryFrom<SpendTransactionRow> for SpendTransaction {
     type Error = AppError;
 
     fn try_from(r: SpendTransactionRow) -> AppResult<Self> {
+        let account = parse_ownership(r.account_ownership, r.account_person_id)?;
+        let over = match (r.tx_ownership, r.tx_person_id) {
+            (None, None) => None,
+            (None, Some(_)) => {
+                return Err(AppError::Internal(anyhow::anyhow!(
+                    "transaction has a person_id but no ownership discriminant"
+                )))
+            }
+            (Some(kind), person_id) => Some(parse_ownership(kind, person_id)?),
+        };
         Ok(SpendTransaction {
             account_kind: parse_kind(r.account_kind)?,
+            attribution: effective_ownership(over, account),
             posted_at: r.posted_at,
             amount_minor: r.amount_minor,
             currency_code: r.currency_code,
@@ -228,18 +282,22 @@ pub async fn exchange_rates(db: &Db) -> AppResult<Vec<ExchangeRate>> {
 /// Every account's id + currency (net-worth history spans archived accounts too).
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn account_currencies(db: &Db) -> AppResult<Vec<AccountCurrency>> {
-    Ok(
-        sqlx::query_as::<_, AccountCurrency>("SELECT id, currency_code FROM accounts")
-            .fetch_all(db)
-            .await?,
+    sqlx::query_as::<_, AccountCurrencyRow>(
+        "SELECT id, currency_code, ownership, person_id FROM accounts",
     )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(AccountCurrency::try_from)
+    .collect()
 }
 
 /// Non-archived accounts in display order.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn active_accounts(db: &Db) -> AppResult<Vec<ActiveAccount>> {
     sqlx::query_as::<_, ActiveAccountRow>(
-        "SELECT id, name, kind, currency_code FROM accounts WHERE archived=0 ORDER BY sort_order, name",
+        "SELECT id, name, kind, currency_code, ownership, person_id
+         FROM accounts WHERE archived=0 ORDER BY sort_order, name",
     )
     .fetch_all(db)
     .await?
@@ -319,7 +377,9 @@ pub async fn categories(db: &Db) -> AppResult<Vec<Category>> {
 pub async fn spend_transactions(db: &Db) -> AppResult<Vec<SpendTransaction>> {
     sqlx::query_as::<_, SpendTransactionRow>(
         "SELECT t.posted_at, t.amount_minor, t.currency_code, t.category_id, t.is_one_off,
-                t.linked_transaction_id, a.kind AS account_kind
+                t.linked_transaction_id, a.kind AS account_kind,
+                t.ownership AS tx_ownership, t.person_id AS tx_person_id,
+                a.ownership AS account_ownership, a.person_id AS account_person_id
          FROM transactions t JOIN accounts a ON a.id = t.account_id",
     )
     .fetch_all(db)
