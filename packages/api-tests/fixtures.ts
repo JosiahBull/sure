@@ -9,7 +9,14 @@ import { fileURLToPath } from "node:url";
 import { createSureClient, type SureClient } from "../client/src/index";
 
 const here = path.dirname(fileURLToPath(import.meta.url)); // packages/api-tests
-const BIN = path.resolve(here, "..", "..", "target", "debug", "sure-api");
+const REPO_ROOT = path.resolve(here, "..", "..");
+// A detector run (`pnpm test:api:blocked`) builds into its own target dir, so the binary
+// global-setup just built is not always target/debug — see scripts/blocked.mjs.
+const TARGET_DIR = process.env.CARGO_TARGET_DIR
+  ? path.resolve(REPO_ROOT, process.env.CARGO_TARGET_DIR)
+  : path.join(REPO_ROOT, "target");
+const BIN = path.join(TARGET_DIR, "debug", "sure-api");
+const BLOCKED = Boolean(process.env.SURE_BLOCKED);
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -69,7 +76,12 @@ export async function startServer(env: Record<string, string> = {}): Promise<Sta
       SURE_ENV_FILE: "",
       DATABASE_URL: `sqlite:${path.join(dir, "test.db")}`,
       BIND_ADDR: `127.0.0.1:${port}`,
-      RUST_LOG: "error",
+      // Silent by default. Under the blocking detector the whole point is the WARN lines
+      // it emits, so let those through — plus the detector's own startup warnings, which
+      // are how a build that can't report anything says so instead of looking clean. Not a
+      // bare `warn`: that would add every unrelated warning the suite deliberately
+      // provokes, and the detector's "active" INFO line once per spawned server.
+      RUST_LOG: BLOCKED ? "error,tokio_blocked=warn,sure_api::telemetry=warn" : "error",
       // No background scheduler. Its first check runs immediately, so the provider poll
       // would record an extra "error" sync row for any enabled provider a test just
       // created — a race the provider specs lost intermittently — and the exchange-rate
@@ -77,7 +89,10 @@ export async function startServer(env: Record<string, string> = {}): Promise<Sta
       BACKGROUND_TASKS: "off",
       ...env,
     },
-    stdio: "ignore",
+    // Normally the backend's own logs are noise around a test result. Under the detector
+    // they *are* the result, so let them through (the tracing subscriber writes to stdout)
+    // — Playwright attributes the output to the test that was running.
+    stdio: BLOCKED ? ["ignore", "inherit", "inherit"] : "ignore",
   });
 
   let stopped = false;

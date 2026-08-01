@@ -15,6 +15,15 @@ path = "src/lib.rs"
 name = "gen-openapi"
 path = "src/bin/gen_openapi.rs"
 
+[features]
+# Development only. Adds `tokio-blocked`'s layer to the subscriber `init_tracing` installs,
+# so a tokio task that spends too long inside one poll — synchronous I/O or CPU-heavy work
+# in an async fn — logs a WARN naming the `spawn` callsite. `tokio/tracing` is what makes
+# tokio emit the per-task spans it measures; that also needs `--cfg tokio_unstable` at
+# build time, which the feature cannot express (see `telemetry::blocking`). Off in every
+# normal build: the layer forces span bookkeeping the release binary should not pay for.
+blocking-detector = ["dep:tokio-blocked", "tokio/tracing"]
+
 [dependencies]
 sure-core = { workspace = true, features = ["axum"] }
 sure-app = { workspace = true }
@@ -31,4 +40,5 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tokio-blocked = { workspace = true, optional = true }
 uuid = { workspace = true }

@@ -18,6 +18,11 @@ repository = ""
 
 [workspace.lints.rust]
 # (no new rustc lints yet — clippy carries this rule)
+# `tokio_unstable` is not a cargo feature: it is a `--cfg` the *build* sets (see
+# scripts/blocked.mjs), and tokio only emits the task spans the blocking detector reads
+# when it is present. Declaring it here is what lets `sure-api` say `cfg!(tokio_unstable)`
+# without tripping rustc's unexpected-cfg check under `-D warnings`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
 [workspace.lints.clippy]
 # CLAUDE.md rule 2, direct enforcement: a `_` or `variant | _` arm over an enum is a hard
@@ -93,6 +98,10 @@ anyhow = "1"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Development only, behind `sure-api`'s `blocking-detector` feature: a tracing layer that
+# times every tokio task poll and warns when one runs long enough to have blocked its
+# worker thread. Never enabled by a normal build — see the README's "Finding blocking code".
+tokio-blocked = "0.1"
 # Linux-only, and only depended on by `sure-server`: the self-sandbox it applies in `main`
 # before the tokio runtime starts. See packages/server/src/sandbox.rs.
 landlock = "0.4"

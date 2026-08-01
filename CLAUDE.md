@@ -94,6 +94,14 @@ ids, JSON blobs.
   `test:api` (`@sure/api-tests`, Playwright-driven backend e2e) then `test:web`;
   `pnpm lint:rust` is `cargo clippy --all-targets -- -D warnings`; `pnpm fmt:rust` is
   `cargo fmt --all`.
+- **Blocking-code detector** (development only): `pnpm dev:api:blocked` and
+  `pnpm test:api:blocked` build with `sure-api`'s `blocking-detector` feature *and*
+  `RUSTFLAGS="--cfg tokio_unstable"` — both are needed, the feature alone reports nothing —
+  into `target/blocked/`, which adds `tokio-blocked`'s layer to the subscriber
+  `telemetry::init_tracing` installs so a task that blocks its worker thread logs a WARN.
+  It is never on in a normal or release build. Keep the `RUST_LOG` filter attached to the
+  *output* layer rather than the registry: a registry-wide filter drops the TRACE-level
+  `runtime.spawn` spans the detector reads, and the detector then silently sees nothing.
 - **Pre-commit** (`.githooks/pre-commit`, wired by the `prepare` script): runs
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
   `pnpm test:api`, `pnpm --filter @sure/web check`. It deliberately skips the web

@@ -22,7 +22,11 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BIN = "sure-api";
+// `pnpm dev:api:blocked` runs this script through scripts/blocked.mjs, which sets
+// SURE_BLOCKED along with the RUSTFLAGS and CARGO_TARGET_DIR the detector build needs.
+const BLOCKED = Boolean(process.env.SURE_BLOCKED);
 const BUILD_ARGS = ["build", "-p", "sure-server", "--bin", BIN];
+if (BLOCKED) BUILD_ARGS.push("--features", "blocking-detector");
 // `cargo build` honours CARGO_TARGET_DIR, so finding the binary afterwards has to as well.
 const TARGET_DIR = process.env.CARGO_TARGET_DIR
   ? path.resolve(ROOT, process.env.CARGO_TARGET_DIR)

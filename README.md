@@ -143,6 +143,55 @@ load nothing (the test suites do this, so a developer's tokens can't reach them)
 themselves are listed under [Production](#production-single-binary) and in
 [docs/HTTP.md](docs/HTTP.md).
 
+### Finding blocking code
+
+Everything the backend does on a request runs on a tokio worker thread, and a poll that
+takes milliseconds instead of microseconds has stalled every other request queued behind
+it. The usual culprits are ordinary-looking synchronous calls in an `async fn`: a
+`std::fs` read, a `std::thread::sleep`, parsing a large upload, a hot loop over a report.
+
+[`tokio-blocked`](https://docs.rs/tokio-blocked) can be compiled in to catch them. It
+times every task poll and logs a WARN when one runs long:
+
+```bash
+pnpm dev:api:blocked     # the usual watch-and-reload backend, with the detector on
+pnpm test:api:blocked    # the API e2e suite against a detector build (serial, see below)
+```
+
+```
+WARN tokio_blocked::task_poll_blocked: poll_duration_ns=2227292 callsite.name="runtime.spawn"
+  callsite.target="tokio::task" callsite.file="packages/server/src/http.rs" callsite.line=140
+```
+
+Both are wrappers around [`scripts/blocked.mjs`](scripts/blocked.mjs), which builds with
+`--features blocking-detector` *and* `RUSTFLAGS="--cfg tokio_unstable"` — tokio only emits
+the per-task spans the detector measures when both are set. That RUSTFLAGS change is a
+different build fingerprint, so these builds go to `target/blocked/` rather than
+recompiling the workspace every time you switch back and forth; the first one is cold and
+takes a few minutes. Neither the feature nor the flag is ever on in a normal build: the
+detector makes the runtime carry span bookkeeping that production should not pay for.
+
+Two knobs, both read at startup and echoed on the "blocking detector active" line:
+`SURE_BLOCKED_POLL_US` (default `1000`) warns above that many microseconds in a *single*
+poll, and `SURE_BLOCKED_TOTAL_MS` (default off) warns when a task's *total* busy time
+reaches that many milliseconds — the "this task is quietly expensive" view, for once the
+per-poll warnings are dealt with. Either takes `off` to disable it.
+
+1ms is well above tokio's own 10–100µs guidance on purpose: this is an unoptimised build,
+where six requests against a fresh database produce 29 warnings at 150µs and 4 at 1ms, and
+a threshold that fires on every request is one you learn to scroll past. Lower it when
+you're hunting a specific stall.
+
+Caveats worth knowing before chasing a number. Tokio can only report the `spawn` callsite,
+not the blocking line itself, so for a wide future it tells you *that* something blocked,
+not where: every request is one task spawned in `packages/server/src/http.rs`, and all of
+startup — including migrations — is the root future in `main.rs`, so expect a burst before
+the "listening" line (a test run spawns a server per test, so `| grep http.rs` is the way
+to read one). Wrap a suspect in `tokio::spawn(...).await` to bisect. And a machine
+under load produces false positives, which is why `pnpm test:api:blocked` runs the suite
+with one worker; append `--workers=4` to trade signal for wall-clock once you know what
+you're looking at.
+
 ## Commands
 
 | Command | What it does |
@@ -150,11 +199,13 @@ themselves are listed under [Production](#production-single-binary) and in
 | `pnpm dev` | Run backend + Vite dev server together (Vite waits for the backend; both reload on save) |
 | `pnpm dev:api` | Backend only, rebuilding and restarting on every Rust/migration/`.env` change |
 | `pnpm dev:api:once` | Backend only, built and run once (`cargo run`, no watcher) |
+| `pnpm dev:api:blocked` | `pnpm dev:api` with the tokio blocking detector compiled in ([above](#finding-blocking-code)) |
 | `pnpm gen:client` | Regenerate the OpenAPI spec and the typed client |
 | `pnpm build` | Generate client, build the release backend, build the SPA |
 | `pnpm seed` | Seed a running backend with demo data |
 | `pnpm test` | API e2e tests, then the web Playwright suite |
 | `pnpm test:api` | API e2e tests (TS + Playwright, through the client) |
+| `pnpm test:api:blocked` | The same suite, serially, against a build that reports blocking code ([above](#finding-blocking-code)) |
 | `pnpm test:api:check` | Type-check the API tests against the client contract (`tsc`) |
 | `pnpm test:web:install` | One-time: install the Chromium used by the web suite |
 | `pnpm test:web` | Web Playwright suite (builds + boots + seeds automatically) |

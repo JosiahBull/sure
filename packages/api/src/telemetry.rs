@@ -67,19 +67,199 @@ const DEFAULT_FILTER: &str = "info,\
 /// [`DEFAULT_FILTER`]. Idempotent: safe to call more than once (later calls no-op).
 pub fn init_tracing() {
     use tracing_subscriber::fmt::format::FmtSpan;
-    use tracing_subscriber::{fmt, EnvFilter};
+
+    init_tracing_with(
+        tracing_subscriber::fmt::layer()
+            .with_target(true)
+            // Emit one line when a span closes. For the INFO `http.request` span this is
+            // the single per-request summary; for the DEBUG handler/DAL spans it's the
+            // timed breadcrumb trail beneath it.
+            .with_span_events(FmtSpan::CLOSE),
+    );
+}
+
+/// [`init_tracing`] with the output layer left open, so a test can install the real
+/// subscriber — same filter, same optional blocking detector — and read what it emits
+/// instead of watching it go to stdout.
+fn init_tracing_with<L>(output: L)
+where
+    L: tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
+{
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    use tracing_subscriber::EnvFilter;
 
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
 
-    let _ = fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        // Emit one line when a span closes. For the INFO `http.request` span this is the
-        // single per-request summary; for the DEBUG handler/DAL spans it's the timed
-        // breadcrumb trail beneath it.
-        .with_span_events(FmtSpan::CLOSE)
-        .try_init();
+    #[cfg(feature = "blocking-detector")]
+    let detector = blocking::Detector::from_env();
+
+    // `RUST_LOG` filters the *output* layer, not the registry. A registry-wide filter would
+    // be equivalent today, but it would also drop tokio's TRACE-level `runtime.spawn` spans
+    // before the blocking detector below ever saw them — and that is the one layer whose
+    // whole job is watching spans nobody wants printed.
+    let subscriber = tracing_subscriber::registry().with(output.with_filter(filter));
+    #[cfg(feature = "blocking-detector")]
+    let subscriber = subscriber.with(detector.layer());
+
+    let _ = subscriber.try_init();
+
+    // After `try_init`, or the announcement has no subscriber to land in.
+    #[cfg(feature = "blocking-detector")]
+    detector.announce();
+}
+
+/// The dev-only blocking-code detector.
+///
+/// [`tokio-blocked`] measures the wall-clock time a tokio task spends inside a single poll
+/// and logs a WARN — target `tokio_blocked::task_poll_blocked` — naming the `spawn`
+/// callsite when that exceeds a threshold. A poll is meant to be microseconds; anything
+/// longer is synchronous I/O or CPU-heavy work sitting in an `async fn`, holding a worker
+/// thread that the rest of the server needs.
+///
+/// Two things have to line up for it to see anything, and only one of them is a cargo
+/// feature:
+///
+/// * `--features blocking-detector` on `sure-api`, which pulls the crate in and turns on
+///   `tokio/tracing`;
+/// * `RUSTFLAGS="--cfg tokio_unstable"` on the *build*, without which tokio's task
+///   instrumentation compiles out entirely and there are no spans to measure.
+///
+/// [`Detector::announce`] says which of those is missing rather than leaving a silent
+/// no-op. `scripts/blocked.mjs` (`pnpm dev:api:blocked`, `pnpm test:api:blocked`) sets both.
+///
+/// [`tokio-blocked`]: https://docs.rs/tokio-blocked
+#[cfg(feature = "blocking-detector")]
+mod blocking {
+    use std::time::Duration;
+
+    use tracing::Metadata;
+    use tracing_subscriber::filter::filter_fn;
+    use tracing_subscriber::registry::LookupSpan;
+    use tracing_subscriber::Layer;
+
+    /// Warn above this much time in a single poll unless `SURE_BLOCKED_POLL_US` says
+    /// otherwise.
+    ///
+    /// tokio's guidance is to move anything over 10–100µs off the runtime, and
+    /// `tokio-blocked` defaults to 150µs on that basis. This is a `cargo build` with no
+    /// optimisation, though, where ordinary handler work is tens of times slower than the
+    /// release binary it stands in for: measured over startup plus six requests, 150µs
+    /// reported 29 polls — most of a request each — and 1ms reported 4, nearly all of them
+    /// the migrations. A threshold that fires on every request teaches you to scroll past
+    /// it, so the default is the one that points at something.
+    ///
+    /// Lower it towards tokio's numbers when hunting a specific stall, or when running a
+    /// `--release` build where 150µs of poll really is 150µs of production stall.
+    const DEFAULT_POLL_US: u64 = 1_000;
+
+    /// Thresholds read from the environment once, at startup.
+    pub(super) struct Detector {
+        /// Warn when one poll takes this long. `None` disables the per-poll warning.
+        poll: Option<Duration>,
+        /// Warn when a task's *total* busy time across its whole life reaches this. `None`
+        /// (the default) disables it — it is the "this task is quietly expensive" view,
+        /// useful once the per-poll warnings are dealt with.
+        total: Option<Duration>,
+        /// Env vars that were set to something unparseable, reported by [`Self::announce`].
+        /// Falling back to the default silently would leave a dev tuning a knob that isn't
+        /// connected to anything.
+        ignored: Vec<&'static str>,
+    }
+
+    impl Detector {
+        pub(super) fn from_env() -> Self {
+            let mut ignored = Vec::new();
+            let poll = threshold("SURE_BLOCKED_POLL_US", Some(DEFAULT_POLL_US), &mut ignored)
+                .map(Duration::from_micros);
+            let total =
+                threshold("SURE_BLOCKED_TOTAL_MS", None, &mut ignored).map(Duration::from_millis);
+            Self {
+                poll,
+                total,
+                ignored,
+            }
+        }
+
+        pub(super) fn layer<S>(&self) -> impl Layer<S>
+        where
+            S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+        {
+            tokio_blocked::TokioBlockedLayer::new()
+                .with_warn_busy_single_poll(self.poll)
+                .with_warn_busy_total(self.total)
+                // The detector registers *interest* in every callsite in the process, which
+                // would make the registry allocate span storage for everything the fmt
+                // layer's filter then throws away — sqlx's TRACE query spans above all.
+                // That cost lands inside the polls being measured, so narrow it to the
+                // spans it actually reads (see `tokio_blocked`'s `matches_tokio_poll`).
+                .with_filter(filter_fn(is_tokio_task_span))
+        }
+
+        /// Log what the detector will and won't do. Costs one line at startup and saves
+        /// mistaking a misconfigured detector for a clean bill of health.
+        pub(super) fn announce(self) {
+            for var in self.ignored {
+                tracing::warn!(
+                    var,
+                    "ignoring unparseable value; expected an integer or `off`"
+                );
+            }
+            if !cfg!(tokio_unstable) {
+                tracing::warn!(
+                    "blocking detector compiled in, but this binary was built without \
+                     `--cfg tokio_unstable`: tokio emits no task spans, so nothing will \
+                     ever be reported. Rebuild with RUSTFLAGS=\"--cfg tokio_unstable\" \
+                     (`pnpm dev:api:blocked` does)."
+                );
+                return;
+            }
+            match (self.poll, self.total) {
+                (None, None) => tracing::warn!(
+                    "blocking detector compiled in but both thresholds are off \
+                     (SURE_BLOCKED_POLL_US, SURE_BLOCKED_TOTAL_MS)"
+                ),
+                (poll, total) => tracing::info!(
+                    poll_threshold = ?poll,
+                    total_threshold = ?total,
+                    "blocking detector active — long polls log at WARN under \
+                     `tokio_blocked::task_poll_blocked`"
+                ),
+            }
+        }
+    }
+
+    /// Parse `name` as an integer count of the caller's unit, treating `off`/`0`/empty as
+    /// "disabled" and an unset var as `default`. Anything else is recorded in `ignored`.
+    fn threshold(
+        name: &'static str,
+        default: Option<u64>,
+        ignored: &mut Vec<&'static str>,
+    ) -> Option<u64> {
+        let Ok(raw) = std::env::var(name) else {
+            return default;
+        };
+        let raw = raw.trim();
+        if raw.is_empty() || raw.eq_ignore_ascii_case("off") {
+            return None;
+        }
+        match raw.parse::<u64>() {
+            Ok(0) => None,
+            Ok(n) => Some(n),
+            Err(_) => {
+                ignored.push(name);
+                default
+            }
+        }
+    }
+
+    /// The spans `tokio_blocked` measures: tokio's per-task span, plus the async-op spans
+    /// its resource instrumentation emits. Deliberately a superset of what the layer looks
+    /// at — a too-narrow filter here would silently blind the detector.
+    fn is_tokio_task_span(meta: &Metadata<'_>) -> bool {
+        meta.target() == "tokio::task" || meta.name().starts_with("runtime.resource")
+    }
 }
 
 /// Build the request span for a single incoming HTTP request, populated with the
@@ -246,4 +426,58 @@ fn rewrite_body(response: Response, detail: ErrorDetail) -> Response {
     // The body no longer matches whatever validator described the original.
     parts.headers.remove(header::ETAG);
     Response::from_parts(parts, axum::body::Body::from(json))
+}
+
+/// Proof that the blocking detector is actually wired into the subscriber
+/// [`init_tracing`] installs — the failure mode being a silent one (a filter in the wrong
+/// place, a missing build flag) where the server looks clean because nothing is watching.
+///
+/// Its own test binary, because it installs a *global* subscriber: the detector's warning
+/// is emitted from a tokio worker thread, which only sees a globally-installed one.
+#[cfg(all(test, feature = "blocking-detector"))]
+mod blocking_detector_tests {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use tracing::subscriber::Subscriber;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::Layer;
+
+    /// Collects the target of every event that reaches it.
+    struct Capture(Arc<Mutex<Vec<String>>>);
+
+    impl<S: Subscriber> Layer<S> for Capture {
+        fn on_event(&self, event: &tracing::Event<'_>, _cx: Context<'_, S>) {
+            self.0
+                .lock()
+                .expect("no test panics while holding this")
+                .push(event.metadata().target().to_string());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_task_that_blocks_its_worker_is_reported() {
+        // Without the cfg tokio never emits the task spans the detector reads, and there is
+        // nothing to assert. `pnpm test:api:blocked` is the run where this really executes.
+        if !cfg!(tokio_unstable) {
+            eprintln!("skipped: built without RUSTFLAGS=\"--cfg tokio_unstable\"");
+            return;
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        super::init_tracing_with(Capture(events.clone()));
+
+        // The mistake the detector exists to catch: a synchronous sleep in an async task.
+        tokio::spawn(async {
+            std::thread::sleep(Duration::from_millis(20));
+        })
+        .await
+        .expect("the task cannot panic");
+
+        let seen = events.lock().expect("the writer never panics").clone();
+        assert!(
+            seen.iter().any(|t| t == "tokio_blocked::task_poll_blocked"),
+            "a 20ms blocking poll should have been reported; saw {seen:?}"
+        );
+    }
 }
