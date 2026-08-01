@@ -4610,6 +4610,13 @@ export interface components {
              */
             interest_rate_bps?: number | null;
             rate_type?: null | components["schemas"]["RateType"];
+            /** @description ISO-8601 date the current fixed rate expires. */
+            fixed_until?: string | null;
+            /**
+             * Format: int64
+             * @description Length of the current fixed-rate period, in months.
+             */
+            fixed_term_months?: number | null;
             /**
              * Format: int64
              * @description Overall loan term, in months.
@@ -4617,8 +4624,52 @@ export interface components {
             term_months?: number | null;
             /** @description ISO-8601 date the loan started. */
             start_date?: string | null;
+            /**
+             * Format: int64
+             * @description The rate to assume once the current fixed period ends, in basis points. See
+             *     [`MortgageMeta::refix_rate_bps`].
+             */
+            refix_rate_bps?: number | null;
+            /**
+             * Format: int64
+             * @description One standard deviation of uncertainty around `refix_rate_bps`, in basis points.
+             */
+            refix_rate_uncertainty_bps?: number | null;
+            /**
+             * Format: int64
+             * @description The actual contractual repayment, in minor units per `repayment_frequency`.
+             */
+            repayment_minor?: number | null;
+            repayment_frequency?: null | components["schemas"]["RepaymentFrequency"];
             url?: string | null;
             notes?: string | null;
+        };
+        /**
+         * @description The repayment schedule a deterministic mortgage/loan is projected from, at the assumed
+         *     refix rate (not the mean of the simulated draws — the payment is convex in the rate).
+         */
+        LoanScheduleSummary: {
+            /**
+             * Format: int64
+             * @description Minor units of the account's own `currency_code`.
+             */
+            monthly_payment_minor: number;
+            /** Format: int64 */
+            current_rate_bps: number;
+            /** Format: int64 */
+            remaining_term_months: number;
+            /**
+             * Format: int64
+             * @description Months from today until the fixed rate rolls off; absent if none is modelled.
+             */
+            refix_in_months?: number | null;
+            /** Format: int64 */
+            refix_rate_bps?: number | null;
+            /**
+             * Format: int64
+             * @description One standard deviation of uncertainty on the refix rate, in basis points.
+             */
+            refix_rate_uncertainty_bps?: number | null;
         };
         /**
          * @description What kind of ledger entry a `holdings` row is. Stored as `holdings.kind` (plain `TEXT`).
@@ -4675,6 +4726,28 @@ export interface components {
             term_months?: number | null;
             /** @description ISO-8601 date the loan started (used to derive time remaining). */
             start_date?: string | null;
+            /**
+             * Format: int64
+             * @description The rate to assume once the current fixed period ends, in basis points. The
+             *     forecast draws each simulated path's post-refix rate around this, which is what
+             *     gives a fixed-rate mortgage an honest band instead of a single confident line.
+             */
+            refix_rate_bps?: number | null;
+            /**
+             * Format: int64
+             * @description One standard deviation of uncertainty around `refix_rate_bps`, in basis points
+             *     (e.g. 150 = "±1.5% would be an unremarkable miss"). Zero makes the refix a
+             *     certainty; every path then gets the same rate.
+             */
+            refix_rate_uncertainty_bps?: number | null;
+            /**
+             * Format: int64
+             * @description The actual contractual repayment, in minor units per `repayment_frequency`. Used
+             *     in preference to a payment derived from the terms, so a deliberate overpayment (or
+             *     the lender's own rounding) is projected as it really is rather than idealised.
+             */
+            repayment_minor?: number | null;
+            repayment_frequency?: null | components["schemas"]["RepaymentFrequency"];
             /**
              * Format: int64
              * @description Interest paid so far, in minor units.
@@ -4882,6 +4955,13 @@ export interface components {
          * @enum {string}
          */
         RateType: "fixed" | "floating" | "split";
+        /**
+         * @description How often a loan's contractual repayment is actually made. Weekly and fortnightly are
+         *     the NZ norm; the forecast annualises them (×52/12, ×26/12) rather than treating them as
+         *     ×4/×2 — the extra payments a year are exactly why paying weekly clears a loan sooner.
+         * @enum {string}
+         */
+        RepaymentFrequency: "weekly" | "fortnightly" | "monthly";
         ResolvedAssumption: {
             target_type: components["schemas"]["ForecastTargetType"];
             /** Format: int64 */
@@ -4902,6 +4982,9 @@ export interface components {
              *     grows forward from.
              */
             baseline_minor?: number | null;
+            schedule?: null | components["schemas"]["LoanScheduleSummary"];
+            /** @description The account's own currency, for formatting `schedule`. Absent for a category. */
+            currency_code?: string | null;
             source: components["schemas"]["AssumptionSource"];
         };
         Rule: {

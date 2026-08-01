@@ -12,7 +12,7 @@ use crate::state::AppState;
 pub use sure_core::{
     Account, AccountClass, AccountKind, AccountMetadata, AreaUnit, BrokerageMeta, CryptoMeta,
     DepositoryMeta, GenericMeta, LoanMeta, MileageUnit, MortgageMeta, PropertyMeta, RateType,
-    SaveAccount, SetSecuredBy, SharesMeta, TaxTreatment, VehicleMeta,
+    RepaymentFrequency, SaveAccount, SetSecuredBy, SharesMeta, TaxTreatment, VehicleMeta,
 };
 
 // OTEL span names for this module's handlers.

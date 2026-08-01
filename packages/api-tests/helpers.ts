@@ -22,19 +22,30 @@ const REQUIRED_METADATA: Partial<Record<AccountKind, Record<string, unknown>>> =
     country: "New Zealand",
   },
   vehicle: { profile: "vehicle", make: "Toyota", model: "RAV4", year: 2021 },
+  // A mortgage/loan carries its whole amortisation schedule: term and start date make the
+  // payoff projectable, and a fixed rate must also say what to assume once it expires.
   mortgage: {
     profile: "mortgage",
     lender: "ASB",
     original_amount_minor: 48_500_000,
     interest_rate_bps: 549,
     rate_type: "fixed",
+    fixed_until: "2027-01-11",
+    refix_rate_bps: 549,
+    refix_rate_uncertainty_bps: 150,
+    term_months: 360,
+    start_date: "2024-01-01",
   },
+  // Floating, so it needs no refix terms — the fixed case is covered by `mortgage`.
   loan: {
     profile: "loan",
     subtype: "other",
     lender: "MTF Finance",
     original_amount_minor: 1_500_000,
     interest_rate_bps: 890,
+    rate_type: "floating",
+    term_months: 60,
+    start_date: "2024-01-01",
   },
   student_loan: {
     profile: "loan",

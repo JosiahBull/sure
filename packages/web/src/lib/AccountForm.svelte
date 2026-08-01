@@ -212,7 +212,7 @@
       if (blank(openingDate)) out.push({ id: OPENING_DATE, label: "As of" });
     }
     for (const f of visible) {
-      if (isFieldRequired(f, kind) && !effective(f)) out.push({ id: f.key, label: f.label });
+      if (isFieldRequired(f, kind, raw) && !effective(f)) out.push({ id: f.key, label: f.label });
     }
     return out;
   });
@@ -343,7 +343,7 @@
 </script>
 
 {#snippet metaField(f: MetaField)}
-  {@const required = isFieldRequired(f, kind)}
+  {@const required = isFieldRequired(f, kind, raw)}
   {@const bad = invalid(f.key)}
   <label class="field">
     <span class="lbl" class:req={required}>{f.label}</span>

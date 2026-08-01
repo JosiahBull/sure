@@ -54,6 +54,34 @@ impl From<sure_app::forecast::AssumptionSource> for AssumptionSource {
     }
 }
 
+/// The repayment schedule a deterministic mortgage/loan is projected from, at the assumed
+/// refix rate (not the mean of the simulated draws — the payment is convex in the rate).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LoanScheduleSummary {
+    /// Minor units of the account's own `currency_code`.
+    pub monthly_payment_minor: i64,
+    pub current_rate_bps: i64,
+    pub remaining_term_months: i64,
+    /// Months from today until the fixed rate rolls off; absent if none is modelled.
+    pub refix_in_months: Option<i64>,
+    pub refix_rate_bps: Option<i64>,
+    /// One standard deviation of uncertainty on the refix rate, in basis points.
+    pub refix_rate_uncertainty_bps: Option<i64>,
+}
+
+impl From<sure_app::forecast::LoanScheduleSummary> for LoanScheduleSummary {
+    fn from(s: sure_app::forecast::LoanScheduleSummary) -> Self {
+        LoanScheduleSummary {
+            monthly_payment_minor: s.monthly_payment_minor,
+            current_rate_bps: s.current_rate_bps,
+            remaining_term_months: s.remaining_term_months,
+            refix_in_months: s.refix_in_months,
+            refix_rate_bps: s.refix_rate_bps,
+            refix_rate_uncertainty_bps: s.refix_rate_uncertainty_bps,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ResolvedAssumption {
     pub target_type: ForecastTargetType,
@@ -66,6 +94,10 @@ pub struct ResolvedAssumption {
     /// Only set for categories: the current fitted monthly run-rate the simulation
     /// grows forward from.
     pub baseline_minor: Option<i64>,
+    /// Only set for a mortgage/loan projected from an amortisation schedule.
+    pub schedule: Option<LoanScheduleSummary>,
+    /// The account's own currency, for formatting `schedule`. Absent for a category.
+    pub currency_code: Option<String>,
     pub source: AssumptionSource,
 }
 
@@ -79,6 +111,8 @@ impl From<sure_app::forecast::ResolvedAssumption> for ResolvedAssumption {
             annual_volatility_bps: r.annual_volatility_bps,
             dividend_yield_bps: r.dividend_yield_bps,
             baseline_minor: r.baseline_minor,
+            schedule: r.schedule.map(Into::into),
+            currency_code: r.currency_code,
             source: r.source.into(),
         }
     }

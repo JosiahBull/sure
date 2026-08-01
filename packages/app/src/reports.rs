@@ -289,10 +289,18 @@ pub(crate) fn sample_dates(from: NaiveDate, to: NaiveDate, interval: Interval) -
 /// need the opposite sign, which is what the balance reconstruction in
 /// [`account_value_at`] depends on. Both the myIR import and the balance-delta task feed
 /// this account kind, so the exclusion has to live here rather than in either of them.
+/// A plain `loan` is the same shape as a mortgage — a drawdown, then repayments that are
+/// positive on the liability — so it belongs here for the same reason. It also has to be
+/// here for the forecast to be correct: `sure_app::forecast` debits a projected loan
+/// repayment from the cash pool, which is only free of double-counting because the loan's
+/// own legs never reach a category baseline.
 pub(crate) fn is_excluded_from_spend(kind: AccountKind) -> bool {
     matches!(
         kind,
-        AccountKind::Mortgage | AccountKind::StudentLoan | AccountKind::Brokerage
+        AccountKind::Mortgage
+            | AccountKind::Loan
+            | AccountKind::StudentLoan
+            | AccountKind::Brokerage
     )
 }
 
@@ -923,6 +931,7 @@ mod tests {
     fn only_instrument_bookkeeping_kinds_are_excluded_from_spend() {
         for kind in [
             AccountKind::Mortgage,
+            AccountKind::Loan,
             AccountKind::StudentLoan,
             AccountKind::Brokerage,
         ] {
@@ -934,7 +943,8 @@ mod tests {
             AccountKind::Cash,
             AccountKind::CreditCard,
             AccountKind::RevolvingCredit,
-            AccountKind::Loan,
+            // A generic "other liability" has no instrument bookkeeping of its own — it's
+            // whatever the user says it is, so its transactions stay in the report.
             AccountKind::Liability,
             AccountKind::RealEstate,
             AccountKind::SharesNz,

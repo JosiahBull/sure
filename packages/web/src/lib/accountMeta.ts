@@ -67,7 +67,7 @@ export type MetaFieldType =
  * with the matching `Required` variant, and vice versa, or the two tables can silently
  * drift — a value the client accepts and the server 422s, or the other way round.
  */
-export type ValueRule = "amount" | "bps";
+export type ValueRule = "amount" | "bps" | "count";
 
 export interface MetaField {
   key: string;
@@ -117,6 +117,16 @@ export interface MetaField {
    * marks exist so the form can say so *before* the round trip, and must stay in step with it.
    */
   required?: boolean | string[];
+  /**
+   * Narrows {@link required} to the case where a sibling field currently holds one of
+   * these values — a field can be unanswerable rather than merely unanswered. A floating
+   * mortgage has no rate expiry and nothing to refix to, so asking for either would be
+   * asking for a number that does not exist.
+   *
+   * Mirrors the `REFIX_REQUIRED` branch of `AccountMetadata::validate_for`
+   * (packages/core/src/types.rs), which is what actually enforces it.
+   */
+  requiredWhen?: { key: string; equals: string[] };
   /**
    * How this field's *value* is checked once it is present, independent of whether it's
    * required at all (that's {@link required}/{@link isFieldRequired} — a blank value is
@@ -388,6 +398,72 @@ const REQUIRED_RATE_TYPE_FIELD: MetaField = {
   required: true,
 };
 
+/** The rate types that expire, and so need something to roll off onto. */
+const REFIXING_RATE_TYPES = ["fixed", "split"];
+
+/**
+ * What happens when a fixed rate expires — the single largest uncertainty in a long-horizon
+ * projection, and the reason the forecast can put an honest band around a mortgage instead
+ * of drawing one confident line to the end of the term.
+ *
+ * Required only for a rate type that actually expires: a floating loan has no roll-off date
+ * and nothing to refix to. Mirrors `REFIX_REQUIRED` in packages/core/src/types.rs.
+ */
+function refixFields(kind: string): MetaField[] {
+  const when = { key: "rate_type", equals: REFIXING_RATE_TYPES };
+  return [
+    {
+      key: "fixed_until",
+      label: "Fixed until",
+      type: "date",
+      required: [kind],
+      requiredWhen: when,
+    },
+    {
+      key: "refix_rate_bps",
+      label: "Assumed rate after refix (%)",
+      type: "percent",
+      placeholder: "4.49",
+      required: [kind],
+      requiredWhen: when,
+      valueRule: "bps",
+    },
+    {
+      key: "refix_rate_uncertainty_bps",
+      label: "Refix uncertainty (± %)",
+      type: "percent",
+      placeholder: "1.50",
+      required: [kind],
+      requiredWhen: when,
+      valueRule: "bps",
+    },
+  ];
+}
+
+/**
+ * The repayment as it is actually made. Optional: the forecast can derive a table payment
+ * from the terms, and does when this is blank. Recording it matters when the real payment
+ * differs from the ideal one — a deliberate overpayment, or the lender's own rounding —
+ * because then the projection follows what is really being paid.
+ */
+function repaymentFields(): MetaField[] {
+  return [
+    { key: "repayment_minor", label: "Repayment", type: "money", section: "details" },
+    {
+      key: "repayment_frequency",
+      label: "Repayment frequency",
+      type: "select",
+      options: [
+        NONE_OPTION,
+        { value: "weekly", label: "Weekly" },
+        { value: "fortnightly", label: "Fortnightly" },
+        { value: "monthly", label: "Monthly" },
+      ],
+      section: "details",
+    },
+  ];
+}
+
 /**
  * An *optional* subtype select leads with a blank option — labelled "None" to match the
  * reference's `include_blank`. `buildMetadata` drops the empty string.
@@ -509,10 +585,18 @@ export const FIELDS: Record<MetaProfile, MetaField[]> = {
       valueRule: "bps",
     },
     REQUIRED_RATE_TYPE_FIELD,
-    { key: "fixed_until", label: "Fixed until", type: "date" },
+    ...refixFields("mortgage"),
     { key: "fixed_term_months", label: "Fixed term (months)", type: "int" },
-    { key: "term_months", label: "Overall term (months)", type: "int" },
-    { key: "start_date", label: "Start date", type: "date" },
+    {
+      key: "term_months",
+      label: "Overall term (months)",
+      type: "int",
+      placeholder: "324",
+      required: true,
+      valueRule: "count",
+    },
+    { key: "start_date", label: "Start date", type: "date", required: true },
+    ...repaymentFields(),
     // Running totals are bookkeeping rather than setup, so they sit with the extras.
     {
       key: "interest_paid_minor",
@@ -548,11 +632,22 @@ export const FIELDS: Record<MetaProfile, MetaField[]> = {
       required: true,
       valueRule: "bps",
     },
-    // Unlike a mortgage's, a loan's rate type stays optional: plenty of personal lending has no
-    // meaningful answer (an interest-free family loan, a buy-now-pay-later balance).
-    RATE_TYPE_FIELD,
-    { key: "term_months", label: "Term (months)", type: "int", placeholder: "360" },
-    { key: "start_date", label: "Start date", type: "date" },
+    // Required for a `loan` but not a `student_loan`: the two share this profile, and only
+    // one of them amortises. An NZ student loan is interest-free and repaid as a percentage
+    // of income, so it has no rate type, term or schedule to give.
+    { ...REQUIRED_RATE_TYPE_FIELD, required: ["loan"] },
+    ...refixFields("loan"),
+    { key: "fixed_term_months", label: "Fixed term (months)", type: "int" },
+    {
+      key: "term_months",
+      label: "Term (months)",
+      type: "int",
+      placeholder: "360",
+      required: ["loan"],
+      valueRule: "count",
+    },
+    { key: "start_date", label: "Start date", type: "date", required: ["loan"] },
+    ...repaymentFields(),
     URL_FIELD,
     NOTES_FIELD,
   ],
@@ -641,10 +736,20 @@ export const FIELDS: Record<MetaProfile, MetaField[]> = {
  * {@link MetaField.kinds}) is never required of it: `buildMetadata` drops those, so the server
  * never sees them either.
  */
-export function isFieldRequired(f: MetaField, kind: string): boolean {
+export function isFieldRequired(
+  f: MetaField,
+  kind: string,
+  raw?: Record<string, string>
+): boolean {
   if (!f.required) return false;
   if (f.kinds && !f.kinds.includes(kind)) return false;
-  return f.required === true || f.required.includes(kind);
+  if (f.required !== true && !f.required.includes(kind)) return false;
+  if (!f.requiredWhen) return true;
+  // Without the form's current values there's no way to evaluate the condition. Answer
+  // "not required" rather than guessing: the caller that has `raw` (the save path) is the
+  // one that must not let an incomplete account through, and it always passes it.
+  if (!raw) return false;
+  return f.requiredWhen.equals.includes((raw[f.requiredWhen.key] ?? "").trim());
 }
 
 /** Every legal `<option>` value for `f`, flattening {@link MetaField.groups} if it has them. */
@@ -737,6 +842,9 @@ export function valueProblem(f: MetaField, value: string): string | null {
       return n > 0 ? null : `${f.label} must be greater than zero.`;
     case "bps":
       return n >= 0 ? null : `${f.label} cannot be negative.`;
+    // `Required::Count` — a whole count, so zero is a placeholder rather than an answer.
+    case "count":
+      return n > 0 ? null : `${f.label} must be greater than zero.`;
   }
 }
 

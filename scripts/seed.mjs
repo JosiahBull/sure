@@ -111,8 +111,14 @@ async function main() {
       rate_type: "fixed",
       fixed_until: monthsAhead(14, 1),
       fixed_term_months: 24,
+      // What to assume once that fix expires, and how unsure of it we are — this is what
+      // gives the forecast an honest band around the mortgage instead of one flat line.
+      refix_rate_bps: 649,
+      refix_rate_uncertainty_bps: 150, // ±1.5%, one standard deviation
       term_months: 360,
       start_date: monthsAgo(38, 15),
+      repayment_minor: 169_000, // $1,690/fortnight
+      repayment_frequency: "fortnightly",
       interest_paid_minor: 9_800_000, // $98,000
       capital_paid_minor: 6_500_000, // $65,000
     },
@@ -150,6 +156,8 @@ async function main() {
       lender: "MTF Finance",
       original_amount_minor: 2_500_000, // $25,000
       interest_rate_bps: 890, // 8.90%
+      // Fixed for the whole term, as car finance usually is, so there's no refix to assume.
+      rate_type: "floating",
       term_months: 60,
       start_date: monthsAgo(20, 10),
     },

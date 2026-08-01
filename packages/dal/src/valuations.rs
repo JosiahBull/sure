@@ -196,6 +196,11 @@ mod tests {
                         original_amount_minor: Some(48_500_000),
                         interest_rate_bps: Some(549),
                         rate_type: Some(sure_core::RateType::Fixed),
+                        fixed_until: Some("2027-01-11".to_string()),
+                        refix_rate_bps: Some(549),
+                        refix_rate_uncertainty_bps: Some(150),
+                        term_months: Some(360),
+                        start_date: Some("2024-01-01".to_string()),
                         ..Default::default()
                     },
                 )),

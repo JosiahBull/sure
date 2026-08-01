@@ -399,13 +399,58 @@ test("a mortgage must carry its lender, principal and rate", async ({ api }) => 
   }
 });
 
-test("a loan must carry its subtype, lender, principal and rate", async ({ api }) => {
+test("a loan must carry its subtype, lender and full amortisation terms", async ({ api }) => {
   const msg = await rejected(api, saveBody("loan", { profile: "loan" }));
-  for (const field of ["subtype", "lender", "original_amount_minor", "interest_rate_bps"]) {
+  // A `loan` is a table loan like a mortgage: the forecast projects its payoff from these
+  // rather than fitting a trend to a debt.
+  for (const field of [
+    "subtype",
+    "lender",
+    "original_amount_minor",
+    "interest_rate_bps",
+    "rate_type",
+    "term_months",
+    "start_date",
+  ]) {
     expect(msg, `should name ${field}`).toContain(field);
   }
-  // A loan's rate *type* stays optional, unlike a mortgage's.
-  expect(msg).not.toContain("rate_type");
+});
+
+test("a student loan is exempt from the terms a loan must have", async ({ api }) => {
+  // `loan` and `student_loan` share a profile and only one of them amortises: an NZ student
+  // loan is interest-free and repaid as a percentage of income, so it has no schedule.
+  const created = await api.POST("/api/accounts", {
+    body: saveBody("student_loan", {
+      profile: "loan",
+      subtype: "student",
+      lender: "Inland Revenue",
+      original_amount_minor: 3_000_000,
+      interest_rate_bps: 0,
+    }),
+  });
+  expect(created.response.status).toBe(201);
+});
+
+test("a fixed rate must say what happens when it expires", async ({ api }) => {
+  const base = {
+    profile: "mortgage",
+    lender: "ASB",
+    original_amount_minor: 48_500_000,
+    interest_rate_bps: 512,
+    term_months: 324,
+    start_date: "2025-12-11",
+  };
+
+  const msg = await rejected(api, saveBody("mortgage", { ...base, rate_type: "fixed" }));
+  for (const field of ["fixed_until", "refix_rate_bps", "refix_rate_uncertainty_bps"]) {
+    expect(msg, `should name ${field}`).toContain(field);
+  }
+
+  // A floating rate has no expiry and nothing to refix to, so it is asked for neither.
+  const floating = await api.POST("/api/accounts", {
+    body: saveBody("mortgage", { ...base, rate_type: "floating" }),
+  });
+  expect(floating.response.status).toBe(201);
 });
 
 test("an investment account must name its broker", async ({ api }) => {
@@ -651,17 +696,17 @@ test("an opening balance cannot be set when updating an account", async ({ api }
 test("an account a provider linked without the required fields still reads back", async ({
   api,
 }) => {
-  // The link path validates in `ValidationMode::Linked`: a feed can't know a mortgage's
-  // original principal (sync fills in what the upstream does report later), so linking must
-  // not demand it — and the resulting account must still be readable everywhere.
+  // The link path validates in `ValidationMode::Linked`: a feed can't know a property's
+  // address, so linking must not demand it — and the resulting account must still be
+  // readable everywhere. (A mortgage is the documented exception; see the test below.)
   const linked = await api.POST("/api/providers/link", {
     body: {
       kind: "akahu",
-      external_id: "acc_sparse_mortgage",
-      name: "Akahu — Home Loan",
+      external_id: "acc_sparse_property",
+      name: "Akahu — Family Home",
       new_account: {
-        name: "Home Loan",
-        kind: "mortgage",
+        name: "Family Home",
+        kind: "real_estate",
         currency_code: "NZD",
         archived: false,
         sort_order: 0,
@@ -674,16 +719,16 @@ test("an account a provider linked without the required fields still reads back"
     params: { path: { id: linked.data!.account_id } },
   });
   expect(response.status).toBe(200);
-  const meta = data?.metadata as Schemas["MortgageMeta"] & { profile: string };
-  expect(meta.profile).toBe("mortgage");
-  expect(meta.lender).toBeUndefined();
+  const meta = data?.metadata as Schemas["PropertyMeta"] & { profile: string };
+  expect(meta.profile).toBe("property");
+  expect(meta.city).toBeUndefined();
   expect((await api.GET("/api/accounts", {})).data?.some((a) => a.id === data!.id)).toBe(true);
 
   // Only *saving* it is blocked — the prompt to fill in the gaps.
   const incomplete = await api.PUT("/api/accounts/{id}", {
     params: { path: { id: data!.id } },
-    body: saveBody("mortgage", { profile: "mortgage" }, {
-      name: "Home Loan",
+    body: saveBody("real_estate", { profile: "property" }, {
+      name: "Family Home",
       opening_balance_minor: undefined,
       opening_balance_date: undefined,
     }),
@@ -694,17 +739,59 @@ test("an account a provider linked without the required fields still reads back"
   const saved = await api.PUT("/api/accounts/{id}", {
     params: { path: { id: data!.id } },
     body: saveBody(
-      "mortgage",
+      "real_estate",
       {
-        profile: "mortgage",
-        lender: "ANZ",
-        original_amount_minor: 58_500_000,
-        interest_rate_bps: 649,
-        rate_type: "fixed",
+        profile: "property",
+        subtype: "single_family_home",
+        address_line1: "12 Rimu Street",
+        city: "Wellington",
+        country: "New Zealand",
       },
-      { name: "Home Loan", opening_balance_minor: undefined, opening_balance_date: undefined }
+      { name: "Family Home", opening_balance_minor: undefined, opening_balance_date: undefined }
     ),
   });
   expect(saved.response.status).toBe(200);
-  expect((saved.data?.metadata as Schemas["MortgageMeta"]).lender).toBe("ANZ");
+  expect((saved.data?.metadata as Schemas["PropertyMeta"]).city).toBe("Wellington");
+});
+
+test("linking a mortgage still demands its amortisation terms", async ({ api }) => {
+  // The documented exception to `ValidationMode::Linked`. Akahu reports a mortgage's
+  // balance and essentially never its schedule, so exempting the link path would make the
+  // commonest way to create a mortgage the one that leaves it unforecastable. There is a
+  // person in the connect dialog, and it asks.
+  const link = (metadata?: Schemas["AccountMetadata"]) =>
+    api.POST("/api/providers/link", {
+      body: {
+        kind: "akahu",
+        external_id: `acc_mortgage_${metadata ? "full" : "bare"}`,
+        name: "Akahu — Home Loan",
+        new_account: {
+          name: "Home Loan",
+          kind: "mortgage",
+          currency_code: "NZD",
+          archived: false,
+          sort_order: 0,
+          ...(metadata ? { metadata } : {}),
+        },
+      },
+    });
+
+  const bare = await link();
+  expect(bare.response.status).toBe(422);
+  for (const field of ["original_amount_minor", "interest_rate_bps", "rate_type", "term_months"]) {
+    expect(JSON.stringify(bare.error), `should name ${field}`).toContain(field);
+  }
+
+  const complete = await link({
+    profile: "mortgage",
+    original_amount_minor: 48_500_000,
+    interest_rate_bps: 512,
+    rate_type: "fixed",
+    fixed_until: "2027-01-11",
+    refix_rate_bps: 512,
+    refix_rate_uncertainty_bps: 150,
+    term_months: 324,
+    start_date: "2025-12-11",
+  });
+  expect(complete.response.status).toBe(201);
 });

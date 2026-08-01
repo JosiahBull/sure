@@ -31,7 +31,8 @@ use rand_distr::{Distribution, Normal};
 
 use sure_core::{
     AccountClass, AccountKind, AccountMetadata, AppResult, CategoryKind, CronKind,
-    ForecastAssumption, ForecastEvent, ForecastEventKind, ForecastTargetType, Interval,
+    ForecastAssumption, ForecastEvent, ForecastEventKind, ForecastTargetType, Interval, RateType,
+    RepaymentFrequency,
 };
 
 use crate::fx::Fx;
@@ -43,6 +44,38 @@ use crate::reports;
 const MIN_HISTORY_DAYS: i64 = 60;
 /// How many trailing complete months of category totals feed the trend regression.
 const CATEGORY_TREND_MONTHS: i64 = 24;
+/// How far back an account's value series is sampled when deriving its growth rate. Long
+/// enough to be stable across a lumpy year, short enough that a structural break — leaving
+/// study, finishing a renovation, changing how an account is used — drops out of the fit
+/// instead of being averaged against the present.
+const ACCOUNT_TREND_MONTHS: i64 = 36;
+/// Months a category's history must span before a *direction* is read into it. Below this
+/// its run-rate is held flat: the baseline is still projected, but the slope of three or
+/// four lumpy months is noise, and compounding it over a multi-year horizon is how a
+/// category that saw one large month comes to dominate the whole forecast.
+const MIN_CATEGORY_TREND_MONTHS: i64 = 6;
+/// …and how many of those months must contain actual spend. A series that is mostly zeros
+/// with a couple of spikes has a steep OLS slope that describes the spikes' placement, not
+/// a trend in the household's behaviour.
+const MIN_CATEGORY_ACTIVE_MONTHS: i64 = 4;
+/// How far a fitted slope must stand out from the scatter around it before it is treated
+/// as a direction rather than an accident of which months happened to be expensive.
+/// Roughly the 95% two-tailed threshold for the 6-24 month windows this fits over.
+const MIN_TREND_T_STATISTIC: f64 = 2.0;
+/// Ceiling on a *derived* category growth rate, ±25%/yr. Household spending on a category
+/// does not compound at triple digits; a fit that says so is over-fitting a short series.
+/// An explicit override is deliberately not clamped — that's the user asserting something.
+const MAX_DERIVED_CATEGORY_GROWTH_BPS: i64 = 2_500;
+/// Ceiling on a *derived* category volatility, 300%/yr.
+///
+/// This is a numerical guard, not an opinion about how lumpy spending can be: it bounds the
+/// exponent of the lognormal monthly draw so one tail sample can't produce an absurd month.
+/// Real measured values do run this high — a category paid three months in seven has a
+/// month-to-month coefficient of variation in the hundreds of percent, and that is a true
+/// description of it. It is only usable at all because the noise no longer accumulates into
+/// the run-rate (see the category step in `simulate`); while it did, anything above ~75%
+/// compounded into a meaningless spread and the ceiling had to do the model's job for it.
+const MAX_DERIVED_CATEGORY_VOL_BPS: i64 = 30_000;
 const MIN_HORIZON_MONTHS: i64 = 1;
 const MAX_HORIZON_MONTHS: i64 = 60;
 const MIN_SIMULATIONS: i64 = 100;
@@ -86,7 +119,31 @@ pub struct ResolvedAssumption {
     /// minor units) the simulation grows forward from. `None` if there's no derived
     /// trend to anchor to (an override alone doesn't imply a baseline).
     pub baseline_minor: Option<i64>,
+    /// Only set for a mortgage/loan projected from an amortisation schedule: what that
+    /// schedule actually is, so the forecast can show its working rather than an
+    /// unexplained "deterministic".
+    pub schedule: Option<LoanScheduleSummary>,
+    /// The account's own currency, so [`LoanScheduleSummary`]'s minor-unit amounts can be
+    /// formatted. `None` for a category, whose `baseline_minor` is in the base currency.
+    pub currency_code: Option<String>,
     pub source: AssumptionSource,
+}
+
+/// The repayment schedule a deterministic mortgage/loan is projected from.
+///
+/// Computed at the *stated* refix rate rather than the mean of the simulated draws: the
+/// payment is convex in the rate, so those differ slightly. Present it as "at the assumed
+/// refix rate", never as an average.
+#[derive(Debug, Clone, Copy)]
+pub struct LoanScheduleSummary {
+    /// Minor units of the account's own currency.
+    pub monthly_payment_minor: i64,
+    pub current_rate_bps: i64,
+    pub remaining_term_months: i64,
+    /// Months from today until the fixed rate rolls off; `None` if none is modelled.
+    pub refix_in_months: Option<i64>,
+    pub refix_rate_bps: Option<i64>,
+    pub refix_rate_uncertainty_bps: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -209,7 +266,17 @@ impl ForecastService {
                 continue;
             }
 
-            if amortization_terms(&a.metadata).is_some() {
+            if let Some(terms) = loan_terms(&a.metadata, today) {
+                let (current_minor, _) = reports::account_value_at(
+                    a.id,
+                    &a.currency_code,
+                    today,
+                    &tx_by_acct,
+                    &val_by_acct,
+                );
+                // The same constructor the simulation uses, at the stated refix rate — so
+                // the figure shown and the figure projected cannot drift apart.
+                let schedule = AmortSchedule::expected(&terms, current_minor as f64, today);
                 out.push(ResolvedAssumption {
                     target_type: ForecastTargetType::Account,
                     target_id: a.id,
@@ -218,6 +285,15 @@ impl ForecastService {
                     annual_volatility_bps: 0,
                     dividend_yield_bps: None,
                     baseline_minor: None,
+                    schedule: Some(LoanScheduleSummary {
+                        monthly_payment_minor: schedule.payment.round() as i64,
+                        current_rate_bps: terms.rate_bps,
+                        remaining_term_months: schedule.remaining_term,
+                        refix_in_months: terms.refix.map(|r| r.month),
+                        refix_rate_bps: terms.refix.map(|r| r.rate_bps),
+                        refix_rate_uncertainty_bps: terms.refix.map(|r| r.uncertainty_bps),
+                    }),
+                    currency_code: Some(a.currency_code.clone()),
                     source: AssumptionSource::Deterministic,
                 });
                 continue;
@@ -270,6 +346,8 @@ impl ForecastService {
                 annual_volatility_bps: vol,
                 dividend_yield_bps,
                 baseline_minor: None,
+                schedule: None,
+                currency_code: Some(a.currency_code.clone()),
                 source,
             });
         }
@@ -296,13 +374,18 @@ impl ForecastService {
             }
 
             let totals = category_monthly_totals(&spend, &cats, id, today, &fx);
-            let derived3 = if totals.len() >= 3 {
-                linear_trend_and_vol(&totals)
-            } else {
-                None
-            };
-            let derived = derived3.map(|(g, v, _)| (g, v));
-            let baseline_minor = derived3.map(|(_, _, fitted)| fx.base_minor(fitted));
+            let fit = category_fit(&totals);
+            // The baseline survives even when no trend could be fitted. Previously it came
+            // only from a successful regression, so a category with a few months of history
+            // dropped out of the simulation altogether — silently projecting *no* spending
+            // on it, which is a worse error than projecting it flat.
+            //
+            // The volatility survives too. `category_fit` reports a growth of 0 when the
+            // slope isn't distinguishable from flat, but the month-to-month scatter around
+            // that flat line is measured and real — gating it on a *trend* having been
+            // fitted would claim a category's spend is known to the cent.
+            let baseline_minor = fit.map(|f| fx.base_minor(f.baseline));
+            let derived = fit.map(|f| (f.growth_bps, f.vol_bps));
 
             let ov = overrides.get(&(ForecastTargetType::Category, id));
             let (growth, vol, source) = resolve_growth(
@@ -320,6 +403,8 @@ impl ForecastService {
                 annual_volatility_bps: vol,
                 dividend_yield_bps: None,
                 baseline_minor,
+                schedule: None,
+                currency_code: None,
                 source,
             });
         }
@@ -431,38 +516,54 @@ impl ForecastService {
                 reports::account_value_at(a.id, &a.currency_code, today, &tx_by_acct, &val_by_acct);
             let current = current_minor as f64;
 
-            let projection = if let Some((principal, rate_bps, term_months, start)) =
-                amortization_terms(&a.metadata)
-            {
-                AccountProjection::Deterministic {
-                    principal,
-                    rate_bps,
-                    term_months,
-                    elapsed_at_today: months_between(start, today),
-                }
+            let projection = if let Some(terms) = loan_terms(&a.metadata, today) {
+                AccountProjection::Deterministic(terms)
             } else {
                 let resolved = by_target.get(&(ForecastTargetType::Account, a.id));
                 let annual_growth = resolved.map(|r| r.annual_growth_bps).unwrap_or(0);
                 let annual_vol = resolved.map(|r| r.annual_volatility_bps).unwrap_or(0);
-                AccountProjection::Stochastic {
-                    monthly_log_return: annual_rate_to_monthly_log_return(annual_growth),
-                    monthly_vol: (annual_vol as f64 / 10_000.0).max(0.0) / 12f64.sqrt(),
+                let monthly_log_return = annual_rate_to_monthly_log_return(annual_growth);
+                let monthly_vol = (annual_vol as f64 / 10_000.0).max(0.0) / 12f64.sqrt();
+                if class == AccountClass::Liability {
+                    // Project a debt the same way its rate was measured. `derive_account_rate`
+                    // fits a liability with a *linear* trend (a log-return is undefined once a
+                    // balance crosses zero), so applying that fit as a compounding rate is a
+                    // different model from the one the data supported: an exponential decay
+                    // approaches zero without ever arriving, leaving a loan that is genuinely
+                    // three years from being cleared still showing a balance a decade out.
+                    // Converting the rate back into the dollars-per-month it was fitted from
+                    // keeps the two consistent, and lets the debt actually finish.
+                    AccountProjection::LinearPaydown {
+                        monthly_delta: current * (monthly_log_return.exp() - 1.0),
+                        monthly_vol_abs: current.abs() * monthly_vol,
+                    }
+                } else {
+                    AccountProjection::Stochastic {
+                        monthly_log_return,
+                        monthly_vol,
+                    }
                 }
             };
 
             // Events only apply to non-deterministic accounts for now — a fully
             // amortising mortgage/loan projects from its own terms alone.
             let (step_changes, one_offs) =
-                if matches!(projection, AccountProjection::Stochastic { .. }) {
-                    account_events(&events, a.id, today, horizon)
-                } else {
+                if matches!(projection, AccountProjection::Deterministic(_)) {
                     (Vec::new(), Vec::new())
+                } else {
+                    account_events(&events, a.id, today, horizon)
                 };
 
             account_sims.push(AccountSim {
                 currency_code: a.currency_code.clone(),
                 current,
                 projection,
+                // Exactly the kinds whose own ledger rows are kept out of the income/
+                // expense report: that exclusion is what guarantees the repayment isn't
+                // already inside a category baseline. `StudentLoan` is excluded from
+                // spend too but must not debit — see the field's doc comment.
+                repayment_debits_cash: reports::is_excluded_from_spend(a.kind)
+                    && a.kind != AccountKind::StudentLoan,
                 step_changes,
                 one_offs,
             });
@@ -492,7 +593,19 @@ impl ForecastService {
 
         let cash_start: f64 = accounts
             .iter()
-            .filter(|a| a.kind.class() == AccountClass::Cash)
+            .filter(|a| {
+                a.kind.class() == AccountClass::Cash
+                    // A card or a revolving facility is an everyday transaction account,
+                    // not a valued instrument — the same argument that keeps it out of
+                    // `account_sims` (it has no growth rate) puts it *in* the pool the
+                    // category cash flow drives. Leaving it out of both, as before, made
+                    // its balance invisible to the forecast entirely, so the projection
+                    // started above the net worth the reports show for today.
+                    || matches!(
+                        a.kind,
+                        AccountKind::CreditCard | AccountKind::RevolvingCredit
+                    )
+            })
             .map(|a| {
                 let (v, _) = reports::account_value_at(
                     a.id,
@@ -528,22 +641,35 @@ impl ForecastService {
                 }
             }
 
+            // Per-path repayment state, parallel to `acc_values` (`None` for every
+            // non-amortising account). Opening a schedule draws this path's post-refix
+            // rate, so it happens here, once per path, in `account_sims` order.
+            let mut schedules: Vec<Option<AmortSchedule>> = account_sims
+                .iter()
+                .enumerate()
+                .map(|(i, sim)| match sim.projection {
+                    AccountProjection::Deterministic(terms) => {
+                        Some(AmortSchedule::open(&terms, acc_values[i], today, &mut rng))
+                    }
+                    AccountProjection::Stochastic { .. }
+                    | AccountProjection::LinearPaydown { .. } => None,
+                })
+                .collect();
+
             for m in 1..=horizon {
+                // Base-currency major units, like `cash`.
+                let mut repayments = 0.0;
                 for (i, sim) in account_sims.iter().enumerate() {
                     match sim.projection {
-                        AccountProjection::Deterministic {
-                            principal,
-                            rate_bps,
-                            term_months,
-                            elapsed_at_today,
-                        } => {
-                            let remaining = amortized_remaining(
-                                principal,
-                                rate_bps,
-                                term_months,
-                                elapsed_at_today + m,
-                            );
-                            acc_values[i] = -remaining;
+                        AccountProjection::Deterministic(_) => {
+                            let Some(schedule) = schedules[i].as_mut() else {
+                                continue;
+                            };
+                            let paid = schedule.advance(m);
+                            acc_values[i] = schedule.signed_balance();
+                            if sim.repayment_debits_cash {
+                                repayments += to_base(&fx, paid.cash_out(), &sim.currency_code);
+                            }
                         }
                         AccountProjection::Stochastic {
                             monthly_log_return,
@@ -569,6 +695,36 @@ impl ForecastService {
                                 .sum();
                             acc_values[i] += one_off;
                         }
+                        AccountProjection::LinearPaydown {
+                            monthly_delta,
+                            monthly_vol_abs,
+                        } => {
+                            if let Some(&(_, val)) =
+                                sim.step_changes.iter().find(|&&(idx, _)| idx == m)
+                            {
+                                acc_values[i] = val;
+                            } else {
+                                let noise = if monthly_vol_abs > 0.0 {
+                                    Normal::new(0.0, monthly_vol_abs).unwrap().sample(&mut rng)
+                                } else {
+                                    0.0
+                                };
+                                acc_values[i] += monthly_delta + noise;
+                            }
+                            let one_off: f64 = sim
+                                .one_offs
+                                .iter()
+                                .filter(|&&(idx, _)| idx == m)
+                                .map(|&(_, d)| d)
+                                .sum();
+                            acc_values[i] += one_off;
+                            // Cleared. A debt paid off is paid off — it must not run past
+                            // zero into being an asset, since the assets/liabilities split
+                            // is by sign and noise alone would otherwise push it across.
+                            if acc_values[i] > 0.0 {
+                                acc_values[i] = 0.0;
+                            }
+                        }
                     }
                 }
 
@@ -579,14 +735,15 @@ impl ForecastService {
                     {
                         cat_baselines[i] = new_baseline;
                     } else {
-                        let sd = cat_baselines[i].abs() * sim.monthly_vol_fraction;
-                        let noise = if sd > 0.0 {
-                            Normal::new(0.0, sd).unwrap().sample(&mut rng)
-                        } else {
-                            0.0
-                        };
-                        cat_baselines[i] =
-                            (cat_baselines[i] * sim.monthly_log_return.exp() + noise).max(0.0);
+                        // The run-rate drifts by its trend alone. Crucially the month's
+                        // noise is *not* folded back into it: doing so made the baseline a
+                        // random walk, so one expensive January permanently raised the
+                        // projected food budget for every month after it, and the spread
+                        // compounded without bound (a ±$600k band five years out). Household
+                        // spending is lumpy but mean-reverting — you spend about the same on
+                        // food each year whichever months it lands in — so the lumpiness
+                        // belongs on the month, not on the estimate.
+                        cat_baselines[i] *= sim.monthly_log_return.exp();
                     }
                     let one_off: f64 = sim
                         .one_offs
@@ -594,14 +751,29 @@ impl ForecastService {
                         .filter(|&&(idx, _)| idx == m)
                         .map(|&(_, d)| d)
                         .sum();
-                    let contribution = cat_baselines[i] + one_off;
+                    // What this month actually happens to cost. Lognormal, scaled so its
+                    // *mean* is exactly the run-rate: spending can't go negative, and the
+                    // old `max(0.0)` clip on a symmetric draw silently inflated every lumpy
+                    // category — with noise this wide, clipping the bottom half of the
+                    // distribution overstated the mean by roughly 50%.
+                    let realised = if sim.monthly_vol_fraction > 0.0 {
+                        let sigma = sim.monthly_vol_fraction;
+                        let z = Normal::new(0.0, sigma).unwrap().sample(&mut rng);
+                        cat_baselines[i] * (z - 0.5 * sigma * sigma).exp()
+                    } else {
+                        cat_baselines[i]
+                    };
+                    let contribution = realised + one_off;
                     net_flow += if sim.is_income {
                         contribution
                     } else {
                         -contribution
                     };
                 }
-                cash += net_flow;
+                // Servicing the debt is real money leaving. Net worth therefore falls by
+                // exactly the interest each month: the principal moves from cash to the
+                // liability and nets out, the interest simply goes.
+                cash += net_flow - repayments;
 
                 let mut assets = 0.0;
                 let mut liabilities = 0.0;
@@ -657,18 +829,26 @@ async fn source_kind_is_income(svc: &ForecastService, category_id: i64) -> AppRe
 
 #[derive(Debug, Clone, Copy)]
 enum AccountProjection {
-    /// A mortgage/loan with a complete amortisation schedule: an exact function of
-    /// elapsed months, no sampling.
-    Deterministic {
-        principal: f64,
-        rate_bps: i64,
-        term_months: i64,
-        elapsed_at_today: i64,
-    },
-    /// `value *= exp(monthly_log_return + noise)` each month.
+    /// A mortgage/loan with a complete amortisation schedule. The terms are shared across
+    /// every path; the state they drive — balance, current rate, and this path's drawn
+    /// refix rate — is per-path, and lives in `simulate`'s `schedules` beside
+    /// `acc_values`.
+    Deterministic(LoanTerms),
+    /// `value *= exp(monthly_log_return + noise)` each month. Assets and investments, whose
+    /// rate is fitted as a compounding return in the first place.
     Stochastic {
         monthly_log_return: f64,
         monthly_vol: f64,
+    },
+    /// `value += monthly_delta + noise` each month, stopping at zero. A liability without a
+    /// repayment schedule of its own: its rate is fitted as a straight line, so it is
+    /// projected as one, and a debt being paid down reaches zero and stays there rather
+    /// than shrinking by a fixed percentage forever.
+    LinearPaydown {
+        /// Signed, native minor units. Positive moves a (negative) debt toward zero.
+        monthly_delta: f64,
+        /// Absolute standard deviation of the monthly move, native minor units.
+        monthly_vol_abs: f64,
     },
 }
 
@@ -676,6 +856,15 @@ struct AccountSim {
     currency_code: String,
     current: f64,
     projection: AccountProjection,
+    /// Whether this loan's repayment should be debited from the projected cash pool.
+    ///
+    /// A mortgage's legs are already outside the category cash-flow model — the account
+    /// kind is excluded from spend outright, and the bank-side legs are linked transfer
+    /// legs — so debiting the payment introduces no double count. A student loan is the
+    /// opposite case: repaid via PAYE, it is already inside the *net* salary the income
+    /// baseline is fitted to, and there is no ledger leg that could reveal the overlap.
+    /// For those, the paydown is projected but the cash side is left to the categories.
+    repayment_debits_cash: bool,
     /// `(month_index, new_value)`, native currency — a known future revaluation.
     step_changes: Vec<(i64, f64)>,
     /// `(month_index, delta)`, native currency — a one-time contribution/withdrawal.
@@ -843,22 +1032,84 @@ fn month_index(today: NaiveDate, effective: &str, horizon: i64) -> Option<i64> {
     }
 }
 
-/// The amortisation terms a mortgage/loan needs to project its exact remaining balance,
-/// or `None` if any field is unset (or unparseable) — the account then falls back to a
-/// trend/rate like a generic asset.
-fn amortization_terms(metadata: &AccountMetadata) -> Option<(f64, i64, i64, NaiveDate)> {
-    let (original, rate, term, start) = match metadata {
+/// A rate roll-off: when the current fixed period ends, and what to assume after it.
+///
+/// Only present when the metadata carries *both* an expiry and a rate to assume — an
+/// expiry with nothing to switch to is not a schedule, it's a gap.
+#[derive(Debug, Clone, Copy)]
+struct Refix {
+    /// Month index relative to today. Never 0: the projection loop runs `1..=horizon`, so
+    /// a fix expiring this month — or one whose `fixed_until` was simply never updated
+    /// after it lapsed — has to roll over at the first projected month, or it would test
+    /// equal to nothing and silently never roll at all.
+    month: i64,
+    rate_bps: i64,
+    /// One standard deviation, in bps. Zero means the refix is a certainty.
+    uncertainty_bps: i64,
+}
+
+/// The amortisation terms a mortgage/loan projects from, or `None` if the four the
+/// schedule can't do without (principal, rate, term, start) are unset or unparseable —
+/// the account then falls back to a trend/rate like a generic asset. Everything else
+/// refines the schedule rather than enabling it.
+#[derive(Debug, Clone, Copy)]
+struct LoanTerms {
+    /// Minor units, positive. Only the fallback anchor: a loan with a real balance is
+    /// projected from that instead (see [`AmortSchedule::expected`]).
+    original_principal: f64,
+    rate_bps: i64,
+    term_months: i64,
+    start: NaiveDate,
+    refix: Option<Refix>,
+    /// The recorded contractual repayment, normalised to a monthly amount in minor units.
+    monthly_repayment: Option<f64>,
+}
+
+/// A term beyond this is data entry, not a loan — and a large exponent is exactly where
+/// the payment formula overflows to `inf` and poisons the projection with `NaN`.
+/// `band_from_samples` sorts with `partial_cmp().unwrap()`, so one `NaN` is a panic on a
+/// live endpoint.
+const MAX_TERM_MONTHS: i64 = 1_200;
+/// Likewise for a rate. A borrowing rate is never negative.
+const MAX_RATE_BPS: i64 = 100_000;
+
+fn loan_terms(metadata: &AccountMetadata, today: NaiveDate) -> Option<LoanTerms> {
+    #[allow(clippy::type_complexity)]
+    let (
+        original,
+        rate,
+        term,
+        start,
+        rate_type,
+        fixed_until,
+        refix_rate,
+        refix_sd,
+        repayment,
+        frequency,
+    ) = match metadata {
         AccountMetadata::Mortgage(m) => (
             m.original_amount_minor,
             m.interest_rate_bps,
             m.term_months,
             m.start_date.as_deref(),
+            m.rate_type,
+            m.fixed_until.as_deref(),
+            m.refix_rate_bps,
+            m.refix_rate_uncertainty_bps,
+            m.repayment_minor,
+            m.repayment_frequency,
         ),
         AccountMetadata::Loan(l) => (
             l.original_amount_minor,
             l.interest_rate_bps,
             l.term_months,
             l.start_date.as_deref(),
+            l.rate_type,
+            l.fixed_until.as_deref(),
+            l.refix_rate_bps,
+            l.refix_rate_uncertainty_bps,
+            l.repayment_minor,
+            l.repayment_frequency,
         ),
         // Every other profile has no amortisation schedule at all: the caller falls back
         // to a trend/rate like a generic asset for these.
@@ -870,25 +1121,249 @@ fn amortization_terms(metadata: &AccountMetadata) -> Option<(f64, i64, i64, Naiv
         | AccountMetadata::Crypto(_)
         | AccountMetadata::Generic(_) => return None,
     };
-    let start_date = reports::parse_date(start?)?;
-    Some((original? as f64, rate?, term?, start_date))
+
+    // A floating rate has no end, so there is nothing for it to roll off onto — even if
+    // stale `fixed_until`/`refix_rate_bps` values are still sitting in the metadata from
+    // when it was fixed. This mirrors `AccountMetadata::validate_for`, which asks for the
+    // refix terms only when the rate type is one that expires.
+    let refix = (rate_type != Some(RateType::Floating))
+        .then(|| {
+            refix_rate.and_then(|rate_bps| {
+                let until = reports::parse_date(fixed_until?)?;
+                Some(Refix {
+                    month: months_between(today, until).max(1),
+                    rate_bps: rate_bps.clamp(0, MAX_RATE_BPS),
+                    uncertainty_bps: refix_sd.unwrap_or(0).clamp(0, MAX_RATE_BPS),
+                })
+            })
+        })
+        .flatten();
+
+    Some(LoanTerms {
+        original_principal: original? as f64,
+        rate_bps: rate?.clamp(0, MAX_RATE_BPS),
+        term_months: term?.clamp(1, MAX_TERM_MONTHS),
+        start: reports::parse_date(start?)?,
+        refix,
+        monthly_repayment: monthly_repayment(repayment, frequency),
+    })
+}
+
+/// A contractual repayment normalised to a monthly amount. Annualised (×52/12, ×26/12)
+/// rather than multiplied by 4 or 2: there are 52 weeks in a year, not 48, and those
+/// extra payments are precisely why repaying weekly clears a loan sooner. The sign is
+/// ignored — a repayment is an outflow however the user happened to type it.
+fn monthly_repayment(
+    amount_minor: Option<i64>,
+    frequency: Option<RepaymentFrequency>,
+) -> Option<f64> {
+    let amount = amount_minor?.abs() as f64;
+    if amount <= 0.0 {
+        return None;
+    }
+    Some(match frequency.unwrap_or(RepaymentFrequency::Monthly) {
+        RepaymentFrequency::Weekly => amount * 52.0 / 12.0,
+        RepaymentFrequency::Fortnightly => amount * 26.0 / 12.0,
+        RepaymentFrequency::Monthly => amount,
+    })
+}
+
+fn monthly_rate(annual_bps: i64) -> f64 {
+    (annual_bps.clamp(0, MAX_RATE_BPS) as f64 / 10_000.0) / 12.0
+}
+
+/// The level payment that amortises `balance` over `remaining_term` months at
+/// `monthly_rate`.
+///
+/// Written with the discount factor rather than the equivalent `B·r·g/(g−1)`: for a long
+/// term the growth factor `g` overflows to `inf` and that form yields `NaN`, whereas this
+/// one degrades to `B·r` — interest-only, which is the correct limit.
+fn table_payment(balance: f64, monthly_rate: f64, remaining_term: i64) -> f64 {
+    if balance <= 0.0 {
+        return 0.0;
+    }
+    let n = remaining_term.max(1) as f64;
+    if monthly_rate.abs() < 1e-9 {
+        return balance / n;
+    }
+    let discount = (1.0 + monthly_rate).powf(-n);
+    if !(discount.is_finite() && discount < 1.0) {
+        return balance / n; // pathological rate: straight-line beats NaN
+    }
+    balance * monthly_rate / (1.0 - discount)
+}
+
+/// What one month of a repayment actually costs, in the account's own minor units.
+///
+/// Split, because the money that leaves the household is `interest + principal` — equal
+/// to the scheduled payment every month *except* the last, where only the residual is
+/// owed. Debiting the nominal payment there would invent an outflow.
+#[derive(Debug, Clone, Copy, Default)]
+struct Repayment {
+    interest: f64,
+    principal: f64,
+}
+
+impl Repayment {
+    fn cash_out(self) -> f64 {
+        self.interest + self.principal
+    }
+}
+
+/// A loan's repayment schedule as one simulated path sees it: running state, stepped a
+/// month at a time, anchored to the balance the account actually has today.
+///
+/// Not a closed form, because the rate changes mid-flight at a refix and the payment may
+/// be one the user recorded rather than one derived from the terms.
+#[derive(Debug, Clone, Copy)]
+struct AmortSchedule {
+    /// Outstanding balance, positive minor units. Monotone non-increasing and never
+    /// negative — see [`AmortSchedule::advance`].
+    balance: f64,
+    monthly_rate: f64,
+    /// The payment charged each month at the current rate, positive minor units.
+    payment: f64,
+    /// Months of term left, floored at 1 so a stale term can't divide by zero.
+    remaining_term: i64,
+    refix_month: Option<i64>,
+    /// The rate this path switches to at `refix_month` — drawn once, per path.
+    refix_monthly_rate: f64,
+}
+
+impl AmortSchedule {
+    /// The schedule with the refix held at its stated rate: what the UI is shown, and what
+    /// a loan with no recorded uncertainty gets. The single constructor, so the projected
+    /// schedule and the displayed one cannot drift apart.
+    fn expected(terms: &LoanTerms, current_value: f64, today: NaiveDate) -> Self {
+        // A future `start_date` (a drawdown not yet made) would otherwise give negative
+        // elapsed months, a remaining term longer than the loan, and too small a payment.
+        let elapsed = months_between(terms.start, today).clamp(0, terms.term_months);
+        let remaining_term = (terms.term_months - elapsed).max(1);
+
+        // Anchor on what the account is actually worth today. The point of a schedule is
+        // to continue the real balance, not to re-derive a theoretical one that disagrees
+        // with it: recomputing from the original principal makes the projection jump at
+        // month 1 by however far the loan is ahead of (or behind) its table. Only when
+        // there is no balance to read at all — no valuations, no transactions — fall back
+        // to the closed form.
+        let anchored = current_value.abs();
+        let balance = if anchored.is_finite() && anchored >= 1.0 {
+            anchored
+        } else {
+            amortized_remaining(
+                terms.original_principal,
+                terms.rate_bps,
+                terms.term_months,
+                elapsed,
+            )
+        };
+
+        let monthly_rate = monthly_rate(terms.rate_bps);
+        Self {
+            balance,
+            monthly_rate,
+            payment: terms
+                .monthly_repayment
+                .filter(|p| p.is_finite() && *p > 0.0)
+                .unwrap_or_else(|| table_payment(balance, monthly_rate, remaining_term)),
+            remaining_term,
+            refix_month: terms.refix.map(|r| r.month),
+            refix_monthly_rate: terms
+                .refix
+                .map_or(monthly_rate, |r| self::monthly_rate(r.rate_bps)),
+        }
+    }
+
+    /// [`AmortSchedule::expected`], with this path's post-refix rate drawn from
+    /// `Normal(refix_rate, uncertainty)` and floored at zero.
+    ///
+    /// One draw, held for the whole horizon — deliberately not re-drawn at each rollover.
+    /// Independent draws around a constant mean average out, so a re-drawn path is
+    /// *narrower* than a persistently wrong rate; persistence is both the wider and the
+    /// honest assumption about being wrong on where rates settle.
+    ///
+    /// Consumes exactly one RNG value when there is an uncertain refix and none otherwise,
+    /// which is what keeps a seeded run reproducible — see the note on `simulate`.
+    fn open(terms: &LoanTerms, current_value: f64, today: NaiveDate, rng: &mut StdRng) -> Self {
+        let mut schedule = Self::expected(terms, current_value, today);
+        if let Some(refix) = terms.refix {
+            let sd = refix.uncertainty_bps as f64;
+            if sd > 0.0 {
+                let drawn = Normal::new(refix.rate_bps as f64, sd).unwrap().sample(rng);
+                // Clamped, not rejection-sampled: a truncating loop would make the number
+                // of RNG values consumed depend on the draws themselves, breaking
+                // reproducibility. P(draw < 0) is negligible for any real rate anyway.
+                schedule.refix_monthly_rate = monthly_rate(drawn.max(0.0).round() as i64);
+            }
+        }
+        schedule
+    }
+
+    /// Take one month's payment, returning what actually leaves the account.
+    fn advance(&mut self, month: i64) -> Repayment {
+        // Repaid. A loan that finishes inside the horizon must stop draining cash, not go
+        // on paying a phantom mortgage to the end of the projection.
+        if self.balance <= 0.0 {
+            return Repayment::default();
+        }
+        if self.refix_month == Some(month) {
+            self.monthly_rate = self.refix_monthly_rate;
+            // The lender re-sets the payment to clear the balance over the remaining term
+            // — but never below one the user told us they actually make, so a deliberate
+            // overpayment survives the rollover instead of reverting to the minimum.
+            self.payment = table_payment(self.balance, self.monthly_rate, self.remaining_term)
+                .max(self.payment);
+        }
+        let interest = self.balance * self.monthly_rate;
+        // A payment that no longer covers the interest would flat-line (or grow) the
+        // balance forever. Re-amortise: a too-small recorded repayment is bad data, not a
+        // negative-amortisation product.
+        if self.payment <= interest {
+            self.payment = table_payment(self.balance, self.monthly_rate, self.remaining_term);
+        }
+        // The load-bearing clamp. `0 <= principal <= balance` makes the balance monotone
+        // non-increasing and bounded below by zero, so it can never cross into a phantom
+        // asset — the assets/liabilities split is by sign.
+        let principal = (self.payment - interest).clamp(0.0, self.balance);
+        self.balance -= principal;
+        self.remaining_term = (self.remaining_term - 1).max(1);
+        Repayment {
+            interest,
+            principal,
+        }
+    }
+
+    /// This loan's contribution to net worth: negative, because a liability is stored
+    /// negative — but exactly `0.0` once repaid, never `-0.0`. The assets/liabilities
+    /// split is by sign and `-0.0 >= 0.0` is true, so a repaid loan would otherwise be
+    /// filed as an asset.
+    fn signed_balance(&self) -> f64 {
+        if self.balance <= 0.0 {
+            0.0
+        } else {
+            -self.balance
+        }
+    }
 }
 
 /// Standard fixed-payment amortisation: the remaining principal after `n` monthly
-/// payments (clamped to the loan's term), recomputed from the loan's own terms each
-/// time rather than tracked as running state.
+/// payments (clamped to the loan's term), computed in closed form from the loan's own
+/// terms. Only the fallback anchor now — a loan with a real balance is projected forward
+/// by [`AmortSchedule`] instead of re-derived from origination.
 fn amortized_remaining(principal: f64, annual_rate_bps: i64, term_months: i64, n: i64) -> f64 {
     if term_months <= 0 || principal <= 0.0 {
         return 0.0;
     }
     let n = n.clamp(0, term_months);
-    let r = (annual_rate_bps as f64 / 10_000.0) / 12.0;
+    let r = monthly_rate(annual_rate_bps);
     if r.abs() < 1e-9 {
         return (principal * (1.0 - n as f64 / term_months as f64)).max(0.0);
     }
-    let growth_term = (1.0 + r).powi(term_months as i32);
-    let payment = principal * r * growth_term / (growth_term - 1.0);
-    let growth_n = (1.0 + r).powi(n as i32);
+    let payment = table_payment(principal, r, term_months);
+    let growth_n = (1.0 + r).powf(n as f64);
+    if !growth_n.is_finite() {
+        return 0.0;
+    }
     (principal * growth_n - payment * (growth_n - 1.0) / r).max(0.0)
 }
 
@@ -915,6 +1390,13 @@ fn monthly_value_series(
     let Some(earliest) = earliest else {
         return Vec::new();
     };
+    // Only the recent past. An account's whole history can span a change of regime that a
+    // single straight line cannot represent, and fitting through one reads out backwards:
+    // a student loan drawn down over three years of study and repaid ever since has a net
+    // *downward* slope across its full history, so the trend says the debt is growing at
+    // the very moment it is being cleared. What matters for projecting forward is what the
+    // account has been doing lately.
+    let earliest = earliest.max(add_months(today, -ACCOUNT_TREND_MONTHS));
     reports::sample_dates(earliest, today, Interval::Month)
         .into_iter()
         .map(|d| {
@@ -1013,6 +1495,116 @@ fn linear_trend_and_vol(values: &[f64]) -> Option<(i64, i64, f64)> {
     let annual_vol = (residual_stdev * 12f64.sqrt() / latest_fitted.abs()).abs();
     let (g, v) = bps_pair(annual_growth, annual_vol);
     Some((g, v, latest_fitted))
+}
+
+/// A category's cash-flow assumption, fitted from its own monthly history.
+#[derive(Debug, Clone, Copy)]
+struct CategoryFit {
+    /// The monthly run-rate to grow forward from, base-currency major units.
+    baseline: f64,
+    /// Annual growth in bps — `0` when the history can't support a direction.
+    growth_bps: i64,
+    /// Annual volatility in bps. Measured whether or not a slope was fitted — the
+    /// month-to-month scatter is real even when its direction isn't.
+    vol_bps: i64,
+}
+
+/// Fit a category's monthly totals into a baseline, a growth rate and a volatility.
+///
+/// The baseline is the plain mean of the window — total spend over months elapsed, which
+/// is what "what do I spend on this per month" actually means. Deliberately *not* the
+/// OLS-fitted value at the latest point, which is what the account path uses: for a
+/// household category the series is lumpy and often mostly zeros, and the fitted endpoint
+/// chases the most recent spike. (Professional Services in a real database: twelve months
+/// near $3 and then one $2,188 month, which put the fitted endpoint an order of magnitude
+/// above anything the household actually spends.)
+///
+/// A slope is only fitted when there is enough activity to mean anything —
+/// [`MIN_CATEGORY_TREND_MONTHS`] of span and [`MIN_CATEGORY_ACTIVE_MONTHS`] with real
+/// spend. Below that the run-rate is held flat, because the alternative is extrapolating
+/// the slope of a mostly-empty series for years. (Same database: Housing had three months
+/// of data — $10, $1,079, $70 — from which the old code derived +325%/yr, compounding to
+/// roughly 1,400× over a five-year horizon.)
+///
+/// Both are then clamped. A household category does not compound at triple digits, and a
+/// volatility measured as a multiple of a near-zero denominator is a divide-by-small
+/// artefact rather than an estimate of anything.
+fn category_fit(totals: &[f64]) -> Option<CategoryFit> {
+    if totals.is_empty() {
+        return None;
+    }
+    let n = totals.len();
+    let baseline = totals.iter().sum::<f64>() / n as f64;
+    // No activity at all in the window: the category contributes nothing to project.
+    if baseline <= 0.0 {
+        return None;
+    }
+
+    let active = totals.iter().filter(|v| **v > 0.0).count() as i64;
+    let flat = CategoryFit {
+        baseline,
+        growth_bps: 0,
+        vol_bps: 0,
+    };
+    if (n as i64) < MIN_CATEGORY_TREND_MONTHS || active < MIN_CATEGORY_ACTIVE_MONTHS {
+        return Some(flat);
+    }
+
+    let xs: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let x_mean = xs.iter().sum::<f64>() / n as f64;
+    let mut cov = 0.0;
+    let mut var_x = 0.0;
+    for i in 0..n {
+        cov += (xs[i] - x_mean) * (totals[i] - baseline);
+        var_x += (xs[i] - x_mean).powi(2);
+    }
+    if var_x == 0.0 {
+        return Some(flat);
+    }
+    let slope = cov / var_x;
+    let intercept = baseline - slope * x_mean;
+    let residual_var: f64 = xs
+        .iter()
+        .zip(totals)
+        .map(|(x, y)| (y - (intercept + slope * x)).powi(2))
+        .sum::<f64>()
+        / (n.saturating_sub(2)).max(1) as f64;
+
+    // Only read a direction into the series if the slope actually stands out from the
+    // scatter around it. Every OLS fit produces *some* slope, and on a dozen lumpy months
+    // of household spending that slope is usually describing where the big months happened
+    // to fall, not a change in behaviour — projecting it for years then turns an accident
+    // of timing into the dominant term. The standard t-statistic on the slope is the
+    // textbook way to ask "is this distinguishable from flat?", and |t| >= 2 is roughly the
+    // 95% threshold at the window sizes in play (6-24 months).
+    let slope_stderr = (residual_var / var_x).sqrt();
+    if !(slope_stderr.is_finite() && slope_stderr > 0.0)
+        || (slope / slope_stderr).abs() < MIN_TREND_T_STATISTIC
+    {
+        // Flat run-rate, but keep the measured volatility: the scatter is real even when
+        // the direction isn't.
+        let vol = (residual_var.sqrt() * 12f64.sqrt() / baseline)
+            .clamp(0.0, MAX_DERIVED_CATEGORY_VOL_BPS as f64 / 10_000.0);
+        return Some(CategoryFit {
+            baseline,
+            growth_bps: 0,
+            vol_bps: bps_pair(0.0, vol).1,
+        });
+    }
+
+    // Both relative to the mean, not to the fitted endpoint — a stable denominator.
+    let growth = (12.0 * slope / baseline).clamp(
+        -(MAX_DERIVED_CATEGORY_GROWTH_BPS as f64 / 10_000.0),
+        MAX_DERIVED_CATEGORY_GROWTH_BPS as f64 / 10_000.0,
+    );
+    let vol = (residual_var.sqrt() * 12f64.sqrt() / baseline)
+        .clamp(0.0, MAX_DERIVED_CATEGORY_VOL_BPS as f64 / 10_000.0);
+    let (growth_bps, vol_bps) = bps_pair(growth, vol);
+    Some(CategoryFit {
+        baseline,
+        growth_bps,
+        vol_bps,
+    })
 }
 
 fn bps_pair(growth: f64, vol: f64) -> (i64, i64) {
@@ -1216,6 +1808,95 @@ mod tests {
         assert!(linear_trend_and_vol(&[1.0, 2.0]).is_none());
     }
 
+    /// The Housing case from a real database: three months of data ($10, $1,079, $70) in a
+    /// seven-month window. The old code fitted a slope to that and derived +325%/yr, which
+    /// compounds to ~1,400× over five years and swamps the whole projection. Too few active
+    /// months to read a direction into — hold the run-rate flat instead.
+    #[test]
+    fn category_fit_holds_a_sparse_series_flat_instead_of_extrapolating_it() {
+        let totals = vec![10.0, 0.0, 0.0, 0.0, 0.0, 1_079.0, 70.0];
+        let fit = category_fit(&totals).unwrap();
+        assert_eq!(fit.growth_bps, 0);
+        assert_eq!(fit.growth_bps, 0);
+        assert_eq!(fit.vol_bps, 0);
+        // …but it still contributes: total spend over months elapsed.
+        assert!((fit.baseline - 1_159.0 / 7.0).abs() < 0.01);
+    }
+
+    /// The bug this exposes: a baseline used to exist only where a regression succeeded, so
+    /// a category the fit rejected vanished from the simulation entirely — projecting zero
+    /// spending on it, which is a bigger error than projecting it flat.
+    #[test]
+    fn category_fit_keeps_a_baseline_for_a_series_too_short_to_trend() {
+        let fit = category_fit(&[300.0, 200.0]).unwrap();
+        assert_eq!(fit.growth_bps, 0);
+        assert!((fit.baseline - 250.0).abs() < 0.01);
+    }
+
+    /// A genuine, sustained trend is still read — the clamp only bites the absurd.
+    #[test]
+    fn category_fit_reads_a_real_trend() {
+        // Rising ~4%/month from 1000, twelve months: a real direction, plainly visible.
+        let totals: Vec<f64> = (0..12).map(|i| 1_000.0 * 1.04f64.powi(i)).collect();
+        let fit = category_fit(&totals).unwrap();
+        assert!(
+            fit.growth_bps > 1_000,
+            "expected a clear rise, got {}",
+            fit.growth_bps
+        );
+        assert!(fit.growth_bps <= MAX_DERIVED_CATEGORY_GROWTH_BPS);
+    }
+
+    /// A lumpy series' fitted endpoint chases the latest spike; the mean does not. The
+    /// Professional Services case: twelve months near $3, then one $2,188 month. One
+    /// expensive month is not a trend, and the t-test is what says so.
+    #[test]
+    fn category_fit_is_not_dragged_to_the_latest_spike() {
+        let mut totals = vec![3.0; 12];
+        totals.push(2_188.0);
+        let fit = category_fit(&totals).unwrap();
+        // The mean is ~$171; the OLS endpoint would be an order of magnitude higher.
+        assert!(
+            fit.baseline < 250.0,
+            "baseline {} chased the spike",
+            fit.baseline
+        );
+        assert_eq!(fit.growth_bps, 0);
+        // …but the scatter is real, so the volatility survives.
+        assert!(fit.vol_bps > 0);
+    }
+
+    /// Noise around a flat mean has a non-zero OLS slope essentially always. Projecting it
+    /// for years is how an accident of which months were expensive becomes the dominant
+    /// term in a forecast — so it has to read as flat.
+    #[test]
+    fn category_fit_does_not_trend_on_noise() {
+        // Alternating high/low around $500: no direction, plenty of scatter.
+        let totals: Vec<f64> = (0..12)
+            .map(|i| if i % 2 == 0 { 300.0 } else { 700.0 })
+            .collect();
+        let fit = category_fit(&totals).unwrap();
+        assert_eq!(fit.growth_bps, 0);
+        assert_eq!(fit.growth_bps, 0);
+        assert!((fit.baseline - 500.0).abs() < 0.01);
+    }
+
+    /// Both knobs are bounded, whatever the data does.
+    #[test]
+    fn category_fit_clamps_growth_and_volatility() {
+        // A violently accelerating series: unclamped this fits several hundred percent.
+        let totals: Vec<f64> = (0..12).map(|i| 10.0 * 3f64.powi(i)).collect();
+        let fit = category_fit(&totals).unwrap();
+        assert_eq!(fit.growth_bps, MAX_DERIVED_CATEGORY_GROWTH_BPS);
+        assert!(fit.vol_bps <= MAX_DERIVED_CATEGORY_VOL_BPS);
+    }
+
+    #[test]
+    fn category_fit_ignores_a_category_with_no_spend() {
+        assert!(category_fit(&[0.0; 12]).is_none());
+        assert!(category_fit(&[]).is_none());
+    }
+
     #[test]
     fn resolve_growth_precedence_override_then_cron_then_derived() {
         assert_eq!(
@@ -1236,23 +1917,279 @@ mod tests {
         );
     }
 
-    #[test]
-    fn has_amortization_schedule_requires_every_field() {
-        use sure_core::MortgageMeta;
-        let complete = MortgageMeta {
+    fn mortgage_meta() -> sure_core::MortgageMeta {
+        sure_core::MortgageMeta {
             original_amount_minor: Some(500_000_00),
             interest_rate_bps: Some(549),
             term_months: Some(360),
             start_date: Some("2024-01-01".into()),
             ..Default::default()
-        };
-        assert!(amortization_terms(&AccountMetadata::Mortgage(complete)).is_some());
+        }
+    }
 
-        let partial = MortgageMeta {
+    #[test]
+    fn has_amortization_schedule_requires_every_field() {
+        let today = d("2026-07-01");
+        assert!(loan_terms(&AccountMetadata::Mortgage(mortgage_meta()), today).is_some());
+
+        let partial = sure_core::MortgageMeta {
             original_amount_minor: Some(500_000_00),
             ..Default::default()
         };
-        assert!(amortization_terms(&AccountMetadata::Mortgage(partial)).is_none());
+        assert!(loan_terms(&AccountMetadata::Mortgage(partial), today).is_none());
+    }
+
+    /// `fixed_until` is the one field nobody updates after they actually refix, so a date
+    /// in the past is the common case rather than the exotic one. The projection loop runs
+    /// `1..=horizon`, so a stale expiry must still roll over at the first projected month
+    /// — testing the month for equality against a clamped-to-zero index would mean the
+    /// roll-off silently never fires and the loan keeps a rate it no longer has.
+    #[test]
+    fn loan_terms_rolls_an_already_expired_fix_over_at_the_first_month() {
+        let today = d("2026-07-01");
+        let meta = sure_core::MortgageMeta {
+            rate_type: Some(sure_core::RateType::Fixed),
+            fixed_until: Some("2026-01-15".into()),
+            refix_rate_bps: Some(699),
+            refix_rate_uncertainty_bps: Some(150),
+            ..mortgage_meta()
+        };
+        let refix = loan_terms(&AccountMetadata::Mortgage(meta), today)
+            .unwrap()
+            .refix
+            .expect("an expiry plus a rate is a refix");
+        assert_eq!(refix.month, 1);
+    }
+
+    /// Switching a loan from fixed to floating leaves the old expiry and refix rate sitting
+    /// in the metadata — `buildMetadata` only drops fields the user blanks. A floating rate
+    /// has no end, so it must not roll off onto anything, whatever is left lying around.
+    #[test]
+    fn loan_terms_ignores_a_stale_refix_on_a_floating_loan() {
+        let today = d("2026-07-01");
+        let meta = sure_core::MortgageMeta {
+            rate_type: Some(sure_core::RateType::Floating),
+            fixed_until: Some("2027-01-11".into()),
+            refix_rate_bps: Some(699),
+            refix_rate_uncertainty_bps: Some(150),
+            ..mortgage_meta()
+        };
+        assert!(loan_terms(&AccountMetadata::Mortgage(meta), today)
+            .unwrap()
+            .refix
+            .is_none());
+    }
+
+    /// An expiry with no rate to switch to isn't a schedule, and a rate with no expiry has
+    /// no moment to apply — either alone must not produce a roll-off.
+    #[test]
+    fn loan_terms_needs_both_an_expiry_and_a_rate_to_refix() {
+        let today = d("2026-07-01");
+        let expiry_only = sure_core::MortgageMeta {
+            fixed_until: Some("2027-01-11".into()),
+            ..mortgage_meta()
+        };
+        let rate_only = sure_core::MortgageMeta {
+            refix_rate_bps: Some(699),
+            ..mortgage_meta()
+        };
+        for meta in [expiry_only, rate_only] {
+            assert!(loan_terms(&AccountMetadata::Mortgage(meta), today)
+                .unwrap()
+                .refix
+                .is_none());
+        }
+    }
+
+    /// $500/week and $1,000/fortnight are the same annual outlay, so they must normalise
+    /// to the same monthly figure — and to 52/12 of the weekly amount, not 4× it.
+    #[test]
+    fn monthly_repayment_annualises_rather_than_multiplying_by_weeks_in_a_month() {
+        use RepaymentFrequency::*;
+        let weekly = monthly_repayment(Some(500_00), Some(Weekly)).unwrap();
+        let fortnightly = monthly_repayment(Some(1_000_00), Some(Fortnightly)).unwrap();
+        assert!((weekly - fortnightly).abs() < 0.01);
+        assert!((weekly - 216_666.67).abs() < 1.0, "got {weekly}");
+        // A naive ×4 would give 200_000 — materially different over a 30-year term.
+        assert!(weekly > 210_000.0);
+        assert_eq!(monthly_repayment(Some(0), Some(Monthly)), None);
+        // Sign is the user's typing convention, not information.
+        assert_eq!(
+            monthly_repayment(Some(-1_000), Some(Monthly)),
+            Some(1_000.0)
+        );
+        assert_eq!(monthly_repayment(Some(1_000), None), Some(1_000.0));
+    }
+
+    /// The growth-factor form of the annuity payment overflows to `inf` for a long term,
+    /// yielding `NaN` — which reaches `band_from_samples`, whose `partial_cmp().unwrap()`
+    /// would panic on a live endpoint.
+    #[test]
+    fn table_payment_stays_finite_for_an_absurd_term() {
+        let payment = table_payment(500_000_00.0, monthly_rate(2_000), MAX_TERM_MONTHS);
+        assert!(payment.is_finite() && payment > 0.0, "got {payment}");
+        assert!(loan_terms(
+            &AccountMetadata::Mortgage(sure_core::MortgageMeta {
+                term_months: Some(999_999),
+                interest_rate_bps: Some(-500),
+                ..mortgage_meta()
+            }),
+            d("2026-07-01"),
+        )
+        .is_some_and(|t| t.term_months == MAX_TERM_MONTHS && t.rate_bps == 0));
+    }
+
+    /// The whole point of anchoring: a loan that's been overpaid is worth what the ledger
+    /// says, not what its original table implies. Re-deriving from the principal is what
+    /// made the projection jump at month 1.
+    #[test]
+    fn schedule_anchors_to_the_current_balance_not_the_original_principal() {
+        let today = d("2026-07-01");
+        let terms = loan_terms(&AccountMetadata::Mortgage(mortgage_meta()), today).unwrap();
+        let theoretical = amortized_remaining(500_000_00.0, 549, 360, 30);
+        let mut schedule = AmortSchedule::expected(&terms, -400_000_00.0, today);
+
+        assert_eq!(schedule.balance, 400_000_00.0);
+        assert!(
+            (theoretical - 400_000_00.0).abs() > 50_000_00.0,
+            "fixture must differ"
+        );
+
+        let before = schedule.balance;
+        let paid = schedule.advance(1);
+        assert!(
+            before - schedule.balance < paid.cash_out(),
+            "no month-1 jump"
+        );
+    }
+
+    /// A loan with no valuations and no transactions yet has no balance to anchor to; the
+    /// closed form is the only thing left to project from.
+    #[test]
+    fn schedule_falls_back_to_the_theoretical_balance_with_no_history() {
+        let today = d("2026-07-01");
+        let terms = loan_terms(&AccountMetadata::Mortgage(mortgage_meta()), today).unwrap();
+        let schedule = AmortSchedule::expected(&terms, 0.0, today);
+        let expected = amortized_remaining(500_000_00.0, 549, 360, 30);
+        assert!((schedule.balance - expected).abs() < 1.0);
+    }
+
+    /// The balance must be monotone, never negative, and land on exactly `+0.0` — the
+    /// assets/liabilities split is by sign and `-0.0 >= 0.0` is true in Rust, so a repaid
+    /// loan would otherwise be filed as an asset. Every dollar of principal must also be
+    /// accounted for: the sum of the principal legs is the balance, exactly.
+    #[test]
+    fn schedule_never_over_amortises_past_zero() {
+        let today = d("2026-07-01");
+        let terms = loan_terms(
+            &AccountMetadata::Mortgage(sure_core::MortgageMeta {
+                // Ten times the table payment: this loan clears years early.
+                repayment_minor: Some(30_000_00),
+                repayment_frequency: Some(RepaymentFrequency::Monthly),
+                ..mortgage_meta()
+            }),
+            today,
+        )
+        .unwrap();
+        let mut schedule = AmortSchedule::expected(&terms, -400_000_00.0, today);
+
+        let mut principal_paid = 0.0;
+        let mut previous = schedule.balance;
+        for m in 1..=360 {
+            let paid = schedule.advance(m);
+            principal_paid += paid.principal;
+            assert!(schedule.balance >= 0.0, "month {m}: {}", schedule.balance);
+            assert!(schedule.balance <= previous, "month {m} went backwards");
+            previous = schedule.balance;
+        }
+        assert_eq!(schedule.balance, 0.0);
+        assert!((principal_paid - 400_000_00.0).abs() < 1e-3);
+        let signed = schedule.signed_balance();
+        assert!(signed == 0.0 && signed.is_sign_positive(), "got {signed:?}");
+        // And a repaid loan stops costing anything.
+        assert_eq!(schedule.advance(361).cash_out(), 0.0);
+    }
+
+    /// A recorded repayment too small to cover the interest would flat-line the balance
+    /// forever. That's bad data, not an interest-only product — re-amortise instead.
+    #[test]
+    fn schedule_replaces_a_repayment_that_cannot_cover_the_interest() {
+        let today = d("2026-07-01");
+        let terms = loan_terms(
+            &AccountMetadata::Mortgage(sure_core::MortgageMeta {
+                repayment_minor: Some(1_00),
+                repayment_frequency: Some(RepaymentFrequency::Monthly),
+                ..mortgage_meta()
+            }),
+            today,
+        )
+        .unwrap();
+        let mut schedule = AmortSchedule::expected(&terms, -400_000_00.0, today);
+        let mut previous = schedule.balance;
+        for m in 1..=12 {
+            schedule.advance(m);
+            assert!(schedule.balance < previous, "month {m} did not pay down");
+            previous = schedule.balance;
+        }
+    }
+
+    /// A higher rate does not change *when* a table loan ends — it changes how much of
+    /// each (larger) payment is interest, so the balance falls more slowly early on.
+    #[test]
+    fn schedule_switches_rate_at_the_refix_month() {
+        let today = d("2026-07-01");
+        let at = |refix_bps| {
+            let terms = loan_terms(
+                &AccountMetadata::Mortgage(sure_core::MortgageMeta {
+                    rate_type: Some(sure_core::RateType::Fixed),
+                    fixed_until: Some("2026-11-01".into()),
+                    refix_rate_bps: Some(refix_bps),
+                    ..mortgage_meta()
+                }),
+                today,
+            )
+            .unwrap();
+            let mut schedule = AmortSchedule::expected(&terms, -400_000_00.0, today);
+            let mut balances = Vec::new();
+            for m in 1..=6 {
+                schedule.advance(m);
+                balances.push(schedule.balance);
+            }
+            balances
+        };
+        let low = at(549);
+        let high = at(899);
+        assert_eq!(low[..3], high[..3], "identical before the refix");
+        assert!(high[5] > low[5], "a higher rate amortises more slowly");
+    }
+
+    /// Rounding a repayment up is the commonest way people overpay a mortgage. The lender
+    /// re-setting the payment at a refix must not quietly revert them to the minimum.
+    #[test]
+    fn schedule_keeps_an_overpayment_across_a_refix() {
+        let today = d("2026-07-01");
+        let terms = loan_terms(
+            &AccountMetadata::Mortgage(sure_core::MortgageMeta {
+                rate_type: Some(sure_core::RateType::Fixed),
+                fixed_until: Some("2026-09-01".into()),
+                // Well above the table payment, and the refix is to a *lower* rate.
+                refix_rate_bps: Some(100),
+                repayment_minor: Some(5_000_00),
+                repayment_frequency: Some(RepaymentFrequency::Monthly),
+                ..mortgage_meta()
+            }),
+            today,
+        )
+        .unwrap();
+        let mut schedule = AmortSchedule::expected(&terms, -400_000_00.0, today);
+        for m in 1..=3 {
+            schedule.advance(m);
+        }
+        assert!(
+            (schedule.payment - 5_000_00.0).abs() < 1.0,
+            "got {}",
+            schedule.payment
+        );
     }
 
     #[test]
@@ -1291,7 +2228,8 @@ mod tests {
         use async_trait::async_trait;
         use sure_core::{
             Account, AccountKind as AK, AccountMetadata as AM, Cron, CronRun, CronRunResult,
-            GenericMeta, SaveAccount, SaveCron, SaveForecastAssumption, SaveForecastEvent,
+            GenericMeta, LoanMeta, MortgageMeta, SaveAccount, SaveCron, SaveForecastAssumption,
+            SaveForecastEvent,
         };
 
         use crate::ports::{
@@ -1484,6 +2422,26 @@ mod tests {
             }
         }
 
+        /// A mortgage with the terms that make it amortise, plus a valuation so it has a
+        /// real balance to anchor to (the closed-form fallback would hide anchoring bugs).
+        fn mortgage(id: i64, meta: sure_core::MortgageMeta) -> Account {
+            Account {
+                kind: AK::Mortgage,
+                class: AK::Mortgage.class(),
+                metadata: AM::Mortgage(meta),
+                ..account(id, AK::Mortgage, "NZD")
+            }
+        }
+
+        fn valued(account_id: i64, as_of: NaiveDate, value_minor: i64) -> LedgerValuation {
+            LedgerValuation {
+                account_id,
+                as_of: as_of.to_string(),
+                value_minor,
+                currency_code: "NZD".into(),
+            }
+        }
+
         fn make_service(
             accounts: Vec<Account>,
             valuations: Vec<LedgerValuation>,
@@ -1659,6 +2617,457 @@ mod tests {
                     b.net_worth.median_minor
                 );
             }
+        }
+
+        /// Terms modelled on a representative ASB loan: $485k over 27
+        /// years at 5.12%, fixed for another few months and then refixed.
+        fn asb_terms(fixed_until: Option<&str>, uncertainty_bps: Option<i64>) -> MortgageMeta {
+            MortgageMeta {
+                lender: Some("ASB".into()),
+                original_amount_minor: Some(485_000_00),
+                interest_rate_bps: Some(512),
+                rate_type: Some(sure_core::RateType::Fixed),
+                fixed_until: fixed_until.map(Into::into),
+                term_months: Some(324),
+                start_date: Some("2025-12-11".into()),
+                refix_rate_bps: fixed_until.map(|_| 512),
+                refix_rate_uncertainty_bps: uncertainty_bps,
+                ..Default::default()
+            }
+        }
+
+        fn mortgage_service(meta: MortgageMeta, today: NaiveDate) -> ForecastService {
+            make_service(
+                vec![mortgage(1, meta)],
+                vec![valued(1, today - chrono::Duration::days(1), -478_940_17)],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                today,
+            )
+        }
+
+        /// The crux of the feature. Until the fixed rate expires the balance is genuinely
+        /// certain, so every path must agree to the cent; once it rolls off onto a rate
+        /// drawn per path, the band has to open up. A forecast that shows a mortgage as a
+        /// single confident line for thirty years is the thing being fixed.
+        #[test]
+        fn simulate_widens_the_liability_band_only_after_the_refix() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let svc = mortgage_service(asb_terms(Some("2026-11-01"), Some(150)), today);
+
+            let result = rt
+                .block_on(svc.simulate(&SimulationParams {
+                    horizon_months: 24,
+                    simulations: 1000,
+                    currency: None,
+                    seed: Some(11),
+                }))
+                .unwrap();
+
+            // Months 1 and 2 — the refix itself lands on month 3, so that one already
+            // carries a drawn rate.
+            for m in &result.months[..2] {
+                assert_eq!(
+                    m.liabilities.p10_minor, m.liabilities.p90_minor,
+                    "{}: a fixed rate is certain, so every path must agree",
+                    m.as_of
+                );
+            }
+            assert!(
+                result.months[2].liabilities.p90_minor - result.months[2].liabilities.p10_minor > 0,
+                "the band should open the moment the rate is drawn"
+            );
+            let last = &result.months[23];
+            assert!(
+                last.liabilities.p90_minor - last.liabilities.p10_minor > 0,
+                "{}: the refix draw must open the band",
+                last.as_of
+            );
+            assert!(last.liabilities.p10_minor <= last.liabilities.median_minor);
+            assert!(last.liabilities.median_minor <= last.liabilities.p90_minor);
+        }
+
+        /// A certain refix is still deterministic: zero uncertainty must collapse the band
+        /// again, so the width is attributable to the draw and nothing else.
+        #[test]
+        fn simulate_keeps_a_certain_refix_deterministic() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let svc = mortgage_service(asb_terms(Some("2026-11-01"), Some(0)), today);
+
+            let result = rt
+                .block_on(svc.simulate(&SimulationParams {
+                    horizon_months: 24,
+                    simulations: 300,
+                    currency: None,
+                    seed: Some(11),
+                }))
+                .unwrap();
+            for m in &result.months {
+                assert_eq!(
+                    m.liabilities.p10_minor, m.liabilities.p90_minor,
+                    "{}",
+                    m.as_of
+                );
+            }
+        }
+
+        /// Servicing a mortgage costs real money. The debt shrinking while no cash leaves
+        /// was worth roughly a year's interest in over-projected net worth.
+        ///
+        /// The bank account is what makes the two halves separable: with cash comfortably
+        /// positive it stays in `assets`, so `liabilities` is the loan alone and the
+        /// repayment shows up as assets falling rather than as the pool going negative.
+        #[test]
+        fn simulate_debits_cash_for_the_repayment() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let yesterday = today - chrono::Duration::days(1);
+            let svc = make_service(
+                vec![
+                    mortgage(1, asb_terms(None, None)),
+                    account(2, AK::Bank, "NZD"),
+                ],
+                vec![
+                    valued(1, yesterday, -478_940_17),
+                    valued(2, yesterday, 200_000_00),
+                ],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                today,
+            );
+            let result = rt
+                .block_on(svc.simulate(&SimulationParams {
+                    horizon_months: 12,
+                    simulations: 100,
+                    currency: None,
+                    seed: Some(3),
+                }))
+                .unwrap();
+
+            let first = &result.months[0];
+            let last = &result.months[11];
+            // The debt is paid down…
+            assert!(
+                last.liabilities.median_minor > first.liabilities.median_minor,
+                "the balance should be shrinking toward zero: {} -> {}",
+                first.liabilities.median_minor,
+                last.liabilities.median_minor
+            );
+            // …and the cash to do it actually leaves.
+            assert!(
+                last.assets.median_minor < first.assets.median_minor,
+                "cash should be spent on the repayment: {} -> {}",
+                first.assets.median_minor,
+                last.assets.median_minor
+            );
+            // Net worth falls by the interest: the principal just moves between the two
+            // sides, but the interest is gone. ~5.12% on ~$479k is ~$2,043/mo at the
+            // start, so eleven months of it is comfortably over $20k.
+            let drop = first.net_worth.median_minor - last.net_worth.median_minor;
+            assert!(
+                (20_000_00..30_000_00).contains(&drop),
+                "expected roughly a year of interest, got {drop}"
+            );
+        }
+
+        /// A student loan amortises like anything else, but its repayment comes out of
+        /// pay before the salary ever lands, so it is already inside the income baseline.
+        /// Debiting it again would double-count with nothing in the ledger to reveal it.
+        #[test]
+        fn simulate_does_not_debit_cash_for_a_student_loan() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let terms = LoanMeta {
+                lender: Some("Inland Revenue".into()),
+                original_amount_minor: Some(50_000_00),
+                interest_rate_bps: Some(0),
+                term_months: Some(120),
+                start_date: Some("2024-01-01".into()),
+                ..Default::default()
+            };
+            let student = Account {
+                kind: AK::StudentLoan,
+                class: AK::StudentLoan.class(),
+                metadata: AM::Loan(terms),
+                ..account(1, AK::StudentLoan, "NZD")
+            };
+            let svc = make_service(
+                vec![student],
+                vec![valued(1, today - chrono::Duration::days(1), -29_967_15)],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                today,
+            );
+            let result = rt
+                .block_on(svc.simulate(&SimulationParams {
+                    horizon_months: 6,
+                    simulations: 100,
+                    currency: None,
+                    seed: Some(5),
+                }))
+                .unwrap();
+
+            // The debt shrinks and nothing offsets it, so net worth rises.
+            assert!(
+                result.months[5].net_worth.median_minor > result.months[0].net_worth.median_minor
+            );
+            // No cash pool exists here, so any debit would show as a negative asset side.
+            assert_eq!(result.months[5].assets.median_minor, 0);
+        }
+
+        /// A student loan drawn down over years of study and repaid ever since: a single
+        /// straight line through the *whole* history slopes downward (it ends deeper in debt
+        /// than it began), so the derived rate said the debt was growing at the very moment
+        /// it was being cleared. Only the recent past should feed the fit.
+        #[test]
+        fn a_liability_trend_follows_recent_behaviour_not_the_whole_history() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            // Drawn down to -$56k over three years, then repaid to -$30k over the next two.
+            let mut valuations = Vec::new();
+            for i in 0..66 {
+                let date = add_months(d("2021-03-01"), i);
+                let value = if i <= 33 {
+                    -13_500_00 - (i * 1_290_00)
+                } else {
+                    -56_100_00 + ((i - 33) * 790_00)
+                };
+                valuations.push(valued(1, date, value));
+            }
+            let loan = Account {
+                kind: AK::StudentLoan,
+                class: AK::StudentLoan.class(),
+                ..account(1, AK::StudentLoan, "NZD")
+            };
+            let svc = make_service(
+                vec![loan],
+                valuations,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                today,
+            );
+
+            let a = rt.block_on(svc.resolved_assumptions()).unwrap();
+            let loan = a
+                .iter()
+                .find(|a| a.target_type == ForecastTargetType::Account && a.target_id == 1)
+                .unwrap();
+            // A *negative* relative rate on a negative balance moves it toward zero.
+            assert!(
+                loan.annual_growth_bps < 0,
+                "the debt is being repaid, so the trend must point at zero, got {}",
+                loan.annual_growth_bps
+            );
+        }
+
+        /// …and the projection has to actually get there. A liability's rate is fitted as a
+        /// straight line, so compounding it instead leaves a loan three years from payoff
+        /// still showing a balance a decade out.
+        #[test]
+        fn a_repaid_liability_reaches_zero_and_stays_there() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            // -$12,000, repaid at a steady $1,000/month: cleared in a year.
+            let mut valuations = Vec::new();
+            for i in 0..24 {
+                let date = add_months(d("2024-08-01"), i);
+                valuations.push(valued(1, date, -36_000_00 + (i * 1_000_00)));
+            }
+            let loan = Account {
+                kind: AK::StudentLoan,
+                class: AK::StudentLoan.class(),
+                ..account(1, AK::StudentLoan, "NZD")
+            };
+            let svc = make_service(
+                vec![loan],
+                valuations,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                today,
+            );
+            let result = rt
+                .block_on(svc.simulate(&SimulationParams {
+                    horizon_months: 36,
+                    simulations: 200,
+                    currency: None,
+                    seed: Some(4),
+                }))
+                .unwrap();
+
+            // Cleared well inside the horizon, and it does not drift past zero into being
+            // an asset once it gets there.
+            let last = &result.months[35];
+            assert_eq!(
+                last.liabilities.median_minor, 0,
+                "expected the loan cleared, got {}",
+                last.liabilities.median_minor
+            );
+            assert!(last.liabilities.p90_minor <= 0);
+            assert!(
+                result.months[0].liabilities.median_minor < 0,
+                "starts owing"
+            );
+        }
+
+        /// Lumpy spending must not compound into the projection. A category with violent
+        /// month-to-month swings but a stable long-run rate should widen the band roughly
+        /// with √months (deviations averaging out), not with months³ᐟ² — the signature of
+        /// the old model, where each month's noise was folded back into the run-rate and an
+        /// expensive January raised every month after it.
+        ///
+        /// Checked as a ratio rather than an absolute: the 48-month spread should be about
+        /// √4 = 2× the 12-month spread, and is nowhere near the 8× a random walk gives.
+        #[test]
+        fn category_noise_averages_out_instead_of_compounding() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let salary = ReportCategory {
+                id: 10,
+                parent_id: None,
+                name: "Salary".into(),
+                color: None,
+                kind: CategoryKind::Income,
+            };
+            // Wildly lumpy but with no trend: alternating $2k and $10k months for two years.
+            let mut txns = Vec::new();
+            let mut spend = Vec::new();
+            for i in 0..24 {
+                let date = add_months(today, -(24 - i));
+                let amount = if i % 2 == 0 { 200_000 } else { 1_000_000 };
+                txns.push(LedgerTx {
+                    account_id: 1,
+                    posted_at: date.to_string(),
+                    amount_minor: amount,
+                });
+                spend.push(SpendTransaction {
+                    posted_at: date.to_string(),
+                    amount_minor: amount,
+                    currency_code: "NZD".into(),
+                    category_id: Some(10),
+                    is_one_off: false,
+                    linked_transaction_id: None,
+                    account_kind: AK::Bank,
+                });
+            }
+            let svc = make_service(
+                vec![account(1, AK::Bank, "NZD")],
+                Vec::new(),
+                txns,
+                vec![salary],
+                spend,
+                Vec::new(),
+                today,
+            );
+            let result = rt
+                .block_on(svc.simulate(&SimulationParams {
+                    horizon_months: 48,
+                    simulations: 2000,
+                    currency: None,
+                    seed: Some(21),
+                }))
+                .unwrap();
+
+            let spread = |i: usize| {
+                (result.months[i].net_worth.p90_minor - result.months[i].net_worth.p10_minor) as f64
+            };
+            let ratio = spread(47) / spread(11);
+            assert!(
+                (1.2..4.0).contains(&ratio),
+                "48mo spread should be ~2x the 12mo spread (sqrt-of-time), got {ratio:.1}x"
+            );
+        }
+
+        /// A card balance was invisible to the forecast: skipped as an account (it has no
+        /// growth rate) *and* left out of the cash pool, so the projection started above
+        /// the net worth the reports show for today.
+        #[test]
+        fn simulate_pools_a_credit_card_balance_into_cash() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let params = SimulationParams {
+                horizon_months: 3,
+                simulations: 100,
+                currency: None,
+                seed: Some(9),
+            };
+            let house = account(1, AK::RealEstate, "NZD");
+            let card = account(2, AK::CreditCard, "NZD");
+            let valuations = vec![
+                valued(1, today - chrono::Duration::days(1), 770_000_00),
+                valued(2, today - chrono::Duration::days(1), -2_000_00),
+            ];
+
+            let without = make_service(
+                vec![house.clone()],
+                vec![valuations[0].clone()],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                today,
+            );
+            let with = make_service(
+                vec![house, card],
+                valuations,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                today,
+            );
+
+            let a = rt.block_on(without.simulate(&params)).unwrap();
+            let b = rt.block_on(with.simulate(&params)).unwrap();
+            assert_eq!(
+                a.months[0].net_worth.median_minor - b.months[0].net_worth.median_minor,
+                2_000_00,
+                "the card balance must reduce projected net worth"
+            );
+        }
+
+        /// The Forecast page shows "amortisation schedule" and nothing else for a
+        /// mortgage; the schedule is what lets it show its working instead.
+        #[test]
+        fn resolved_assumptions_surfaces_the_schedule() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let svc = mortgage_service(asb_terms(Some("2027-01-11"), Some(150)), today);
+
+            let assumptions = rt.block_on(svc.resolved_assumptions()).unwrap();
+            let a = assumptions
+                .iter()
+                .find(|a| a.target_type == ForecastTargetType::Account && a.target_id == 1)
+                .unwrap();
+
+            assert_eq!(a.source, AssumptionSource::Deterministic);
+            assert_eq!(a.currency_code.as_deref(), Some("NZD"));
+            let s = a.schedule.expect("a complete mortgage has a schedule");
+            assert_eq!(s.current_rate_bps, 512);
+            // 324 months from 2025-12-11, of which 8 have elapsed by 2026-08-01.
+            assert_eq!(s.remaining_term_months, 316);
+            assert_eq!(s.refix_in_months, Some(5));
+            assert_eq!(s.refix_rate_bps, Some(512));
+            assert_eq!(s.refix_rate_uncertainty_bps, Some(150));
+            // $478,940.17 at 5.12% over 316 months. Cross-check: a comparable loan pays
+            // $1,292.15/fortnight, i.e. $2,799/mo — a little above the table payment,
+            // which is what recording `repayment_minor` is for.
+            assert!(
+                (s.monthly_payment_minor - 2_763_00).abs() < 5_00,
+                "payment {} should be about $2,763/mo",
+                s.monthly_payment_minor
+            );
         }
     }
 }

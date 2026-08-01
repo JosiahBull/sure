@@ -706,6 +706,13 @@ mod tests {
             original_amount_minor: Some(48_500_000),
             interest_rate_bps: Some(549),
             rate_type: Some(RateType::Fixed),
+            // A fixed rate expires, so the forecast insists on being told what to assume
+            // after it does — see `AccountMetadata::validate_for`.
+            fixed_until: Some("2027-01-11".to_string()),
+            refix_rate_bps: Some(549),
+            refix_rate_uncertainty_bps: Some(150),
+            term_months: Some(360),
+            start_date: Some("2024-01-01".to_string()),
             ..Default::default()
         }
     }
@@ -716,6 +723,12 @@ mod tests {
             lender: Some("StudyLink".to_string()),
             original_amount_minor: Some(3_000_000),
             interest_rate_bps: Some(0),
+            // A plain `loan` needs a schedule to be forecastable. Floating, so no
+            // roll-off terms are demanded on top — `student_loan` ignores all of this
+            // anyway (see `AccountMetadata::validate_for`).
+            rate_type: Some(RateType::Floating),
+            term_months: Some(120),
+            start_date: Some("2024-01-01".to_string()),
             ..Default::default()
         }
     }
@@ -1022,19 +1035,20 @@ mod tests {
         .await;
 
         let msg = validation_message(result);
+        // A `loan` is a table loan like a mortgage, so it needs the same terms: the
+        // forecast projects its payoff from them rather than fitting a trend to a debt.
+        // `student_loan` shares this profile and is exempt — see the test below.
         for field in [
             "subtype",
             "lender",
             "original_amount_minor",
             "interest_rate_bps",
+            "rate_type",
+            "term_months",
+            "start_date",
         ] {
             assert!(msg.contains(field), "{msg} should name {field}");
         }
-        // A loan's rate *type* stays optional, unlike a mortgage's.
-        assert!(
-            !msg.contains("rate_type"),
-            "{msg} should not name rate_type"
-        );
     }
 
     #[tokio::test]
@@ -1281,8 +1295,9 @@ mod tests {
         );
     }
 
-    /// The one metadata rule that also holds on the provider-link path: a feed cannot know a
-    /// property's city, but a value it *does* send has to mean something.
+    /// A metadata rule that also holds on the provider-link path: a feed cannot know a
+    /// property's city, but a value it *does* send has to mean something. Checked on a
+    /// student loan, the one loan-profile kind with no terms of its own to get in the way.
     #[test]
     fn an_illegal_subtype_is_rejected_even_when_linking() {
         let metadata = AccountMetadata::Loan(LoanMeta {
@@ -1290,14 +1305,14 @@ mod tests {
             ..Default::default()
         });
         let problems = metadata
-            .validate_for(AccountKind::Loan, ValidationMode::Linked)
+            .validate_for(AccountKind::StudentLoan, ValidationMode::Linked)
             .expect_err("an unknown subtype is structural, not a gap a sync could fill");
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("payday"));
 
         // ...while everything a sync could fill in later is left alone.
         AccountMetadata::Loan(LoanMeta::default())
-            .validate_for(AccountKind::Loan, ValidationMode::Linked)
+            .validate_for(AccountKind::StudentLoan, ValidationMode::Linked)
             .unwrap();
     }
 

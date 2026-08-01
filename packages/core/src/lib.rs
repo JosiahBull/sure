@@ -50,6 +50,7 @@ pub use transactions::{
 pub use types::{
     Account, AccountClass, AccountKind, AccountMetadata, AreaUnit, BrokerageMeta, CryptoMeta,
     DepositoryMeta, GenericMeta, Interval, LoanMeta, MileageUnit, MortgageMeta, PropertyMeta,
-    RateType, SaveAccount, SetSecuredBy, SharesMeta, TaxTreatment, ValidationMode, VehicleMeta,
+    RateType, RepaymentFrequency, SaveAccount, SetSecuredBy, SharesMeta, TaxTreatment,
+    ValidationMode, VehicleMeta,
 };
 pub use valuations::{NewValuation, Valuation, ValuationSource};

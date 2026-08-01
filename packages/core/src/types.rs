@@ -134,6 +134,17 @@ pub enum RateType {
     Split,
 }
 
+/// How often a loan's contractual repayment is actually made. Weekly and fortnightly are
+/// the NZ norm; the forecast annualises them (×52/12, ×26/12) rather than treating them as
+/// ×4/×2 — the extra payments a year are exactly why paying weekly clears a loan sooner.
+#[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum RepaymentFrequency {
+    Weekly,
+    Fortnightly,
+    Monthly,
+}
+
 /// The unit a property's floor/land area is recorded in.
 #[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -309,6 +320,24 @@ pub struct MortgageMeta {
     /// ISO-8601 date the loan started (used to derive time remaining).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_date: Option<String>,
+    /// The rate to assume once the current fixed period ends, in basis points. The
+    /// forecast draws each simulated path's post-refix rate around this, which is what
+    /// gives a fixed-rate mortgage an honest band instead of a single confident line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refix_rate_bps: Option<i64>,
+    /// One standard deviation of uncertainty around `refix_rate_bps`, in basis points
+    /// (e.g. 150 = "±1.5% would be an unremarkable miss"). Zero makes the refix a
+    /// certainty; every path then gets the same rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refix_rate_uncertainty_bps: Option<i64>,
+    /// The actual contractual repayment, in minor units per `repayment_frequency`. Used
+    /// in preference to a payment derived from the terms, so a deliberate overpayment (or
+    /// the lender's own rounding) is projected as it really is rather than idealised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repayment_minor: Option<i64>,
+    /// How often `repayment_minor` is paid. Absent means monthly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repayment_frequency: Option<RepaymentFrequency>,
     /// Interest paid so far, in minor units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interest_paid_minor: Option<i64>,
@@ -341,12 +370,31 @@ pub struct LoanMeta {
     pub interest_rate_bps: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_type: Option<RateType>,
+    /// ISO-8601 date the current fixed rate expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_until: Option<String>,
+    /// Length of the current fixed-rate period, in months.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_term_months: Option<i64>,
     /// Overall loan term, in months.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub term_months: Option<i64>,
     /// ISO-8601 date the loan started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_date: Option<String>,
+    /// The rate to assume once the current fixed period ends, in basis points. See
+    /// [`MortgageMeta::refix_rate_bps`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refix_rate_bps: Option<i64>,
+    /// One standard deviation of uncertainty around `refix_rate_bps`, in basis points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refix_rate_uncertainty_bps: Option<i64>,
+    /// The actual contractual repayment, in minor units per `repayment_frequency`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repayment_minor: Option<i64>,
+    /// How often `repayment_minor` is paid. Absent means monthly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repayment_frequency: Option<RepaymentFrequency>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -590,6 +638,12 @@ impl AccountMetadata {
 /// structural rules (the profile has to suit the kind, and a `subtype` that *is* present
 /// has to be a legal value), while [`ValidationMode::Manual`] — a human at the account
 /// form — enforces everything.
+///
+/// One exception, added with the mortgage forecast: a mortgage or loan is asked for its
+/// amortisation terms on both paths (`AMORTISING_REQUIRED`). Linking is not an unattended
+/// import — the connect dialog is a form with a person in front of it — and a feed reports
+/// a loan's balance but essentially never its terms, so exempting the link path would mean
+/// the usual way to create a mortgage is the one that leaves it unforecastable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ValidationMode {
     Manual,
@@ -678,6 +732,10 @@ const PROFILE_REQUIRED: &[(&str, &[Required])] = &[
             Required::Count("year"),
         ],
     ),
+    // `term_months` + `start_date` are what turn a mortgage from a balance into a
+    // schedule: together with the principal and the rate they let the forecast project
+    // the exact payoff instead of extrapolating a trend from a few months of history
+    // (`sure_app::forecast`). Without them the projection is meaningless for a debt.
     (
         "mortgage",
         &[
@@ -685,6 +743,8 @@ const PROFILE_REQUIRED: &[(&str, &[Required])] = &[
             Required::Amount("original_amount_minor"),
             Required::Bps("interest_rate_bps"),
             Required::Choice("rate_type"),
+            Required::Count("term_months"),
+            Required::Text("start_date"),
         ],
     ),
     (
@@ -716,6 +776,18 @@ const KIND_REQUIRED: &[(AccountKind, &[Required])] = &[
         AccountKind::RevolvingCredit,
         &[Required::Amount("credit_limit_minor")],
     ),
+    // A table loan amortises on a schedule, so it needs the same terms a mortgage does.
+    // These sit here rather than on the `loan` profile because `student_loan` shares that
+    // profile and is deliberately exempt: an NZ student loan carries no interest and is
+    // repaid as a percentage of income, so it has no rate, term or schedule to ask for.
+    (
+        AccountKind::Loan,
+        &[
+            Required::Choice("rate_type"),
+            Required::Count("term_months"),
+            Required::Text("start_date"),
+        ],
+    ),
     // A listed holding is priced by (ticker, exchange) — see `list_shares_tickers` and the
     // stock-price poller. `shares_private` is excluded: an unlisted holding has neither.
     (
@@ -727,6 +799,37 @@ const KIND_REQUIRED: &[(AccountKind, &[Required])] = &[
         &[Required::Text("ticker"), Required::Text("exchange")],
     ),
 ];
+
+/// The terms that turn a debt into a schedule, demanded of a mortgage/loan on *every*
+/// write path — see the note in [`AccountMetadata::validate_for`] for why this one case
+/// overrides the manual-vs-linked split. Deliberately not `lender`/`subtype`: those are
+/// labels, and a feed can supply the institution on its own.
+const AMORTISING_REQUIRED: &[Required] = &[
+    Required::Amount("original_amount_minor"),
+    Required::Bps("interest_rate_bps"),
+    Required::Choice("rate_type"),
+    Required::Count("term_months"),
+    Required::Text("start_date"),
+];
+
+/// Amortising-debt kinds whose rate can roll off, and the fields that roll-off needs.
+///
+/// Conditional on `rate_type`, which is why these can't live in the flat tables above: a
+/// floating loan has no expiry and nothing to refix to, so demanding a refix rate for one
+/// would be asking for a number that doesn't exist. A fixed rate (and the fixed leg of a
+/// split) does expire, and what happens next is the single largest uncertainty in a
+/// long-horizon projection — so the forecast insists on being told, rather than quietly
+/// assuming today's rate runs for the next thirty years.
+const REFIX_REQUIRED: &[Required] = &[
+    Required::Text("fixed_until"),
+    Required::Bps("refix_rate_bps"),
+    Required::Bps("refix_rate_uncertainty_bps"),
+];
+
+/// Whether `kind` is a table loan whose terms include a rate that can roll off.
+fn amortises(kind: AccountKind) -> bool {
+    matches!(kind, AccountKind::Mortgage | AccountKind::Loan)
+}
 
 /// Legal `subtype` values per profile.
 ///
@@ -802,6 +905,33 @@ impl AccountMetadata {
             }
         }
 
+        // Amortising debt is the exception to the mode split above, and asked for on both
+        // paths. The exemption exists because a *feed* knows less than a person — but a
+        // link is not an unattended import: there is a human in the connect dialog, and it
+        // asks for these. Meanwhile a bank feed reports a mortgage's balance and almost
+        // never its terms (Akahu's `loan_details` is optional throughout, and ASB supplies
+        // none of it), so letting a mortgage in without them means the commonest way to
+        // create one is the one that leaves it unprojectable — falling back to fitting a
+        // trend to a debt, silently, forever.
+        if amortises(kind) {
+            // In `Manual` the tables above already cover these; this is what closes the
+            // gap on the link path without asking for them twice.
+            if mode == ValidationMode::Linked {
+                for required in AMORTISING_REQUIRED {
+                    problems.extend(required.problem(field(required.key())));
+                }
+            }
+            // Only a rate that expires needs somewhere to go when it does.
+            if matches!(
+                field("rate_type").and_then(Value::as_str),
+                Some("fixed") | Some("split")
+            ) {
+                for required in REFIX_REQUIRED {
+                    problems.extend(required.problem(field(required.key())));
+                }
+            }
+        }
+
         if problems.is_empty() {
             Ok(())
         } else {
@@ -870,4 +1000,196 @@ pub struct SaveAccount {
 pub struct SetSecuredBy {
     /// The asset account this (liability) account is secured against; `null` to unlink.
     pub secured_by_account_id: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The terms that make a loan projectable, as the account form would send them.
+    fn fixed_mortgage() -> MortgageMeta {
+        MortgageMeta {
+            lender: Some("ASB".into()),
+            original_amount_minor: Some(48_500_000),
+            interest_rate_bps: Some(512),
+            rate_type: Some(RateType::Fixed),
+            fixed_until: Some("2027-01-11".into()),
+            term_months: Some(324),
+            start_date: Some("2025-12-11".into()),
+            refix_rate_bps: Some(512),
+            refix_rate_uncertainty_bps: Some(150),
+            ..Default::default()
+        }
+    }
+
+    fn problems(meta: &AccountMetadata, kind: AccountKind) -> Vec<String> {
+        meta.validate_for(kind, ValidationMode::Manual)
+            .err()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_complete_fixed_mortgage_validates() {
+        let meta = AccountMetadata::Mortgage(fixed_mortgage());
+        assert_eq!(problems(&meta, AccountKind::Mortgage), Vec::<String>::new());
+    }
+
+    /// Every problem at once: filling in a form should not be whack-a-mole.
+    #[test]
+    fn an_empty_mortgage_reports_every_missing_term_together() {
+        let meta = AccountMetadata::Mortgage(MortgageMeta::default());
+        let problems = problems(&meta, AccountKind::Mortgage);
+        for key in [
+            "lender",
+            "original_amount_minor",
+            "interest_rate_bps",
+            "rate_type",
+            "term_months",
+            "start_date",
+        ] {
+            assert!(
+                problems.iter().any(|p| p.starts_with(key)),
+                "expected {key} in {problems:?}"
+            );
+        }
+        // The refix trio is conditional on a fixed rate, and no rate type is set yet.
+        assert!(!problems.iter().any(|p| p.starts_with("refix_rate_bps")));
+    }
+
+    /// A floating rate has no expiry and nothing to refix to, so demanding either would be
+    /// asking for a number that does not exist.
+    #[test]
+    fn a_floating_loan_is_not_asked_for_a_refix() {
+        let meta = AccountMetadata::Mortgage(MortgageMeta {
+            rate_type: Some(RateType::Floating),
+            fixed_until: None,
+            refix_rate_bps: None,
+            refix_rate_uncertainty_bps: None,
+            ..fixed_mortgage()
+        });
+        assert_eq!(problems(&meta, AccountKind::Mortgage), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_fixed_rate_must_say_what_happens_when_it_expires() {
+        for rate_type in [RateType::Fixed, RateType::Split] {
+            let meta = AccountMetadata::Mortgage(MortgageMeta {
+                rate_type: Some(rate_type),
+                fixed_until: None,
+                refix_rate_bps: None,
+                refix_rate_uncertainty_bps: None,
+                ..fixed_mortgage()
+            });
+            let problems = problems(&meta, AccountKind::Mortgage);
+            assert_eq!(problems.len(), 3, "{rate_type:?}: {problems:?}");
+            for key in [
+                "fixed_until",
+                "refix_rate_bps",
+                "refix_rate_uncertainty_bps",
+            ] {
+                assert!(problems.iter().any(|p| p.starts_with(key)), "{problems:?}");
+            }
+        }
+    }
+
+    /// Zero uncertainty is a real answer ("I'm confident"), unlike a zero term. Only a
+    /// negative one is nonsense.
+    #[test]
+    fn zero_refix_uncertainty_is_accepted_but_a_zero_term_is_not() {
+        let confident = AccountMetadata::Mortgage(MortgageMeta {
+            refix_rate_uncertainty_bps: Some(0),
+            ..fixed_mortgage()
+        });
+        assert_eq!(
+            problems(&confident, AccountKind::Mortgage),
+            Vec::<String>::new()
+        );
+
+        let no_term = AccountMetadata::Mortgage(MortgageMeta {
+            term_months: Some(0),
+            ..fixed_mortgage()
+        });
+        assert!(problems(&no_term, AccountKind::Mortgage)
+            .iter()
+            .any(|p| p.contains("term_months") && p.contains("greater than zero")));
+    }
+
+    /// `Loan` and `StudentLoan` share the `loan` profile, and only one of them amortises:
+    /// an NZ student loan is interest-free and repaid as a percentage of income, so it has
+    /// no rate, term or schedule to ask for. This is the whole reason the requirement is
+    /// keyed on kind rather than profile.
+    #[test]
+    fn a_student_loan_is_exempt_from_the_terms_a_loan_must_have() {
+        let bare = AccountMetadata::Loan(LoanMeta {
+            subtype: Some("student".into()),
+            lender: Some("Inland Revenue".into()),
+            original_amount_minor: Some(5_000_000),
+            interest_rate_bps: Some(0),
+            ..Default::default()
+        });
+        assert_eq!(
+            problems(&bare, AccountKind::StudentLoan),
+            Vec::<String>::new()
+        );
+
+        let as_a_loan = problems(&bare, AccountKind::Loan);
+        for key in ["rate_type", "term_months", "start_date"] {
+            assert!(
+                as_a_loan.iter().any(|p| p.starts_with(key)),
+                "expected {key} in {as_a_loan:?}"
+            );
+        }
+    }
+
+    /// Linking is still the lenient path for everything a feed can't know — a house's
+    /// address, a card's subtype — so an ordinary account links with nothing filled in.
+    #[test]
+    fn linking_stays_lenient_for_what_a_feed_cannot_know() {
+        let meta = AccountMetadata::Property(PropertyMeta::default());
+        assert!(meta
+            .validate_for(AccountKind::RealEstate, ValidationMode::Linked)
+            .is_ok());
+        // …and the same value is refused at the account form, where a person is asked.
+        assert!(meta
+            .validate_for(AccountKind::RealEstate, ValidationMode::Manual)
+            .is_err());
+    }
+
+    /// The exception: a mortgage's terms are asked for even when linking, because Akahu
+    /// reports a balance and no schedule, and a mortgage without one silently degrades to
+    /// a trend fitted to a debt.
+    #[test]
+    fn linking_still_demands_a_mortgages_terms() {
+        let bare = AccountMetadata::Mortgage(MortgageMeta::default());
+        let problems = bare
+            .validate_for(AccountKind::Mortgage, ValidationMode::Linked)
+            .expect_err("a mortgage needs its schedule on every path");
+        for key in [
+            "original_amount_minor",
+            "interest_rate_bps",
+            "rate_type",
+            "term_months",
+            "start_date",
+        ] {
+            assert!(
+                problems.iter().any(|p| p.starts_with(key)),
+                "expected {key} in {problems:?}"
+            );
+        }
+        // A lender is a label, not a term — the feed supplies the institution anyway.
+        assert!(!problems.iter().any(|p| p.starts_with("lender")));
+
+        assert!(AccountMetadata::Mortgage(fixed_mortgage())
+            .validate_for(AccountKind::Mortgage, ValidationMode::Linked)
+            .is_ok());
+    }
+
+    /// And a student loan links (and saves) with none of it, on either path.
+    #[test]
+    fn linking_a_student_loan_demands_nothing() {
+        let meta = AccountMetadata::Loan(LoanMeta::default());
+        assert!(meta
+            .validate_for(AccountKind::StudentLoan, ValidationMode::Linked)
+            .is_ok());
+    }
 }

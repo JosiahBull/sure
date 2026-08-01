@@ -56,8 +56,10 @@ test("a mortgage with complete amortisation metadata is deterministic, not a der
   const mortgage = await createAccount(api, "Home Loan", "mortgage", "NZD", {
     metadata: {
       profile: "mortgage",
+      lender: "ASB",
       original_amount_minor: 500_000_00,
       interest_rate_bps: 549,
+      rate_type: "floating",
       term_months: 360,
       start_date: "2024-01-01",
     },
@@ -66,6 +68,55 @@ test("a mortgage with complete amortisation metadata is deterministic, not a der
   const { data } = await api.GET("/api/forecast/assumptions", {});
   const a = findAssumption(data!, "account", mortgage.id);
   expect(a?.source).toBe("deterministic");
+  // …and it shows its working, rather than an unexplained "deterministic".
+  expect(a?.currency_code).toBe("NZD");
+  expect(a?.schedule?.current_rate_bps).toBe(549);
+  expect(a?.schedule?.monthly_payment_minor).toBeGreaterThan(0);
+  expect(a?.schedule?.remaining_term_months).toBeLessThan(360);
+  // Floating: no roll-off to model.
+  expect(a?.schedule?.refix_in_months ?? null).toBeNull();
+});
+
+test("a fixed-rate mortgage's refix uncertainty widens the projection only after it rolls off", async ({
+  api,
+}) => {
+  // Fixed for another three months, then refixed at 5.12% ± 1.5% (one standard deviation).
+  // Until the roll-off the balance is genuinely certain and every simulated path must agree;
+  // after it, the drawn rate is what gives the forecast an honest band.
+  const fixedUntil = new Date();
+  fixedUntil.setMonth(fixedUntil.getMonth() + 3);
+
+  const mortgage = await createAccount(api, "Prime Housing Lending", "mortgage", "NZD", {
+    metadata: {
+      profile: "mortgage",
+      lender: "ASB",
+      original_amount_minor: 485_000_00,
+      interest_rate_bps: 512,
+      rate_type: "fixed",
+      fixed_until: fixedUntil.toISOString().slice(0, 10),
+      refix_rate_bps: 512,
+      refix_rate_uncertainty_bps: 150,
+      term_months: 324,
+      start_date: "2025-12-11",
+    },
+  });
+  await api.POST("/api/accounts/{id}/valuations", {
+    params: { path: { id: mortgage.id } },
+    body: { as_of: new Date().toISOString().slice(0, 10), value_minor: -478_940_17 },
+  });
+
+  const { data } = await api.GET("/api/forecast", {
+    params: { query: { horizon_months: 24, simulations: 1000, seed: 11 } },
+  });
+
+  const first = data!.months[0].liabilities;
+  expect(first.p90_minor - first.p10_minor).toBe(0);
+  const last = data!.months[23].liabilities;
+  expect(last.p90_minor - last.p10_minor).toBeGreaterThan(0);
+
+  const a = findAssumption(data!.assumptions, "account", mortgage.id);
+  expect(a?.schedule?.refix_in_months).toBe(3);
+  expect(a?.schedule?.refix_rate_uncertainty_bps).toBe(150);
 });
 
 test("an assumption override round-trips and clears back to the derived default", async ({ api }) => {

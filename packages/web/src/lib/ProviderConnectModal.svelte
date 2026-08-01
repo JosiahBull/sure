@@ -1,7 +1,15 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, colorFor, formatMoney, type Schemas } from "./api";
-  import { KINDS, showsInstitution } from "./accountMeta";
+  import {
+    FIELDS,
+    KINDS,
+    buildMetadata,
+    isFieldRequired,
+    kindToProfile,
+    showsInstitution,
+    type MetaField,
+  } from "./accountMeta";
   import { providerInitials, providerLabel } from "./providerMeta";
   import Icon from "./Icon.svelte";
 
@@ -28,7 +36,28 @@
     kind: Schemas["AccountKind"];
     currency: string;
     institution: string;
+    /** Raw metadata inputs, same shape `AccountForm` keeps and `buildMetadata` consumes. */
+    meta: Record<string, string>;
   };
+
+  /**
+   * The metadata a newly-created account can't be stored without, for the kind this row is
+   * being linked as.
+   *
+   * Only amortising debt has any: a mortgage or loan is projected from its terms, and a
+   * bank feed doesn't report them — Akahu can say a mortgage exists without saying what
+   * rate it's on or when that rate expires. Asking here is the difference between a linked
+   * mortgage that forecasts and one that silently falls back to fitting a trend to a debt.
+   * Everything else keeps the old behaviour: link now, fill in details later.
+   */
+  function requiredMetaFields(f: LinkFormState): MetaField[] {
+    if (f.target !== "new") return [];
+    return FIELDS[kindToProfile(f.kind)].filter((field) => isFieldRequired(field, f.kind, f.meta));
+  }
+
+  function metaComplete(f: LinkFormState): boolean {
+    return requiredMetaFields(f).every((field) => (f.meta[field.key] ?? "").trim() !== "");
+  }
   type GroupFormState = { target: string; name: string; currency: string; institution: string };
 
   let discovered = $state<Schemas["ProviderAccount"][]>([]);
@@ -106,6 +135,8 @@
             kind: a.kind_hint,
             currency: a.currency_code,
             institution: a.institution ?? "",
+            // The lender is the one term the feed does know.
+            meta: a.institution ? { lender: a.institution } : {},
           };
         }
       }
@@ -129,6 +160,7 @@
               kind: f.kind,
               currency_code: f.currency,
               institution: f.institution.trim() || null,
+              metadata: buildMetadata(f.kind, f.meta),
               archived: false,
               sort_order: 0,
             },
@@ -382,13 +414,43 @@
                           <input class="input" placeholder="e.g. ANZ" bind:value={f.institution} />
                         </label>
                       {/if}
+                      {#each requiredMetaFields(f) as mf (mf.key)}
+                        <label class="field">
+                          {mf.label}
+                          {#if mf.type === "select"}
+                            <select class="select" bind:value={f.meta[mf.key]}>
+                              {#each mf.options ?? [] as o (o.value)}
+                                <option value={o.value}>{o.label}</option>
+                              {/each}
+                            </select>
+                          {:else}
+                            <input
+                              class="input"
+                              type={mf.type === "date" ? "date" : "text"}
+                              inputmode={mf.type === "money" || mf.type === "percent" || mf.type === "int"
+                                ? "decimal"
+                                : undefined}
+                              placeholder={mf.placeholder ?? ""}
+                              bind:value={f.meta[mf.key]}
+                            />
+                          {/if}
+                        </label>
+                      {/each}
                     {/if}
                   </div>
+                  {#if f.target === "new" && requiredMetaFields(f).length > 0}
+                    <p class="small faint" style="margin:6px 0 0">
+                      A {f.kind === "mortgage" ? "mortgage" : "loan"} is projected from its terms, and
+                      the bank feed doesn't report them. Prefer to do this later? Create the account
+                      on the Accounts page first, then attach this one to it.
+                    </p>
+                  {/if}
                   <div class="actions">
                     <button
                       class="btn btn-primary btn-sm"
                       onclick={() => linkAccount(a)}
-                      disabled={busy === a.external_id || (f.target === "new" && !f.name.trim())}
+                      disabled={busy === a.external_id ||
+                        (f.target === "new" && (!f.name.trim() || !metaComplete(f)))}
                     >
                       {busy === a.external_id ? "Linking…" : "Link account"}
                     </button>

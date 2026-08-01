@@ -98,6 +98,24 @@
     }
   }
 
+  /**
+   * "amortisation schedule" alone says nothing about *which* schedule. Spell out the
+   * roll-off, because the refix rate — and how unsure of it we are — is what the band
+   * around a mortgage is actually made of.
+   */
+  function scheduleLabel(a: ResolvedAssumption): string {
+    const s = a.schedule;
+    if (!s) return sourceLabel(a.source);
+    if (s.refix_in_months == null || s.refix_rate_bps == null) {
+      return "amortisation schedule · rate held to term";
+    }
+    const when = s.refix_in_months === 1 ? "next month" : `in ${s.refix_in_months} months`;
+    const rate = (s.refix_rate_bps / 100).toFixed(2);
+    const sd = s.refix_rate_uncertainty_bps ?? 0;
+    const spread = sd > 0 ? ` ± ${(sd / 100).toFixed(2)}%` : "";
+    return `amortisation schedule · refixes ${when} at ${rate}%${spread}`;
+  }
+
   // ---- assumption override editing ------------------------------------------------
   let editingKey = $state<string | null>(null);
   let editForm = $state({ growth: "0", volatility: "0", dividendYield: "0" });
@@ -248,7 +266,16 @@
                 <span class="badge target-badge">{a.target_type}</span>
                 <span class="ell" style="font-weight:560">{a.label}</span>
               </span>
-              {#if a.source !== "deterministic"}
+              {#if a.schedule}
+                {@const s = a.schedule}
+                <div class="row" style="gap:14px">
+                  <span class="tabular small">
+                    {formatMoney(s.monthly_payment_minor, a.currency_code ?? currency)}/mo
+                  </span>
+                  <span class="tabular small faint">{(s.current_rate_bps / 100).toFixed(2)}%</span>
+                  <span class="tabular small faint">{s.remaining_term_months} mo left</span>
+                </div>
+              {:else if a.source !== "deterministic"}
                 <div class="row" style="gap:14px">
                   <span class="tabular small">growth {pct(a.annual_growth_bps)}/yr</span>
                   <span class="tabular small faint">± {(a.annual_volatility_bps / 100).toFixed(1)}%/yr</span>
@@ -259,7 +286,7 @@
               {/if}
             </div>
             <div class="a-meta row spread">
-              <span class="small faint">{sourceLabel(a.source)}</span>
+              <span class="small faint">{scheduleLabel(a)}</span>
               {#if a.source !== "deterministic"}
                 <div class="row" style="gap:6px">
                   {#if a.source === "override"}
