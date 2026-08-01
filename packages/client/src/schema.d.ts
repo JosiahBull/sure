@@ -698,6 +698,11 @@ export interface paths {
                     include_one_off?: boolean;
                     /** @description Report currency; defaults to the configured base currency. */
                     currency?: string;
+                    /**
+                     * @description Whose spending to report: `joint`, or a household member's id. Omitted reports the
+                     *     whole household.
+                     */
+                    attributed_to?: string;
                 };
                 header?: never;
                 path: {
@@ -3171,6 +3176,11 @@ export interface paths {
                     include_one_off?: boolean;
                     /** @description Report currency; defaults to the configured base currency. */
                     currency?: string;
+                    /**
+                     * @description Whose spending to report: `joint`, or a household member's id. Omitted reports the
+                     *     whole household.
+                     */
+                    attributed_to?: string;
                 };
                 header?: never;
                 path?: never;
@@ -3215,6 +3225,11 @@ export interface paths {
                     include_one_off?: boolean;
                     /** @description Report currency; defaults to the configured base currency. */
                     currency?: string;
+                    /**
+                     * @description Whose spending to report: `joint`, or a household member's id. Omitted reports the
+                     *     whole household.
+                     */
+                    attributed_to?: string;
                 };
                 header?: never;
                 path?: never;
@@ -3259,6 +3274,11 @@ export interface paths {
                      */
                     interval?: string;
                     currency?: string;
+                    /**
+                     * @description Whose accounts to include: `joint`, or a household member's id. Omitted is the whole
+                     *     household. Filters accounts, not transactions — see the domain type's doc comment.
+                     */
+                    attributed_to?: string;
                 };
                 header?: never;
                 path?: never;
@@ -3303,6 +3323,11 @@ export interface paths {
                     include_one_off?: boolean;
                     /** @description Report currency; defaults to the configured base currency. */
                     currency?: string;
+                    /**
+                     * @description Whose spending to report: `joint`, or a household member's id. Omitted reports the
+                     *     whole household.
+                     */
+                    attributed_to?: string;
                 };
                 header?: never;
                 path?: never;
@@ -4330,6 +4355,7 @@ export interface components {
             currency_code: string;
             /** Format: int64 */
             value_minor: number;
+            ownership: components["schemas"]["Ownership"];
         };
         /**
          * @description Broad grouping used by net-worth and balance logic.

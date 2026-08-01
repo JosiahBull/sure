@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate};
 
-use sure_core::{AccountClass, AccountKind, AppResult, CategoryKind, Interval};
+use sure_core::{AccountClass, AccountKind, AppResult, CategoryKind, Interval, Ownership};
 
 use crate::fx::Fx;
 use crate::ports::{Clock, FxRatesRepo, ReportRepo, SpendTransaction};
@@ -29,6 +29,10 @@ pub struct ReportQuery {
     pub include_one_off: Option<bool>,
     /// Report currency; defaults to the configured base currency.
     pub currency: Option<String>,
+    /// Restrict to one household member's spending, or to the joint bucket. Matches on a
+    /// transaction's *effective* attribution — its own override, else its account's owner.
+    /// `None` reports the whole household, which stays the default everywhere.
+    pub attributed_to: Option<Ownership>,
 }
 
 #[derive(Debug, Default)]
@@ -39,6 +43,15 @@ pub struct NetWorthQuery {
     /// (`sure-api`'s `routes::reports`), so an unrecognised value never reaches here.
     pub interval: Option<Interval>,
     pub currency: Option<String>,
+    /// Restrict to the accounts one household member owns, or to the joint ones.
+    ///
+    /// Net worth is an account-level quantity — a balance belongs to whoever owns the
+    /// account, and a per-transaction override says who a *movement* was for, not who owns
+    /// the pot it moved through. So this filters accounts and ignores overrides, unlike the
+    /// spend reports. Joint accounts are their own bucket rather than being split in half:
+    /// there is no share percentage anywhere in the app, and inventing 50/50 would put a
+    /// number on screen that nothing in the data supports.
+    pub attributed_to: Option<Ownership>,
 }
 
 // ---- result shapes --------------------------------------------------------
@@ -126,6 +139,10 @@ pub struct AccountBalance {
     pub class: AccountClass,
     pub currency_code: String,
     pub value_minor: i64,
+    /// Who owns this account. Carried on the row so the balance sheet can be regrouped by
+    /// person in the client — it already regroups by kind and class the same way — rather
+    /// than the report growing a per-person variant of itself.
+    pub ownership: Ownership,
 }
 
 #[derive(Debug)]
@@ -432,11 +449,16 @@ pub(crate) async fn load_spend(
     from: NaiveDate,
     to: NaiveDate,
     include_one_off: bool,
+    attributed_to: Option<Ownership>,
 ) -> AppResult<Vec<SpendTransaction>> {
     let rows = reports.spend_transactions().await?;
     Ok(rows
         .into_iter()
         .filter(|t| {
+            // Whose spending this is was resolved by the loader (override, else account).
+            if attributed_to.is_some_and(|owner| t.attribution != owner) {
+                return false;
+            }
             // Linked transactions are the two legs of a transfer — internal movement.
             if t.linked_transaction_id.is_some() {
                 return false;
@@ -511,7 +533,10 @@ impl ReportService {
         let base = self.base_currency(q.currency.as_deref()).await?;
         let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
 
-        let accounts = self.reports.account_currencies().await?;
+        let mut accounts = self.reports.account_currencies().await?;
+        if let Some(owner) = q.attributed_to {
+            accounts.retain(|a| a.ownership == owner);
+        }
         let txns = self.reports.transactions().await?;
         let vals = self.reports.valuations().await?;
 
@@ -594,6 +619,7 @@ impl ReportService {
             from,
             to,
             q.include_one_off.unwrap_or(false),
+            q.attributed_to,
         )
         .await?;
 
@@ -653,6 +679,7 @@ impl ReportService {
             from,
             to,
             q.include_one_off.unwrap_or(false),
+            q.attributed_to,
         )
         .await?;
 
@@ -755,6 +782,7 @@ impl ReportService {
                 account_value_at(a.id, &a.currency_code, as_of, &tx_by_acct, &val_by_acct);
             total += fx.to_base_major(value_minor, &ccy);
             out.push(AccountBalance {
+                ownership: a.ownership,
                 account_id: a.id,
                 name: a.name.clone(),
                 kind: a.kind,

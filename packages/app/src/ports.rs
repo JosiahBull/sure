@@ -300,6 +300,7 @@ pub struct ExchangeRateRow {
 pub struct AccountCurrency {
     pub id: i64,
     pub currency_code: String,
+    pub ownership: Ownership,
 }
 
 /// A non-archived account, for the current-balances report.
@@ -309,6 +310,7 @@ pub struct ActiveAccount {
     pub name: String,
     pub kind: AccountKind,
     pub currency_code: String,
+    pub ownership: Ownership,
 }
 
 /// A single asset account, for the equity-position report.
@@ -365,6 +367,8 @@ pub struct SpendTransaction {
     pub is_one_off: bool,
     pub linked_transaction_id: Option<i64>,
     pub account_kind: AccountKind,
+    /// Already-resolved effective attribution (override, else the account's owner).
+    pub attribution: Ownership,
 }
 
 /// A transaction row denormalised for rule evaluation.

@@ -3,6 +3,7 @@
 // denominator (a kind-group's share of its own tab's total, not of net worth as a whole).
 import type { Schemas } from "./api";
 import { kindLabel } from "./accountMeta";
+import { ownershipKey, ownershipLabel, ownershipColor, people } from "./people.svelte";
 
 export type PanelTab = "all" | "assets" | "debts";
 
@@ -133,6 +134,60 @@ export function groupByClass(
   });
   // Fixed reference order (assets first, then debts), not by value.
   groups.sort((a, b) => classOf(a.accounts[0].kind).order - classOf(b.accounts[0].kind).order);
+
+  return { groups, totalMinor };
+}
+
+// --- Grouping by household member -------------------------------------------
+// Balances are account-level, so "whose is this" is answered entirely by the account's own
+// owner — no server round trip, the same way the kind/class groupings work off the one
+// balances response.
+
+export interface OwnerGroup {
+  key: string;
+  label: string;
+  /** The person's colour, or null for the joint bucket. */
+  color: string | null;
+  totalMinor: number;
+  accounts: Schemas["AccountBalance"][];
+}
+
+/**
+ * Split a tab's accounts by owner: one bucket per household member plus a joint one.
+ *
+ * Joint is a bucket rather than a 50/50 split of each person's column — there is no share
+ * percentage anywhere in the app, so halving the mortgage would put a number on screen that
+ * nothing in the data supports. Empty buckets are dropped, and people keep their configured
+ * order so the columns don't reshuffle as balances move.
+ */
+export function groupByOwner(
+  accounts: Schemas["AccountBalance"][],
+  tab: PanelTab
+): { groups: OwnerGroup[]; totalMinor: number } {
+  const rows = accounts.filter((a) => inTab(a, tab));
+  const totalMinor = rows.reduce((sum, a) => sum + a.value_minor, 0);
+
+  const byOwner = new Map<string, Schemas["AccountBalance"][]>();
+  for (const a of rows) {
+    const key = ownershipKey(a.ownership);
+    const list = byOwner.get(key);
+    if (list) list.push(a);
+    else byOwner.set(key, [a]);
+  }
+
+  const order = [...people.list.map((p) => `person:${p.id}`), "joint"];
+  const groups: OwnerGroup[] = [...byOwner.entries()].map(([key, groupAccounts]) => ({
+    key,
+    label: ownershipLabel(groupAccounts[0].ownership),
+    color: ownershipColor(groupAccounts[0].ownership),
+    totalMinor: groupAccounts.reduce((sum, a) => sum + a.value_minor, 0),
+    accounts: groupAccounts,
+  }));
+  groups.sort((a, b) => {
+    const ai = order.indexOf(a.key);
+    const bi = order.indexOf(b.key);
+    return (ai === -1 ? order.length : ai) - (bi === -1 ? order.length : bi);
+  });
 
   return { groups, totalMinor };
 }

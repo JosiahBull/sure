@@ -15,7 +15,23 @@ export const filters = $state({
   includeOneOff: false,
   /** Brush-selected window (Grafana-style zoom) that overrides `range` while set. */
   custom: null as { from: string; to: string } | null,
+  /**
+   * Whose money the reports describe: an `ownershipKey` ("person:3" / "joint"), or "" for
+   * the whole household — which stays the default, because the household total is still the
+   * number you usually want.
+   */
+  attributedTo: "",
 });
+
+/**
+ * The `attributed_to` query param for the reports, or undefined for the whole household.
+ * The wire form is a bare id or "joint"; the UI's key form carries a "person:" prefix.
+ */
+export function attributionParam(): string | undefined {
+  const key = filters.attributedTo;
+  if (key === "") return undefined;
+  return key.startsWith("person:") ? key.slice("person:".length) : key;
+}
 
 function iso(d: Date): string {
   return d.toISOString().slice(0, 10);

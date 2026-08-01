@@ -495,6 +495,7 @@ impl ReportRepo for SqliteStore {
             .map(|a| AccountCurrency {
                 id: a.id,
                 currency_code: a.currency_code,
+                ownership: a.ownership,
             })
             .collect())
     }
@@ -543,6 +544,7 @@ impl ReportRepo for SqliteStore {
             .await?
             .into_iter()
             .map(|t| sure_app::ports::SpendTransaction {
+                attribution: t.attribution,
                 posted_at: t.posted_at,
                 amount_minor: t.amount_minor,
                 currency_code: t.currency_code,
@@ -563,6 +565,7 @@ impl ReportRepo for SqliteStore {
             .await?
             .into_iter()
             .map(|a| ActiveAccount {
+                ownership: a.ownership,
                 id: a.id,
                 name: a.name,
                 kind: a.kind, // already `sure_core::AccountKind`, parsed in the DAL
