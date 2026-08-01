@@ -10,6 +10,7 @@
     ensureLoaded as ensurePeopleLoaded,
     ownershipLabel,
     ownershipColor,
+    ownershipKey,
     ownershipFromKey,
     ownershipOptions,
   } from "../lib/people.svelte";
@@ -491,6 +492,11 @@
         notes: t.notes,
         category_id: t.category_id,
         is_one_off: t.is_one_off,
+        // Every field the row already has must be restated: this is a full-replace PUT, so
+        // anything omitted is cleared. `ownership` especially — an omitted attribution
+        // override reads as "follow the account", which would quietly undo a hand-set one
+        // every time an unrelated inline edit was made.
+        ownership: t.ownership,
         ...patch,
       },
     });
@@ -499,6 +505,10 @@
 
   const setCategory = (t: Tx, cat: number | "") =>
     saveTx(t, { category_id: cat === "" ? null : cat });
+
+  /** Attribute one transaction from its row. `inherit` drops the override. */
+  const setOwner = (t: Tx, key: string) =>
+    saveTx(t, { ownership: key === "inherit" ? null : ownershipFromKey(key) });
 
   // ---- Bulk selection & actions ----
   // Selected transaction ids. Reassigned (never mutated in place) on every change so
@@ -858,16 +868,30 @@
                 {#if owner}
                   {@const c = ownershipColor(owner.ownership)}
                   <!-- Faint when it simply follows the account, solid when this transaction
-                       was attributed by hand — so an override is visible at a glance. -->
+                       was attributed by hand — so an override is visible at a glance. The
+                       real <select> sits transparently on top, same as the category pill. -->
                   <span
                     class="owner-chip"
                     class:inherited={owner.inherited}
                     style={c ? `--owner:${c}` : undefined}
                     title={owner.inherited
-                      ? `Follows the account's owner`
+                      ? "Follows the account's owner — click to attribute this one differently"
                       : `Attributed to ${ownershipLabel(owner.ownership)} on this transaction`}
                   >
                     {ownershipLabel(owner.ownership)}
+                    <select
+                      class="pill-select"
+                      aria-label="Attributed to"
+                      value={t.ownership ? ownershipKey(t.ownership) : "inherit"}
+                      onchange={(e) => setOwner(t, e.currentTarget.value)}
+                    >
+                      <!-- Named for what it does, not for a state: there is no
+                           "unattributed" — this hands the row back to its account. -->
+                      <option value="inherit">Follow the account</option>
+                      {#each ownershipOptions() as o (o.key)}
+                        <option value={o.key}>{o.label}</option>
+                      {/each}
+                    </select>
                   </span>
                 {/if}
               {/if}
@@ -1306,7 +1330,9 @@
     background: var(--hover);
   }
   .owner-chip {
+    position: relative;
     flex: none;
+    cursor: pointer;
     font-size: 11px;
     font-weight: 600;
     padding: 1px 7px;
