@@ -99,11 +99,6 @@ error. (See `packages/client/strip-operation-ids.mjs` for why the spec is post-p
 
 - Rust (nightly is used here; stable ≥ 1.85 with edition 2021 also works)
 - Node ≥ 22 and `pnpm` (`corepack enable`)
-- **Temporary**: `akahu-client` is patched to a local clone (see `[patch.crates-io]` in
-  the root `Cargo.toml`) until a real `0.2.0` is published — clone
-  `github.com/josiahbull/akahu-client` as a sibling directory (`../akahu-client` relative
-  to this repo) before building. Remove the patch and bump
-  `packages/providers/Cargo.toml`'s version requirement once that's published.
 
 ## Quick start
 
