@@ -84,6 +84,12 @@ COPY --from=web /build/packages/web/dist ./web
 # Single-binary runtime config. BIND_ADDR is 0.0.0.0 because the app's own default,
 # 127.0.0.1, is unreachable from outside the container. The SQLite DB lives under /data
 # (a volume) so it survives container replacement; sure-api creates the file on start.
+#
+# On top of the non-root user below, sure-api sandboxes *itself* with Landlock at startup:
+# /data is the only writable path, nothing anywhere is executable, and outbound TCP is
+# limited to 443 and 53. It needs no privileges and nothing from the runtime, so there is
+# nothing to configure here — set SURE_SANDBOX=enforce to refuse to start when the host
+# kernel is too old to apply all of it. See docs/SANDBOX.md.
 ENV DATABASE_URL=sqlite:/data/sure.db \
     BIND_ADDR=0.0.0.0:8080 \
     WEB_DIR=/app/web \

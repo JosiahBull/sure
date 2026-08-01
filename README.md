@@ -65,7 +65,8 @@ Flat pnpm + Cargo workspace under `packages/`. The backend follows a ports-and-a
 framework and the database wired in as adapters at the edges — see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning and the interface choices,
 and [docs/HTTP.md](docs/HTTP.md) for what the HTTP boundary does around them (caching,
-compression, HTTP/2, rate limiting).
+compression, HTTP/2, rate limiting). On Linux the server also sandboxes itself with
+Landlock before it does any work — see [docs/SANDBOX.md](docs/SANDBOX.md).
 
 ```
 packages/
@@ -196,6 +197,14 @@ The HTTP layer — cache directives, compression, h2c, and the abuse guards — 
 in [docs/HTTP.md](docs/HTTP.md), along with every env var that tunes it. The defaults are
 the intended settings; the most likely one to change is `CORS_ALLOWED_ORIGINS` if you serve
 the app from a different hostname than `sure.bullfamilies.com`.
+
+On Linux the process sandboxes itself with [Landlock](https://landlock.io) before it opens
+the database or binds a socket: writable access to the data directory and nothing else,
+read access to the SPA directory and the system config it needs, no `execve` anywhere, and
+outbound TCP limited to 443 and 53. It needs no privileges and nothing on the host — set
+`SURE_SANDBOX=enforce` to refuse to start if the kernel can't apply all of it. The policy,
+its two deliberate compromises, and the rest of the `SURE_SANDBOX_*` vars are in
+[docs/SANDBOX.md](docs/SANDBOX.md).
 
 For the Akahu bank-feed provider (NZ accounts + transactions), set `AKAHU_APP_TOKEN` and
 `AKAHU_USER_TOKEN` in the environment or in `.env` (from your Akahu personal-app

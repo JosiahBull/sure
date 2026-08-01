@@ -25,3 +25,8 @@ tower = { workspace = true }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
 tracing = { workspace = true }
+
+# Landlock is a Linux LSM with no equivalent elsewhere; `sandbox.rs` compiles to a logged
+# no-op on other platforms so a macOS `cargo run` doesn't need it at all.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { workspace = true }

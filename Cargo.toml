@@ -93,6 +93,9 @@ anyhow = "1"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Linux-only, and only depended on by `sure-server`: the self-sandbox it applies in `main`
+# before the tokio runtime starts. See packages/server/src/sandbox.rs.
+landlock = "0.4"
 # Only used to name sqlx's `log_statements` level filter; sqlx's logging itself is
 # bridged into `tracing` by the subscriber.
 log = "0.4"

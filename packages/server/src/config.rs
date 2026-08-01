@@ -6,6 +6,7 @@ use std::time::Duration;
 use sure_api::config::{ApiConfig, Limits, DEFAULT_CORS_ORIGINS};
 
 use crate::http::HttpConfig;
+use crate::sandbox::{SandboxConfig, SandboxMode};
 
 /// Runtime configuration, sourced from the environment with sensible local defaults.
 ///
@@ -29,6 +30,9 @@ pub struct Config {
     /// transfer linking) runs at all. On outside tests — see `serve` for why the e2e suite
     /// turns it off.
     pub background_tasks: bool,
+    /// The Landlock self-sandbox: how hard to insist on it, and anything to allow beyond
+    /// what the server needs on its own.
+    pub sandbox: SandboxConfig,
 }
 
 /// Fold a `.env` file into the process environment, before anything reads it, and return
@@ -121,6 +125,13 @@ impl Config {
             shutdown_grace: secs("SHUTDOWN_GRACE_SECS", http_defaults.shutdown_grace),
         };
 
+        let sandbox = SandboxConfig {
+            mode: parsed("SURE_SANDBOX", SandboxMode::default()),
+            read_paths: paths("SURE_SANDBOX_READ_PATHS"),
+            write_paths: paths("SURE_SANDBOX_WRITE_PATHS"),
+            connect_ports: ports("SURE_SANDBOX_CONNECT_PORTS"),
+        };
+
         Ok(Self {
             database_url,
             bind_addr,
@@ -128,6 +139,7 @@ impl Config {
             api,
             http,
             background_tasks: flag("BACKGROUND_TASKS", true),
+            sandbox,
         })
     }
 }
@@ -168,6 +180,37 @@ fn flag(name: &str, default: bool) -> bool {
                 default
             }
         },
+    }
+}
+
+/// Read `name` as a `:`-separated path list — the separator `PATH` and Landlock's own
+/// sandboxer use, and the one a path can't contain by accident the way it can a comma.
+fn paths(name: &str) -> Vec<PathBuf> {
+    let Some(raw) = std::env::var_os(name) else {
+        return Vec::new();
+    };
+    std::env::split_paths(&raw)
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect()
+}
+
+/// Read `name` as a comma-separated port list, dropping (loudly) anything that isn't a
+/// port. Unlike a limit, a bad entry here can only ever *narrow* what the sandbox allows.
+fn ports(name: &str) -> Vec<u16> {
+    match std::env::var(name) {
+        Err(_) => Vec::new(),
+        Ok(raw) => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| match s.parse() {
+                Ok(port) => Some(port),
+                Err(_) => {
+                    tracing::warn!(env = name, value = s, "not a port number; ignoring it");
+                    None
+                }
+            })
+            .collect(),
     }
 }
 
