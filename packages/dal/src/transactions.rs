@@ -1,5 +1,5 @@
 use sqlx::{FromRow, QueryBuilder, Sqlite};
-use sure_core::{AppError, AppResult};
+use sure_core::{AppError, AppResult, Ownership};
 pub use sure_core::{
     BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,
     TxQuery,
@@ -24,13 +24,34 @@ pub(crate) struct TransactionRow {
     provider: Option<String>,
     external_id: Option<String>,
     categorized_by_rule_id: Option<i64>,
+    ownership: Option<String>,
+    person_id: Option<i64>,
     created_at: String,
     updated_at: String,
 }
 
-impl From<TransactionRow> for Transaction {
-    fn from(r: TransactionRow) -> Self {
-        Transaction {
+impl TryFrom<TransactionRow> for Transaction {
+    type Error = AppError;
+
+    fn try_from(r: TransactionRow) -> AppResult<Self> {
+        // `None` is a legitimate value here (inherit from the account), so only a *present*
+        // discriminant is parsed — and then strictly, exactly like the accounts row does:
+        // the pair is only ever written together, so a half-written one means the row came
+        // from something that went around every writer we own.
+        let ownership = match (r.ownership.as_deref(), r.person_id) {
+            (None, None) => None,
+            (None, Some(_)) => {
+                return Err(AppError::Internal(anyhow::anyhow!(
+                    "transaction has a person_id but no ownership discriminant"
+                )))
+            }
+            (Some(kind), person_id) => Some(
+                Ownership::from_stored(kind, person_id)
+                    .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))?,
+            ),
+        };
+        Ok(Transaction {
+            ownership,
             id: r.id,
             account_id: r.account_id,
             posted_at: r.posted_at,
@@ -48,54 +69,99 @@ impl From<TransactionRow> for Transaction {
             categorized_by_rule_id: r.categorized_by_rule_id,
             created_at: r.created_at,
             updated_at: r.updated_at,
+        })
+    }
+}
+
+/// Split an attribution override into the two columns to bind, validating the person exists
+/// so a stale id is a 422 naming it rather than an opaque FK violation.
+///
+/// `None` (no override) is the common case and stores as two NULLs — the transaction follows
+/// its account, for good, including when that account is later re-attributed.
+async fn split_ownership(
+    db: &Db,
+    ownership: Option<Ownership>,
+) -> AppResult<(Option<&'static str>, Option<i64>)> {
+    let Some(ownership) = ownership else {
+        return Ok((None, None));
+    };
+    if let Ownership::Person { person_id } = ownership {
+        if !crate::people::exists(db, person_id).await? {
+            return Err(AppError::validation(format!(
+                "person {person_id} does not exist"
+            )));
         }
     }
+    let (kind, person_id) = ownership.as_parts();
+    Ok((Some(kind), person_id))
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
-    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("SELECT * FROM transactions WHERE 1=1");
+    // `t.*`, not `*`: the join below would otherwise splice the account's own `ownership`
+    // and `person_id` columns into the row and shadow the transaction's.
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "SELECT t.* FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE 1=1",
+    );
     if let Some(account_id) = q.account_id {
-        qb.push(" AND account_id = ").push_bind(account_id);
+        qb.push(" AND t.account_id = ").push_bind(account_id);
     }
     if let Some(category_id) = q.category_id {
-        qb.push(" AND category_id = ").push_bind(category_id);
+        qb.push(" AND t.category_id = ").push_bind(category_id);
     }
     if let Some(from) = q.from.as_deref() {
-        qb.push(" AND date(posted_at) >= date(")
+        qb.push(" AND date(t.posted_at) >= date(")
             .push_bind(from.to_string())
             .push(")");
     }
     if let Some(to) = q.to.as_deref() {
-        qb.push(" AND date(posted_at) <= date(")
+        qb.push(" AND date(t.posted_at) <= date(")
             .push_bind(to.to_string())
             .push(")");
     }
     if !q.include_one_off.unwrap_or(true) {
-        qb.push(" AND is_one_off = 0");
+        qb.push(" AND t.is_one_off = 0");
     }
     if let Some(search) = q.search.as_deref().filter(|s| !s.is_empty()) {
         let like = format!("%{}%", search.to_lowercase());
-        qb.push(" AND (lower(description) LIKE ")
+        qb.push(" AND (lower(t.description) LIKE ")
             .push_bind(like.clone())
-            .push(" OR lower(coalesce(merchant,'')) LIKE ")
+            .push(" OR lower(coalesce(t.merchant,'')) LIKE ")
             .push_bind(like.clone())
-            .push(" OR lower(coalesce(notes,'')) LIKE ")
+            .push(" OR lower(coalesce(t.notes,'')) LIKE ")
             .push_bind(like)
             .push(")");
     }
-    qb.push(" ORDER BY date(posted_at) DESC, id DESC");
+    // Effective attribution: the transaction's own override, or — when it has none — its
+    // account's owner. Written as two OR'd equality branches rather than a CASE so SQLite
+    // can still use `idx_tx_person` / `idx_accounts_person` for the selective half.
+    if let Some(attributed_to) = q.attributed_to {
+        match attributed_to {
+            Ownership::Person { person_id } => {
+                qb.push(" AND ((t.ownership = 'person' AND t.person_id = ")
+                    .push_bind(person_id)
+                    .push(") OR (t.ownership IS NULL AND a.ownership = 'person' AND a.person_id = ")
+                    .push_bind(person_id)
+                    .push("))");
+            }
+            Ownership::Joint => {
+                qb.push(
+                    " AND (t.ownership = 'joint'                      OR (t.ownership IS NULL AND a.ownership = 'joint'))",
+                );
+            }
+        }
+    }
+    qb.push(" ORDER BY date(t.posted_at) DESC, t.id DESC");
     let limit = q.limit.unwrap_or(1000).clamp(1, 10_000);
     qb.push(" LIMIT ").push_bind(limit);
     qb.push(" OFFSET ").push_bind(q.offset.unwrap_or(0).max(0));
 
-    Ok(qb
-        .build_query_as::<TransactionRow>()
+    qb.build_query_as::<TransactionRow>()
         .fetch_all(db)
         .await?
         .into_iter()
-        .map(Into::into)
-        .collect())
+        .map(Transaction::try_from)
+        .collect()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -107,11 +173,12 @@ pub async fn get(db: &Db, id: i64) -> AppResult<Transaction> {
 pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
     let currency = resolve_currency(db, &input).await?;
     validate_category(db, input.category_id).await?;
-    Ok(sqlx::query_as::<_, TransactionRow>(
+    let (ownership, person_id) = split_ownership(db, input.ownership).await?;
+    sqlx::query_as::<_, TransactionRow>(
         "INSERT INTO transactions
             (account_id, posted_at, amount_minor, currency_code, description, merchant, notes,
-             category_id, is_one_off, merchant_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) RETURNING *",
+             category_id, is_one_off, merchant_id, ownership, person_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) RETURNING *",
     )
     .bind(input.account_id)
     .bind(input.posted_at.trim())
@@ -123,19 +190,23 @@ pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
     .bind(input.category_id)
     .bind(input.is_one_off)
     .bind(input.merchant_id)
+    .bind(ownership)
+    .bind(person_id)
     .fetch_one(db)
     .await
     .map_err(map_fk)?
-    .into())
+    .try_into()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Transaction> {
     let currency = resolve_currency(db, &input).await?;
     validate_category(db, input.category_id).await?;
-    Ok(sqlx::query_as::<_, TransactionRow>(
+    let (ownership, person_id) = split_ownership(db, input.ownership).await?;
+    sqlx::query_as::<_, TransactionRow>(
         "UPDATE transactions SET account_id=?2, posted_at=?3, amount_minor=?4, currency_code=?5,
             description=?6, merchant=?7, notes=?8, category_id=?9, is_one_off=?10, merchant_id=?11,
+            ownership=?12, person_id=?13,
             categorized_by_rule_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id=?1 RETURNING *",
     )
@@ -150,11 +221,13 @@ pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Trans
     .bind(input.category_id)
     .bind(input.is_one_off)
     .bind(input.merchant_id)
+    .bind(ownership)
+    .bind(person_id)
     .fetch_optional(db)
     .await
     .map_err(map_fk)?
     .ok_or(AppError::NotFound("transaction"))?
-    .into())
+    .try_into()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -178,14 +251,25 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
         category_id,
         merchant_id,
         is_one_off,
+        ownership,
     } = input;
-    if ids.is_empty() || (category_id.is_none() && merchant_id.is_none() && is_one_off.is_none()) {
+    if ids.is_empty()
+        || (category_id.is_none()
+            && merchant_id.is_none()
+            && is_one_off.is_none()
+            && ownership.is_none())
+    {
         return Ok(0);
     }
     // Validate a to-be-set category once up front (a cleared/absent one needs no check).
     if let Some(Some(cid)) = category_id {
         validate_category(db, Some(cid)).await?;
     }
+    // Same for an attribution: check the person exists once, not once per row.
+    let ownership_columns = match ownership {
+        Some(o) => Some(split_ownership(db, o).await?),
+        None => None,
+    };
 
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("UPDATE transactions SET ");
     {
@@ -204,6 +288,14 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
         if let Some(one_off) = is_one_off {
             set.push("is_one_off = ");
             set.push_bind_unseparated(one_off);
+        }
+        // Both columns always move together — a discriminant without its person (or the
+        // reverse) is refused by the table's trigger, and rightly so.
+        if let Some((kind, person_id)) = ownership_columns {
+            set.push("ownership = ");
+            set.push_bind_unseparated(kind);
+            set.push("person_id = ");
+            set.push_bind_unseparated(person_id);
         }
         set.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')");
     }
@@ -318,7 +410,7 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
     .bind(req.category_id)
     .fetch_one(&mut *tx)
     .await?
-    .into();
+    .try_into()?;
     let inflow: Transaction = sqlx::query_as::<_, TransactionRow>(
         "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code, description, category_id, linked_transaction_id)
          VALUES (?1,?2,?3,?4,?5,?6,?7) RETURNING *",
@@ -332,7 +424,7 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
     .bind(out.id)
     .fetch_one(&mut *tx)
     .await?
-    .into();
+    .try_into()?;
     sqlx::query("UPDATE transactions SET linked_transaction_id=?2 WHERE id=?1")
         .bind(out.id)
         .bind(inflow.id)
@@ -444,14 +536,12 @@ pub async fn link_transfers(db: &Db, window_days: i64) -> AppResult<i64> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn fetch(db: &Db, id: i64) -> AppResult<Transaction> {
-    Ok(
-        sqlx::query_as::<_, TransactionRow>("SELECT * FROM transactions WHERE id = ?1")
-            .bind(id)
-            .fetch_optional(db)
-            .await?
-            .ok_or(AppError::NotFound("transaction"))?
-            .into(),
-    )
+    sqlx::query_as::<_, TransactionRow>("SELECT * FROM transactions WHERE id = ?1")
+        .bind(id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound("transaction"))?
+        .try_into()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -532,6 +622,8 @@ mod tests {
                 sort_order: 0,
                 opening_balance_minor: Some(0),
                 opening_balance_date: Some("2020-01-01".to_string()),
+                // These tests don't care who owns the account; joint needs no person row.
+                ownership: sure_core::Ownership::Joint,
             },
         )
         .await
@@ -553,6 +645,7 @@ mod tests {
                 category_id: None,
                 is_one_off: false,
                 merchant_id: None,
+                ownership: None,
             },
         )
         .await
@@ -633,6 +726,7 @@ mod tests {
                 category_id: Some(Some(groceries)),
                 merchant_id: None,
                 is_one_off: Some(true),
+                ownership: None,
             },
         )
         .await
@@ -663,6 +757,7 @@ mod tests {
                 category_id: Some(Some(groceries)),
                 merchant_id: None,
                 is_one_off: None,
+                ownership: None,
             },
         )
         .await
@@ -677,6 +772,7 @@ mod tests {
                 category_id: Some(None),
                 merchant_id: None,
                 is_one_off: None,
+                ownership: None,
             },
         )
         .await
@@ -697,7 +793,8 @@ mod tests {
                     ids: vec![],
                     category_id: Some(None),
                     merchant_id: None,
-                    is_one_off: None
+                    is_one_off: None,
+                    ownership: None,
                 }
             )
             .await
@@ -712,7 +809,8 @@ mod tests {
                     ids: vec![a],
                     category_id: None,
                     merchant_id: None,
-                    is_one_off: None
+                    is_one_off: None,
+                    ownership: None,
                 }
             )
             .await
@@ -773,5 +871,215 @@ mod tests {
 
         // Idempotent: a further pass finds nothing new.
         assert_eq!(link_transfers(&db, 5).await.unwrap(), 0);
+    }
+    // --- attribution --------------------------------------------------------
+
+    async fn person(db: &Db, name: &str) -> i64 {
+        crate::people::create(
+            db,
+            sure_core::SavePerson {
+                name: name.to_string(),
+                color: None,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    /// An account owned by `ownership`, so the inheritance path has something to inherit.
+    async fn owned_account(db: &Db, name: &str, ownership: Ownership) -> i64 {
+        crate::accounts::create(
+            db,
+            SaveAccount {
+                name: name.to_string(),
+                kind: AccountKind::Bank,
+                institution: Some("ANZ".to_string()),
+                currency_code: "NZD".to_string(),
+                metadata: None,
+                archived: false,
+                sort_order: 0,
+                opening_balance_minor: Some(0),
+                opening_balance_date: Some("2020-01-01".to_string()),
+                ownership,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    async fn attributed(db: &Db, to: Ownership) -> Vec<String> {
+        let mut names: Vec<String> = list(
+            db,
+            TxQuery {
+                attributed_to: Some(to),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.description)
+        .collect();
+        names.sort();
+        names
+    }
+
+    async fn described(db: &Db, account_id: i64, description: &str, ownership: Option<Ownership>) {
+        create(
+            db,
+            SaveTransaction {
+                account_id,
+                posted_at: "2026-02-01".to_string(),
+                amount_minor: -100,
+                currency_code: Some("NZD".to_string()),
+                description: description.to_string(),
+                merchant: None,
+                notes: None,
+                category_id: None,
+                is_one_off: false,
+                merchant_id: None,
+                ownership,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_transaction_inherits_its_accounts_owner_and_an_override_wins() {
+        let db = test_db().await;
+        let alex = person(&db, "Alex").await;
+        let sam = person(&db, "Sam").await;
+        let alexs = owned_account(&db, "Alex's card", Ownership::Person { person_id: alex }).await;
+        let shared = owned_account(&db, "Joint account", Ownership::Joint).await;
+
+        described(&db, alexs, "alex inherited", None).await;
+        described(&db, shared, "joint inherited", None).await;
+        // The two cases an override exists for, in both directions.
+        described(
+            &db,
+            shared,
+            "sams share of the joint card",
+            Some(Ownership::Person { person_id: sam }),
+        )
+        .await;
+        described(
+            &db,
+            alexs,
+            "a shared expense on alex's card",
+            Some(Ownership::Joint),
+        )
+        .await;
+
+        assert_eq!(
+            attributed(&db, Ownership::Person { person_id: alex }).await,
+            ["alex inherited"]
+        );
+        assert_eq!(
+            attributed(&db, Ownership::Person { person_id: sam }).await,
+            ["sams share of the joint card"]
+        );
+        assert_eq!(
+            attributed(&db, Ownership::Joint).await,
+            ["a shared expense on alex's card", "joint inherited"]
+        );
+    }
+
+    /// Inheritance is by reference, not a copy taken at import time — so sorting out whose
+    /// account is whose moves its whole history at once, which is the entire point.
+    #[tokio::test]
+    async fn re_attributing_an_account_moves_its_uneoverridden_history() {
+        let db = test_db().await;
+        let alex = person(&db, "Alex").await;
+        let sam = person(&db, "Sam").await;
+        let account = owned_account(&db, "Everyday", Ownership::Person { person_id: alex }).await;
+        described(&db, account, "inherited", None).await;
+        described(
+            &db,
+            account,
+            "pinned to sam",
+            Some(Ownership::Person { person_id: sam }),
+        )
+        .await;
+
+        crate::accounts::set_ownership(&db, account, Ownership::Person { person_id: sam })
+            .await
+            .unwrap();
+
+        // The inherited row followed the account; the override didn't move.
+        assert!(attributed(&db, Ownership::Person { person_id: alex })
+            .await
+            .is_empty());
+        assert_eq!(
+            attributed(&db, Ownership::Person { person_id: sam }).await,
+            ["inherited", "pinned to sam"]
+        );
+    }
+
+    #[tokio::test]
+    async fn bulk_update_sets_and_clears_an_override() {
+        let db = test_db().await;
+        let alex = person(&db, "Alex").await;
+        let account = owned_account(&db, "Joint", Ownership::Joint).await;
+        described(&db, account, "one", None).await;
+        described(&db, account, "two", None).await;
+        let ids: Vec<i64> = list(&db, TxQuery::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+
+        let set = BulkUpdate {
+            ids: ids.clone(),
+            category_id: None,
+            merchant_id: None,
+            is_one_off: None,
+            ownership: Some(Some(Ownership::Person { person_id: alex })),
+        };
+        assert_eq!(bulk_update(&db, set).await.unwrap(), 2);
+        assert_eq!(
+            attributed(&db, Ownership::Person { person_id: alex }).await,
+            ["one", "two"]
+        );
+
+        // A present `null` clears the override, so both go back to following the account.
+        let clear = BulkUpdate {
+            ids,
+            category_id: None,
+            merchant_id: None,
+            is_one_off: None,
+            ownership: Some(None),
+        };
+        assert_eq!(bulk_update(&db, clear).await.unwrap(), 2);
+        assert_eq!(attributed(&db, Ownership::Joint).await, ["one", "two"]);
+    }
+
+    #[tokio::test]
+    async fn an_override_naming_nobody_is_refused() {
+        let db = test_db().await;
+        let account = owned_account(&db, "Joint", Ownership::Joint).await;
+        let err = create(
+            &db,
+            SaveTransaction {
+                account_id: account,
+                posted_at: "2026-02-01".to_string(),
+                amount_minor: -100,
+                currency_code: Some("NZD".to_string()),
+                description: "x".to_string(),
+                merchant: None,
+                notes: None,
+                category_id: None,
+                is_one_off: false,
+                merchant_id: None,
+                ownership: Some(Ownership::Person { person_id: 404 }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
     }
 }

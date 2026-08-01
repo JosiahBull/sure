@@ -24,6 +24,7 @@ pub mod equity;
 pub mod exchange_rate_cache;
 pub mod forecast;
 pub mod merchants;
+pub mod people;
 pub mod providers;
 pub mod reports;
 pub mod rules;

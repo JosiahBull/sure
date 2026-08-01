@@ -12,20 +12,20 @@ use sure_app::ports::{
     AccountCurrency, AccountRepo, ActiveAccount, Activity30dRow, AssetAccount, BrokerageRepo,
     CategoryRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo, DividendImport, EquityRepo,
     ExchangeRateRepo, ExchangeRateRow, ForecastRepo, FxRatesRepo, HoldingImport, HoldingRow,
-    ImportCounts, ImportRow, LedgerTx, LedgerValuation, MerchantRepo, PlannedApplication,
-    ProviderRepo, ReportCategory, ReportRepo, RuleRepo, SecuredLiabilityAccount, SettingsRepo,
-    SharesTicker, SnapshotRepo, StockPriceCacheRepo, TransactionRepo, TransferRepo, TxCtx,
-    ValuationRepo, WalletRow,
+    ImportCounts, ImportRow, LedgerTx, LedgerValuation, MerchantRepo, PersonRepo,
+    PlannedApplication, ProviderRepo, ReportCategory, ReportRepo, RuleRepo,
+    SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo, StockPriceCacheRepo,
+    TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
     CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, ForecastAssumption,
     ForecastEvent, ForecastTargetType, HoldingLot, LinkProviderAccount, LinkProviderGroup,
-    LinkRequest, Merchant, NewCurrency, NewValuation, Provider, ProviderSync, Rule,
-    RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
-    SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
-    SaveMerchant, SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice, SyncOutcome,
-    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
+    LinkRequest, Merchant, NewCurrency, NewValuation, Ownership, Person, Provider, ProviderSync,
+    Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory,
+    SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
+    SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice,
+    SyncOutcome, Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
 };
 
 use crate::Db;
@@ -69,6 +69,14 @@ impl AccountRepo for SqliteStore {
         crate::accounts::set_secured_by(&self.db, id, target).await
     }
 
+    async fn set_ownership(&self, id: i64, ownership: Ownership) -> AppResult<Account> {
+        crate::accounts::set_ownership(&self.db, id, ownership).await
+    }
+
+    async fn set_ownership_bulk(&self, ids: &[i64], ownership: Ownership) -> AppResult<u64> {
+        crate::accounts::set_ownership_bulk(&self.db, ids, ownership).await
+    }
+
     async fn list_shares_tickers(&self) -> AppResult<Vec<SharesTicker>> {
         Ok(crate::accounts::list_shares_tickers(&self.db)
             .await?
@@ -105,6 +113,29 @@ impl AccountRepo for SqliteStore {
 
     async fn set_institution_if_unset(&self, account_id: i64, institution: &str) -> AppResult<()> {
         crate::accounts::set_institution_if_unset(&self.db, account_id, institution).await
+    }
+}
+
+#[async_trait]
+impl PersonRepo for SqliteStore {
+    async fn list(&self) -> AppResult<Vec<Person>> {
+        crate::people::list(&self.db).await
+    }
+
+    async fn get(&self, id: i64) -> AppResult<Person> {
+        crate::people::get(&self.db, id).await
+    }
+
+    async fn create(&self, input: SavePerson) -> AppResult<Person> {
+        crate::people::create(&self.db, input).await
+    }
+
+    async fn update(&self, id: i64, input: SavePerson) -> AppResult<Person> {
+        crate::people::update(&self.db, id, input).await
+    }
+
+    async fn delete(&self, id: i64) -> AppResult<()> {
+        crate::people::delete(&self.db, id).await
     }
 }
 

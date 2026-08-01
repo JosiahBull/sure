@@ -37,7 +37,14 @@ test("account lifecycle and classes", async ({ api }) => {
   expect(sharesBody.data?.class).toBe("investment");
 
   const bad = await api.POST("/api/accounts", {
-    body: { name: "Bad", kind: "bank", currency_code: "ZZZ", archived: false, sort_order: 0 },
+    body: {
+      name: "Bad",
+      kind: "bank",
+      currency_code: "ZZZ",
+      archived: false,
+      sort_order: 0,
+      ownership: { kind: "joint" },
+    },
   });
   expect(bad.response.status).toBe(422);
 

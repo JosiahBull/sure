@@ -77,6 +77,10 @@ const INSTITUTION_REQUIRED: AccountKind[] = ["bank", "savings", "credit_card", "
  * whatever the caller passes, so a spec asserting on metadata still gets exactly what it
  * asked for. The opening balance defaults to zero, which deliberately seeds no ledger row,
  * leaving each spec's own transactions/valuations the only ones present.
+ *
+ * `ownership` is required by the API — every account belongs to a household member or is
+ * joint. Specs that aren't about attribution get `joint`, which needs no person to exist;
+ * the ones that are pass their own.
  */
 export async function createAccount(
   api: SureClient,
@@ -86,11 +90,12 @@ export async function createAccount(
   extra: {
     metadata?: Schemas["AccountMetadata"];
     institution?: string;
+    ownership?: Schemas["Ownership"];
     opening_balance_minor?: number;
     opening_balance_date?: string;
   } = {}
 ) {
-  const { metadata, institution, ...openingBalance } = extra;
+  const { metadata, institution, ownership, ...openingBalance } = extra;
   // A brokerage account is the one kind with no opening balance: its value comes from the
   // holdings ledger.
   const openingBalanceDefaults =
@@ -103,6 +108,7 @@ export async function createAccount(
       archived: false,
       sort_order: 0,
       institution: institution ?? (INSTITUTION_REQUIRED.includes(kind) ? "ANZ" : undefined),
+      ownership: ownership ?? { kind: "joint" },
       metadata: withRequiredMetadata(kind, metadata),
       ...openingBalanceDefaults,
       ...openingBalance,
@@ -153,6 +159,8 @@ export async function createTransaction(
     category_id?: number | null;
     merchant_id?: number | null;
     is_one_off?: boolean;
+    /** Attribution override; omitted means "follow the account's owner", as an import does. */
+    ownership?: Schemas["Ownership"];
   }
 ) {
   const { data, response } = await api.POST("/api/transactions", {
@@ -164,6 +172,7 @@ export async function createTransaction(
       category_id: input.category_id ?? null,
       merchant_id: input.merchant_id ?? null,
       is_one_off: input.is_one_off ?? false,
+      ownership: input.ownership ?? null,
     },
   });
   expect(response.status, "create transaction").toBe(201);

@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
+use crate::people::Ownership;
+
 /// The kinds of financial account Sure understands. `kind` selects type-specific
 /// behaviour (how balance and net-worth contribution are computed); free-form
 /// per-kind configuration lives in an account's `metadata`.
@@ -961,6 +963,8 @@ pub struct Account {
     pub sort_order: i64,
     /// For a liability, the asset account it is secured against (e.g. a mortgage's home).
     pub secured_by_account_id: Option<i64>,
+    /// Which household member this belongs to (or `joint`, or nobody has said yet).
+    pub ownership: Ownership,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -994,6 +998,15 @@ pub struct SaveAccount {
     /// The date `opening_balance_minor` applies from (ISO-8601).
     #[serde(default)]
     pub opening_balance_date: Option<String>,
+    /// Which household member the account belongs to, or that it's joint.
+    ///
+    /// Required, on create *and* on the full-replace update — deliberately not
+    /// `#[serde(default)]` like the optional fields around it. An account with no owner is
+    /// the state this feature exists to eliminate, so the refusal lives at the outermost
+    /// edge: a body without it fails to deserialise and never reaches a handler that could
+    /// pick a default. The cost is that every caller must answer the question, which is the
+    /// point.
+    pub ownership: Ownership,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

@@ -21,11 +21,11 @@ use sure_core::{
     CategoryNode, Cron, CronRun, CronRunResult, Currency, DividendDetail, EquityExercise,
     EquityGrant, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot,
     LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind, Merchant, NewCurrency,
-    NewValuation, Provider, ProviderAccount, ProviderKind, ProviderSync, Rule,
+    NewValuation, Ownership, Person, Provider, ProviderAccount, ProviderKind, ProviderSync, Rule,
     RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
     SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
-    SaveMerchant, SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice, SyncOutcome,
-    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
+    SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice,
+    SyncOutcome, Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
 };
 
 // ---- Clock ------------------------------------------------------------------
@@ -474,6 +474,10 @@ pub trait AccountRepo: Send + Sync {
     async fn update(&self, id: i64, input: SaveAccount) -> AppResult<Account>;
     async fn delete(&self, id: i64) -> AppResult<()>;
     async fn set_secured_by(&self, id: i64, target: Option<i64>) -> AppResult<Account>;
+    /// Attribute one account to a household member (or to the household, or to nobody).
+    async fn set_ownership(&self, id: i64, ownership: Ownership) -> AppResult<Account>;
+    /// The same, for many accounts at once; returns how many were changed.
+    async fn set_ownership_bulk(&self, ids: &[i64], ownership: Ownership) -> AppResult<u64>;
     /// Single-ticker shares accounts (see `SharesMeta`).
     async fn list_shares_tickers(&self) -> AppResult<Vec<SharesTicker>>;
     /// Distinct tickers ever traded on any brokerage account's holdings ledger.
@@ -485,6 +489,16 @@ pub trait AccountRepo: Send + Sync {
         original_amount_minor: i64,
     ) -> AppResult<()>;
     async fn set_institution_if_unset(&self, account_id: i64, institution: &str) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait PersonRepo: Send + Sync {
+    async fn list(&self) -> AppResult<Vec<Person>>;
+    async fn get(&self, id: i64) -> AppResult<Person>;
+    async fn create(&self, input: SavePerson) -> AppResult<Person>;
+    async fn update(&self, id: i64, input: SavePerson) -> AppResult<Person>;
+    /// Refused with a conflict while any account is still attributed to them.
+    async fn delete(&self, id: i64) -> AppResult<()>;
 }
 
 #[async_trait]

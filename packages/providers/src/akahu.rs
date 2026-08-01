@@ -166,9 +166,14 @@ fn map_kind_hint(kind: &BankAccountKind, name: &str, has_credit_limit: bool) -> 
         // (no per-ticker lots to import), so it stays a plain valued-holding `shares_nz`.
         BankAccountKind::Investment | BankAccountKind::Wallet => AccountKind::Brokerage,
         BankAccountKind::Kiwisaver => AccountKind::SharesNz,
-        BankAccountKind::Foreign | BankAccountKind::Tax | BankAccountKind::Rewards => {
-            AccountKind::Cash
-        }
+        // An IRD tax account is a running position with the department, not spendable cash:
+        // it sits at zero most of the year and goes negative when provisional or terminal
+        // tax falls due. Hinting `Cash` put that debt in the Cash group as a negative
+        // balance — arithmetically fine (net worth buckets purely by sign) but wrong on
+        // every screen that groups by class. `Liability` reads correctly in the common case,
+        // and a credit balance still totals correctly from its sign.
+        BankAccountKind::Tax => AccountKind::Liability,
+        BankAccountKind::Foreign | BankAccountKind::Rewards => AccountKind::Cash,
     }
 }
 
@@ -185,6 +190,11 @@ fn map_account(a: akahu_client::Account) -> ProviderAccount {
         name: a.name,
         currency_code: a.balance.currency.code().to_string(),
         institution,
+        // Akahu's `_authorisation` is per *login*, not per institution: two people who each
+        // connect their own ASB accounts share a `connection._id` and differ here. That
+        // makes it the grouping the connect dialog needs to tell whose accounts are whose.
+        authorisation_id: Some(a.authorisation.into_inner()),
+        account_number: a.formatted_account,
         kind_hint,
         balance_minor: decimal_to_minor(a.balance.current),
         supports_transactions: a
@@ -254,6 +264,50 @@ mod tests {
         assert!(acc.supports_transactions);
         // No `connection` in this fixture — institution should be absent, not guessed.
         assert_eq!(acc.institution, None);
+        assert_eq!(acc.authorisation_id, Some("auth_456".to_string()));
+        // No `formatted_account` in this fixture either.
+        assert_eq!(acc.account_number, None);
+    }
+
+    /// What the connect dialog leans on to tell one household member's accounts from the
+    /// other's: two logins at the same bank share a `connection`, and differ only by
+    /// `_authorisation`. The account number is what tells two same-named accounts apart
+    /// within one login.
+    #[test]
+    fn two_logins_at_one_bank_are_distinguishable() {
+        let account = |id: &str, auth: &str, name: &str, number: &str| {
+            let json = format!(
+                r#"{{
+                    "_id": "{id}",
+                    "_authorisation": "{auth}",
+                    "connection": {{ "_id": "conn_asb", "name": "ASB", "connection_type": "official" }},
+                    "name": "{name}",
+                    "formatted_account": "{number}",
+                    "status": "ACTIVE",
+                    "refreshed": {{}},
+                    "balance": {{ "current": 10.00, "currency": "NZD" }},
+                    "type": "SAVINGS",
+                    "attributes": []
+                }}"#
+            );
+            map_account(serde_json::from_str::<akahu_client::Account>(&json).unwrap())
+        };
+
+        let mine = account("acc_1", "auth_mine", "Emergency Fund", "12-3456-0000001-51");
+        let theirs = account(
+            "acc_2",
+            "auth_theirs",
+            "Emergency Fund",
+            "12-3456-0000002-51",
+        );
+
+        // Same institution, same name, same kind — the two fields added for this are the
+        // only things separating them.
+        assert_eq!(mine.institution, theirs.institution);
+        assert_eq!(mine.name, theirs.name);
+        assert_ne!(mine.authorisation_id, theirs.authorisation_id);
+        assert_eq!(mine.account_number, Some("12-3456-0000001-51".to_string()));
+        assert_ne!(mine.account_number, theirs.account_number);
     }
 
     #[test]
@@ -423,9 +477,10 @@ mod tests {
             map_kind_hint(&BankAccountKind::Foreign, n, false),
             AccountKind::Cash
         );
+        // A tax account is a debt when it isn't zero, not spendable cash.
         assert_eq!(
             map_kind_hint(&BankAccountKind::Tax, n, false),
-            AccountKind::Cash
+            AccountKind::Liability
         );
         assert_eq!(
             map_kind_hint(&BankAccountKind::Rewards, n, false),

@@ -63,6 +63,19 @@ async function main() {
   const transfers = (await post("/api/categories", { name: "Transfers", kind: "transfer" })).id;
   const bankFees = (await post("/api/categories", { name: "Bank fees", kind: "expense" })).id;
 
+  // The household. Every account has to name an owner, so a database always starts with a
+  // placeholder person (see migration 0016) — renaming it is what the app asks a real user to
+  // do, and it's what the demo does here rather than leaving a stand-in lying around.
+  const existingPeople = await api("GET", "/api/people");
+  const placeholder = existingPeople.find((p) => p.placeholder);
+  const ari = placeholder
+    ? (await put(`/api/people/${placeholder.id}`, { name: "Ari", color: "#7c5cff", sort_order: 0 })).id
+    : (await post("/api/people", { name: "Ari", color: "#7c5cff", sort_order: 0 })).id;
+  const sam = (await post("/api/people", { name: "Sam", color: "#12b981", sort_order: 1 })).id;
+  // Shorthands for the three answers an account can give.
+  const owns = (personId) => ({ ownership: { kind: "person", person_id: personId } });
+  const joint = { ownership: { kind: "joint" } };
+
   // Accounts, each with typed, per-kind metadata (see AccountMetadata in the backend).
   //
   // Every field the backend now requires per kind is spelled out here (a property's
@@ -72,16 +85,16 @@ async function main() {
   // and zero deliberately seeds no ledger row, so the demo numbers stay exactly as they read.
   const openingBalance = { opening_balance_minor: 0, opening_balance_date: monthsAgo(38, 15) };
   const everyday = (await post("/api/accounts", {
-    name: "Everyday", kind: "bank", currency_code: "NZD", institution: "ANZ", ...openingBalance,
+    name: "Everyday", kind: "bank", currency_code: "NZD", institution: "ANZ", ...openingBalance, ...owns(ari),
     metadata: { profile: "depository", subtype: "checking", account_number: "••4821", url: "https://www.anz.co.nz" },
   })).id;
   const savings = (await post("/api/accounts", {
-    name: "Savings", kind: "savings", currency_code: "NZD", institution: "ANZ", ...openingBalance,
+    name: "Savings", kind: "savings", currency_code: "NZD", institution: "ANZ", ...openingBalance, ...joint,
     metadata: { profile: "depository", subtype: "savings", account_number: "••5502" },
   })).id;
   const card = (await post("/api/accounts", {
     name: "Credit Card", kind: "credit_card", currency_code: "NZD", institution: "American Express",
-    ...openingBalance,
+    ...openingBalance, ...owns(ari),
     metadata: {
       profile: "depository",
       account_number: "••1009",
@@ -89,7 +102,7 @@ async function main() {
     },
   })).id;
   const home = (await post("/api/accounts", {
-    name: "Family Home", kind: "real_estate", currency_code: "NZD", ...openingBalance,
+    name: "Family Home", kind: "real_estate", currency_code: "NZD", ...openingBalance, ...joint,
     metadata: {
       profile: "property",
       subtype: "single_family_home",
@@ -102,7 +115,7 @@ async function main() {
     },
   })).id;
   const loan = (await post("/api/accounts", {
-    name: "Home Loan", kind: "mortgage", currency_code: "NZD", ...openingBalance,
+    name: "Home Loan", kind: "mortgage", currency_code: "NZD", ...openingBalance, ...joint,
     metadata: {
       profile: "mortgage",
       lender: "ANZ",
@@ -125,7 +138,7 @@ async function main() {
   })).id;
   const greenLoan = (await post("/api/accounts", {
     name: "Green Home Loan", kind: "revolving_credit", currency_code: "NZD", institution: "ANZ",
-    ...openingBalance,
+    ...openingBalance, ...joint,
     metadata: {
       profile: "depository",
       credit_limit_minor: 3_500_000, // $35,000, fully drawn
@@ -133,15 +146,15 @@ async function main() {
     },
   })).id;
   const shares = (await post("/api/accounts", {
-    name: "Sharesies (US)", kind: "shares_us", currency_code: "USD", ...openingBalance,
+    name: "Sharesies (US)", kind: "shares_us", currency_code: "USD", ...openingBalance, ...owns(sam),
     metadata: { profile: "shares", broker: "Sharesies", ticker: "VOO", exchange: "NYSE Arca" },
   })).id;
   const options = (await post("/api/accounts", {
-    name: "Startco Options", kind: "shares_private", currency_code: "USD", ...openingBalance,
+    name: "Startco Options", kind: "shares_private", currency_code: "USD", ...openingBalance, ...owns(sam),
     metadata: { profile: "shares", broker: "Carta", ticker: "STARTCO" },
   })).id;
   const car = (await post("/api/accounts", {
-    name: "Family Car", kind: "vehicle", currency_code: "NZD", ...openingBalance,
+    name: "Family Car", kind: "vehicle", currency_code: "NZD", ...openingBalance, ...joint,
     metadata: {
       profile: "vehicle",
       make: "Toyota", model: "RAV4", year: 2021, plate: "MEP123", nickname: "the wagon",
@@ -149,7 +162,7 @@ async function main() {
     },
   })).id;
   const carLoan = (await post("/api/accounts", {
-    name: "Car Loan", kind: "loan", currency_code: "NZD", ...openingBalance,
+    name: "Car Loan", kind: "loan", currency_code: "NZD", ...openingBalance, ...joint,
     metadata: {
       profile: "loan",
       subtype: "auto",

@@ -9,6 +9,7 @@ pub mod equity;
 pub mod error;
 pub mod forecast;
 pub mod merchants;
+pub mod people;
 pub mod providers;
 pub mod rules;
 pub mod settings;
@@ -33,6 +34,9 @@ pub use forecast::{
     SaveForecastAssumption, SaveForecastEvent,
 };
 pub use merchants::{Merchant, SaveMerchant};
+pub use people::{
+    effective_ownership, Ownership, Person, SavePerson, SetOwnership, SetOwnershipBulk,
+};
 pub use providers::{
     LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderAccount,
     ProviderKind, ProviderSync, SaveProvider, StudentLoanImportResult, SyncOutcome, SyncRequest,

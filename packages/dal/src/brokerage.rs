@@ -611,6 +611,8 @@ mod tests {
                 // computed from the holdings ledger these tests populate.
                 opening_balance_minor: None,
                 opening_balance_date: None,
+                // These tests don't care who owns the account; joint needs no person row.
+                ownership: sure_core::Ownership::Joint,
             },
         )
         .await

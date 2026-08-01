@@ -507,6 +507,8 @@ mod tests {
             sort_order: 0,
             opening_balance_minor: Some(0),
             opening_balance_date: Some("2020-01-01".to_string()),
+            // These tests don't care who owns the account; joint needs no person row.
+            ownership: sure_core::Ownership::Joint,
         }
     }
 
@@ -523,6 +525,8 @@ mod tests {
             sort_order: 0,
             opening_balance_minor: None,
             opening_balance_date: None,
+            // These tests don't care who owns the account; joint needs no person row.
+            ownership: sure_core::Ownership::Joint,
         }
     }
 
@@ -673,6 +677,8 @@ mod tests {
             // The one kind with no opening balance — its value comes from the holdings ledger.
             opening_balance_minor: None,
             opening_balance_date: None,
+            // These tests don't care who owns the account; joint needs no person row.
+            ownership: sure_core::Ownership::Joint,
         }
     }
 
@@ -778,7 +784,8 @@ mod tests {
         .fetch_one(db)
         .await
         .unwrap()
-        .into()
+        .try_into()
+        .unwrap()
     }
 
     fn enriched_row(external_id: &str, merchant: &str, category: &str, group: &str) -> ImportRow {

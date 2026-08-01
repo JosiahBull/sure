@@ -72,6 +72,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/ownership": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Attribute several accounts at once. All-or-nothing: an id that doesn't exist fails the
+         *     whole batch rather than leaving the caller to work out which half moved.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SetOwnershipBulk"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BulkResult"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}": {
         parameters: {
             query?: never;
@@ -711,6 +769,66 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/ownership": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Attribute an account to a household member, to the household (`joint`), or to nobody
+         *     (`unattributed`).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SetOwnership"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Account"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2404,6 +2522,212 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the household. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Person"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Add someone to the household. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SavePerson"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Person"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/people/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch one household member. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Person"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        /** Rename or restyle a household member. */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SavePerson"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Person"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        /**
+         * Remove someone from the household. Refused with 409 while any account is still
+         *     attributed to them — re-attribute those accounts first.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/provider-kinds": {
         parameters: {
             query?: never;
@@ -3517,6 +3841,11 @@ export interface paths {
                     include_one_off?: boolean;
                     /** @description Case-insensitive substring match on description/merchant/notes. */
                     search?: string;
+                    /**
+                     * @description Whose transactions to show: `joint`, or a household member's id. Matches on the
+                     *     *effective* attribution — a transaction's own override, or its account's owner.
+                     */
+                    attributed_to?: string;
                     limit?: number;
                     offset?: number;
                 };
@@ -3532,6 +3861,14 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["Transaction"][];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
             };
@@ -3979,6 +4316,8 @@ export interface components {
              * @description For a liability, the asset account it is secured against (e.g. a mortgage's home).
              */
             secured_by_account_id?: number | null;
+            /** @description Which household member this belongs to (or `joint`, or nobody has said yet). */
+            ownership: components["schemas"]["Ownership"];
             created_at: string;
             updated_at: string;
         };
@@ -4181,6 +4520,7 @@ export interface components {
             merchant_id?: number | null;
             /** @description Present → set the one-off flag; absent → leave unchanged. */
             is_one_off?: boolean | null;
+            ownership?: null | components["schemas"]["Ownership"];
         };
         Category: {
             /** Format: int64 */
@@ -4790,6 +5130,50 @@ export interface components {
             note?: string | null;
         };
         /**
+         * @description Who an account belongs to. Every account has one — there is no unattributed state.
+         *
+         *     Stored as the `(accounts.ownership, accounts.person_id)` column pair and parsed into
+         *     this enum the moment a row is read — the columns are the serialised edge, this is the
+         *     value everything above the DAL passes around (CLAUDE.md rule 1). A pair of database
+         *     triggers enforces the same two shapes, so a row cannot exist in any other state however
+         *     it was written.
+         *
+         *     Accounts that predate the household feature are owned by the *placeholder* person the
+         *     household-required migration created (see [`Person::placeholder`]) rather than by a
+         *     guess at a real one — the requirement is satisfied without inventing an answer.
+         */
+        Ownership: {
+            /** Format: int64 */
+            person_id: number;
+            /** @enum {string} */
+            kind: "person";
+        } | {
+            /** @enum {string} */
+            kind: "joint";
+        };
+        /** @description One member of the household. */
+        Person: {
+            /** Format: int64 */
+            id: number;
+            name: string;
+            /**
+             * @description Badge/chart colour, a CSS hex string (`#rrggbb`). `None` lets the web layer derive
+             *     one from the id, the way it already does for categories.
+             */
+            color?: string | null;
+            /** Format: int64 */
+            sort_order: number;
+            /**
+             * @description True for the stand-in the household-required migration created to own accounts that
+             *     predate the feature. Not something a caller sets: it's the app admitting it doesn't
+             *     know whose those accounts are, and it clears itself the moment this person is
+             *     renamed (an explicit name is the answer it was standing in for).
+             */
+            placeholder: boolean;
+            created_at: string;
+            updated_at: string;
+        };
+        /**
          * @description A ticker position as of a date: quantity currently held, its latest known price, and
          *     the resulting market value in the position's own trading currency.
          */
@@ -4917,6 +5301,26 @@ export interface components {
             currency_code: string;
             /** @description The financial institution's display name (e.g. "ASB"), if the source reports one. */
             institution?: string | null;
+            /**
+             * @description Which upstream *authorisation* (login) this account was discovered through.
+             *
+             *     Not the institution: two people who each connect their own ASB login produce two
+             *     values here and one institution. It is the only thing in a discovery response that
+             *     separates one person's accounts from another's — Akahu reports no account-holder
+             *     name (`meta.holder` is empty in practice, and `/parties` needs a permission a
+             *     personal app doesn't have), so the household attribution this drives is a grouping,
+             *     not a lookup. `None` for sources with no such concept.
+             */
+            authorisation_id?: string | null;
+            /**
+             * @description The account number as the source formats it (e.g. `12-3456-0123456-00`), when it
+             *     reports one.
+             *
+             *     Two accounts under one login routinely share a name ("Emergency Fund" twice), and
+             *     the *same* joint account seen through two logins can carry a different nickname in
+             *     each — so this is what actually identifies an account to the person linking it.
+             */
+            account_number?: string | null;
             /**
              * @description Best-effort suggestion for the local account's `kind`; the user confirms/edits it
              *     when linking, so an imperfect guess here isn't a correctness problem.
@@ -5122,6 +5526,17 @@ export interface components {
             opening_balance_minor?: number | null;
             /** @description The date `opening_balance_minor` applies from (ISO-8601). */
             opening_balance_date?: string | null;
+            /**
+             * @description Which household member the account belongs to, or that it's joint.
+             *
+             *     Required, on create *and* on the full-replace update — deliberately not
+             *     `#[serde(default)]` like the optional fields around it. An account with no owner is
+             *     the state this feature exists to eliminate, so the refusal lives at the outermost
+             *     edge: a body without it fails to deserialise and never reaches a handler that could
+             *     pick a default. The cost is that every caller must answer the question, which is the
+             *     point.
+             */
+            ownership: components["schemas"]["Ownership"];
         };
         SaveCategory: {
             name: string;
@@ -5224,6 +5639,12 @@ export interface components {
             category_id?: number | null;
             note?: string | null;
         };
+        SavePerson: {
+            name: string;
+            color?: string | null;
+            /** Format: int64 */
+            sort_order?: number;
+        };
         SaveProvider: {
             name: string;
             kind: string;
@@ -5259,6 +5680,7 @@ export interface components {
             merchant?: string | null;
             /** Format: int64 */
             merchant_id?: number | null;
+            ownership?: null | components["schemas"]["Ownership"];
             notes?: string | null;
             /** Format: int64 */
             category_id?: number | null;
@@ -5274,6 +5696,15 @@ export interface components {
              * @description Amount owed, in the report currency (positive).
              */
             balance_minor: number;
+        };
+        /** @description Body of `PUT /api/accounts/{id}/ownership`. */
+        SetOwnership: {
+            ownership: components["schemas"]["Ownership"];
+        };
+        /** @description Body of `POST /api/accounts/ownership` — attribute several accounts in one go. */
+        SetOwnershipBulk: {
+            account_ids: number[];
+            ownership: components["schemas"]["Ownership"];
         };
         SetSecuredBy: {
             /**
@@ -5394,6 +5825,7 @@ export interface components {
              * @description Which rule (if any) last set this transaction's category.
              */
             categorized_by_rule_id?: number | null;
+            ownership?: null | components["schemas"]["Ownership"];
             created_at: string;
             updated_at: string;
         };

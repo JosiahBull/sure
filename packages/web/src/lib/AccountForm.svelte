@@ -1,7 +1,14 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { untrack, onMount } from "svelte";
   import { api, type Schemas } from "./api";
   import Icon from "./Icon.svelte";
+  import {
+    ensureLoaded as ensurePeopleLoaded,
+    ownershipKey,
+    ownershipFromKey,
+    ownershipOptions,
+    defaultOwnershipKey,
+  } from "./people.svelte";
   import {
     KINDS,
     FIELDS,
@@ -51,6 +58,10 @@
   let institution = $state(initial?.institution ?? "");
   let raw = $state<Record<string, string>>(metadataToRaw(initial?.metadata));
   let securedBy = $state<number | "">(initial?.secured_by_account_id ?? "");
+  // Every account names an owner, so this is never blank: an edit shows the account's own,
+  // and a create starts on the first household member (changing it is one click, and there is
+  // no third "unset" state to leave it in).
+  let owner = $state(initial ? ownershipKey(initial.ownership) : "");
   let error = $state<string | null>(null);
   let busy = $state(false);
   /**
@@ -139,6 +150,13 @@
   // Arriving here from the type picker, the name is the only thing left to decide — start there.
   $effect(() => {
     if (kindLocked) nameEl?.focus();
+  });
+
+  // The household drives the Owner select. Shared store, so this is usually already resolved;
+  // a create can only choose its default once the roster is in.
+  onMount(async () => {
+    await ensurePeopleLoaded();
+    if (!owner) owner = defaultOwnershipKey();
   });
 
   /** The values a select can legally hold, flat or grouped. */
@@ -304,6 +322,9 @@
       metadata: buildMetadata(kind, raw, initial?.metadata),
       archived: initial?.archived ?? false,
       sort_order: initial?.sort_order ?? 0,
+      // Required by the API on both paths — an account with no owner is exactly what the
+      // household feature exists to prevent, so there is nothing sensible to omit here.
+      ownership: ownershipFromKey(owner || defaultOwnershipKey()),
     };
 
     let id = initial?.id;
@@ -480,6 +501,12 @@
       <span class="lbl">Currency</span>
       <select class="select" bind:value={currency}>
         {#each currencies as c}<option value={c.code}>{c.code}</option>{/each}
+      </select>
+    </label>
+    <label class="field">
+      <span class="lbl req">Owner</span>
+      <select class="select" bind:value={owner}>
+        {#each ownershipOptions() as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
       </select>
     </label>
     {#if showInstitution}

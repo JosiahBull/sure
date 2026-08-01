@@ -209,6 +209,8 @@ mod tests {
                 // Zero seeds no valuation, leaving the ones each test writes on their own.
                 opening_balance_minor: Some(0),
                 opening_balance_date: Some("2020-01-01".to_string()),
+                // These tests don't care who owns the account; joint needs no person row.
+                ownership: sure_core::Ownership::Joint,
             },
         )
         .await

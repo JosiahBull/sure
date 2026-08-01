@@ -2228,8 +2228,8 @@ mod tests {
         use async_trait::async_trait;
         use sure_core::{
             Account, AccountKind as AK, AccountMetadata as AM, Cron, CronRun, CronRunResult,
-            GenericMeta, LoanMeta, MortgageMeta, SaveAccount, SaveCron, SaveForecastAssumption,
-            SaveForecastEvent,
+            GenericMeta, LoanMeta, MortgageMeta, Ownership, SaveAccount, SaveCron,
+            SaveForecastAssumption, SaveForecastEvent,
         };
 
         use crate::ports::{
@@ -2257,6 +2257,16 @@ mod tests {
                 unreachable!()
             }
             async fn set_secured_by(&self, _id: i64, _target: Option<i64>) -> AppResult<Account> {
+                unreachable!()
+            }
+            async fn set_ownership(&self, _id: i64, _ownership: Ownership) -> AppResult<Account> {
+                unreachable!()
+            }
+            async fn set_ownership_bulk(
+                &self,
+                _ids: &[i64],
+                _ownership: Ownership,
+            ) -> AppResult<u64> {
                 unreachable!()
             }
             async fn list_shares_tickers(&self) -> AppResult<Vec<SharesTicker>> {
@@ -2419,6 +2429,7 @@ mod tests {
                 secured_by_account_id: None,
                 created_at: "2020-01-01T00:00:00Z".into(),
                 updated_at: "2020-01-01T00:00:00Z".into(),
+                ownership: Ownership::Joint,
             }
         }
 

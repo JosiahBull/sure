@@ -1,6 +1,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+use crate::people::Ownership;
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct Transaction {
     pub id: i64,
@@ -24,6 +26,10 @@ pub struct Transaction {
     pub external_id: Option<String>,
     /// Which rule (if any) last set this transaction's category.
     pub categorized_by_rule_id: Option<i64>,
+    /// Attribution *override*: who this one transaction belongs to, when that isn't simply
+    /// its account's owner. `None` — the usual case, and what every import produces — means
+    /// it follows the account (see [`crate::effective_ownership`]).
+    pub ownership: Option<Ownership>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -42,6 +48,9 @@ pub struct SaveTransaction {
     pub merchant: Option<String>,
     #[serde(default)]
     pub merchant_id: Option<i64>,
+    /// Attribution override; omit (or send `null`) to follow the account's owner.
+    #[serde(default)]
+    pub ownership: Option<Ownership>,
     #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
@@ -63,6 +72,9 @@ pub struct TxQuery {
     pub include_one_off: Option<bool>,
     /// Case-insensitive substring match on description/merchant/notes.
     pub search: Option<String>,
+    /// Restrict to transactions whose *effective* attribution (override, else the account's
+    /// owner) is this. Parsed from `?attributed_to=joint|<person id>` at the HTTP edge.
+    pub attributed_to: Option<Ownership>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -88,6 +100,10 @@ pub struct BulkUpdate {
     /// Present → set the one-off flag; absent → leave unchanged.
     #[serde(default)]
     pub is_one_off: Option<bool>,
+    /// Present → override the attribution (or `null` to go back to following the account);
+    /// absent → leave unchanged.
+    #[serde(default, deserialize_with = "double_option")]
+    pub ownership: Option<Option<Ownership>>,
 }
 
 /// The ids to delete in a single bulk request.

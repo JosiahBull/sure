@@ -41,6 +41,7 @@ test("mutations and sensitive reads are never stored", async ({ server, api }) =
       institution: "ANZ",
       archived: false,
       sort_order: 0,
+      ownership: { kind: "joint" },
       opening_balance_minor: 0,
       opening_balance_date: "2020-01-01",
     },

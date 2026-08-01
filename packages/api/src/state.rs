@@ -3,9 +3,9 @@ use std::sync::Arc;
 use sure_app::brokerage::BrokerageService;
 use sure_app::forecast::ForecastService;
 use sure_app::ports::{
-    AccountRepo, CategoryRepo, CronRepo, CurrencyRepo, EquityRepo, MerchantRepo, ProviderRegistry,
-    ProviderRepo, SettingsRepo, SnapshotRepo, StockPriceCacheRepo, StockPriceProvider,
-    TransactionRepo, ValuationRepo,
+    AccountRepo, CategoryRepo, CronRepo, CurrencyRepo, EquityRepo, MerchantRepo, PersonRepo,
+    ProviderRegistry, ProviderRepo, SettingsRepo, SnapshotRepo, StockPriceCacheRepo,
+    StockPriceProvider, TransactionRepo, ValuationRepo,
 };
 use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
@@ -30,6 +30,7 @@ pub struct AppState {
     pub transactions: Arc<dyn TransactionRepo>,
     pub categories: Arc<dyn CategoryRepo>,
     pub merchants: Arc<dyn MerchantRepo>,
+    pub people: Arc<dyn PersonRepo>,
     pub currencies: Arc<dyn CurrencyRepo>,
     pub settings: Arc<dyn SettingsRepo>,
     pub valuations: Arc<dyn ValuationRepo>,

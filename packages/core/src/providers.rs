@@ -159,6 +159,22 @@ pub struct ProviderAccount {
     pub currency_code: String,
     /// The financial institution's display name (e.g. "ASB"), if the source reports one.
     pub institution: Option<String>,
+    /// Which upstream *authorisation* (login) this account was discovered through.
+    ///
+    /// Not the institution: two people who each connect their own ASB login produce two
+    /// values here and one institution. It is the only thing in a discovery response that
+    /// separates one person's accounts from another's — Akahu reports no account-holder
+    /// name (`meta.holder` is empty in practice, and `/parties` needs a permission a
+    /// personal app doesn't have), so the household attribution this drives is a grouping,
+    /// not a lookup. `None` for sources with no such concept.
+    pub authorisation_id: Option<String>,
+    /// The account number as the source formats it (e.g. `12-3456-0123456-00`), when it
+    /// reports one.
+    ///
+    /// Two accounts under one login routinely share a name ("Emergency Fund" twice), and
+    /// the *same* joint account seen through two logins can carry a different nickname in
+    /// each — so this is what actually identifies an account to the person linking it.
+    pub account_number: Option<String>,
     /// Best-effort suggestion for the local account's `kind`; the user confirms/edits it
     /// when linking, so an imperfect guess here isn't a correctness problem.
     pub kind_hint: AccountKind,
