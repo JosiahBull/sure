@@ -115,9 +115,50 @@ byte holds it open forever.
 | Shutdown drain deadline | 15s | `SHUTDOWN_GRACE_SECS` |
 
 The loop also refuses to spin on a failed `accept()` — descriptor exhaustion backs off
-rather than retrying thousands of times a second — and `SIGTERM`/`SIGINT` drains in-flight
-requests before the database pool closes, so a container restart doesn't cut a SQLite
-write short.
+rather than retrying thousands of times a second.
+
+Note that `SHUTDOWN_GRACE_SECS` bounds only the *connection* drain. Signals, cancellation,
+and waiting for everything else the process spawned belong to
+[`sure-appbase`](../packages/appbase/src/lib.rs), which wraps the whole thing — see
+[Shutdown](#shutdown).
+
+## Shutdown
+
+`SIGTERM`/`SIGINT` drains in-flight requests, then the background scheduler, and only then
+closes the database pool, so a container restart doesn't cut a SQLite write short. The
+sequence lives in `sure-appbase` rather than here because it has to outlive the HTTP
+server: the accept loop returning is the *middle* of shutting down, not the end.
+
+Its phases each get their own grace period, and the whole sequence is capped at their sum —
+separate numbers rather than one budget carved up by subtraction, so an overrunning phase
+can never leave a later one with a negative remainder.
+
+| Phase | Default | Env |
+| --- | --- | --- |
+| Keep serving after a signal, before cancelling | 0s | `SHUTDOWN_PREDRAIN_SECS` |
+| `serve` to return (covers the connection drain **and** the pool close) | 30s | `SHUTDOWN_APP_GRACE_SECS` |
+| Tasks spawned through the `Shutdown` handle | 10s | `SHUTDOWN_DRAIN_GRACE_SECS` |
+| Blocking-pool backstop | 5s | `SHUTDOWN_BLOCKING_GRACE_SECS` |
+
+The pre-drain delay is zero because nothing routes to this process — behind a load
+balancer it wants roughly the health-check interval, so the balancer stops sending traffic
+before the server stops accepting it.
+
+What makes this checkable rather than hopeful: tasks are *tracked*
+(`tokio_util::task::TaskTracker`), not counted. A shutdown that leaves work running says so
+on the way out —
+
+```
+WARN sure_appbase: drain deadline exceeded; tasks left running (spawn sites below) abandoned=1
+WARN sure_appbase: task still running at shutdown site="packages/server/src/lib.rs:173:14"
+INFO sure_appbase: shutdown complete trigger="terminate" app="finished" drain="timed_out" ... clean=false
+```
+
+— naming the line that spawned it, because `Shutdown::spawn` is `#[track_caller]` and debug
+builds keep the call site. The `clean=true` case is asserted end-to-end by
+[`shutdown.spec.ts`](../packages/api-tests/specs/shutdown.spec.ts). The catch is that only
+tasks spawned *through the handle* are visible; a bare `tokio::spawn` is not tracked and
+will be abandoned silently.
 
 ### Per request ([`api/src/limits.rs`](../packages/api/src/limits.rs))
 

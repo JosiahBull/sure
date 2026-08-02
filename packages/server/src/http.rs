@@ -12,8 +12,12 @@
 //!
 //! Everything else here follows from owning the loop: a ceiling on concurrent
 //! connections, HTTP/2 stream limits, an accept loop that doesn't spin on `EMFILE`, and a
-//! graceful drain on `SIGTERM` so an in-flight SQLite write finishes before the process
-//! goes away.
+//! graceful drain so an in-flight SQLite write finishes before the process goes away.
+//!
+//! The drain is *started* elsewhere. Signals belong to `sure-appbase`, which owns the
+//! whole shutdown sequence; this module waits on the [`Shutdown`] token it is handed. Two
+//! independent listeners for the same `SIGTERM` would race over who gets to decide the
+//! process is stopping.
 //!
 //! Nothing is given up in exchange. The app uses no protocol upgrades (no WebSockets), so
 //! `serve_connection` is sufficient — and it is the variant that participates in graceful
@@ -31,6 +35,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 use hyper_util::server::graceful::GracefulShutdown;
 use hyper_util::service::TowerToHyperService;
+use sure_appbase::Shutdown;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tower::ServiceExt;
@@ -81,15 +86,20 @@ impl Default for HttpConfig {
     }
 }
 
-/// Accept connections until a shutdown signal arrives, then drain.
+/// Accept connections until `shutdown` is cancelled, then drain.
 ///
 /// Returns once every connection has finished or the grace period has elapsed, so the
 /// caller can close the database pool knowing no handler still holds it.
-pub async fn serve(listener: TcpListener, app: Router, cfg: HttpConfig) -> anyhow::Result<()> {
+pub async fn serve(
+    listener: TcpListener,
+    app: Router,
+    cfg: HttpConfig,
+    shutdown: &Shutdown,
+) -> anyhow::Result<()> {
     let builder = connection_builder(&cfg);
     let graceful = GracefulShutdown::new();
     let connections = Arc::new(Semaphore::new(cfg.max_connections.max(1)));
-    let mut shutdown = pin!(shutdown_signal());
+    let mut cancelled = pin!(shutdown.cancelled());
 
     loop {
         // Taken before accepting, so at the ceiling the loop simply stops calling
@@ -101,7 +111,7 @@ pub async fn serve(listener: TcpListener, app: Router, cfg: HttpConfig) -> anyho
                 // Only reachable if the semaphore is closed, which nothing here does.
                 Err(_) => break,
             },
-            _ = &mut shutdown => break,
+            () = &mut cancelled => break,
         };
 
         let (stream, peer) = tokio::select! {
@@ -112,7 +122,7 @@ pub async fn serve(listener: TcpListener, app: Router, cfg: HttpConfig) -> anyho
                     continue;
                 }
             },
-            _ = &mut shutdown => break,
+            () = &mut cancelled => break,
         };
 
         // Small JSON responses shouldn't wait on Nagle's algorithm for a coalescing
@@ -137,7 +147,12 @@ pub async fn serve(listener: TcpListener, app: Router, cfg: HttpConfig) -> anyho
             .into_owned();
         let watcher = graceful.watcher();
 
-        tokio::spawn(async move {
+        // Tracked, not bare `tokio::spawn`. `graceful.shutdown()` below already waits for
+        // these, so tracking changes nothing in the normal case — but when the drain
+        // deadline is hit and connections are abandoned, tracking is what lets the
+        // shutdown report say so (and, in a debug build, point at this line) instead of
+        // the process exiting quietly over the top of them.
+        shutdown.spawn(async move {
             if let Err(err) = watcher.watch(connection).await {
                 // Client disconnects are routine and not worth an operator's attention.
                 tracing::debug!(%peer, error = %err, "connection closed with an error");
@@ -203,36 +218,6 @@ async fn on_accept_error(err: &io::Error) {
     } else {
         tracing::warn!(error = %err, "accept failed; backing off");
         tokio::time::sleep(ACCEPT_BACKOFF).await;
-    }
-}
-
-/// Resolves on `SIGINT` (Ctrl-C) or `SIGTERM` (what a container runtime sends first).
-async fn shutdown_signal() {
-    let interrupt = async {
-        if let Err(err) = tokio::signal::ctrl_c().await {
-            tracing::warn!(error = %err, "could not listen for SIGINT");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "could not listen for SIGTERM");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = interrupt => {}
-        _ = terminate => {}
     }
 }
 

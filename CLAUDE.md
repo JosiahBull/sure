@@ -5,8 +5,10 @@ Rust workspace (`Cargo.toml`): `packages/core` (domain types, zero I/O) → `pac
 (all `sqlx`/SQL, converts rows to core types) → `packages/app` (services/use-cases,
 talks to the DAL only through `sure_app::ports` traits) → `packages/api` (Axum routes,
 OpenAPI) → `packages/server` (binary: wires it together, HTTP transport concerns) —
-plus `packages/providers` (bank/broker/price feed adapters) and `packages/scheduler`
-(cron runner). pnpm workspace (`pnpm-workspace.yaml`): `packages/web` (the SPA),
+plus `packages/providers` (bank/broker/price feed adapters), `packages/scheduler`
+(cron runner), and `packages/appbase` (process lifecycle: signals, cancellation, and
+draining what the process spawned — depends on nothing else in the workspace).
+pnpm workspace (`pnpm-workspace.yaml`): `packages/web` (the SPA),
 `packages/client` (generated typed API client), `packages/api-tests` (Playwright
 backend e2e suite).
 
@@ -102,6 +104,14 @@ ids, JSON blobs.
   It is never on in a normal or release build. Keep the `RUST_LOG` filter attached to the
   *output* layer rather than the registry: a registry-wide filter drops the TRACE-level
   `runtime.spawn` spans the detector reads, and the detector then silently sees nothing.
+- **Spawning background tasks**: use `Shutdown::spawn` / `Shutdown::spawn_blocking`
+  (`packages/appbase`), never a bare `tokio::spawn`, for anything that outlives a
+  request. Only tracked tasks are cancelled and waited for at shutdown; an untracked one
+  is dropped mid-flight when the process exits, and — being invisible to the drain — will
+  not show up in the shutdown report or fail `specs/shutdown.spec.ts`. `spawn` is
+  `#[track_caller]`, so a debug build names the spawning line when a task overruns the
+  drain; a helper that wraps it needs `#[track_caller]` too or it becomes the reported
+  site for everything it spawns. See `docs/HTTP.md` for the phases and their env vars.
 - **Pre-commit** (`.githooks/pre-commit`, wired by the `prepare` script): runs
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
   `pnpm test:api`, `pnpm --filter @sure/web check`. It deliberately skips the web

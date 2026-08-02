@@ -336,17 +336,6 @@ test("cross-origin reads are limited to the configured allowlist", async ({ serv
   expect(plain.status).toBe(200);
 });
 
-test("SIGTERM drains and exits cleanly", async () => {
-  // The container runtime sends SIGTERM first; exiting non-zero (or being killed after
-  // the timeout) is what leaves a SQLite WAL behind.
-  const server = await startServer();
-  const exited = new Promise<number | null>((resolve) => {
-    server.proc.on("exit", (code) => resolve(code));
-  });
-  server.stop("SIGTERM");
-  const code = await Promise.race([
-    exited,
-    new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 10_000)),
-  ]);
-  expect(code).toBe(0);
-});
+// Shutdown lives in `shutdown.spec.ts`. It used to be one exit-code assertion here, which
+// a process that exits while its tasks are still running passes just as happily as one
+// that drained — so it moved somewhere it could assert on the shutdown report instead.

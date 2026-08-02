@@ -15,4 +15,8 @@ async-trait = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
+# Only for `CancellationToken` in `Scheduler::run`. Taking the token rather than a
+# `sure-appbase` handle keeps the dependency pointing down: the composition root decides
+# this loop is a tracked task, the scheduler only needs to know when to stop.
+tokio-util = { workspace = true }
 tracing = { workspace = true }

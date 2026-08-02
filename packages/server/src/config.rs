@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use sure_api::config::{ApiConfig, Limits, DEFAULT_CORS_ORIGINS};
+use sure_appbase::LifecycleConfig;
 
 use crate::http::HttpConfig;
 use crate::sandbox::{SandboxConfig, SandboxMode};
@@ -33,6 +34,10 @@ pub struct Config {
     /// The Landlock self-sandbox: how hard to insist on it, and anything to allow beyond
     /// what the server needs on its own.
     pub sandbox: SandboxConfig,
+    /// How long each phase of shutdown gets. Distinct from
+    /// [`HttpConfig::shutdown_grace`], which bounds only the connection drain *inside*
+    /// the application future — these bound the sequence around it.
+    pub lifecycle: LifecycleConfig,
 }
 
 /// Fold a `.env` file into the process environment, before anything reads it, and return
@@ -132,6 +137,23 @@ impl Config {
             connect_ports: ports("SURE_SANDBOX_CONNECT_PORTS"),
         };
 
+        let lifecycle_defaults = LifecycleConfig::default();
+        let lifecycle = LifecycleConfig {
+            // Zero by default. Nothing routes to this process — it is a single binary a
+            // person runs — so there is no endpoint slice to wait for, and a delay would
+            // be pure latency between Ctrl-C and the prompt coming back.
+            predrain_delay: secs("SHUTDOWN_PREDRAIN_SECS", lifecycle_defaults.predrain_delay),
+            // Has to cover `serve`'s whole teardown: the HTTP drain (`SHUTDOWN_GRACE_SECS`,
+            // 15s), then the background-task drain, then closing the pool. Raising that
+            // one without raising this just moves where the deadline bites.
+            app_grace: secs("SHUTDOWN_APP_GRACE_SECS", lifecycle_defaults.app_grace),
+            drain_grace: secs("SHUTDOWN_DRAIN_GRACE_SECS", lifecycle_defaults.drain_grace),
+            blocking_grace: secs(
+                "SHUTDOWN_BLOCKING_GRACE_SECS",
+                lifecycle_defaults.blocking_grace,
+            ),
+        };
+
         Ok(Self {
             database_url,
             bind_addr,
@@ -140,6 +162,7 @@ impl Config {
             http,
             background_tasks: flag("BACKGROUND_TASKS", true),
             sandbox,
+            lifecycle,
         })
     }
 }

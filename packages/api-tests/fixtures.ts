@@ -48,8 +48,31 @@ type Server = { baseURL: string };
 /** A backend spawned outside the fixture, for tests that need non-default configuration. */
 export type StartedServer = Server & {
   proc: ReturnType<typeof spawn>;
-  /** Kill the process and remove its temp directory. Safe to call twice. */
+  /** The temp directory holding this server's SQLite database. */
+  dir: string;
+  /**
+   * Signal the process and remove its temp directory once it has actually exited. Safe to
+   * call twice.
+   *
+   * Cleanup is deferred rather than immediate because a graceful stop is not instant: the
+   * shutdown tests send `SIGTERM` and then assert on what the server did on its way out,
+   * which it cannot do if its database has already been deleted underneath it.
+   */
   stop: (signal?: NodeJS.Signals) => void;
+  /** Resolve with the exit code, or `null` if the process was killed by a signal. */
+  waitForExit: (timeoutMs?: number) => Promise<number | null>;
+  /** Everything written to stdout and stderr. Empty unless `startServer` was given `capture`. */
+  output: () => string;
+};
+
+/** Non-environment knobs for [`startServer`]. */
+export type StartOptions = {
+  /**
+   * Buffer the backend's stdout/stderr so a test can assert on its log lines. Off by
+   * default: the logs are noise around an ordinary API assertion, and piping them means
+   * something has to keep draining the pipe.
+   */
+  capture?: boolean;
 };
 
 /**
@@ -59,10 +82,14 @@ export type StartedServer = Server & {
  * `env` overrides go on top of the defaults, which is how the HTTP-behaviour tests reach
  * configuration a normal run never sets — a tiny rate limit, a `WEB_DIR`, compression off.
  */
-export async function startServer(env: Record<string, string> = {}): Promise<StartedServer> {
+export async function startServer(
+  env: Record<string, string> = {},
+  options: StartOptions = {},
+): Promise<StartedServer> {
   const port = await freePort();
   const dir = mkdtempSync(path.join(tmpdir(), "sure-e2e-"));
   const baseURL = `http://127.0.0.1:${port}`;
+  const capture = Boolean(options.capture);
   // Deliberately unset rather than inherited: tests assert the specific "not configured"
   // error the Akahu provider returns when these are absent, which must hold regardless
   // of whatever the developer's own shell happens to have exported.
@@ -91,17 +118,52 @@ export async function startServer(env: Record<string, string> = {}): Promise<Sta
     },
     // Normally the backend's own logs are noise around a test result. Under the detector
     // they *are* the result, so let them through (the tracing subscriber writes to stdout)
-    // — Playwright attributes the output to the test that was running.
-    stdio: BLOCKED ? ["ignore", "inherit", "inherit"] : "ignore",
+    // — Playwright attributes the output to the test that was running. `capture` keeps
+    // them for the test to read instead.
+    stdio: capture ? ["ignore", "pipe", "pipe"] : BLOCKED ? ["ignore", "inherit", "inherit"] : "ignore",
   });
+
+  let logs = "";
+  if (capture) {
+    proc.stdout?.on("data", (chunk) => {
+      logs += String(chunk);
+    });
+    proc.stderr?.on("data", (chunk) => {
+      logs += String(chunk);
+    });
+  }
+
+  const exited = new Promise<number | null>((resolve) => {
+    proc.on("exit", (code) => resolve(code));
+  });
+
+  const waitForExit = async (timeoutMs = 15_000): Promise<number | null> => {
+    let timer: NodeJS.Timeout | undefined;
+    const expiry = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`server did not exit within ${timeoutMs}ms`)), timeoutMs);
+    });
+    try {
+      return await Promise.race([exited, expiry]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const cleanup = () => rmSync(dir, { recursive: true, force: true });
 
   let stopped = false;
   const stop = (signal: NodeJS.Signals = "SIGKILL") => {
-    if (!stopped) {
-      stopped = true;
-      proc.kill(signal);
+    if (stopped) {
+      return;
     }
-    rmSync(dir, { recursive: true, force: true });
+    stopped = true;
+    // Already gone (a test awaited the exit itself): nothing to wait for.
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      cleanup();
+      return;
+    }
+    void exited.then(cleanup);
+    proc.kill(signal);
   };
 
   try {
@@ -110,7 +172,7 @@ export async function startServer(env: Record<string, string> = {}): Promise<Sta
     stop();
     throw err;
   }
-  return { baseURL, proc, stop };
+  return { baseURL, proc, dir, stop, waitForExit, output: () => logs };
 }
 
 /**

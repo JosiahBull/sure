@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "packages/appbase",
     "packages/core",
     "packages/scheduler",
     "packages/dal",
@@ -41,6 +42,10 @@ match_wildcard_for_single_variants = "deny"
 # origin needs. Browsers still only get h2/h3 from whatever terminates TLS in front.
 axum = { version = "0.8", features = ["macros", "http2"] }
 tokio = { version = "1", features = ["full"] }
+# `rt` is what carries `TaskTracker`; `CancellationToken` comes with it. `sure-appbase`
+# uses both to make "has everything this process spawned actually stopped?" an exact,
+# awaitable question instead of a poll over `RuntimeMetrics::num_alive_tasks`.
+tokio-util = { version = "0.7", features = ["rt"] }
 # `util` for `ServiceExt::map_request` — the accept loop uses it to adapt hyper's
 # `Request<Incoming>` to the `Request<axum::body::Body>` the router wants.
 tower = { version = "0.5", features = ["util"] }
@@ -118,6 +123,7 @@ rand = "0.8"
 rand_distr = "0.4"
 
 # Internal crates
+sure-appbase = { path = "packages/appbase" }
 sure-core = { path = "packages/core" }
 sure-scheduler = { path = "packages/scheduler" }
 sure-dal = { path = "packages/dal" }

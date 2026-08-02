@@ -18,6 +18,7 @@ path = "src/main.rs"
 blocking-detector = ["sure-api/blocking-detector"]
 
 [dependencies]
+sure-appbase = { workspace = true }
 sure-app = { workspace = true }
 sure-dal = { workspace = true }
 sure-providers = { workspace = true }

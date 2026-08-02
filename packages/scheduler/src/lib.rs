@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use tokio_util::sync::CancellationToken;
 
 /// A recurring background job.
 #[async_trait]
@@ -54,19 +55,33 @@ impl Scheduler {
         self.tasks.push(task);
     }
 
-    /// Spawn the check loop on the current Tokio runtime. Runs for the life of the
-    /// process. The first check happens immediately, so a never-run task executes on
-    /// startup rather than waiting a full `check_interval`.
-    pub fn spawn(self) {
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(self.check_interval);
-            loop {
-                interval.tick().await;
-                for task in &self.tasks {
-                    self.run_if_due(task.as_ref()).await;
-                }
+    /// Run the check loop until `cancel` fires. The first check happens immediately, so a
+    /// never-run task executes on startup rather than waiting a full `check_interval`.
+    ///
+    /// Cancellation is checked *between* tasks, never during one. Dropping a task's
+    /// future part-way through would abandon whatever write it was in the middle of and
+    /// — because only successful runs are recorded — leave the schedule claiming the task
+    /// still hasn't run. The cost is that shutdown waits out the task in flight, which is
+    /// why the caller drains this under a deadline rather than trusting it to be quick.
+    pub async fn run(self, cancel: CancellationToken) {
+        let mut interval = tokio::time::interval(self.check_interval);
+        loop {
+            tokio::select! {
+                // Biased so a cancellation delivered in the same moment as a tick wins:
+                // there is no reason to start another sweep on the way out.
+                biased;
+                () = cancel.cancelled() => break,
+                _ = interval.tick() => {}
             }
-        });
+
+            for task in &self.tasks {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                self.run_if_due(task.as_ref()).await;
+            }
+        }
+        tracing::debug!("scheduler stopped");
     }
 
     async fn run_if_due(&self, task: &dyn ScheduledTask) {

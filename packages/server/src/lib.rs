@@ -16,6 +16,7 @@ use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
 use sure_app::sync::SyncService;
 use sure_app::SystemClock;
+pub use sure_appbase::Shutdown;
 use sure_dal::store::SqliteStore;
 use sure_dal::Db;
 
@@ -86,8 +87,13 @@ fn build_state(
     }
 }
 
-/// Connect, migrate, and serve until shutdown. Used by the `sure-api` binary.
-pub async fn serve(config: Config) -> anyhow::Result<()> {
+/// Connect, migrate, and serve until `shutdown` is cancelled.
+///
+/// The application half of the lifecycle `sure_appbase::run` drives: everything spawned
+/// here goes through the handle, so the shutdown report can account for all of it. See
+/// [`main`](../main/index.html) for why the runtime is built by the binary rather than by
+/// `sure-appbase`.
+pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
     let pool = sure_dal::connect(&config.database_url).await?;
     sure_dal::migrate(&pool).await?;
 
@@ -155,7 +161,10 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         scheduler.register(Box::new(
             sure_app::tasks::transfer_link::TransferLinkTask::new(store),
         ));
-        scheduler.spawn();
+        // Tracked, so the drain below waits for a sweep that is mid-flight when the
+        // shutdown signal lands — a provider poll part-way through writing a sync row is
+        // exactly the thing that must not be cut off.
+        shutdown.spawn(scheduler.run(shutdown.child_token()));
     }
 
     let state = build_state(pool.clone(), registry, stock_price_provider);
@@ -163,9 +172,21 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "sure-api listening");
-    // Returns once every connection has drained (or the grace period expired), so closing
-    // the pool below can't cut a write short. See `http` for why this isn't `axum::serve`.
-    http::serve(listener, app, config.http).await?;
+    // Returns once every connection has drained (or the grace period expired). See `http`
+    // for why this isn't `axum::serve`.
+    http::serve(listener, app, config.http, &shutdown).await?;
+
+    // The HTTP loop is done, but the scheduler may still be finishing a task that holds a
+    // connection, so wait for everything tracked *before* closing the pool. `run` drains
+    // again after this future returns; that second call finds an empty tracker and is a
+    // no-op. Doing it in the other order would checkpoint the WAL out from under a write
+    // still in flight.
+    let drain = shutdown.drain(config.lifecycle.drain_grace).await;
+    tracing::debug!(
+        outcome = drain.as_str(),
+        abandoned = drain.abandoned(),
+        "background tasks drained"
+    );
 
     // SQLite checkpoints the WAL on the last connection closing; doing it here rather than
     // letting the process exit is what keeps a container restart from leaving one behind.
