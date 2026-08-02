@@ -10,7 +10,9 @@ async function goto(page: Page, route: string) {
 
 test("overview shows net worth, category breakdown and the money-flow sankey", async ({ page }) => {
   await goto(page, "/");
-  await expect(page.getByRole("heading", { name: "Net worth" })).toBeVisible();
+  // Exact: the overview also carries a "Net worth by person" card, which a substring
+  // match would tie with the headline "Net worth" one.
+  await expect(page.getByRole("heading", { name: "Net worth", exact: true })).toBeVisible();
   await expect(page.getByText("Where money went")).toBeVisible();
   // Seeded expense categories roll up to top-level buckets (appears in the pie legend
   // and the sankey, so scope to the first match).

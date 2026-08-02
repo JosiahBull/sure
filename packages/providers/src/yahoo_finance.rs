@@ -32,7 +32,7 @@ impl YahooFinanceProvider {
     pub fn new() -> Self {
         Self {
             base_url: BASE_URL.to_string(),
-            client: reqwest::Client::new(),
+            client: crate::http::client(),
             last_request: Mutex::new(None),
         }
     }

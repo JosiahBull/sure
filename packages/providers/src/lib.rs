@@ -20,6 +20,7 @@ use sure_core::ProviderKind;
 pub mod akahu;
 pub mod csv;
 pub mod frankfurter;
+mod http;
 pub mod myir;
 pub mod sharesies;
 pub mod yahoo_finance;

@@ -119,7 +119,7 @@ impl AkahuProvider {
         let user_token = std::env::var("AKAHU_USER_TOKEN")
             .map_err(|_| anyhow::anyhow!("AKAHU_USER_TOKEN is not set"))?;
         let client = AkahuClient::new(
-            reqwest_akahu::Client::new(),
+            crate::http::akahu_client(),
             app_token,
             Some(BASE_URL.to_string()),
         );
