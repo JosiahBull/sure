@@ -72,6 +72,35 @@ test("categories nest and cycles are rejected", async ({ api }) => {
   expect(cycle.response.status).toBe(422);
 });
 
+test("categories nest at most three levels deep", async ({ api }) => {
+  const housing = await createCategory(api, "Housing");
+  const utilities = await createCategory(api, "Utilities", "expense", housing.id);
+  const power = await createCategory(api, "Power", "expense", utilities.id);
+
+  // A fourth level has no column to be drawn in, so it's refused at the source.
+  const tooDeep = await api.POST("/api/categories", {
+    body: { name: "Off-peak", kind: "expense", parent_id: power.id, sort_order: 0 },
+  });
+  expect(tooDeep.response.status).toBe(422);
+
+  // Re-parenting is the subtler half: Utilities is itself only one level down, but it
+  // brings Power with it, so landing it under a depth-1 category would push Power to four.
+  const food = await createCategory(api, "Food");
+  const dining = await createCategory(api, "Dining", "expense", food.id);
+  const movedSubtree = await api.PUT("/api/categories/{id}", {
+    params: { path: { id: utilities.id } },
+    body: { name: "Utilities", kind: "expense", parent_id: dining.id, sort_order: 0 },
+  });
+  expect(movedSubtree.response.status).toBe(422);
+
+  // The leaf alone still fits there — it's the subtree that didn't.
+  const movedLeaf = await api.PUT("/api/categories/{id}", {
+    params: { path: { id: power.id } },
+    body: { name: "Power", kind: "expense", parent_id: dining.id, sort_order: 0 },
+  });
+  expect(movedLeaf.response.status).toBe(200);
+});
+
 test("transaction filters and the one-off toggle", async ({ api }) => {
   const acc = await createAccount(api, "Everyday", "bank");
   const groceries = await createCategory(api, "Groceries");

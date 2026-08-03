@@ -17,6 +17,7 @@
   let nw = $state<Schemas["NetWorthSeries"] | null>(null);
   let breakdown = $state<Schemas["CategoryBreakdown"] | null>(null);
   let sankey = $state<Schemas["SankeyGraph"] | null>(null);
+  let flowExpanded = $state(false);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
@@ -227,6 +228,12 @@
   <div class="error-banner" style="margin-bottom:16px">{error}</div>
 {/if}
 
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === "Escape") flowExpanded = false;
+  }}
+/>
+
 <div class="grid cards">
   <section class="card">
     <div class="card-title">
@@ -311,7 +318,12 @@
     <section class="card">
       <div class="card-title">
         <h2>Money flow</h2>
-        <span class="muted small">income → cash flow → expenses</span>
+        <div class="row" style="gap:10px">
+          <span class="muted small">income → cash flow → expenses</span>
+          <!-- The chart shows as many category levels as the width can render legibly, so a
+               narrow card gets fewer. This is where the rest of them live. -->
+          <button type="button" class="btn btn-sm" onclick={() => (flowExpanded = true)}>Expand</button>
+        </div>
       </div>
       <Sankey
         nodes={sankey.nodes}
@@ -320,6 +332,36 @@
         onselect={goToCategory}
       />
     </section>
+  {/if}
+
+  <!-- Three category levels per side is up to seven columns, which is tight inside a card.
+       The same chart, given a window to breathe in — the previous app had the same escape
+       hatch. -->
+  {#if flowExpanded && sankey}
+    <div
+      class="overlay"
+      role="presentation"
+      onclick={(e) => {
+        if (e.target === e.currentTarget) flowExpanded = false;
+      }}
+    >
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Money flow">
+        <div class="card-title">
+          <h2>Money flow</h2>
+          <button type="button" class="btn btn-sm" onclick={() => (flowExpanded = false)}>Close</button>
+        </div>
+        <Sankey
+          nodes={sankey.nodes}
+          links={sankeyLinks}
+          height="calc(85dvh - 72px)"
+          format={(v) => formatMoney(v, currency)}
+          onselect={(id, kind) => {
+            flowExpanded = false;
+            goToCategory(id, kind);
+          }}
+        />
+      </div>
+    </div>
   {/if}
 
   {#if balances.data && people.list.length > 1 && byOwner.groups.length > 1}
@@ -521,6 +563,30 @@
 {/if}
 
 <style>
+  /* Expanded money-flow view. Mirrors the overlay/modal shell the account modals use, but
+     sized to the viewport rather than a form: the whole point is horizontal room. */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(2px);
+  }
+  .overlay .modal {
+    display: flex;
+    flex-direction: column;
+    width: min(1650px, 96vw);
+    padding: 16px;
+    border-radius: var(--r-lg);
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elev);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  }
+
   /* One column per household member, plus joint. Wraps rather than scrolls: a household is
      two or three people, not a table. */
   .owner-cards {

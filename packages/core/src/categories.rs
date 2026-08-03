@@ -44,6 +44,17 @@ impl std::str::FromStr for CategoryKind {
     }
 }
 
+/// How many levels of category nesting the app supports, top level included — so
+/// `Income > Employment > Partly Group` is the deepest legal chain.
+///
+/// The money-flow report draws exactly this many columns per side and the category
+/// pickers qualify a name with its ancestors, so a deeper tree could be built but never
+/// fully shown. Enforced on the CRUD path only (`sure_dal::categories::validate`): the
+/// provider imports' `find_or_create` and the snapshot restore write rows directly, so a
+/// deeper tree can still reach the reports and they have to roll it up rather than assume
+/// the cap holds.
+pub const MAX_CATEGORY_DEPTH: i64 = 3;
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct Category {
     pub id: i64,

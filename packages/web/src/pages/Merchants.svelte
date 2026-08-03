@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, colorFor, type Schemas } from "../lib/api";
+  import { categoryOptions, qualifiedName } from "../lib/categories";
 
   let merchants = $state<Schemas["Merchant"][]>([]);
   let categories = $state<Schemas["Category"][]>([]);
@@ -126,7 +127,7 @@
       <label class="field">Default category
         <select class="select" bind:value={af.category_id}>
           <option value="">— none —</option>
-          {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+          {#each categoryOptions(categories) as o}<option value={o.id}>{o.label}</option>{/each}
         </select>
       </label>
       <label class="field">Note
@@ -167,7 +168,7 @@
                   <div class="col" style="min-width:0;gap:2px">
                     <div class="row" style="gap:6px;min-width:0">
                       <span class="ell">{m.name}</span>
-                      {#if cat}<span class="badge">{cat.name}</span>{/if}
+                      {#if cat}<span class="badge">{qualifiedName(categories, cat.id) || cat.name}</span>{/if}
                     </div>
                     {#if m.note}<span class="small faint ell">{m.note}</span>{/if}
                   </div>
@@ -207,7 +208,7 @@
                       <label class="field">Default category
                         <select class="select" bind:value={ef.category_id}>
                           <option value="">— none —</option>
-                          {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+                          {#each categoryOptions(categories) as o}<option value={o.id}>{o.label}</option>{/each}
                         </select>
                       </label>
                       <label class="field">Note

@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, colorFor, type Schemas } from "../lib/api";
+  import { api, type Schemas } from "../lib/api";
+  import { categoryColor } from "../lib/color";
+  import { categoryOptions, MAX_CATEGORY_DEPTH, rootIdOf, subtreeHeight, subtreeIds } from "../lib/categories";
+  import { resolvedTheme } from "../lib/theme.svelte";
 
   type Category = Schemas["Category"];
   type Node = Schemas["CategoryNode"];
@@ -39,6 +42,23 @@
     return out;
   }
   const rows = $derived(flatten(tree));
+  /** The same categories as a flat list, for the ancestor walks in `../lib/categories`. */
+  const flatCategories = $derived(rows.map((r) => r.cat));
+
+  /**
+   * The categories that could legally be this one's parent. Offering the rest would just
+   * hand the user a 422 from `sure_dal::categories::validate`: nesting is capped at
+   * MAX_CATEGORY_DEPTH levels, and re-parenting drags the whole subtree along, so what fits
+   * depends on how *tall* the category being edited is, not only on where it would land.
+   * Its own descendants are excluded as well, since nesting under one is a cycle.
+   */
+  const descendants = $derived(editingId === null ? new Set<number>() : subtreeIds(flatCategories, editingId));
+  const parentOptions = $derived.by(() => {
+    const height = editingId === null ? 0 : subtreeHeight(flatCategories, editingId);
+    return categoryOptions(flatCategories, { exclude: descendants }).filter(
+      (o) => o.depth + 1 + height <= MAX_CATEGORY_DEPTH - 1,
+    );
+  });
 
   async function load() {
     loading = true;
@@ -49,10 +69,13 @@
   }
   onMount(load);
 
-  // Top-level categories key off their own id; children inherit the parent's key so a
-  // parent and its children share one colour family (matching the reference design).
-  function colorOf(cat: Category): string {
-    return cat.color ?? colorFor(cat.parent_id ?? cat.id);
+  // A category's colour is its own if the user set one, else its *top-level* ancestor's
+  // family shade, deepened by how far down the branch it sits — the same rule the money-flow
+  // chart uses, so the two agree. Keying off `parent_id` instead would only reach one level
+  // up, so a grandchild would start its own family rather than joining its grandparent's.
+  const dark = $derived(resolvedTheme() === "dark");
+  function colorOf(cat: Category, depth: number): string {
+    return cat.color ?? categoryColor({ rootId: rootIdOf(flatCategories, cat.id), depth, dark });
   }
 
   function msgOf(e: unknown): string {
@@ -163,8 +186,8 @@
       <label class="field">Parent
         <select class="select" bind:value={fParent}>
           <option value="">No parent</option>
-          {#each rows as r (r.cat.id)}
-            <option value={r.cat.id}>{r.cat.name}</option>
+          {#each parentOptions as o (o.id)}
+            <option value={o.id}>{o.label}</option>
           {/each}
         </select>
       </label>
@@ -198,7 +221,7 @@
       <div class="empty">No categories yet.</div>
     {:else}
       {#each rows as { cat, depth } (cat.id)}
-        {@const c = colorOf(cat)}
+        {@const c = colorOf(cat, depth)}
         <div class="cat-row">
           <div class="cat-main" style="padding-left:{depth * 22}px">
             {#if depth > 0}<span class="arrow" style="color:{c}">↳</span>{/if}

@@ -56,15 +56,6 @@ export async function unwrap<T>(p: Promise<{ data?: T; error?: unknown }>): Prom
   return data;
 }
 
-/** Deterministic color for a category id (stable across renders). */
-const PALETTE = [
-  "#e99537", "#4da568", "#6471eb", "#db5a54", "#df4e92",
-  "#c44fe9", "#eb5429", "#61c9ea", "#805dee", "#6ad28a",
-];
-export function colorFor(key: string | number | null | undefined, fallbackIndex = 0): string {
-  if (key === null || key === undefined) return "#737373"; // Category::UNCATEGORIZED_COLOR
-  const s = String(key);
-  let h = fallbackIndex;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return PALETTE[h % PALETTE.length];
-}
+// Category colour lives in ./color alongside the depth-shading the category hierarchy
+// needs; re-exported here so the existing `from "../api"` import sites keep working.
+export { colorFor } from "./color";

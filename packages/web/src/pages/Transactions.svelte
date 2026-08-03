@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, formatMoney, formatDate, formatDateLong, colorFor, type Schemas } from "../lib/api";
+  import { api, formatMoney, formatDate, formatDateLong, type Schemas } from "../lib/api";
+  import { categoryColor } from "../lib/color";
+  import { categoryOptions, depthOf, qualifiedName, rootIdOf, subtreeIds } from "../lib/categories";
+  import { resolvedTheme } from "../lib/theme.svelte";
   import { ICONS } from "../lib/icons";
   import { RANGES, activeRange, attributionParam, filters, type RangeKey } from "../lib/state.svelte";
   import { router } from "../lib/router.svelte";
@@ -135,33 +138,9 @@
     }
   }
 
-  const childrenOf = $derived.by(() => {
-    const m = new Map<number, number[]>();
-    for (const c of categories) {
-      if (c.parent_id != null) {
-        const arr = m.get(c.parent_id);
-        if (arr) arr.push(c.id);
-        else m.set(c.parent_id, [c.id]);
-      }
-    }
-    return m;
-  });
-  // The selected category plus all its descendants. The category breakdown rolls up to
-  // top-level categories, so filtering by a parent must include its children's transactions.
-  const categorySubtree = $derived.by(() => {
-    if (categoryId === "") return null;
-    const out = new Set<number>([categoryId]);
-    const stack = [categoryId];
-    while (stack.length) {
-      for (const ch of childrenOf.get(stack.pop()!) ?? []) {
-        if (!out.has(ch)) {
-          out.add(ch);
-          stack.push(ch);
-        }
-      }
-    }
-    return out;
-  });
+  // The selected category plus all its descendants. The reports roll spend up the tree, so
+  // filtering by a parent must include its children's transactions to agree with them.
+  const categorySubtree = $derived(categoryId === "" ? null : subtreeIds(categories, categoryId));
 
   const sortedFiltered = $derived.by(() => {
     const filtered = txns.filter((t) => {
@@ -341,7 +320,12 @@
       chips.push({ key: "end", icon: "calendar", label: `on or before ${to}`, clear: () => (filters.custom = null) });
     }
     if (categoryId !== "")
-      chips.push({ key: "category", label: categoryName.get(categoryId) ?? "Category", clear: () => (categoryId = "") });
+      // Qualified, so a nested "Power" chip says which branch it filtered to.
+      chips.push({
+        key: "category",
+        label: qualifiedName(categories, categoryId) || "Category",
+        clear: () => (categoryId = ""),
+      });
     if (accountId !== "")
       chips.push({ key: "account", label: accountName.get(accountId) ?? "Account", clear: () => (accountId = "") });
     if (typeFilter)
@@ -645,7 +629,7 @@
       <label class="field">Category
         <select class="select" bind:value={form.category_id}>
           <option value="">— none —</option>
-          {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+          {#each categoryOptions(categories) as o}<option value={o.id}>{o.label}</option>{/each}
         </select>
       </label>
       <label class="field">Merchant
@@ -731,7 +715,7 @@
           <label class="field">Category
             <select class="select" aria-label="Filter by category" bind:value={categoryId}>
               <option value="">All categories</option>
-              {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+              {#each categoryOptions(categories) as o}<option value={o.id}>{o.label}</option>{/each}
             </select>
           </label>
           <label class="field">Type
@@ -842,7 +826,14 @@
       {@const title = t.description || txName(t) || "—"}
       {@const merchant = merchantName.get(t.merchant_id ?? -1) ?? t.merchant ?? ""}
       {@const cat = t.category_id != null ? catById.get(t.category_id) : null}
-      {@const cc = cat ? (cat.color ?? colorFor(cat.parent_id ?? cat.id)) : colorFor(null)}
+      {@const cc = cat
+        ? (cat.color ??
+          categoryColor({
+            rootId: rootIdOf(categories, cat.id),
+            depth: depthOf(categories, cat.id),
+            dark: resolvedTheme() === "dark",
+          }))
+        : categoryColor({ rootId: null, depth: 0, dark: resolvedTheme() === "dark" })}
       <div
         id={`tx-${t.id}`}
         class="tx-row"
@@ -917,7 +908,7 @@
               onchange={(e) => setCategory(t, e.currentTarget.value === "" ? "" : Number(e.currentTarget.value))}
             >
               <option value="">— none —</option>
-              {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+              {#each categoryOptions(categories) as o}<option value={o.id}>{o.label}</option>{/each}
             </select>
           </div>
         </div>
@@ -963,7 +954,7 @@
     <select class="select btn-sm" aria-label="Set category for selected" onchange={onBulkCategory} disabled={bulkBusy}>
       <option value="">Set category…</option>
       <option value="__clear__">— clear —</option>
-      {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+      {#each categoryOptions(categories) as o}<option value={o.id}>{o.label}</option>{/each}
     </select>
     {#if people.list.length > 0}
       <select

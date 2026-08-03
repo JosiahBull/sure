@@ -1,5 +1,5 @@
 use sqlx::{FromRow, SqlitePool};
-use sure_core::{AppError, AppResult};
+use sure_core::{AppError, AppResult, MAX_CATEGORY_DEPTH};
 pub use sure_core::{Category, CategoryKind, CategoryNode, SaveCategory};
 
 use crate::Db;
@@ -190,8 +190,61 @@ async fn validate(db: &SqlitePool, input: &SaveCategory, id: Option<i64>) -> App
                 ));
             }
         }
+        // Depth cap, in two halves because a re-parent takes a whole subtree with it:
+        // where this node itself would land, and where its deepest descendant would. A
+        // check on the parent alone would happily accept moving a 2-deep branch under a
+        // depth-1 category. Only reached when a parent is set — moving to the top level
+        // can only make the tree shallower. Runs after `would_cycle` so a cyclic chain is
+        // rejected before either recursive walk below has to cope with it.
+        let height = match id {
+            Some(id) => subtree_height(db, id).await?,
+            None => 0, // a category being created has no children yet
+        };
+        if depth_of(db, parent).await? + 1 + height > MAX_CATEGORY_DEPTH - 1 {
+            return Err(AppError::validation(format!(
+                "categories nest at most {MAX_CATEGORY_DEPTH} levels deep"
+            )));
+        }
     }
     Ok(())
+}
+
+/// How deep `id` sits: 0 for a top-level category.
+///
+/// Bounded at 64 hops, mirroring the guard in `sure_app::reports::Categories` — `validate`
+/// runs `would_cycle` first so a cycle can't reach here through the API, but a recursive
+/// CTE over a hand-edited cyclic parent chain would otherwise spin forever.
+#[tracing::instrument(level = "debug", skip_all)]
+async fn depth_of(db: &SqlitePool, id: i64) -> AppResult<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "WITH RECURSIVE up(id, parent_id, depth) AS (
+             SELECT id, parent_id, 0 FROM categories WHERE id = ?1
+             UNION ALL
+             SELECT c.id, c.parent_id, up.depth + 1
+             FROM categories c JOIN up ON c.id = up.parent_id WHERE up.depth < 64
+         )
+         SELECT COALESCE(MAX(depth), 0) FROM up",
+    )
+    .bind(id)
+    .fetch_one(db)
+    .await?)
+}
+
+/// How many levels sit *below* `id`: 0 for a leaf. Same 64-hop bound as [`depth_of`].
+#[tracing::instrument(level = "debug", skip_all)]
+async fn subtree_height(db: &SqlitePool, id: i64) -> AppResult<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "WITH RECURSIVE down(id, depth) AS (
+             SELECT id, 0 FROM categories WHERE id = ?1
+             UNION ALL
+             SELECT c.id, down.depth + 1
+             FROM categories c JOIN down ON c.parent_id = down.id WHERE down.depth < 64
+         )
+         SELECT COALESCE(MAX(depth), 0) FROM down",
+    )
+    .bind(id)
+    .fetch_one(db)
+    .await?)
 }
 
 #[tracing::instrument(level = "debug", skip_all)]

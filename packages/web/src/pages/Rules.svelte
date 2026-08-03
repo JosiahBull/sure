@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, formatDate, formatMoney, type Schemas } from "../lib/api";
+  import { categoryOptions, qualifiedName } from "../lib/categories";
   import RuleGroup from "../lib/rules/RuleGroup.svelte";
   import {
     emit,
@@ -59,7 +60,6 @@
   let openRun = $state<number | null>(null);
   let runDetails = $state<Record<number, AppDetail[]>>({});
 
-  const catName = $derived(new Map(categories.map((c) => [c.id, c.name])));
   const merchName = $derived(new Map(merchants.map((m) => [m.id, m.name])));
   const ruleName = $derived(new Map(rules.map((r) => [r.id, r.name])));
 
@@ -224,8 +224,9 @@
   }
 
   const toggleRun = (id: number) => (openRun = openRun === id ? null : id);
+  // Qualified with its ancestors — at three levels a bare "Power" doesn't say which branch.
   const catLabel = (id: number | null | undefined) =>
-    id == null ? "none" : (catName.get(id) ?? `#${id}`);
+    id == null ? "none" : (qualifiedName(categories, id) || `#${id}`);
   const merchLabel = (id: number | null | undefined) =>
     id == null ? "none" : (merchName.get(id) ?? `#${id}`);
 
@@ -311,7 +312,7 @@
       <label class="field">Set category
         <select class="select" bind:value={form.set_category_id}>
           <option value="">— leave as is —</option>
-          {#each categories as c}<option value={c.id}>{c.name}</option>{/each}
+          {#each categoryOptions(categories) as o}<option value={o.id}>{o.label}</option>{/each}
         </select>
       </label>
       <label class="field">Set merchant
@@ -347,7 +348,7 @@
         <div class="row spread" style="gap:8px">
           <div style="min-width:0">
             <strong>{r.name}</strong>
-            {#if r.set_category_id}<span class="badge" style="margin-left:6px">→ {catName.get(r.set_category_id) ?? "?"}</span>{/if}
+            {#if r.set_category_id}<span class="badge" style="margin-left:6px">→ {catLabel(r.set_category_id)}</span>{/if}
             {#if r.set_merchant_id}<span class="badge" style="margin-left:6px">merchant: {merchName.get(r.set_merchant_id) ?? "?"}</span>{/if}
             {#if r.set_one_off != null}<span class="badge" style="margin-left:6px">{r.set_one_off ? "mark one-off" : "clear one-off"}</span>{/if}
             {#if !r.enabled}<span class="badge" style="margin-left:6px">disabled</span>{/if}

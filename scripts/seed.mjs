@@ -49,19 +49,37 @@ function monthsAhead(n, day = 1) {
 async function main() {
   await put("/api/settings", { base_currency_code: "NZD" });
 
-  // Categories (nested).
-  const income = (await post("/api/categories", { name: "Income", kind: "income" })).id;
-  const housing = (await post("/api/categories", { name: "Housing", kind: "expense" })).id;
-  const rent = (await post("/api/categories", { name: "Rent", kind: "expense", parent_id: housing })).id;
-  const utilities = (await post("/api/categories", { name: "Utilities", kind: "expense", parent_id: housing })).id;
-  const food = (await post("/api/categories", { name: "Food", kind: "expense" })).id;
-  const groceries = (await post("/api/categories", { name: "Groceries", kind: "expense", parent_id: food })).id;
-  const dining = (await post("/api/categories", { name: "Dining out", kind: "expense", parent_id: food })).id;
-  const transport = (await post("/api/categories", { name: "Transport", kind: "expense" })).id;
-  const lifestyle = (await post("/api/categories", { name: "Lifestyle", kind: "expense" })).id;
-  const fun = (await post("/api/categories", { name: "Entertainment", kind: "expense", parent_id: lifestyle })).id;
-  const transfers = (await post("/api/categories", { name: "Transfers", kind: "transfer" })).id;
-  const bankFees = (await post("/api/categories", { name: "Bank fees", kind: "expense" })).id;
+  // Categories, nested to the full three levels the money-flow chart draws. The shape is
+  // deliberately ragged so the demo exercises every case the layout has to cope with: a
+  // three-deep branch, a two-deep sibling beside it, flat top-level categories with no
+  // children at all, and a parent that keeps some spend of its own.
+  const cat = (name, kind, parent_id) => post("/api/categories", { name, kind, parent_id });
+
+  const income = (await cat("Income", "income")).id;
+  const employment = (await cat("Employment", "income", income)).id;
+  const salary = (await cat("Salary", "income", employment)).id;
+  const bonus = (await cat("Bonus", "income", employment)).id;
+  const interest = (await cat("Interest", "income", income)).id; // two deep — ragged on purpose
+
+  const housing = (await cat("Housing", "expense")).id;
+  const rent = (await cat("Rent", "expense", housing)).id; // two deep
+  const utilities = (await cat("Utilities", "expense", housing)).id;
+  const power = (await cat("Power", "expense", utilities)).id;
+  const internet = (await cat("Internet", "expense", utilities)).id;
+
+  const food = (await cat("Food", "expense")).id;
+  const groceries = (await cat("Groceries", "expense", food)).id;
+  const dining = (await cat("Dining out", "expense", food)).id;
+
+  const lifestyle = (await cat("Lifestyle", "expense")).id;
+  const fun = (await cat("Entertainment", "expense", lifestyle)).id;
+  const streaming = (await cat("Streaming", "expense", fun)).id;
+
+  // Flat, no children — the node a depth-based layout has to place next to the hub rather
+  // than banishing to the far column with everyone else's leaves.
+  const transport = (await cat("Transport", "expense")).id;
+  const bankFees = (await cat("Bank fees", "expense")).id;
+  const transfers = (await cat("Transfers", "transfer")).id;
 
   // The household. Every account has to name an owner, so a database always starts with a
   // placeholder person (see migration 0016) — renaming it is what the app asks a real user to
@@ -204,7 +222,7 @@ async function main() {
   await post(`/api/accounts/${options}/equity/revalue`, {});
 
   // Custom merchants (payees), some with a default category.
-  const merchNetflix = (await post("/api/merchants", { name: "Netflix", category_id: fun })).id;
+  const merchNetflix = (await post("/api/merchants", { name: "Netflix", category_id: streaming })).id;
   await post("/api/merchants", { name: "Countdown", category_id: groceries });
   await post("/api/merchants", { name: "New World", category_id: groceries });
   await post("/api/merchants", { name: "Z Energy", category_id: transport });
@@ -214,18 +232,26 @@ async function main() {
     [groceries]: ["Countdown", "New World", "Pak'nSave"],
     [dining]: ["Cafe Vic", "Sushi Ten", "Thai Corner"],
     [transport]: ["Z Energy", "AT HOP", "Uber"],
-    [utilities]: ["Contact Energy", "2degrees"],
-    [fun]: ["Netflix", "Event Cinemas", "Spotify"],
+    [power]: ["Contact Energy"],
+    [internet]: ["2degrees"],
+    [fun]: ["Event Cinemas", "Spotify"],
   };
   const pick = (arr, i) => arr[i % arr.length];
 
   for (let m = 6; m >= 0; m--) {
-    // salary
-    await tx(everyday, monthsAgo(m, 2), 720_000, "Acme Payroll", income);
+    // Pay, split across the Employment branch...
+    await tx(everyday, monthsAgo(m, 2), 640_000, "Acme Payroll", salary);
+    if (m % 3 === 0) await tx(everyday, monthsAgo(m, 2), 120_000, "Acme Bonus", bonus);
+    // ...plus a contract payment still filed on Employment itself. Nothing further out
+    // feeds it, so the chart draws it as a band on the Employment node's inner face — the
+    // usual shape once categories get split up after the fact.
+    await tx(everyday, monthsAgo(m, 16), 80_000, "Cluey Tutoring", employment);
+    await tx(savings, monthsAgo(m, 28), 1_200 + m * 40, "Interest", interest);
     // rent
     await tx(everyday, monthsAgo(m, 3), -220_000, "Property Manager", rent);
-    // utilities
-    await tx(everyday, monthsAgo(m, 8), -18_000 - m * 500, pick(merchants[utilities], m), utilities);
+    // utilities, split into its own two leaves
+    await tx(everyday, monthsAgo(m, 8), -12_000 - m * 400, pick(merchants[power], m), power);
+    await tx(everyday, monthsAgo(m, 9), -6_000, pick(merchants[internet], m), internet);
     // groceries (weekly-ish) — left uncategorised so the rule below classifies them
     for (let w = 0; w < 4; w++) {
       await tx(card, monthsAgo(m, 4 + w * 6), -(9000 + ((m + w) % 5) * 1500), pick(merchants[groceries], m + w), null);
@@ -235,8 +261,9 @@ async function main() {
     await tx(card, monthsAgo(m, 22), -(3800 + (m % 3) * 700), pick(merchants[dining], m + 1), dining);
     // transport
     await tx(card, monthsAgo(m, 6), -(6500 + (m % 4) * 800), pick(merchants[transport], m), transport);
-    // entertainment
-    await tx(card, monthsAgo(m, 15), -1999, pick(merchants[fun], m), fun);
+    // entertainment: a three-deep leaf plus spend kept on its parent
+    await tx(card, monthsAgo(m, 15), -1999, "Netflix", streaming);
+    await tx(card, monthsAgo(m, 17), -(2200 + (m % 3) * 600), pick(merchants[fun], m), fun);
     // occasional one-off
     if (m === 3) await txOneOff(card, monthsAgo(m, 18), -145_000, "Dishwasher");
   }
@@ -298,9 +325,9 @@ async function main() {
 
   // A rule recognising bank-paid interest, then run it.
   const interestRule = await post("/api/rules", {
-    name: "Bank interest received → Income",
+    name: "Bank interest received → Income > Interest",
     expression: "contains(lower(description), 'cr.int')",
-    set_category_id: income,
+    set_category_id: interest,
     overwrite_manual: false,
     stop_on_match: false,
     priority: 3,

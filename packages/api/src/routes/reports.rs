@@ -178,10 +178,22 @@ impl From<sure_app::reports::CategoryBreakdown> for CategoryBreakdown {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SankeyNode {
+    /// `center`, `savings`, or `in:<category_id>` / `out:<category_id>` at any level of
+    /// the hierarchy (`0` being the uncategorised bucket). Treat it as an opaque key and
+    /// read the fields below rather than parsing it.
     pub id: String,
     pub label: String,
     /// `income` | `center` | `expense` | `savings`.
     pub kind: String,
+    /// The category this node stands for; null for the hub, savings and uncategorised.
+    pub category_id: Option<i64>,
+    /// 0-based level within its own side (0 = top-level, adjacent to the hub); null for
+    /// the hub and savings.
+    pub depth: Option<u8>,
+    /// Top-level ancestor, for colouring a whole branch from one key.
+    pub root_id: Option<i64>,
+    /// That top-level ancestor's own colour, if set — the branch's base shade.
+    pub root_color: Option<String>,
 }
 
 impl From<sure_app::reports::SankeyNode> for SankeyNode {
@@ -190,6 +202,10 @@ impl From<sure_app::reports::SankeyNode> for SankeyNode {
             id: n.id,
             label: n.label,
             kind: n.kind.as_str().to_string(),
+            category_id: n.category_id,
+            depth: n.depth,
+            root_id: n.root_id,
+            root_color: n.root_color,
         }
     }
 }

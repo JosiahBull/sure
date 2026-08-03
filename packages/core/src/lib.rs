@@ -22,7 +22,7 @@ pub use brokerage::{
     BrokerageActivity30d, BrokerageImportResult, BrokerageSnapshot, Dividend, DividendDetail,
     DividendWithholding, HoldingLot, LotKind, Position, SaveHoldingLot, WalletBalance,
 };
-pub use categories::{Category, CategoryKind, CategoryNode, SaveCategory};
+pub use categories::{Category, CategoryKind, CategoryNode, SaveCategory, MAX_CATEGORY_DEPTH};
 pub use crons::{Cron, CronKind, CronRun, CronRunResult, SaveCron};
 pub use currencies::{Currency, NewCurrency};
 pub use equity::{

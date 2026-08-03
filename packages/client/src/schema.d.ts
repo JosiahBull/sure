@@ -5523,10 +5523,33 @@ export interface components {
             value_minor: number;
         };
         SankeyNode: {
+            /**
+             * @description `center`, `savings`, or `in:<category_id>` / `out:<category_id>` at any level of
+             *     the hierarchy (`0` being the uncategorised bucket). Treat it as an opaque key and
+             *     read the fields below rather than parsing it.
+             */
             id: string;
             label: string;
             /** @description `income` | `center` | `expense` | `savings`. */
             kind: string;
+            /**
+             * Format: int64
+             * @description The category this node stands for; null for the hub, savings and uncategorised.
+             */
+            category_id?: number | null;
+            /**
+             * Format: int32
+             * @description 0-based level within its own side (0 = top-level, adjacent to the hub); null for
+             *     the hub and savings.
+             */
+            depth?: number | null;
+            /**
+             * Format: int64
+             * @description Top-level ancestor, for colouring a whole branch from one key.
+             */
+            root_id?: number | null;
+            /** @description That top-level ancestor's own colour, if set — the branch's base shade. */
+            root_color?: string | null;
         };
         SaveAccount: {
             name: string;

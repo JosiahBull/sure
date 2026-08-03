@@ -110,11 +110,39 @@ impl SankeyNodeKind {
     }
 }
 
+/// How many levels of category hierarchy each side of the money-flow graph fans out into.
+/// Tied to [`sure_core::MAX_CATEGORY_DEPTH`] so the tree the API lets you build and the
+/// tree the chart can draw are the same tree — but the builder still rolls deeper chains
+/// up, because the import and snapshot-restore paths bypass that validation.
+pub const SANKEY_MAX_DEPTH: usize = sure_core::MAX_CATEGORY_DEPTH as usize;
+
+/// The uncategorised bucket's stand-in category key. SQLite rowids start at 1, so 0 can
+/// never collide with a real category id.
+pub(crate) const UNCATEGORISED: i64 = 0;
+
+/// The money-flow graph's hub, which both sides link to.
+const CENTER: &str = "center";
+
 #[derive(Debug)]
 pub struct SankeyNode {
     pub id: String,
     pub label: String,
     pub kind: SankeyNodeKind,
+    /// The category this node stands for. `None` for `center`, `savings`, and the
+    /// uncategorised bucket (which has no row in `categories`).
+    pub category_id: Option<i64>,
+    /// 0-based level within its own side: 0 = top-level (adjacent to the hub), 1 = its
+    /// child, 2 = grandchild. `None` for `center`/`savings`, which sit on the spine rather
+    /// than in either hierarchy.
+    pub depth: Option<u8>,
+    /// The top-level ancestor this node descends from, so a client can colour a whole
+    /// branch from one key. Equals `category_id` at depth 0.
+    pub root_id: Option<i64>,
+    /// That top-level ancestor's own `color`, if the user set one — the branch's base
+    /// shade, which the client darkens or lightens by `depth`. Deliberately the *root's*
+    /// colour rather than this node's: the point is one hue per branch, so honouring a
+    /// per-node override here would fight that.
+    pub root_color: Option<String>,
 }
 
 #[derive(Debug)]
@@ -353,10 +381,48 @@ impl Categories {
         for _ in 0..64 {
             match self.parents.get(&cur) {
                 Some(Some(p)) => cur = *p,
-                _ => break,
+                // Either the walk reached a top-level category (`Some(None)`) or the id
+                // isn't in the map at all — both mean `cur` is as far up as we can go.
+                Some(None) | None => break,
             }
         }
         cur
+    }
+
+    /// The ancestor chain of `id`, root first and ending at `id` itself. An id that isn't
+    /// in the map yields `[id]`, matching [`Self::top_ancestor`]'s treatment of one.
+    ///
+    /// Same 64-hop guard as [`Self::top_ancestor`], plus a seen-check: a parent cycle is
+    /// impossible through the API (`sure_dal::categories::validate` rejects one) but a
+    /// hand-edited database shouldn't be able to hang a report.
+    pub(crate) fn chain(&self, id: i64) -> Vec<i64> {
+        let mut chain = vec![id];
+        let mut cur = id;
+        for _ in 0..64 {
+            match self.parents.get(&cur) {
+                Some(Some(p)) if !chain.contains(p) => {
+                    chain.push(*p);
+                    cur = *p;
+                }
+                Some(Some(_)) | Some(None) | None => break,
+            }
+        }
+        chain.reverse();
+        chain
+    }
+
+    /// [`Self::chain`] cut to at most `max` levels, root first. A category nested deeper
+    /// than `max` reports as its ancestor at level `max - 1`, so its spend rolls up there
+    /// rather than being dropped or placed in a column the chart doesn't draw.
+    pub(crate) fn chain_to_depth(&self, id: i64, max: usize) -> Vec<i64> {
+        let mut chain = self.chain(id);
+        chain.truncate(max);
+        chain
+    }
+
+    /// A category's own `color`, if the user set one.
+    pub(crate) fn color_of(&self, id: i64) -> Option<String> {
+        self.colors.get(&id).cloned().flatten()
     }
 
     pub(crate) fn is_transfer(&self, id: i64) -> bool {
@@ -480,6 +546,206 @@ pub(crate) async fn load_spend(
             }
         })
         .collect())
+}
+
+// ---- money-flow roll-up (sankey) ------------------------------------------
+
+/// Which half of the money-flow graph a roll-up belongs to.
+///
+/// Decided purely by the sign of the amount, never by [`CategoryKind`]: a refund booked
+/// against an expense category *is* income, so one category legitimately appears on both
+/// sides of the graph with different totals. That's the gross picture the chart wants —
+/// netting the two would hide the refund entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowSide {
+    Income,
+    Expense,
+}
+
+impl FlowSide {
+    fn node_kind(self) -> SankeyNodeKind {
+        match self {
+            FlowSide::Income => SankeyNodeKind::Income,
+            FlowSide::Expense => SankeyNodeKind::Expense,
+        }
+    }
+
+    /// Node-id prefix. Ids stay `in:<category_id>` / `out:<category_id>`; they just now
+    /// cover every level of the hierarchy rather than only the top one. A category has one
+    /// parent, so it holds one position per side and the ids stay unique.
+    fn prefix(self) -> &'static str {
+        match self {
+            FlowSide::Income => "in",
+            FlowSide::Expense => "out",
+        }
+    }
+
+    /// Orient a link between a node and whatever sits on its hub-ward side: income flows
+    /// from the leaf towards the hub, expense the other way.
+    fn link(self, node: String, inner: &str, value_minor: i64) -> SankeyLink {
+        match self {
+            FlowSide::Income => SankeyLink {
+                source: node,
+                target: inner.to_string(),
+                value_minor,
+            },
+            FlowSide::Expense => SankeyLink {
+                source: inner.to_string(),
+                target: node,
+                value_minor,
+            },
+        }
+    }
+}
+
+/// One node of a side's roll-up forest, accumulated in base-currency *major* units so the
+/// single rounding to minor units happens at emission (see [`crate::fx`]).
+#[derive(Default)]
+struct FlowNode {
+    /// This category's spend including everything rolled up from below it.
+    total_major: f64,
+    depth: u8,
+    root_id: Option<i64>,
+    children: Vec<i64>,
+}
+
+/// One side's roll-up forest, keyed by category id ([`UNCATEGORISED`] for the bucket of
+/// transactions with no category).
+#[derive(Default)]
+struct FlowForest {
+    nodes: HashMap<i64, FlowNode>,
+    roots: Vec<i64>,
+}
+
+impl FlowForest {
+    /// Book `amount_major` against every node on `chain` (root first), creating nodes and
+    /// parent→child edges on first sight. Every ancestor carries its descendants' spend,
+    /// which is what makes a parent's link the sum of the subtree beneath it.
+    fn add(&mut self, chain: &[i64], amount_major: f64) {
+        let root_id = chain
+            .first()
+            .copied()
+            .filter(|first| *first != UNCATEGORISED);
+        for (depth, &id) in chain.iter().enumerate() {
+            let entry = self.nodes.entry(id).or_insert(FlowNode {
+                depth: depth as u8,
+                root_id,
+                ..FlowNode::default()
+            });
+            entry.total_major += amount_major;
+            match depth.checked_sub(1) {
+                None => {
+                    if !self.roots.contains(&id) {
+                        self.roots.push(id);
+                    }
+                }
+                Some(parent_at) => {
+                    // The parent was inserted on the previous iteration of this same chain.
+                    let kids = &mut self
+                        .nodes
+                        .get_mut(&chain[parent_at])
+                        .expect("parent inserted first")
+                        .children;
+                    if !kids.contains(&id) {
+                        kids.push(id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A flow node's display label: its category name, or the uncategorised bucket's.
+fn flow_label(cats: &Categories, id: i64) -> String {
+    if id == UNCATEGORISED {
+        "Uncategorised".to_string()
+    } else {
+        cats.name_of(id)
+    }
+}
+
+/// `ids` sorted biggest-first, then by label, then by id.
+///
+/// [`FlowForest::nodes`] is a `HashMap` and its iteration order isn't stable across
+/// processes, so every list the emitter walks is sorted first. Otherwise two identical
+/// requests return differently-ordered JSON — and because d3-sankey seeds its vertical
+/// layout from node order, the picture would move between refreshes too.
+fn flow_order(ids: &[i64], forest: &FlowForest, cats: &Categories, fx: &Fx) -> Vec<i64> {
+    let value = |id: &i64| {
+        forest
+            .nodes
+            .get(id)
+            .map(|n| fx.base_minor(n.total_major))
+            .unwrap_or(0)
+    };
+    let mut sorted = ids.to_vec();
+    sorted.sort_by(|a, b| {
+        value(b)
+            .cmp(&value(a))
+            .then_with(|| flow_label(cats, *a).cmp(&flow_label(cats, *b)))
+            .then_with(|| a.cmp(b))
+    });
+    sorted
+}
+
+/// Emit `id`'s node, its whole subtree, and the link joining it to `inner` (its parent's
+/// node id, or [`CENTER`] for a top-level category). Returns the value that link carries,
+/// in minor units — 0 if nothing was emitted.
+///
+/// A category can hold transactions of its own *and* have children: $1,000 booked straight
+/// onto "Employment" plus an "Employment > Salary". d3-sankey sizes a node as
+/// `max(inflow, outflow)`, so that $1,000 shows up as a blank band on the node's inner
+/// face — the money that came from the category itself rather than from anything further
+/// out. That band is deliberate, and matches how the previous app drew it.
+///
+/// The `max` below only guarantees the band is never *negative*: a parent's f64 total and
+/// its children's are rounded to minor units independently, so with several children the
+/// children's rounded sum can exceed the parent's by a minor unit or two, which would
+/// otherwise draw an inflow wider than the outflow.
+#[allow(clippy::too_many_arguments)]
+fn emit_flow_node(
+    id: i64,
+    inner: &str,
+    side: FlowSide,
+    forest: &FlowForest,
+    cats: &Categories,
+    fx: &Fx,
+    nodes: &mut Vec<SankeyNode>,
+    links: &mut Vec<SankeyLink>,
+) -> i64 {
+    let Some(node) = forest.nodes.get(&id) else {
+        return 0;
+    };
+    let own_minor = fx.base_minor(node.total_major);
+    if own_minor <= 0 {
+        // Rounds to nothing at this currency's precision. Skipping the whole subtree is
+        // safe: a child's total is never larger than its parent's.
+        return 0;
+    }
+
+    let node_id = format!("{}:{id}", side.prefix());
+    nodes.push(SankeyNode {
+        id: node_id.clone(),
+        label: flow_label(cats, id),
+        kind: side.node_kind(),
+        category_id: (id != UNCATEGORISED).then_some(id),
+        depth: Some(node.depth),
+        root_id: node.root_id,
+        root_color: node.root_id.and_then(|root| cats.color_of(root)),
+    });
+    // Reserve this node's link slot: children are emitted after it so that the JSON reads
+    // outward from the hub, but the link's value isn't known until they've been summed.
+    let link_slot = links.len();
+    links.push(side.link(node_id.clone(), inner, own_minor));
+
+    let mut children_minor = 0;
+    for child in flow_order(&node.children, forest, cats, fx) {
+        children_minor += emit_flow_node(child, &node_id, side, forest, cats, fx, nodes, links);
+    }
+
+    let value_minor = own_minor.max(children_minor);
+    links[link_slot].value_minor = value_minor;
+    value_minor
 }
 
 // ---- service ---------------------------------------------------------------
@@ -667,7 +933,10 @@ impl ReportService {
         })
     }
 
-    /// Money-flow graph: income categories -> cash flow -> expense categories (+ savings).
+    /// Money-flow graph: income categories -> cash flow -> expense categories (+ savings),
+    /// with up to [`SANKEY_MAX_DEPTH`] levels of category hierarchy fanning out from the
+    /// hub on each side, so `Partly Group -> Employment -> Income -> Cash flow` reads as
+    /// three columns rather than collapsing to one.
     pub async fn sankey(&self, q: &ReportQuery) -> AppResult<SankeyGraph> {
         let base = self.base_currency(q.currency.as_deref()).await?;
         let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
@@ -683,76 +952,63 @@ impl ReportService {
         )
         .await?;
 
-        let mut income: HashMap<i64, f64> = HashMap::new();
-        let mut expense: HashMap<i64, f64> = HashMap::new();
+        let mut income = FlowForest::default();
+        let mut expense = FlowForest::default();
         for t in &spend {
-            let key = t.category_id.map(|c| cats.top_ancestor(c)).unwrap_or(0);
+            let chain = match t.category_id {
+                Some(cid) => cats.chain_to_depth(cid, SANKEY_MAX_DEPTH),
+                None => vec![UNCATEGORISED],
+            };
             let base_major = fx.to_base_major(t.amount_minor.abs(), &t.currency_code);
+            // Sign of the amount, not the category's `kind` — see `FlowSide`.
             if t.amount_minor >= 0 {
-                *income.entry(key).or_default() += base_major;
+                income.add(&chain, base_major);
             } else {
-                *expense.entry(key).or_default() += base_major;
+                expense.add(&chain, base_major);
             }
         }
 
-        let label = |key: i64| -> String {
-            if key == 0 {
-                "Uncategorised".to_string()
-            } else {
-                cats.names.get(&key).cloned().unwrap_or_else(|| "?".into())
-            }
-        };
-
         let mut nodes = vec![SankeyNode {
-            id: "center".into(),
+            id: CENTER.to_string(),
             label: "Cash flow".into(),
             kind: SankeyNodeKind::Center,
+            category_id: None,
+            depth: None,
+            root_id: None,
+            root_color: None,
         }];
         let mut links = Vec::new();
 
-        let mut total_income = 0.0;
-        for (key, total) in &income {
-            total_income += *total;
-            let id = format!("in:{key}");
-            nodes.push(SankeyNode {
-                id: id.clone(),
-                label: label(*key),
-                kind: SankeyNodeKind::Income,
-            });
-            links.push(SankeyLink {
-                source: id,
-                target: "center".into(),
-                value_minor: fx.base_minor(*total),
-            });
-        }
+        let emit_side = |forest: &FlowForest,
+                         side: FlowSide,
+                         nodes: &mut Vec<SankeyNode>,
+                         links: &mut Vec<SankeyLink>|
+         -> i64 {
+            flow_order(&forest.roots, forest, &cats, &fx)
+                .into_iter()
+                .map(|root| emit_flow_node(root, CENTER, side, forest, &cats, &fx, nodes, links))
+                .sum()
+        };
+        let income_minor = emit_side(&income, FlowSide::Income, &mut nodes, &mut links);
+        let expense_minor = emit_side(&expense, FlowSide::Expense, &mut nodes, &mut links);
 
-        let mut total_expense = 0.0;
-        for (key, total) in &expense {
-            total_expense += *total;
-            let id = format!("out:{key}");
-            nodes.push(SankeyNode {
-                id: id.clone(),
-                label: label(*key),
-                kind: SankeyNodeKind::Expense,
-            });
-            links.push(SankeyLink {
-                source: "center".into(),
-                target: id,
-                value_minor: fx.base_minor(*total),
-            });
-        }
-
-        // Surplus flows to savings.
-        if total_income > total_expense {
+        // Surplus flows to savings. Taken from the emitted root links rather than from a
+        // separately-rounded `total_income - total_expense`, so the hub's inflow and
+        // outflow balance to the cent.
+        if income_minor > expense_minor {
             nodes.push(SankeyNode {
                 id: "savings".into(),
                 label: "Savings".into(),
                 kind: SankeyNodeKind::Savings,
+                category_id: None,
+                depth: None,
+                root_id: None,
+                root_color: None,
             });
             links.push(SankeyLink {
-                source: "center".into(),
+                source: CENTER.into(),
                 target: "savings".into(),
-                value_minor: fx.base_minor(total_income - total_expense),
+                value_minor: income_minor - expense_minor,
             });
         }
 
