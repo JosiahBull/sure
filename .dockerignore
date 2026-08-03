@@ -10,6 +10,15 @@
 docs
 scripts/*.mjs
 
+# Personal data exports (the same set .gitignore excludes) — real portfolio, student-loan and
+# bank-statement history. Every COPY below is path-specific, so these never reached an image, but
+# they have no business being uploaded to the daemon as build context either.
+/sharesies-export
+/sharesies-export-*
+/sharesies-instruments-*
+/myir-export
+/asb-export
+
 # Local databases and test/build artifacts
 /data
 **/*.db

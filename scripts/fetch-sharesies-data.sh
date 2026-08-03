@@ -38,6 +38,10 @@
 #   3. Reload the wallet page. Click any request to .../transactions-v2 — SHARESIES_WALLET_ID is
 #      the UUID in that request's path. It is NOT necessarily the same UUID as
 #      SHARESIES_ACCOUNT_ID (confirmed on a live account: they differ).
+#   4. From the same Headers tab as step 2, copy the `x-known-device-key` request header into
+#      SHARESIES_DEVICE_KEY. It identifies the browser Sharesies minted it for, so it is not
+#      shared and carries no default — a device key from someone else's session is both useless
+#      here and theirs, not yours.
 # Treat SHARESIES_COOKIE especially as a secret: don't commit it, don't paste it into chat/tickets
 # (a leaked cookie is a live, working session for whoever has it). Put these in a local .env file
 # (already gitignored) and load it with `set -a; source .env; set +a` (this correctly handles the
@@ -77,7 +81,8 @@
 #   SHARESIES_LOGO_SIZE            wide|thumb|micro (default: wide — highest res of the three)
 #   SHARESIES_API_VERSION          x-api-version header (default: 33)
 #   SHARESIES_GIT_HASH             x-git-hash header (default: a known-good value seen in a real request)
-#   SHARESIES_DEVICE_KEY           x-known-device-key header (default: a known-good value)
+#   SHARESIES_DEVICE_KEY           x-known-device-key header (required, no default: it is minted
+#                                  per browser — capture your own, see step 4 above)
 #   SHARESIES_VERSION              x-version header (default: 42506)
 #   SHARESIES_USER_AGENT           User-Agent header (default: a recent Firefox UA string)
 #   OUT_DIR                        where to write output (default: ./sharesies-export — a fixed,
@@ -148,6 +153,8 @@ NEED_COOKIE=1
 if [[ $NEED_COOKIE -eq 1 ]]; then
   [[ -n "${SHARESIES_COOKIE:-}" ]] || fail "SHARESIES_COOKIE is not set (see header comment for how to get it)"
   [[ -n "${SHARESIES_ACCOUNT_ID:-}" ]] || fail "SHARESIES_ACCOUNT_ID is not set (see header comment for how to get it)"
+  # Minted per browser, so there is no shared default to fall back on — see header comment step 4.
+  [[ -n "${SHARESIES_DEVICE_KEY:-}" ]] || fail "SHARESIES_DEVICE_KEY is not set (see header comment for how to get it)"
 fi
 if [[ $RESUME -eq 0 ]]; then
   [[ -n "${SHARESIES_WALLET_ID:-}" ]] || fail "SHARESIES_WALLET_ID is not set (see header comment for how to get it — it is NOT necessarily the same UUID as SHARESIES_ACCOUNT_ID)"
@@ -161,7 +168,7 @@ LIMIT=$(strip_quotes "${SHARESIES_LIMIT:-100}")
 WALLET_LIMIT=$(strip_quotes "${SHARESIES_WALLET_LIMIT:-5000}")
 API_VERSION=$(strip_quotes "${SHARESIES_API_VERSION:-33}")
 GIT_HASH=$(strip_quotes "${SHARESIES_GIT_HASH:-81e16b2c13f9a04701c175059ed444e4f94c3a62}")
-DEVICE_KEY=$(strip_quotes "${SHARESIES_DEVICE_KEY:-00000000-0000-0000-0000-000000000000}")
+DEVICE_KEY=$(strip_quotes "${SHARESIES_DEVICE_KEY:-}")
 APP_VERSION=$(strip_quotes "${SHARESIES_VERSION:-42506}")
 USER_AGENT=$(strip_quotes "${SHARESIES_USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0}")
 STATUSES="${SHARESIES_TRADING_STATUSES:-active,halt,closeonly,notrade,inactive,unknown}"
