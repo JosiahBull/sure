@@ -3,8 +3,12 @@
 # Pre-commit checks for the sure repo. Mirrors the deterministic gates in
 # .github/workflows/checks.yml so most failures are caught before they reach CI.
 #
-# Runs: rustfmt (check), clippy (-D warnings), the backend e2e suite, and the web
-# type-check. Deliberately does NOT run the web *visual* suite (`pnpm test:web`): those
+# Runs: the personal-data scan, rustfmt (check), clippy (-D warnings), the backend e2e
+# suite, and the web type-check. The scan goes first because it costs milliseconds and
+# guards something a later gate cannot undo — see CLAUDE.md rule 3, and
+# `node scripts/pii-scan.mjs --all` to sweep the whole tree rather than staged additions.
+#
+# Deliberately does NOT run the web *visual* suite (`pnpm test:web`): those
 # screenshot tests are only deterministic inside the pinned Playwright container CI uses
 # (see the `web-tests` job in checks.yml), so they stay a CI concern — regenerate their
 # baselines via .github/workflows/snapshots.yml, never from a local commit.
@@ -19,6 +23,7 @@ run() {
   "$@"
 }
 
+run node scripts/pii-scan.mjs
 run cargo fmt --all --check
 run cargo clippy --workspace --all-targets --all-features -- -D warnings
 run pnpm test:api

@@ -113,8 +113,11 @@ exercising the boundary its test exists for. Reuse the fakes already in the tree
 number.
 
 **Check provenance before committing a fixture — "it looks synthetic" is not evidence.**
-`data/sure.db` is the ground truth, and a byte grep answers it without opening a sqlite
-handle, so it cannot write to the live DB (see the `data/sure.db` convention below):
+`.githooks/pre-commit` now does this for you via `scripts/pii-scan.mjs` (see the enforcement
+section for what it covers and what it misses), but do it by hand while writing the fixture
+rather than discovering it at commit time. `data/sure.db` is the ground truth, and a byte grep
+answers it without opening a sqlite handle, so it cannot write to the live DB (see the
+`data/sure.db` convention below):
 
 ```sh
 # Any hit means the value came from real data. Grep a known-fake control too, so a
@@ -158,7 +161,9 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   drain; a helper that wraps it needs `#[track_caller]` too or it becomes the reported
   site for everything it spawns. See `docs/HTTP.md` for the phases and their env vars.
 - **Pre-commit** (`.githooks/pre-commit`, wired by the `prepare` script): runs
-  `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+  `node scripts/pii-scan.mjs` (rule 3; first, because it is the cheapest gate and the only
+  one guarding something a later gate cannot undo), then `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
   `pnpm test:api`, `pnpm --filter @sure/web check`. It deliberately skips the web
   *visual* Playwright suite (only deterministic in CI's pinned container). Bypass in
   an emergency with `git commit --no-verify`, not by weakening a lint.
@@ -250,12 +255,28 @@ instead of silently defaulting to `month`), and `SankeyNodeKind` (income/center/
 expense/savings, built directly rather than parsed, so no `FromStr` — see
 `packages/core/src/{brokerage,rules,providers}.rs` and `packages/app/src/reports.rs`).
 
-**Rule 3 has no lint, and cannot have one:** whether a given account-number-shaped literal is
-real or invented is not a property of the source — it is a question about
-`data/sure.db`, which no compiler can consult. It is enforced by the provenance grep in the
-rule itself, run *before* a fixture is committed. `.githooks/pre-commit` deliberately does
-not attempt it: a hook that greps every added literal against the live DB would be slow and
-would still miss a value paraphrased by a digit, and one that pattern-matches
-account-number-shaped strings would fire on every legitimate fake in `seed.mjs`. The check
-that actually works is a human or agent asking "where did this string come from?" while
-pasting it, which is why the rule leads with that question rather than with a regex.
+**Rule 3 can't be a clippy lint** — whether an account-number-shaped literal is real or
+invented is not a property of the source, it is a question about `data/sure.db`, which no
+compiler can consult. So it is enforced by `scripts/pii-scan.mjs`, which `.githooks/pre-commit`
+runs first (it costs milliseconds, and guards the one thing a later gate cannot undo):
+
+1. **Shape** — regexes for NZ bank account numbers, IRD numbers (dashed, and undashed beside
+   an `SLS` marker), `FC…` payee accounts, `CARD nnnn` last-fours, UUIDs baked in as shell
+   defaults, long literals assigned to secret-looking names, JWTs, and email addresses. Only
+   *added* lines of staged files are scanned, so pre-existing content never blocks a commit;
+   `--all` sweeps the whole tree.
+2. **Allowlist** — `ALLOWED` in that script, baselined from a tree verified clean, so the
+   established fakes in `seed.mjs`/`accounts.rs`/the ASB fixtures stay quiet. Adding a new
+   invented literal there is the intended workflow, and the entry is the audit trail.
+3. **Provenance** — anything not allowlisted is byte-grepped against `data/sure.db` (and its
+   WAL), read-only, no sqlite handle. A hit means real data and says so with a count; no hit
+   is still reported, because it may be a third party's data that was never in this database.
+
+It found a real third-party account number in an `asb.rs` doc comment within a minute of
+being written — one the manual scrub had missed, because that scrub grepped for the specific
+numbers it already knew rather than for the shape.
+
+What it still can't see: a value paraphrased by a digit, a shape nobody has added a pattern
+for, and anything rendered into an image (the Playwright baselines had to be regenerated, not
+rewritten). It narrows rule 3 to the cases a regex can carry; the question "where did this
+string come from?" is still the check that matters.
