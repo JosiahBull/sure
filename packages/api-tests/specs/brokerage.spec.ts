@@ -1,5 +1,5 @@
 import { test, expect } from "../fixtures";
-import { createAccount, makeZip } from "../helpers";
+import { createAccount, makeZip, postOversized } from "../helpers";
 
 // The value snapshot (GET .../brokerage) prices each holding via the live Yahoo Finance
 // endpoint on a cache miss, so — like stock-prices.spec.ts / akahu.spec.ts — it isn't
@@ -139,4 +139,159 @@ test("rejects an import onto a non-brokerage account", async ({ api, server }) =
   const acc = await createAccount(api, "Everyday", "bank");
   const res = await importZip(server.baseURL, acc.id, exportZip());
   expect(res.status).toBe(422);
+});
+
+// ---- malformed and hostile uploads ------------------------------------------------------
+
+/**
+ * Every one of these has to come back as a clean 4xx naming the problem. The endpoint takes
+ * an arbitrary uploaded file, so "the parser panicked", "the process ran out of memory" and
+ * "the request hung" are all failures of the same kind: **the request must fail, not the
+ * server.** The ceilings the bomb cases exercise live in `sure_providers::zipfile`.
+ */
+test("a file that isn't a zip fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Sharesies", "brokerage");
+  for (const body of [
+    new ArrayBuffer(0),
+    new TextEncoder().encode("<html>nope</html>").buffer as ArrayBuffer,
+    // A zip header and nothing else.
+    new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]).buffer as ArrayBuffer,
+  ]) {
+    const res = await importZip(server.baseURL, acc.id, body);
+    expect(res.status).toBe(422);
+    expect((await res.json()).error.message).toBeTruthy();
+  }
+});
+
+test("a zip missing the files the export is made of fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Sharesies", "brokerage");
+  const cases: Record<string, string>[] = [
+    { "readme.txt": "hello" },
+    { "lookup.json": LOOKUP },
+    // Has the wallet but not the activity.
+    { "lookup.json": LOOKUP, "wallet-transactions.json": WALLET },
+  ];
+  for (const files of cases) {
+    const res = await importZip(server.baseURL, acc.id, makeZip(files));
+    expect(res.status).toBe(422);
+    expect((await res.json()).error.message).toContain("missing");
+  }
+});
+
+test("a zip whose entries aren't the JSON they claim fails cleanly", async ({ api, server }) => {
+  const acc = await createAccount(api, "Sharesies", "brokerage");
+  for (const files of [
+    { "lookup.json": "{", "wallet-transactions.json": WALLET, "activity.json": ACTIVITY },
+    { "lookup.json": LOOKUP, "wallet-transactions.json": "not json", "activity.json": ACTIVITY },
+    // Valid JSON, wrong shape.
+    { "lookup.json": LOOKUP, "wallet-transactions.json": "{}", "activity.json": ACTIVITY },
+    { "lookup.json": LOOKUP, "wallet-transactions.json": WALLET, "activity.json": "[[[" },
+  ]) {
+    const res = await importZip(server.baseURL, acc.id, makeZip(files));
+    expect(res.status).toBe(422);
+  }
+});
+
+test("an amount no money could be fails cleanly rather than wrapping", async ({ api, server }) => {
+  const acc = await createAccount(api, "Sharesies", "brokerage");
+  const wallet = JSON.stringify([
+    {
+      amount: "999999999999999999999999",
+      currency: "nzd",
+      description: "Overflow",
+      key: "w1",
+      timestamp: { $quantum: Date.parse("2026-01-05T00:00:00Z") },
+    },
+  ]);
+  const res = await importZip(
+    server.baseURL,
+    acc.id,
+    makeZip({ "lookup.json": LOOKUP, "wallet-transactions.json": wallet, "activity.json": "[]" })
+  );
+  // Either refused or clamped — never a panic, and never a silently wrapped negative.
+  expect([200, 422]).toContain(res.status);
+  if (res.status === 200) {
+    const { data } = await api.GET("/api/transactions", {
+      params: { query: { account_id: acc.id } },
+    });
+    for (const t of data ?? []) expect(Number.isSafeInteger(t.amount_minor)).toBe(true);
+  }
+});
+
+/**
+ * The gap this closes: the import used to `read_to_end` a zip entry with no ceiling, so a
+ * hundred kilobytes on the wire could ask for gigabytes of allocation. The HTTP body limit
+ * bounds what arrives, not what it expands to.
+ */
+test("a zip bomb is refused without expanding it", async ({ api, server }) => {
+  const acc = await createAccount(api, "Sharesies", "brokerage");
+  const bomb = makeZip(
+    {
+      "lookup.json": LOOKUP,
+      "wallet-transactions.json": new Uint8Array(20 * 1024 * 1024),
+      "activity.json": ACTIVITY,
+    },
+    { deflate: true }
+  );
+  expect(bomb.byteLength).toBeLessThan(200_000);
+
+  const res = await importZip(server.baseURL, acc.id, bomb);
+  expect(res.status).toBe(422);
+  expect((await res.json()).error.message).toMatch(/over the limit|expands/);
+});
+
+test("a zip of many bombs can't add up past the upload ceiling either", async ({ api, server }) => {
+  const acc = await createAccount(api, "Sharesies", "brokerage");
+  const files: Record<string, string | Uint8Array> = {
+    "lookup.json": LOOKUP,
+    "wallet-transactions.json": WALLET,
+    "activity.json": ACTIVITY,
+  };
+  // Each under the per-entry ceiling, together far over the upload's.
+  for (let i = 0; i < 10; i++) files[`pad${i}.json`] = new Uint8Array(15 * 1024 * 1024);
+  const res = await importZip(server.baseURL, acc.id, makeZip(files, { deflate: true }));
+  // The padding is never read (only the three named files are), so this must still succeed
+  // promptly rather than expanding 150 MB to find out.
+  expect([200, 422]).toContain(res.status);
+});
+
+test("a zip with absurdly many entries is refused", async ({ api, server }) => {
+  const acc = await createAccount(api, "Sharesies", "brokerage");
+  const files: Record<string, string> = {};
+  for (let i = 0; i < 200; i++) files[`f${i}.json`] = "{}";
+  const res = await importZip(server.baseURL, acc.id, makeZip(files));
+  expect(res.status).toBe(422);
+  expect((await res.json()).error.message).toContain("at most");
+});
+
+test("a body over the size limit is rejected by the server, not the parser", async ({ api, server }) => {
+  const acc = await createAccount(api, "Sharesies", "brokerage");
+  // Over a raw socket, not `fetch` — the cap trips mid-upload and the RST loses the 413.
+  const res = await postOversized(server.baseURL, 51 * 1024 * 1024, {
+    path: `/api/accounts/${acc.id}/brokerage/import`,
+    contentType: "application/zip",
+  });
+  expect(res.status).toBe(413);
+});
+
+test("a large but honest export imports, and stays fast", async ({ api, server }) => {
+  const acc = await createAccount(api, "Sharesies", "brokerage");
+  const wallet = JSON.stringify(
+    Array.from({ length: 4000 }, (_, i) => ({
+      amount: "1.00",
+      currency: "nzd",
+      description: `Row ${i}`,
+      key: `w${i}`,
+      timestamp: { $quantum: Date.parse("2026-01-05T00:00:00Z") + i * 1000 },
+    }))
+  );
+  const started = Date.now();
+  const res = await importZip(
+    server.baseURL,
+    acc.id,
+    makeZip({ "lookup.json": LOOKUP, "wallet-transactions.json": wallet, "activity.json": "[]" })
+  );
+  expect(res.status).toBe(200);
+  expect((await res.json()).transactions_imported).toBe(4000);
+  expect(Date.now() - started).toBeLessThan(30_000);
 });

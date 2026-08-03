@@ -651,6 +651,7 @@ mod tests {
             category_name: None,
             category_group: None,
             category_kind: None,
+            is_one_off: false,
         }
     }
 

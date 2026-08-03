@@ -20,7 +20,7 @@
 //! human glance rather than silent trust).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use calamine::{Data, Reader, Xlsx};
 use chrono::{Duration, NaiveDate};
@@ -56,11 +56,9 @@ const KNOWN_TRANSACTIONS: [&str; 9] = [
 /// The HTTP body limit bounds what arrives; these bound what it turns into, which is the
 /// part a zip bomb attacks.
 mod limits {
-    /// Workbooks per upload.
-    pub const ENTRIES: usize = 64;
-    /// Uncompressed bytes for any single entry, and across the whole upload.
-    pub const ENTRY_BYTES: u64 = 16 * 1024 * 1024;
-    pub const TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+    /// Workbooks per upload, and the byte ceilings — shared with the other zip-taking
+    /// importers, see [`crate::zipfile`].
+    pub use crate::zipfile::{ENTRIES, ENTRY_BYTES};
     /// Transaction rows per workbook. Twenty years of weekly drawdowns is ~1,000.
     pub const ROWS: usize = 100_000;
 }
@@ -224,30 +222,11 @@ fn read_workbooks(bytes: &[u8]) -> anyhow::Result<Vec<Workbook>> {
     }
 
     let mut out = Vec::new();
-    let mut total = 0u64;
+    let mut budget = crate::zipfile::Budget::default();
     for name in entries {
         let mut entry = archive.by_name(&name)?;
-        // Two independent bounds, because each covers the other's blind spot: the declared
-        // size is free to check but a crafted archive can lie about it, and `take` caps what
-        // is actually written no matter what the header claimed.
-        if entry.size() > limits::ENTRY_BYTES {
-            anyhow::bail!("{name} expands to {} bytes, over the limit", entry.size());
-        }
-        total = total.saturating_add(entry.size());
-        if total > limits::TOTAL_BYTES {
-            anyhow::bail!(
-                "the upload expands to more than {} bytes",
-                limits::TOTAL_BYTES
-            );
-        }
-
-        let mut buf = Vec::new();
-        let read = (&mut entry)
-            .take(limits::ENTRY_BYTES + 1)
-            .read_to_end(&mut buf)?;
-        if read as u64 > limits::ENTRY_BYTES {
-            anyhow::bail!("{name} expands past the {} byte limit", limits::ENTRY_BYTES);
-        }
+        let declared = entry.size();
+        let buf = budget.read(&name, declared, &mut entry)?;
         drop(entry);
 
         check_expansion(&name, &buf)?;

@@ -278,6 +278,17 @@ export const requiresInstitution = (k: string) => INSTITUTION_REQUIRED.includes(
  */
 export const requiresOpeningBalance = (k: string) => k !== "brokerage";
 
+/**
+ * The kinds a bank transaction-export CSV can be imported into — mirrors `accepts_asb_csv`
+ * in packages/api/src/routes/asb.rs, which is the authority; this only decides whether the
+ * accounts list offers the panel. The rest either have no bank statement (a property, a
+ * share holding) or have an importer of their own (a student loan's myIR export).
+ */
+const BANK_CSV_KINDS = ["cash", "bank", "savings", "credit_card", "revolving_credit"];
+
+/** Whether this kind can take a bank transaction-export CSV (see {@link BANK_CSV_KINDS}). */
+export const takesBankCsv = (k: string) => BANK_CSV_KINDS.includes(k);
+
 /** The depository kinds that behave like a card: a limit, an APR, a minimum payment. */
 const CARD_KINDS = ["credit_card", "revolving_credit"];
 

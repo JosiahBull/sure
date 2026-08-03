@@ -254,6 +254,115 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/{id}/asb/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import an ASB transaction export into one account: a `.csv`, or a `.zip` of them (several
+         *     windows of the same account are reconciled). Idempotent — re-uploading the same export
+         *     imports nothing new, so overlapping download windows are free. For a zip spanning several
+         *     accounts use `POST /api/asb/import`.
+         */
+        post: {
+            parameters: {
+                query?: {
+                    /** @description Parse and report, but write nothing. Defaults to committing. */
+                    dry_run?: boolean;
+                    /**
+                     * @description Whether to also record the opening balance the export implies — the account's value
+                     *     immediately before the first row — as a one-off transaction. On by default: without it
+                     *     the reconstructed history starts from nothing rather than from what the account held.
+                     *     Skipped anyway when the export states no closing balance, or when the account already
+                     *     has a row from before that date.
+                     */
+                    opening_balance?: boolean;
+                    /**
+                     * @description Which Sure account each ASB account number belongs to, as
+                     *     `12-3136-0000123-50:8,12-3136-0000123-51:12`. Overrides whatever [`resolve`] would
+                     *     have worked out, and is how the UI commits exactly what its preview showed.
+                     */
+                    assign?: string;
+                };
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            /** @description An ASB transaction export .csv, or a .zip of them */
+            requestBody: {
+                content: {
+                    "application/zip": number[];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AsbImportResult"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        /** Remove a previous ASB import from this account, leaving every other source untouched. */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AsbUndoResult"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}/brokerage": {
         parameters: {
             query?: never;
@@ -1071,6 +1180,78 @@ export interface paths {
                     };
                 };
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/asb/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import ASB transaction exports, routing each to the account it belongs to. Takes a `.csv`
+         *     or a `.zip` of them — one zip can carry every account at once, which is how ASB's
+         *     one-file-per-account export is actually taken.
+         * @description Nothing in an export names a Sure account, so each is matched by `assign`, then by a
+         *     previous import of the same ASB account, then by the account's stored number or name. An
+         *     export that matches nothing is reported and *not* imported.
+         */
+        post: {
+            parameters: {
+                query?: {
+                    /** @description Parse and report, but write nothing. Defaults to committing. */
+                    dry_run?: boolean;
+                    /**
+                     * @description Whether to also record the opening balance the export implies — the account's value
+                     *     immediately before the first row — as a one-off transaction. On by default: without it
+                     *     the reconstructed history starts from nothing rather than from what the account held.
+                     *     Skipped anyway when the export states no closing balance, or when the account already
+                     *     has a row from before that date.
+                     */
+                    opening_balance?: boolean;
+                    /**
+                     * @description Which Sure account each ASB account number belongs to, as
+                     *     `12-3136-0000123-50:8,12-3136-0000123-51:12`. Overrides whatever [`resolve`] would
+                     *     have worked out, and is how the UI commits exactly what its preview showed.
+                     */
+                    assign?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            /** @description An ASB transaction export .csv, or a .zip of them */
+            requestBody: {
+                content: {
+                    "application/zip": number[];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AsbUploadResult"];
+                    };
+                };
+                422: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -4415,6 +4596,124 @@ export interface components {
          * @enum {string}
          */
         AreaUnit: "sqft" | "sqm";
+        /**
+         * @description Result of importing one ASB export. One type serves the dry run and the commit, so a
+         *     preview can never describe an import the commit wouldn't perform: the handler branches
+         *     once, at the end, and everything above the branch is shared. On a dry run
+         *     `imported`/`skipped` stay 0 and `would_import` carries the count.
+         */
+        AsbImportResult: {
+            /** @description Whether this was a preview. `false` means the rows are in the database. */
+            dry_run: boolean;
+            /** Format: int64 */
+            imported: number;
+            /** Format: int64 */
+            skipped: number;
+            /**
+             * Format: int64
+             * @description Rows the commit would insert or skip — what the preview shows on its button.
+             */
+            would_import: number;
+            /**
+             * Format: int64
+             * @description Rows withheld because a connected feed already covers their dates.
+             */
+            held_back: number;
+            /** @description The cutover the rows were withheld from, if any feed set one. */
+            cutover?: string | null;
+            /**
+             * Format: int64
+             * @description Rows in the file, before the cutover.
+             */
+            rows_total: number;
+            /**
+             * @description The ASB account the export was for (`12-3136-0000123-50`), echoed back so a wrong
+             *     upload is obvious. Not to be confused with `account_id`, which is Sure's.
+             */
+            asb_account: string;
+            /**
+             * Format: int64
+             * @description The Sure account the rows went to (or would go to). `None` on a multi-account upload
+             *     where nothing identified it — the caller has to say which, and nothing was imported.
+             */
+            account_id?: number | null;
+            account_name?: string | null;
+            matched_by?: null | components["schemas"]["AsbMatch"];
+            /** @description The file(s) in the upload this account's rows came from. */
+            sources: string[];
+            /** @description ASB's product name for it (e.g. `Streamline`). */
+            product?: string | null;
+            /** @description The window the file's rows cover. */
+            covered_from?: string | null;
+            covered_to?: string | null;
+            /**
+             * Format: int64
+             * @description The closing balance ASB states, and the balance Sure holds for the account on that
+             *     day. Equal is the strongest available evidence that the export belongs to this
+             *     account and its coverage is complete.
+             */
+            ledger_balance_minor?: number | null;
+            /** Format: int64 */
+            account_balance_minor?: number | null;
+            /**
+             * Format: int64
+             * @description What the account must have held immediately before the file's first row, given the
+             *     closing balance and the movements in between.
+             */
+            implied_opening_minor?: number | null;
+            /**
+             * Format: int64
+             * @description The opening balance actually recorded (or, on a dry run, that would be), and the day
+             *     it is dated — the day before the first row.
+             *
+             *     Distinct from `implied_opening_minor`, which is only the arithmetic: this is `None`
+             *     when the caller opted out, or when the account already holds rows from before that
+             *     date and an "opening" balance would really be a movement in the middle of the ledger.
+             *     Without it the reconstructed history starts from nothing, because an account reads as
+             *     0 before its earliest transaction.
+             */
+            opening_balance_minor?: number | null;
+            opening_balance_as_of?: string | null;
+            /**
+             * Format: int64
+             * @description Every amount on the account summed, once the import has been written. Equal to
+             *     `account_balance_minor` means the ledger reconciles: the opening balance plus every
+             *     movement since lands exactly on the balance the account is recorded at. Unequal means
+             *     some period is double-counted or missing — most likely a live feed's rows for the
+             *     overlap disagreeing with the export's. `None` on a dry run, where nothing was written.
+             */
+            ledger_sum_minor?: number | null;
+            /**
+             * @description Non-fatal observations — an unfamiliar transaction type, rows held back, a balance
+             *     that doesn't reconcile.
+             */
+            warnings: string[];
+        };
+        /**
+         * @description How an export in a multi-account upload was matched to a Sure account. Reported so the
+         *     UI can say *why* it pre-selected one, and so a guess is visibly a guess.
+         * @enum {string}
+         */
+        AsbMatch: "assigned" | "previous_import" | "account_number" | "account_name";
+        /** @description Result of removing a previous ASB import (`DELETE /api/accounts/{id}/asb/import`). */
+        AsbUndoResult: {
+            /** Format: int64 */
+            deleted: number;
+        };
+        /**
+         * @description Result of a whole ASB upload (`POST /api/asb/import`) — one entry per ASB account the
+         *     upload named, so a zip of every account reports itself account by account.
+         */
+        AsbUploadResult: {
+            dry_run: boolean;
+            /**
+             * @description One per ASB account found, ordered by account number. An entry with no `account_id`
+             *     was not imported: nothing said where it belongs.
+             */
+            exports: components["schemas"]["AsbImportResult"][];
+            /** @description Upload-level observations — files that weren't exports, more than one account found. */
+            warnings: string[];
+        };
         /** @enum {string} */
         AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history";
         BackfillResult: {

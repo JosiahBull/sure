@@ -145,6 +145,118 @@ pub struct StudentLoanImportResult {
     pub warnings: Vec<String>,
 }
 
+/// How an export in a multi-account upload was matched to a Sure account. Reported so the
+/// UI can say *why* it pre-selected one, and so a guess is visibly a guess.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AsbMatch {
+    /// The request named the account outright. The only certainty here.
+    Assigned,
+    /// This account already holds rows imported from that ASB account number — the durable
+    /// memory that makes every re-upload route itself.
+    PreviousImport,
+    /// The account's stored `account_number` metadata is that number.
+    AccountNumber,
+    /// The account's *name* contains that number, the way a name does when two accounts
+    /// would otherwise be indistinguishable ("Emergency Fund (0000123-51)"). A hint, not
+    /// proof — worth pre-selecting, worth showing as a guess.
+    AccountName,
+}
+
+impl AsbMatch {
+    /// The wire representation (snake_case) — matches `#[serde(rename_all = "snake_case")]`.
+    pub fn as_str(self) -> &'static str {
+        use AsbMatch::*;
+        match self {
+            Assigned => "assigned",
+            PreviousImport => "previous_import",
+            AccountNumber => "account_number",
+            AccountName => "account_name",
+        }
+    }
+}
+
+/// Result of importing one ASB export. One type serves the dry run and the commit, so a
+/// preview can never describe an import the commit wouldn't perform: the handler branches
+/// once, at the end, and everything above the branch is shared. On a dry run
+/// `imported`/`skipped` stay 0 and `would_import` carries the count.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AsbImportResult {
+    /// Whether this was a preview. `false` means the rows are in the database.
+    pub dry_run: bool,
+    pub imported: i64,
+    pub skipped: i64,
+    /// Rows the commit would insert or skip — what the preview shows on its button.
+    pub would_import: i64,
+    /// Rows withheld because a connected feed already covers their dates.
+    pub held_back: i64,
+    /// The cutover the rows were withheld from, if any feed set one.
+    pub cutover: Option<String>,
+    /// Rows in the file, before the cutover.
+    pub rows_total: i64,
+    /// The ASB account the export was for (`12-3136-0000123-50`), echoed back so a wrong
+    /// upload is obvious. Not to be confused with `account_id`, which is Sure's.
+    pub asb_account: String,
+    /// The Sure account the rows went to (or would go to). `None` on a multi-account upload
+    /// where nothing identified it — the caller has to say which, and nothing was imported.
+    pub account_id: Option<i64>,
+    pub account_name: Option<String>,
+    /// How `account_id` was arrived at.
+    pub matched_by: Option<AsbMatch>,
+    /// The file(s) in the upload this account's rows came from.
+    pub sources: Vec<String>,
+    /// ASB's product name for it (e.g. `Streamline`).
+    pub product: Option<String>,
+    /// The window the file's rows cover.
+    pub covered_from: Option<String>,
+    pub covered_to: Option<String>,
+    /// The closing balance ASB states, and the balance Sure holds for the account on that
+    /// day. Equal is the strongest available evidence that the export belongs to this
+    /// account and its coverage is complete.
+    pub ledger_balance_minor: Option<i64>,
+    pub account_balance_minor: Option<i64>,
+    /// What the account must have held immediately before the file's first row, given the
+    /// closing balance and the movements in between.
+    pub implied_opening_minor: Option<i64>,
+    /// The opening balance actually recorded (or, on a dry run, that would be), and the day
+    /// it is dated — the day before the first row.
+    ///
+    /// Distinct from `implied_opening_minor`, which is only the arithmetic: this is `None`
+    /// when the caller opted out, or when the account already holds rows from before that
+    /// date and an "opening" balance would really be a movement in the middle of the ledger.
+    /// Without it the reconstructed history starts from nothing, because an account reads as
+    /// 0 before its earliest transaction.
+    pub opening_balance_minor: Option<i64>,
+    pub opening_balance_as_of: Option<String>,
+    /// Every amount on the account summed, once the import has been written. Equal to
+    /// `account_balance_minor` means the ledger reconciles: the opening balance plus every
+    /// movement since lands exactly on the balance the account is recorded at. Unequal means
+    /// some period is double-counted or missing — most likely a live feed's rows for the
+    /// overlap disagreeing with the export's. `None` on a dry run, where nothing was written.
+    pub ledger_sum_minor: Option<i64>,
+    /// Non-fatal observations — an unfamiliar transaction type, rows held back, a balance
+    /// that doesn't reconcile.
+    pub warnings: Vec<String>,
+}
+
+/// Result of a whole ASB upload (`POST /api/asb/import`) — one entry per ASB account the
+/// upload named, so a zip of every account reports itself account by account.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AsbUploadResult {
+    pub dry_run: bool,
+    /// One per ASB account found, ordered by account number. An entry with no `account_id`
+    /// was not imported: nothing said where it belongs.
+    pub exports: Vec<AsbImportResult>,
+    /// Upload-level observations — files that weren't exports, more than one account found.
+    pub warnings: Vec<String>,
+}
+
+/// Result of removing a previous ASB import (`DELETE /api/accounts/{id}/asb/import`).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AsbUndoResult {
+    pub deleted: i64,
+}
+
 /// An upstream account surfaced by a provider that supports account discovery
 /// (see `sure_app::ports::TransactionProvider::list_accounts`) — not yet linked to a
 /// local `Account`. Surfaced by `GET /provider-kinds/{kind}/accounts`. Lives here, with

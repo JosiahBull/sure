@@ -103,6 +103,10 @@ pub struct ImportRow {
     /// left uncategorized. `category_group` becomes that category's parent.
     pub category_name: Option<String>,
     pub category_group: Option<String>,
+    /// Excluded from spend/income reports, but still counted towards balances and net
+    /// worth. What an opening-balance row needs: it moves the account's value without
+    /// being money earned or spent.
+    pub is_one_off: bool,
     /// Flow direction for a newly-created category; `None` defaults to expense (most
     /// enrichment is spend-side). Only affects creation — an existing category keeps
     /// its kind.
@@ -357,8 +361,8 @@ pub async fn import_transactions(
         let res = sqlx::query(
             "INSERT OR IGNORE INTO transactions
                 (account_id, posted_at, amount_minor, currency_code, description, merchant,
-                 merchant_id, category_id, provider, external_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                 merchant_id, category_id, provider, external_id, is_one_off)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         )
         .bind(account_id)
         .bind(&t.posted_at)
@@ -370,6 +374,7 @@ pub async fn import_transactions(
         .bind(category_id)
         .bind(provider_tag)
         .bind(&t.external_id)
+        .bind(t.is_one_off)
         .execute(db)
         .await?;
         if res.rows_affected() > 0 {
@@ -799,6 +804,7 @@ mod tests {
             category_name: Some(category.to_string()),
             category_group: Some(group.to_string()),
             category_kind: None,
+            is_one_off: false,
         }
     }
 
@@ -885,6 +891,7 @@ mod tests {
                 category_name: Some("Cafes And Restaurants".to_string()),
                 category_group: None,
                 category_kind: None,
+                is_one_off: false,
             }],
         )
         .await

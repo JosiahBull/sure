@@ -236,6 +236,7 @@ pub(crate) fn derive_rows(
             category_name: None,
             category_group: None,
             category_kind: None,
+            is_one_off: false,
         });
     }
     rows

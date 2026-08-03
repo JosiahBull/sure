@@ -1,5 +1,5 @@
 import { test, expect } from "../fixtures";
-import { createAccount, makeZip } from "../helpers";
+import { createAccount, makeZip, postOversized } from "../helpers";
 
 // Akahu reports an IR student loan's balance but no transactions, so the ledger behind the
 // cutover is uploaded from myIR "TAP SLS Transactions" exports. These specs cover what the
@@ -394,8 +394,13 @@ test("a body over the size limit is rejected by the server, not the parser", asy
 }) => {
   const acc = await createAccount(api, "Student loan", "student_loan");
   // The route carries the shared import body limit (50 MB). Past it the request never
-  // reaches the handler at all.
-  const res = await upload(server.baseURL, acc.id, new ArrayBuffer(51 * 1024 * 1024));
+  // reaches the handler at all. Probed over a raw socket rather than `fetch`: the cap is
+  // enforced part-way through the upload, so the close is an RST and `undici` discards the
+  // 413 it was already sent — see `postOversized`, and `http.spec.ts` for the long version.
+  const res = await postOversized(server.baseURL, 51 * 1024 * 1024, {
+    path: `/api/accounts/${acc.id}/student-loan/import`,
+    contentType: "application/zip",
+  });
   expect(res.status).toBe(413);
 });
 

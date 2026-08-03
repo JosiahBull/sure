@@ -38,8 +38,9 @@ pub use people::{
     effective_ownership, Ownership, Person, SavePerson, SetOwnership, SetOwnershipBulk,
 };
 pub use providers::{
-    LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderAccount,
-    ProviderKind, ProviderSync, SaveProvider, StudentLoanImportResult, SyncOutcome, SyncRequest,
+    AsbImportResult, AsbMatch, AsbUndoResult, AsbUploadResult, LinkGroupMember,
+    LinkProviderAccount, LinkProviderGroup, Provider, ProviderAccount, ProviderKind, ProviderSync,
+    SaveProvider, StudentLoanImportResult, SyncOutcome, SyncRequest,
 };
 pub use rules::{
     PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RuleRunKind,

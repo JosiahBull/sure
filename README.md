@@ -47,6 +47,12 @@ on old devices.
   (holdings, dividends, wallet ledger) and myIR student-loan exports (reconciling
   several overlapping download windows into one ledger). Both are idempotent, so
   re-uploading costs nothing — see [docs/STUDENT-LOAN.md](docs/STUDENT-LOAN.md).
+- **History past the bank feed**: an ASB transaction-export CSV reaches back about
+  seven years where open banking serves two, so a cash/card account's history can be
+  extended behind its feed. Previewed before it writes, and rows the feed already
+  covers are held back automatically, so nothing is counted twice. Upload one CSV, or a
+  zip spanning every account at once — each export is routed to its account (from a
+  previous import, a stored account number, or by hand) and reported account by account.
 - **Balance-only accounts get a ledger anyway**: where an upstream reports a balance
   but no transactions (an IR student loan), a daily task differences the balance
   series into transactions, so week-to-week movement is visible.

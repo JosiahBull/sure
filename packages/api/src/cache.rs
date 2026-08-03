@@ -110,6 +110,9 @@ const LONG_ROUTES: &[&str] = &[
     "/api/accounts/{id}/brokerage/import",
     "/api/accounts/{id}/brokerage/backfill",
     "/api/accounts/{id}/brokerage/revalue",
+    // Seven years of an everyday account is a few thousand rows, each its own insert.
+    "/api/accounts/{id}/asb/import",
+    "/api/asb/import",
     "/api/config/import",
     "/api/rules/run",
     "/api/rules/{id}/run",

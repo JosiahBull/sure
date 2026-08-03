@@ -1,7 +1,9 @@
 //! Concrete external-provider adapters. Each implements a port trait defined in
 //! `sure_app::ports` — [`TransactionProvider`] (CSV, Akahu), `StockPriceProvider`
-//! (Yahoo Finance), `ExchangeRateProvider` (Frankfurter) — plus a Sharesies export
-//! parser ([`sharesies::parse_export`]). The [`Registry`] implements
+//! (Yahoo Finance), `ExchangeRateProvider` (Frankfurter) — plus the manual-upload export
+//! parsers, which implement no port because there is one implementation of each ever:
+//! [`sharesies::parse_export`], [`myir::parse_export`], [`asb::parse_export`].
+//! The [`Registry`] implements
 //! [`sure_app::ports::ProviderRegistry`], enumerating the transaction providers for the
 //! sync service; the composition root (`sure-server`) builds it and injects it.
 //!
@@ -18,12 +20,14 @@ use sure_app::ports::{ProviderRegistry, TransactionProvider};
 use sure_core::ProviderKind;
 
 pub mod akahu;
+pub mod asb;
 pub mod csv;
 pub mod frankfurter;
 mod http;
 pub mod myir;
 pub mod sharesies;
 pub mod yahoo_finance;
+pub mod zipfile;
 
 pub use akahu::AkahuProvider;
 pub use frankfurter::FrankfurterProvider;

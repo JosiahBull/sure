@@ -242,6 +242,7 @@ impl BrokerageRepo for SqliteStore {
                 category_name: r.category_name.clone(),
                 category_group: r.category_group.clone(),
                 category_kind: r.category_kind,
+                is_one_off: r.is_one_off,
             })
             .collect();
         let holdings: Vec<crate::brokerage::HoldingImport> = holdings
@@ -654,6 +655,7 @@ impl ProviderRepo for SqliteStore {
                 category_name: r.category_name.clone(),
                 category_group: r.category_group.clone(),
                 category_kind: r.category_kind,
+                is_one_off: r.is_one_off,
             })
             .collect();
         crate::providers::import_transactions(
@@ -745,6 +747,35 @@ impl TransactionRepo for SqliteStore {
 
     async fn bulk_delete(&self, ids: &[i64]) -> AppResult<i64> {
         crate::transactions::bulk_delete(&self.db, ids).await
+    }
+
+    async fn earliest_posted_at_from_other_feed(
+        &self,
+        account_id: i64,
+        exclude_provider: &str,
+    ) -> AppResult<Option<String>> {
+        crate::transactions::earliest_posted_at_from_other_feed(
+            &self.db,
+            account_id,
+            exclude_provider,
+        )
+        .await
+    }
+
+    async fn delete_by_provider(&self, account_id: i64, provider_tag: &str) -> AppResult<i64> {
+        crate::transactions::delete_by_provider(&self.db, account_id, provider_tag).await
+    }
+
+    async fn sample_external_ids(&self, provider_prefix: &str) -> AppResult<Vec<(i64, String)>> {
+        crate::transactions::sample_external_ids(&self.db, provider_prefix).await
+    }
+
+    async fn earliest_posted_at(&self, account_id: i64) -> AppResult<Option<String>> {
+        crate::transactions::earliest_posted_at(&self.db, account_id).await
+    }
+
+    async fn sum_amount_minor(&self, account_id: i64) -> AppResult<i64> {
+        crate::transactions::sum_amount_minor(&self.db, account_id).await
     }
 
     async fn link(&self, id: i64, req: LinkRequest) -> AppResult<Transaction> {

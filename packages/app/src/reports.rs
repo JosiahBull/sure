@@ -1207,6 +1207,114 @@ mod tests {
         );
     }
 
+    /// Seven years of bank history imported behind a feed that only knows today's balance:
+    /// the figures are right from the first transaction onward, and 0 before it, because
+    /// case 2 reads an account as not-yet-opened there rather than back-projecting.
+    ///
+    /// That is correct for an account whose ledger really does start at its first row, and
+    /// wrong for an imported window that starts mid-life — the account appears out of thin
+    /// air at whatever the first day's movements leave behind (here $1,000, after two
+    /// transfers out of an $18,694.18 balance). `sure_providers::asb` closes the gap by
+    /// writing an opening-balance transaction; the second half of this test is why that
+    /// works. Don't "fix" the cliff here: extrapolating a balance backwards past the
+    /// earliest thing on record would invent history for every account in the database.
+    #[test]
+    fn an_imported_history_reads_zero_before_its_earliest_transaction() {
+        // The ASB export's rows: $17,694.18 out on day one, $900 spent later. They sum to
+        // -$18,594.18, and the account is recorded at $100 today.
+        let movements = vec![
+            (d("2020-01-01"), -15_694_18),
+            (d("2020-01-01"), -2_000_00),
+            (d("2021-05-05"), -900_00),
+        ];
+        let mut val = HashMap::new();
+        val.insert(8i64, vec![(d("2026-08-03"), 100_00, "NZD".to_string())]);
+
+        let mut tx = HashMap::new();
+        tx.insert(8i64, movements.clone());
+
+        // From the first row on, every figure is already right.
+        assert_eq!(
+            account_value_at(8, "NZD", d("2020-01-01"), &tx, &val).0,
+            1_000_00
+        );
+        assert_eq!(
+            account_value_at(8, "NZD", d("2021-05-05"), &tx, &val).0,
+            100_00
+        );
+        assert_eq!(
+            account_value_at(8, "NZD", d("2026-08-03"), &tx, &val).0,
+            100_00
+        );
+        // But the day before the import starts reads 0, not the $18,694.18 held then.
+        assert_eq!(account_value_at(8, "NZD", d("2019-12-31"), &tx, &val).0, 0);
+
+        // With an opening-balance transaction dated the day before, the whole series is
+        // right — and the ledger reconciles: -18,594.18 + 18,694.18 == the $100 recorded.
+        let mut with_opening = movements;
+        with_opening.push((d("2019-12-31"), 18_694_18));
+        let mut tx = HashMap::new();
+        tx.insert(8i64, with_opening);
+
+        assert_eq!(account_value_at(8, "NZD", d("2019-12-30"), &tx, &val).0, 0);
+        assert_eq!(
+            account_value_at(8, "NZD", d("2019-12-31"), &tx, &val).0,
+            18_694_18
+        );
+        // The dates that were already correct stay correct.
+        assert_eq!(
+            account_value_at(8, "NZD", d("2020-01-01"), &tx, &val).0,
+            1_000_00
+        );
+        assert_eq!(
+            account_value_at(8, "NZD", d("2026-08-03"), &tx, &val).0,
+            100_00
+        );
+    }
+
+    /// Why an opening balance must be a *transaction* and never a valuation: case 1 wins over
+    /// case 2, and it returns the most recent valuation on or before the date **directly**,
+    /// without applying any transaction since. A valuation placed at the start of an imported
+    /// history therefore freezes the account at that figure for every date after it, hiding
+    /// the very movements the import was for.
+    #[test]
+    fn an_early_valuation_freezes_the_account_and_hides_later_movements() {
+        let mut tx = HashMap::new();
+        tx.insert(
+            8i64,
+            vec![
+                (d("2020-01-01"), -15_694_18),
+                (d("2020-01-01"), -2_000_00),
+                (d("2021-05-05"), -900_00),
+            ],
+        );
+        let mut val = HashMap::new();
+        val.insert(
+            8i64,
+            vec![
+                // The opening balance, wrongly recorded as a valuation …
+                (d("2019-12-31"), 18_694_18, "NZD".to_string()),
+                (d("2026-08-03"), 100_00, "NZD".to_string()),
+            ],
+        );
+
+        // … and now 2021 reports the opening figure rather than the $1,000 actually held:
+        // the two transfers out have vanished from the history.
+        assert_eq!(
+            account_value_at(8, "NZD", d("2021-01-01"), &tx, &val).0,
+            18_694_18
+        );
+        assert_eq!(
+            account_value_at(8, "NZD", d("2025-01-01"), &tx, &val).0,
+            18_694_18
+        );
+        // Only from the later valuation does it come right again.
+        assert_eq!(
+            account_value_at(8, "NZD", d("2026-08-03"), &tx, &val).0,
+            100_00
+        );
+    }
+
     /// The instrument-bookkeeping kinds stay out of the income/expense reports, while the
     /// everyday transaction accounts — including the two *liability* ones — stay in. A
     /// student loan's repayments are positive amounts on a liability, so dropping it from

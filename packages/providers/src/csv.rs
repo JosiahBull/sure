@@ -4,8 +4,14 @@
 //! ideal for exercising the provider machinery end-to-end.
 
 use async_trait::async_trait;
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 
 use sure_app::ports::{ProviderTransaction, SyncContext, TransactionProvider};
+
+/// Beyond this an amount isn't money, it's bad data. Same ceiling the ASB and myIR importers
+/// use, and it is what keeps a hostile payload from writing a quadrillion-dollar row.
+const MAX_ABS_MINOR: i64 = 1_000_000_000_000_00;
 
 pub struct CsvProvider;
 
@@ -75,13 +81,71 @@ impl TransactionProvider for CsvProvider {
 }
 
 /// Parse a human-written amount (`-1,234.56`, `$5.00`) into 2-dp minor units.
+///
+/// `Decimal`, not `f64`, and bounded — the payload is arbitrary text from a request body.
+/// Parsing as a float accepted `1e400` and `inf` (both saturating to `i64::MAX`, i.e. a
+/// $92-quadrillion transaction) and `NaN` (silently zero); `Decimal` rejects all three, and
+/// the range check catches whatever is merely absurd. Mirrors `asb::parse_minor` and
+/// `myir::parse_minor`, which guard the same way.
 fn parse_amount(s: &str) -> anyhow::Result<i64> {
     let cleaned: String = s
         .chars()
         .filter(|c| !matches!(c, '$' | ',' | ' ' | '£' | '€'))
         .collect();
-    let value: f64 = cleaned
+    let value: Decimal = cleaned
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid amount '{s}'"))?;
-    Ok((value * 100.0).round() as i64)
+    let out_of_range = || anyhow::anyhow!("amount '{s}' is out of range");
+    // `Decimal`'s multiply panics on overflow rather than returning an error, so it's checked.
+    let minor = value
+        .checked_mul(Decimal::from(100))
+        .ok_or_else(out_of_range)?
+        .round()
+        .to_i64()
+        .ok_or_else(out_of_range)?;
+    if !(-MAX_ABS_MINOR..=MAX_ABS_MINOR).contains(&minor) {
+        return Err(out_of_range());
+    }
+    Ok(minor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_a_human_written_amount_exactly() {
+        for (text, want) in [
+            ("-1,234.56", -123_456),
+            ("$5.00", 500),
+            // The case a float gets wrong: 329.36 * 100.0 is 32935.999… in binary.
+            ("329.36", 32_936),
+            ("0", 0),
+        ] {
+            assert_eq!(parse_amount(text).unwrap(), want, "amount {text:?}");
+        }
+    }
+
+    /// What an arbitrary request body can contain. None of these may become a transaction.
+    #[test]
+    fn refuses_an_amount_that_isnt_money() {
+        for text in [
+            "1e400",
+            "-1e400",
+            "inf",
+            "-inf",
+            "NaN",
+            "",
+            "twelve",
+            "1.2.3",
+            "--5",
+            "99999999999999999999",
+            "9e18",
+        ] {
+            assert!(
+                parse_amount(text).is_err(),
+                "amount {text:?} should be refused"
+            );
+        }
+    }
 }

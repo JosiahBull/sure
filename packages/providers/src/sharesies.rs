@@ -6,7 +6,7 @@
 //! `sure_dal::brokerage`.
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use chrono::DateTime;
 use rust_decimal::prelude::ToPrimitive;
@@ -83,11 +83,22 @@ pub struct SharesiesExport {
 /// callers should run this on a blocking thread (`tokio::task::spawn_blocking`).
 pub fn parse_export(zip_bytes: &[u8]) -> anyhow::Result<SharesiesExport> {
     let mut archive = zip::ZipArchive::new(Cursor::new(zip_bytes))?;
+    if archive.len() > crate::zipfile::ENTRIES {
+        anyhow::bail!(
+            "the zip holds {} files; at most {} are read at once",
+            archive.len(),
+            crate::zipfile::ENTRIES
+        );
+    }
+    // The three files below are JSON an upload chose the size of, and `serde_json` will
+    // happily parse whatever it is handed — so the ceilings have to be applied on the way
+    // out of the archive. See `crate::zipfile`.
+    let mut budget = crate::zipfile::Budget::default();
 
-    let lookup_bytes = read_entry(&mut archive, "lookup.json")?;
-    let wallet_bytes = read_entry(&mut archive, "wallet-transactions.json")?
+    let lookup_bytes = read_entry(&mut archive, &mut budget, "lookup.json")?;
+    let wallet_bytes = read_entry(&mut archive, &mut budget, "wallet-transactions.json")?
         .ok_or_else(|| anyhow::anyhow!("zip is missing wallet-transactions.json"))?;
-    let activity_bytes = read_entry(&mut archive, "activity.json")?
+    let activity_bytes = read_entry(&mut archive, &mut budget, "activity.json")?
         .ok_or_else(|| anyhow::anyhow!("zip is missing activity.json"))?;
 
     let lookup = match &lookup_bytes {
@@ -111,15 +122,15 @@ pub fn parse_export(zip_bytes: &[u8]) -> anyhow::Result<SharesiesExport> {
 
 fn read_entry(
     archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    budget: &mut crate::zipfile::Budget,
     filename: &str,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let name = file.name().to_string();
         if name == filename || name.ends_with(&format!("/{filename}")) {
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)?;
-            return Ok(Some(buf));
+            let declared = file.size();
+            return Ok(Some(budget.read(&name, declared, &mut file)?));
         }
     }
     Ok(None)

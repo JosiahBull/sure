@@ -207,6 +207,7 @@ pub async fn import(
             category_name: t.category.as_ref().map(|c| c.name.clone()),
             category_kind: t.category.as_ref().and_then(|c| c.kind),
             category_group: t.category.and_then(|c| c.group),
+            is_one_off: false,
         })
         .collect();
     let holdings: Vec<sure_app::ports::HoldingImport> = export

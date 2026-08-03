@@ -418,6 +418,10 @@ pub struct ImportRow {
     pub category_name: Option<String>,
     pub category_group: Option<String>,
     pub category_kind: Option<CategoryKind>,
+    /// Excluded from spend/income reports, but still counted towards balances and net worth
+    /// (see `sure_app::reports::load_ledger`, which filters nothing). What an opening-balance
+    /// row needs: it moves the account's value without being money earned or spent.
+    pub is_one_off: bool,
 }
 
 /// A parsed holding lot ready to persist (e.g. from a Sharesies export).
@@ -676,6 +680,28 @@ pub trait TransactionRepo: Send + Sync {
     async fn delete(&self, id: i64) -> AppResult<()>;
     async fn bulk_update(&self, input: BulkUpdate) -> AppResult<i64>;
     async fn bulk_delete(&self, ids: &[i64]) -> AppResult<i64>;
+    /// The earliest `posted_at` on this account owned by a feed other than
+    /// `exclude_provider` — the cutover a manual historical import must stop at, so one
+    /// movement isn't posted twice by two sources.
+    async fn earliest_posted_at_from_other_feed(
+        &self,
+        account_id: i64,
+        exclude_provider: &str,
+    ) -> AppResult<Option<String>>;
+    /// Delete every transaction on this account that `provider_tag` imported. Undo for a
+    /// bulk upload.
+    async fn delete_by_provider(&self, account_id: i64, provider_tag: &str) -> AppResult<i64>;
+    /// Every amount on this account, summed — against its recorded balance, whether the
+    /// ledger reconciles.
+    async fn sum_amount_minor(&self, account_id: i64) -> AppResult<i64>;
+    /// The earliest `posted_at` on this account, from any source at all. Tells an importer
+    /// whether it would be placing an opening balance ahead of the ledger or into the middle
+    /// of it.
+    async fn earliest_posted_at(&self, account_id: i64) -> AppResult<Option<String>>;
+    /// One `external_id` per account, over the rows tagged by a provider whose tag starts
+    /// with `provider_prefix`. Lets a manual importer recover which upstream account it
+    /// previously imported into which local one, from the ids it wrote.
+    async fn sample_external_ids(&self, provider_prefix: &str) -> AppResult<Vec<(i64, String)>>;
     async fn link(&self, id: i64, req: LinkRequest) -> AppResult<Transaction>;
     async fn unlink(&self, id: i64) -> AppResult<Transaction>;
     async fn create_transfer(&self, req: TransferRequest) -> AppResult<Vec<Transaction>>;

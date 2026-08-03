@@ -1,5 +1,12 @@
 import { test, expect } from "../fixtures";
-import { createAccount, createCategory, createMerchant, createTransaction, getTransaction } from "../helpers";
+import {
+  createAccount,
+  createCategory,
+  createMerchant,
+  createTransaction,
+  getTransaction,
+  postOversized,
+} from "../helpers";
 
 test("export then import restores the exact state", async ({ api }) => {
   const acc = await createAccount(api, "Everyday", "bank");
@@ -42,4 +49,118 @@ test("export then import restores the exact state", async ({ api }) => {
 test("import rejects garbage", async ({ api }) => {
   const res = await api.POST("/api/config/import", { body: { not: "a snapshot" } as never });
   expect(res.response.status).toBe(422);
+});
+
+// ---- malformed and hostile snapshots ----------------------------------------------------
+
+/**
+ * `POST /api/config/import` is the most destructive endpoint in the API: it clears every
+ * table and re-inserts from the body. So the bar is higher than "fails cleanly" — a bad
+ * snapshot must leave the existing data **exactly as it was**, which is what the DAL's
+ * single transaction is for. These cases check that, and that a hostile body can't take the
+ * process down instead.
+ */
+async function postRaw(baseURL: string, body: string, contentType = "application/json") {
+  return fetch(`${baseURL}/api/config/import`, {
+    method: "POST",
+    headers: { "Content-Type": contentType },
+    body,
+  });
+}
+
+test("a body that isn't JSON at all fails cleanly", async ({ server }) => {
+  for (const body of ["", "not json", "{", "[1,2,3", '{"accounts":']) {
+    const res = await postRaw(server.baseURL, body);
+    expect([400, 422]).toContain(res.status);
+  }
+});
+
+test("a JSON body of the wrong shape fails cleanly", async ({ server }) => {
+  for (const body of [
+    "null",
+    "[]",
+    "42",
+    '"a string"',
+    '{"accounts": "not an array"}',
+    '{"accounts": [{"id": "not a number"}]}',
+    // Right keys, wrong element types.
+    '{"currencies": [1, 2, 3]}',
+  ]) {
+    const res = await postRaw(server.baseURL, body);
+    expect([400, 422]).toContain(res.status);
+  }
+});
+
+test("a rejected snapshot leaves the existing data untouched", async ({ api, server }) => {
+  const acc = await createAccount(api, "Everyday", "bank");
+  const tx = await createTransaction(api, {
+    account_id: acc.id,
+    posted_at: "2026-02-10",
+    amount_minor: -5000,
+    description: "Before the bad import",
+  });
+
+  // A snapshot that starts out plausible and turns invalid part-way through: a transaction
+  // pointing at an account the snapshot never defines. The whole thing has to roll back.
+  const good = (await api.GET("/api/config/export", {})).data as Record<string, unknown>;
+  const poisoned = JSON.stringify({
+    ...good,
+    accounts: [],
+    transactions: [
+      {
+        id: 9001,
+        account_id: 424242,
+        posted_at: "2026-01-01T12:00:00+00:00",
+        amount_minor: -100,
+        currency_code: "NZD",
+        description: "Orphan",
+        is_one_off: false,
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    ],
+  });
+  const res = await postRaw(server.baseURL, poisoned);
+  expect([400, 422, 500]).toContain(res.status);
+
+  // The database is exactly as it was.
+  const accounts = await api.GET("/api/accounts", {});
+  expect(accounts.data?.map((a) => a.id)).toEqual([acc.id]);
+  const restored = await getTransaction(api, tx.id);
+  expect(restored.description).toBe("Before the bad import");
+});
+
+test("deeply nested JSON is refused rather than exhausting the stack", async ({ api, server }) => {
+  const acc = await createAccount(api, "Everyday", "bank");
+  // serde_json bounds recursion; this must come back as an error, not a crash.
+  const deep = "[".repeat(20_000) + "]".repeat(20_000);
+  const res = await postRaw(server.baseURL, `{"accounts": ${deep}}`);
+  expect([400, 413, 422]).toContain(res.status);
+
+  // Still serving, and the account survived.
+  const accounts = await api.GET("/api/accounts", {});
+  expect(accounts.data?.map((a) => a.id)).toEqual([acc.id]);
+});
+
+test("a snapshot body over the size limit is rejected by the server", async ({ server }) => {
+  // The route carries its own 32 MB ceiling, well above any real snapshot. Probed over a raw
+  // socket rather than `fetch`: the cap is enforced part-way through the upload, so the close
+  // is an RST and `undici` discards the 413 it was already sent — see `postOversized`.
+  const res = await postOversized(server.baseURL, 33 * 1024 * 1024, {
+    path: "/api/config/import",
+  });
+  expect(res.status).toBe(413);
+});
+
+test("the server survives a burst of malformed snapshots", async ({ api, server }) => {
+  const acc = await createAccount(api, "Everyday", "bank");
+  await Promise.all(
+    Array.from({ length: 20 }, (_, i) =>
+      postRaw(server.baseURL, i % 2 ? "{" : '{"accounts": [{"id": "x"}]}')
+    )
+  );
+  const health = await api.GET("/api/health", {});
+  expect(health.response.status).toBe(200);
+  const accounts = await api.GET("/api/accounts", {});
+  expect(accounts.data?.map((a) => a.id)).toEqual([acc.id]);
 });

@@ -39,6 +39,9 @@ dist-ssr
 # never publish this
 /myir-export/
 
+# Exports from asb.
+asb-export/
+
 # Env / editor
 .env
 .env.*

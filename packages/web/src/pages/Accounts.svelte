@@ -7,12 +7,15 @@
     showsInstitution,
     remainingBorrowing,
     loanPaidOffPct,
+    takesBankCsv,
   } from "../lib/accountMeta";
   import AccountForm from "../lib/AccountForm.svelte";
   import EquityPanel from "../lib/EquityPanel.svelte";
   import PropertyPanel from "../lib/PropertyPanel.svelte";
   import BrokeragePanel from "../lib/BrokeragePanel.svelte";
   import StudentLoanPanel from "../lib/StudentLoanPanel.svelte";
+  import AsbImportPanel from "../lib/AsbImportPanel.svelte";
+  import AsbUploadPanel from "../lib/AsbUploadPanel.svelte";
   import { navigate } from "../lib/router.svelte";
   import { balances, refresh as refreshBalances } from "../lib/balances.svelte";
   import {
@@ -30,6 +33,9 @@
   let error = $state<string | null>(null);
   let loading = $state(true);
   let showAdd = $state(false);
+  // A zip of ASB exports spans accounts, so it belongs to the page rather than to any one
+  // account's row — unlike AsbImportPanel, which lives inside a row.
+  let showImport = $state(false);
   let editing = $state<number | null>(null);
   let expanded = $state<number | null>(null);
   let confirmDelete = $state<number | null>(null);
@@ -139,9 +145,14 @@
       </div>
     {/if}
   </div>
-  <button class="btn btn-primary btn-sm" onclick={() => ((showAdd = !showAdd), (editing = null))}>
-    {showAdd ? "Close" : "+ Add account"}
-  </button>
+  <div class="row wrap" style="gap:6px">
+    <button class="btn btn-sm" onclick={() => ((showImport = !showImport), (showAdd = false), (editing = null))}>
+      {showImport ? "Close" : "Import bank exports"}
+    </button>
+    <button class="btn btn-primary btn-sm" onclick={() => ((showAdd = !showAdd), (showImport = false), (editing = null))}>
+      {showAdd ? "Close" : "+ Add account"}
+    </button>
+  </div>
 </div>
 
 {#if error}<div class="error-banner" style="margin-bottom:12px">{error}</div>{/if}
@@ -179,6 +190,10 @@
     </div>
     {#if bulkError}<div class="error-banner" style="flex-basis:100%">{bulkError}</div>{/if}
   </div>
+{/if}
+
+{#if showImport}
+  <AsbUploadPanel onchange={load} />
 {/if}
 
 {#if showAdd}
@@ -242,7 +257,7 @@
                   <button class="btn btn-sm" onclick={() => ((editing = editing === a.account_id ? null : a.account_id), (showAdd = false))}>
                     {editing === a.account_id ? "Close" : "Edit"}
                   </button>
-                  {#if a.kind === "shares_private" || a.kind === "brokerage" || a.kind === "crypto" || a.kind === "student_loan" || a.class === "asset"}
+                  {#if a.kind === "shares_private" || a.kind === "brokerage" || a.kind === "crypto" || a.kind === "student_loan" || takesBankCsv(a.kind) || a.class === "asset"}
                     <button class="btn btn-sm" onclick={() => (expanded = expanded === a.account_id ? null : a.account_id)}>
                       {expanded === a.account_id
                         ? "Hide"
@@ -250,7 +265,7 @@
                           ? "Holdings"
                           : a.kind === "crypto"
                             ? "Value"
-                            : a.kind === "student_loan"
+                            : a.kind === "student_loan" || takesBankCsv(a.kind)
                               ? "Import"
                               : "Equity"}
                     </button>
@@ -279,6 +294,8 @@
                 <EquityPanel accountId={a.account_id} onchange={load} />
               {:else if a.kind === "student_loan"}
                 <StudentLoanPanel accountId={a.account_id} onchange={load} />
+              {:else if takesBankCsv(a.kind)}
+                <AsbImportPanel accountId={a.account_id} currency={a.currency_code} onchange={load} />
               {:else}
                 <PropertyPanel accountId={a.account_id} onchange={load} />
               {/if}

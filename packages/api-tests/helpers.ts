@@ -1,3 +1,4 @@
+import net from "node:net";
 import { expect } from "@playwright/test";
 import { deflateRawSync } from "node:zlib";
 import type { Schemas, SureClient } from "../client/src/index";
@@ -257,4 +258,97 @@ export function makeZip(
   const ab = new ArrayBuffer(full.byteLength);
   new Uint8Array(ab).set(full);
   return ab;
+}
+
+// ---- oversized bodies -------------------------------------------------------------------
+
+/** Which endpoint an oversized-body probe should hit. */
+export type OversizedTarget = { path?: string; contentType?: string };
+
+/**
+ * One attempt at POSTing `bytes` of body, resolving with the server's answer — or `null`
+ * if the connection died before a complete response could be read.
+ *
+ * Deliberately not `fetch`. The body cap is enforced part-way through the upload: the
+ * server reads up to the limit, answers 413, and closes with the rest of the body still
+ * unread in its receive buffer — which makes the close an RST rather than a FIN, and an
+ * RST tells the client's kernel to discard whatever it has buffered, response included.
+ * `undici` turns that into `TypeError: fetch failed` and loses the 413 it had already
+ * been sent. Reading the socket directly wins that race nearly every time, but "nearly"
+ * is why [`postOversized`] retries: the outcome is decided in the kernel, not here, which
+ * is why this only ever failed under the load of a full suite run.
+ */
+function attemptOversized(
+  baseURL: string,
+  bytes: number,
+  path: string,
+  contentType: string,
+): Promise<Response | null> {
+  const url = new URL(baseURL);
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: url.hostname, port: Number(url.port) });
+    const chunks: Buffer[] = [];
+    // The refusal closes the connection under our feet; that is the expected ending here,
+    // not a failure. A response that never arrives is caught by the test timeout.
+    socket.on("error", () => {});
+    socket.on("data", (chunk) => chunks.push(chunk));
+    socket.on("close", () => {
+      const raw = Buffer.concat(chunks).toString("latin1");
+      const separator = raw.indexOf("\r\n\r\n");
+      // Reset before the response could be read in full — the caller tries again.
+      if (separator === -1) return resolve(null);
+      const [statusLine, ...headerLines] = raw.slice(0, separator).split("\r\n");
+      const headers = new Headers(
+        headerLines.map((line) => {
+          const at = line.indexOf(":");
+          return [line.slice(0, at), line.slice(at + 1).trim()] as [string, string];
+        }),
+      );
+      // Rebuilt as a `Response` so the assertions below read like every other test here.
+      resolve(
+        new Response(raw.slice(separator + 4), {
+          status: Number(statusLine.split(" ")[1]),
+          headers,
+        }),
+      );
+    });
+    socket.on("connect", () => {
+      socket.write(
+        `POST ${path} HTTP/1.1\r\nHost: ${url.host}\r\n` +
+          `Content-Type: ${contentType}\r\nContent-Length: ${bytes}\r\n\r\n`,
+      );
+      // Written in chunks, and only while the socket is still up: one 3 MB `write` would
+      // sit in Node's buffer and keep the process alive after the peer had gone.
+      const chunk = Buffer.alloc(64 * 1024, "a");
+      let sent = 0;
+      const pump = () => {
+        while (sent < bytes && !socket.destroyed && !socket.writableEnded) {
+          const size = Math.min(chunk.length, bytes - sent);
+          sent += size;
+          if (!socket.write(chunk.subarray(0, size))) return socket.once("drain", pump);
+        }
+      };
+      pump();
+    });
+  });
+}
+
+/**
+ * POST an oversized body and return the server's refusal, retrying past a connection that
+ * was reset before the response could be read (see [`attemptOversized`]).
+ *
+ * Retrying does not weaken what is under test: only the guard produces a response at all,
+ * so a server that stopped refusing oversized bodies fails every attempt on the status
+ * assertion rather than being retried into passing.
+ */
+export async function postOversized(
+  baseURL: string,
+  bytes: number,
+  { path = "/api/accounts", contentType = "application/json" }: OversizedTarget = {},
+): Promise<Response> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const res = await attemptOversized(baseURL, bytes, path, contentType);
+    if (res) return res;
+  }
+  throw new Error("the server never returned a complete response to an oversized body");
 }

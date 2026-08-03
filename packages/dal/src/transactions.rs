@@ -332,6 +332,95 @@ pub async fn bulk_delete(db: &Db, ids: &[i64]) -> AppResult<i64> {
     Ok(res.rows_affected() as i64)
 }
 
+/// The earliest `posted_at` on this account that a *different* feed already owns.
+///
+/// The cutover for a manual historical import: from this date on, some connected provider
+/// is already posting this account's movements, and importing a file's rows over the top
+/// would count the same money twice — dedupe is `(provider, external_id)`, so two sources
+/// describing one transaction look like two transactions.
+///
+/// Two deliberate exclusions. `provider IS NULL` skips hand-entered rows and the seeded
+/// `'Opening balance'`: those are sparse, so one of them must not be read as coverage of
+/// everything after it. And `exclude_provider` skips the importer's own previous rows,
+/// without which a second upload would see its own history and hold back the lot.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn earliest_posted_at_from_other_feed(
+    db: &Db,
+    account_id: i64,
+    exclude_provider: &str,
+) -> AppResult<Option<String>> {
+    Ok(sqlx::query_scalar::<_, Option<String>>(
+        "SELECT MIN(posted_at) FROM transactions
+         WHERE account_id = ?1 AND provider IS NOT NULL AND provider <> ?2",
+    )
+    .bind(account_id)
+    .bind(exclude_provider)
+    .fetch_one(db)
+    .await?)
+}
+
+/// Every amount on this account, summed. Against the account's recorded balance this says
+/// whether its ledger actually reconciles — the check that catches a historical import whose
+/// window disagrees with what a live feed already posted for the same period.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn sum_amount_minor(db: &Db, account_id: i64) -> AppResult<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM transactions WHERE account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(db)
+    .await?)
+}
+
+/// The earliest `posted_at` on this account, whatever wrote it. Unlike
+/// [`earliest_posted_at_from_other_feed`] this counts manual rows and the importer's own,
+/// because the question it answers is "is there any ledger here already?" rather than "who
+/// owns this window?".
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn earliest_posted_at(db: &Db, account_id: i64) -> AppResult<Option<String>> {
+    Ok(sqlx::query_scalar::<_, Option<String>>(
+        "SELECT MIN(posted_at) FROM transactions WHERE account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(db)
+    .await?)
+}
+
+/// One `external_id` per account, over the rows whose provider tag starts with
+/// `provider_prefix`.
+///
+/// Lets a manual importer recover which *upstream* account it last imported into which local
+/// account, from the ids it wrote — the ids are the only durable record of that mapping, and
+/// re-deriving it is what lets a repeat upload of the same bank export route itself. One
+/// sample is enough because a tag only ever covers one upstream account.
+///
+/// `provider_prefix` is matched with `LIKE`, so it must not contain `%` or `_`; every caller
+/// passes a fixed tag stem like `asb#`.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn sample_external_ids(db: &Db, provider_prefix: &str) -> AppResult<Vec<(i64, String)>> {
+    Ok(sqlx::query_as::<_, (i64, String)>(
+        "SELECT account_id, MIN(external_id) FROM transactions
+         WHERE provider LIKE ?1 || '%' AND external_id IS NOT NULL
+         GROUP BY account_id",
+    )
+    .bind(provider_prefix)
+    .fetch_all(db)
+    .await?)
+}
+
+/// Delete every transaction on this account that `provider_tag` imported — undo for a bulk
+/// upload. Scoped to the account as well as the tag so a mistyped tag can't reach further
+/// than the account it was invoked for. Returns the number of rows deleted.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn delete_by_provider(db: &Db, account_id: i64, provider_tag: &str) -> AppResult<i64> {
+    let res = sqlx::query("DELETE FROM transactions WHERE account_id = ?1 AND provider = ?2")
+        .bind(account_id)
+        .bind(provider_tag)
+        .execute(db)
+        .await?;
+    Ok(res.rows_affected() as i64)
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn link(db: &Db, id: i64, req: LinkRequest) -> AppResult<Transaction> {
     let other = req.linked_transaction_id;
@@ -1081,5 +1170,214 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+    }
+
+    /// Imported rows, tagged as a provider's, so the cutover and undo have something to
+    /// find. Goes through `providers::import_transactions` because that is the only writer
+    /// that sets `provider`/`external_id`.
+    async fn imported(db: &Db, account_id: i64, tag: &str, dates: &[&str]) {
+        let rows: Vec<crate::providers::ImportRow> = dates
+            .iter()
+            .enumerate()
+            .map(|(i, d)| crate::providers::ImportRow {
+                // `idx_tx_provider_external` is not scoped by account, so the account has
+                // to be in the id or the same tag on a second account silently dedupes
+                // against the first.
+                external_id: format!("{tag}-{account_id}-{i}"),
+                posted_at: format!("{d}T12:00:00+00:00"),
+                amount_minor: -1_00,
+                currency_code: None,
+                description: "imported".to_string(),
+                merchant: None,
+                category_name: None,
+                category_group: None,
+                category_kind: None,
+                is_one_off: false,
+            })
+            .collect();
+        crate::providers::import_transactions(db, account_id, "NZD", tag, &rows)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_cutover_is_the_earliest_row_another_feed_owns() {
+        let db = test_db().await;
+        let acct = account(&db, "Chequing").await;
+        imported(&db, acct, "akahu#10", &["2025-08-03", "2026-01-04"]).await;
+
+        assert_eq!(
+            earliest_posted_at_from_other_feed(&db, acct, "asb#1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("2025-08-03T12:00:00+00:00")
+        );
+    }
+
+    /// The exclusion that makes re-uploading safe: without it a second import would see its
+    /// own 2020 rows, take those as the cutover, and hold back everything.
+    #[tokio::test]
+    async fn the_cutover_ignores_the_importers_own_earlier_rows() {
+        let db = test_db().await;
+        let acct = account(&db, "Chequing").await;
+        let tag = format!("asb#{acct}");
+        imported(&db, acct, "akahu#10", &["2025-08-03"]).await;
+        imported(&db, acct, &tag, &["2020-01-01", "2021-06-30"]).await;
+
+        assert_eq!(
+            earliest_posted_at_from_other_feed(&db, acct, &tag)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("2025-08-03T12:00:00+00:00")
+        );
+    }
+
+    /// A hand-entered row (and the seeded opening balance) carries no `provider`. One of
+    /// those must not be read as a feed covering everything after it.
+    #[tokio::test]
+    async fn a_manual_row_does_not_set_the_cutover() {
+        let db = test_db().await;
+        let acct = account(&db, "Chequing").await;
+        tx(&db, acct, "2019-01-01", -5_00).await;
+
+        assert_eq!(
+            earliest_posted_at_from_other_feed(&db, acct, "asb#1")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn no_feed_on_the_account_means_no_cutover() {
+        let db = test_db().await;
+        let acct = account(&db, "Chequing").await;
+        assert_eq!(
+            earliest_posted_at_from_other_feed(&db, acct, "asb#1")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn the_earliest_row_is_found_whatever_wrote_it() {
+        let db = test_db().await;
+        let acct = account(&db, "Chequing").await;
+        assert_eq!(earliest_posted_at(&db, acct).await.unwrap(), None);
+
+        imported(&db, acct, "asb#1", &["2020-06-01"]).await;
+        tx(&db, acct, "2019-01-01", -5_00).await;
+        // Counts the manual row too, unlike the cutover lookup.
+        assert_eq!(
+            earliest_posted_at(&db, acct).await.unwrap().as_deref(),
+            Some("2019-01-01")
+        );
+    }
+
+    /// An opening-balance row has to reach the balance reconstruction while staying out of
+    /// income, which is what `is_one_off` is for — so the importer must be able to set it.
+    #[tokio::test]
+    async fn an_imported_row_can_be_marked_one_off() {
+        let db = test_db().await;
+        let acct = account(&db, "Chequing").await;
+        crate::providers::import_transactions(
+            &db,
+            acct,
+            "NZD",
+            "asb#1",
+            &[
+                crate::providers::ImportRow {
+                    external_id: "opening".to_string(),
+                    posted_at: "2019-12-31T12:00:00+00:00".to_string(),
+                    amount_minor: 18_694_18,
+                    currency_code: None,
+                    description: "Opening balance".to_string(),
+                    merchant: None,
+                    category_name: None,
+                    category_group: None,
+                    category_kind: None,
+                    is_one_off: true,
+                },
+                crate::providers::ImportRow {
+                    external_id: "ordinary".to_string(),
+                    posted_at: "2020-01-01T12:00:00+00:00".to_string(),
+                    amount_minor: -1_00,
+                    currency_code: None,
+                    description: "Coffee".to_string(),
+                    merchant: None,
+                    category_name: None,
+                    category_group: None,
+                    category_kind: None,
+                    is_one_off: false,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let rows = list(&db, TxQuery::default()).await.unwrap();
+        let by_desc: std::collections::HashMap<&str, &Transaction> =
+            rows.iter().map(|t| (t.description.as_str(), t)).collect();
+        assert!(by_desc["Opening balance"].is_one_off);
+        assert_eq!(by_desc["Opening balance"].amount_minor, 18_694_18);
+        assert!(!by_desc["Coffee"].is_one_off);
+    }
+
+    /// The durable memory a repeat upload routes itself by: the ids record which upstream
+    /// account went to which local one, so the mapping survives without a schema for it.
+    #[tokio::test]
+    async fn sampling_external_ids_recovers_the_upstream_mapping() {
+        let db = test_db().await;
+        let chequing = account(&db, "Chequing").await;
+        let savings = account(&db, "Savings").await;
+        imported(&db, chequing, &format!("asb#{chequing}"), &["2020-01-01"]).await;
+        imported(&db, savings, &format!("asb#{savings}"), &["2020-02-01"]).await;
+        // A different importer's rows, and a manual row, are both out of scope.
+        imported(&db, chequing, "akahu#10", &["2025-08-03"]).await;
+        tx(&db, chequing, "2019-01-01", -5_00).await;
+
+        let mut found = sample_external_ids(&db, "asb#").await.unwrap();
+        found.sort_unstable();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].0, chequing);
+        assert!(found[0].1.starts_with(&format!("asb#{chequing}-")));
+        assert_eq!(found[1].0, savings);
+
+        assert!(sample_external_ids(&db, "nothing#")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn undo_removes_only_that_importers_rows_on_that_account() {
+        let db = test_db().await;
+        let acct = account(&db, "Chequing").await;
+        let other = account(&db, "Savings").await;
+        imported(&db, acct, "asb#1", &["2020-01-01", "2020-02-01"]).await;
+        imported(&db, acct, "akahu#10", &["2025-08-03"]).await;
+        // Same tag on a different account: out of reach.
+        imported(&db, other, "asb#1", &["2020-03-01"]).await;
+        let manual = tx(&db, acct, "2019-01-01", -5_00).await;
+
+        assert_eq!(delete_by_provider(&db, acct, "asb#1").await.unwrap(), 2);
+
+        let left = list(&db, TxQuery::default()).await.unwrap();
+        let mut kept: Vec<&str> = left.iter().map(|t| t.posted_at.as_str()).collect();
+        kept.sort_unstable();
+        assert_eq!(
+            kept,
+            [
+                "2019-01-01",
+                "2020-03-01T12:00:00+00:00",
+                "2025-08-03T12:00:00+00:00"
+            ]
+        );
+        assert!(left.iter().any(|t| t.id == manual));
+        // Idempotent: nothing left to remove.
+        assert_eq!(delete_by_provider(&db, acct, "asb#1").await.unwrap(), 0);
     }
 }
