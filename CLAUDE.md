@@ -89,6 +89,51 @@ into `currencies`), tickers, exchange/institution/lender/broker names, free text
 ids, SQL fragments, HTTP path templates, env var names, file paths, provider external
 ids, JSON blobs.
 
+### 3. Fixtures carry real data's *shape*, never its identifiers
+
+A parser's best test input is a real export — for `sure_providers::asb` and
+`sure_providers::myir` the real memo genuinely *is* the specification, so reaching for one
+is the right instinct. What must not come with it is anything identifying. Both were built
+that way and, until 2026-08-04, between them carried an IRD number, an ASB account number,
+two third parties' account numbers, a family member's name, two payee names, an employer
+with its payroll id, a salary figure, and three payment-card last-fours. Getting them back
+out meant rewriting all 58 commits, so the cost of noticing late is high.
+
+**Keep** — not personal, and in `asb.rs` load-bearing: merchant brands (`Countdown`,
+`KMART`), suburbs, bank/branch prefixes, transaction-type codes, ordinary amounts. ASB
+splits a memo at character twelve, so a 12-character particulars field, and a mid-word split
+like `TWL 119 ALBA NY`, are precisely what the `rejoin_split_field` tests pin.
+
+**Replace** — account numbers (yours *and* anyone else's), IRD numbers, card last-fours,
+people's names, payee and employer names, payroll and payment references, salary figures.
+
+**Replace length-for-length.** A twelve-character field that becomes fourteen silently stops
+exercising the boundary its test exists for. Reuse the fakes already in the tree:
+`12-3456-…` for a bank account (`scripts/seed.mjs`, `accounts.rs`), `012-345-678` for an IRD
+number.
+
+**Check provenance before committing a fixture — "it looks synthetic" is not evidence.**
+`data/sure.db` is the ground truth, and a byte grep answers it without opening a sqlite
+handle, so it cannot write to the live DB (see the `data/sure.db` convention below):
+
+```sh
+# Any hit means the value came from real data. Grep a known-fake control too, so a
+# zero-hit result is evidence the grep works rather than that the file didn't match.
+rg -a -F "$SUSPECT" data/sure.db          # the literal out of the fixture you are adding
+rg -a -F '12-3456-0000123' data/sure.db   # control: an established fake, must be 0
+```
+
+Then grep the **whole tree**, not the file you are editing — one pasted value spreads
+further than where it landed. The same loan amount had been independently copied into
+`sure_app::tasks::balance_delta`; an account number reached the generated
+`packages/client/src/schema.d.ts` through a doc example; and a card last-four in
+`scripts/seed.mjs` was *rendered into* the committed Playwright baselines, which no text
+substitution can reach (they had to be stripped from history and regenerated). Look for a
+value's other spellings while you are there: an IRD number appears both as `nnn-nnn-nnn` and
+undashed inside a direct-debit memo, and every amount is written twice — once as a decimal
+string and again as minor units, with and without digit grouping (`400.00`, `400_00`,
+`40000`).
+
 ## Conventions
 
 - **Scripts** (`package.json`): `pnpm dev` runs API + web together; `pnpm build` runs
@@ -204,3 +249,13 @@ edge in `sure-api`'s `routes::reports`, rejecting an unrecognised value with a 4
 instead of silently defaulting to `month`), and `SankeyNodeKind` (income/center/
 expense/savings, built directly rather than parsed, so no `FromStr` — see
 `packages/core/src/{brokerage,rules,providers}.rs` and `packages/app/src/reports.rs`).
+
+**Rule 3 has no lint, and cannot have one:** whether a given account-number-shaped literal is
+real or invented is not a property of the source — it is a question about
+`data/sure.db`, which no compiler can consult. It is enforced by the provenance grep in the
+rule itself, run *before* a fixture is committed. `.githooks/pre-commit` deliberately does
+not attempt it: a hook that greps every added literal against the live DB would be slow and
+would still miss a value paraphrased by a digit, and one that pattern-matches
+account-number-shaped strings would fire on every legitimate fake in `seed.mjs`. The check
+that actually works is a human or agent asking "where did this string come from?" while
+pasting it, which is why the rule leads with that question rather than with a regex.
