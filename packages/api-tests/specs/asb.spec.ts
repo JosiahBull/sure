@@ -255,6 +255,50 @@ test("a hand-entered row does not set the cutover", async ({ api, server }) => {
   expect(r.imported).toBe(3);
 });
 
+/**
+ * A linked feed that has never posted is the one state where "no other feed owns anything
+ * here" and "a feed owns a period it hasn't written yet" look identical from the ledger.
+ * Importing into it would double every row the feed later posts, because dedupe is
+ * `(provider, external_id)` and cannot see across `asb#N` and `csv#M`.
+ */
+test("an unsynced feed refuses the import rather than importing over its window", async ({
+  api,
+  server,
+}) => {
+  const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
+  // Linked and enabled, but deliberately never synced — no rows, so no derivable cutover.
+  const link = await api.POST("/api/providers", {
+    body: { name: "Unsynced bank feed", kind: "csv", account_id: acc.id, enabled: true },
+  });
+  expect(link.response.status).toBe(201);
+
+  const res = await upload(server.baseURL, acc.id, exportFile(HISTORY));
+  expect(res.status).toBe(422);
+  const message = (await res.json()).error.message;
+  // Names the offending feed, so the reader knows which one to sync or disable.
+  expect(message).toContain("Unsynced bank feed");
+  expect(message).toContain("has not posted a transaction yet");
+
+  // Refused before anything was written.
+  const { data: txns } = await api.GET("/api/transactions", {
+    params: { query: { account_id: acc.id } },
+  });
+  expect(txns?.some((t) => t.provider === `asb#${acc.id}`)).toBe(false);
+});
+
+test("a disabled feed that never posted does not block the import", async ({ api, server }) => {
+  const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
+  const link = await api.POST("/api/providers", {
+    body: { name: "Retired bank feed", kind: "csv", account_id: acc.id, enabled: false },
+  });
+  expect(link.response.status).toBe(201);
+
+  // Nothing will ever post from it, so there is no period to hold back.
+  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY))).json();
+  expect(r.cutover).toBe(null);
+  expect(r.imported).toBe(3);
+});
+
 test("the export's closing balance is reconciled against the account's own", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
   // The account says it holds $250.00; the export closes at $100.00.
@@ -271,6 +315,46 @@ test("the export's closing balance is reconciled against the account's own", asy
   expect(r.warnings.some((w: string) => w.includes("100.00") && w.includes("250.00"))).toBe(true);
   // 100.00 closing − (−12.50 − 200.00 + 1500.00) of movement.
   expect(r.implied_opening_minor).toBe(10_000 - (-1250 - 20_000 + 150_000));
+});
+
+/**
+ * The same reconciliation, on an account with no valuation at all. Every kind this route
+ * accepts accumulates from its own transaction stream, so if the comparison read valuations
+ * alone it would never run for any of them — this is the case that proves it doesn't.
+ */
+test("the closing balance is reconciled against a transaction-derived balance too", async ({
+  api,
+  server,
+}) => {
+  // An opening balance is a transaction, not a valuation: the account derives $500.00.
+  const acc = await createAccount(api, "Chequing", "bank", "NZD", {
+    institution: "ASB",
+    opening_balance_minor: 50_000,
+    opening_balance_date: "2019-12-31",
+  });
+  const { data: before } = await api.GET("/api/transactions", {
+    params: { query: { account_id: acc.id } },
+  });
+  expect(before?.length).toBe(1);
+
+  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), true)).json();
+  expect(r.ledger_balance_minor).toBe(10_000);
+  expect(r.account_balance_minor).toBe(50_000);
+  expect(r.warnings.some((w: string) => w.includes("100.00") && w.includes("500.00"))).toBe(true);
+});
+
+/**
+ * The other half of the zero-suppression: an account whose ledger is empty derives 0, which
+ * is the absence of a balance rather than a balance of zero. Warning on it would fire on
+ * every first import and train the reader to ignore the one that matters.
+ */
+test("an account with no balance of its own is not reconciled against", async ({ api, server }) => {
+  const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
+
+  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), true)).json();
+  expect(r.ledger_balance_minor).toBe(10_000);
+  expect(r.account_balance_minor).toBe(null);
+  expect(r.warnings.some((w: string) => w.includes("but the account"))).toBe(false);
 });
 
 test("an account kind with no bank statement is refused", async ({ api, server }) => {

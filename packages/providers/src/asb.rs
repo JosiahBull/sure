@@ -34,11 +34,12 @@
 //! [`AsbTranType::memo_is_card_descriptor`] which transaction types they may be applied to
 //! at all.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Cursor;
 use std::str::FromStr;
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 
@@ -55,6 +56,12 @@ mod limits {
     pub use crate::zipfile::ENTRIES;
     /// Transaction rows across the whole upload.
     pub const ROWS: usize = 100_000;
+    /// Bytes the upload may itself be, checked before a byte of it is looked at. The zip
+    /// budget bounds what an *archive* expands to and nothing else bounds a bare CSV, which
+    /// is parsed straight out of the request body — and decoding it costs up to three times
+    /// its size again if the bytes aren't valid UTF-8. The bound lives with the parser so it
+    /// holds whether or not the route in front of it is still configured with a body limit.
+    pub const UPLOAD_BYTES: usize = 16 * 1024 * 1024;
 }
 
 /// Beyond this an amount isn't a bank movement, it's bad data. Bounding it here also keeps
@@ -587,6 +594,13 @@ impl AsbExport {
 /// *not* fatal: the row imports on a conservative path and the type is reported through
 /// [`AsbExport::warnings`], so a new ASB label can't block a seven-year import.
 pub fn parse_upload(bytes: &[u8]) -> anyhow::Result<AsbUpload> {
+    if bytes.len() > limits::UPLOAD_BYTES {
+        anyhow::bail!(
+            "the upload is {} bytes; at most {} are read at once",
+            bytes.len(),
+            limits::UPLOAD_BYTES
+        );
+    }
     let Entries {
         files,
         mut warnings,
@@ -908,9 +922,17 @@ fn parse_csv(source: &str, bytes: &[u8]) -> anyhow::Result<AsbExport> {
 }
 
 /// Lossy on purpose: one odd byte in a merchant name must not sink a seven-year import.
-fn decode(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    text.strip_prefix('\u{feff}').unwrap_or(&text).to_string()
+///
+/// Returns a [`Cow`] and strips the BOM from the *bytes* rather than from the decoded text,
+/// so the ordinary case — a valid UTF-8 export — is a borrow and copies nothing.
+/// `from_utf8_lossy` already allocates up to three times the input when the bytes are bad
+/// (every stray byte becomes a 3-byte U+FFFD); stripping the prefix afterwards forced a
+/// second, unconditional copy on top of that, so an upload of invalid bytes held the
+/// original, the replacement text and the copy of it live at once.
+fn decode(bytes: &[u8]) -> Cow<'_, str> {
+    // UTF-8 BOM. Excel writes one when it saves a CSV, and it would otherwise be read as
+    // part of the preamble's first line.
+    String::from_utf8_lossy(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
 }
 
 /// Splits the preamble from the CSV proper. Found by scanning for the header row rather
@@ -1023,15 +1045,54 @@ fn iso(d: NaiveDate) -> String {
     d.format("%Y-%m-%d").to_string()
 }
 
-/// ASB's export offers a choice of date format; this parser wants the ISO-ordered one. A
-/// day/month-first file fails here rather than being silently misread, because
-/// `%Y/%m/%d` cannot make sense of `03/08/2026`.
+/// The oldest date a statement row may carry. A bank movement from before this is not
+/// history anyone is importing, it is a date whose format was misread.
+const EARLIEST_ROW: NaiveDate = match NaiveDate::from_ymd_opt(1970, 1, 1) {
+    Some(d) => d,
+    None => unreachable!(),
+};
+
+/// ASB's export offers a choice of date format; this parser wants the ISO-ordered one, and a
+/// file in any other order is rejected outright rather than silently misread — a wrong date
+/// order is a property of the export, not of one row.
+///
+/// `%Y/%m/%d` alone does **not** achieve that, which is the trap this function exists to
+/// close: chrono's `%Y` accepts *one to four* digits, so `20/01/2020` fails only because
+/// `2020` is not a day, while `20/01/20` parses happily as `0020-01-20`. That is exactly what
+/// arrives when someone opens the export in Excel to look at it and saves: Excel rewrites
+/// every date in the machine's short-date locale, which on an NZ or UK system is `d/mm/yy`.
+/// Those dates are *parseable*, so nothing downstream drops them the way it drops garbage —
+/// they flow into `covered_from` and the report loaders' `earliest_transaction_date` and drag
+/// the net-worth series back two thousand years. So the year's shape is checked on the bytes
+/// first, and the parsed date is then range-checked at both ends: `0020/01/20` is four digits
+/// and just as wrong, and a row dated a decade out is bad data whichever way it got there.
 fn parse_date(text: &str, at: &str) -> anyhow::Result<NaiveDate> {
-    NaiveDate::parse_from_str(text.trim(), "%Y/%m/%d").map_err(|_| {
+    let text = text.trim();
+    let unreadable = || {
         anyhow::anyhow!(
             "{at}: cannot read '{text}' as a date — re-export with the YYYY/MM/DD date format"
         )
-    })
+    };
+    let four_digit_year = text
+        .split_once('/')
+        .is_some_and(|(y, _)| y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()));
+    if !four_digit_year {
+        return Err(unreadable());
+    }
+    let date = NaiveDate::parse_from_str(text, "%Y/%m/%d").map_err(|_| unreadable())?;
+
+    // Tomorrow, not today: the export is written in NZ local time and compared here in UTC,
+    // so the last row of a statement pulled late in the evening is legitimately dated ahead
+    // of this process's own date.
+    let latest = Utc::now().date_naive().succ_opt().unwrap_or(NaiveDate::MAX);
+    if date < EARLIEST_ROW || date > latest {
+        return Err(anyhow::anyhow!(
+            "{at}: '{text}' is not a plausible statement date — a row before {EARLIEST_ROW} or \
+             after tomorrow means the file's date format was misread; re-export with the \
+             YYYY/MM/DD date format"
+        ));
+    }
+    Ok(date)
 }
 
 /// Exact 2-dp minor units. `Decimal`, not float — `329.36` must not land as `32935`.
@@ -1592,7 +1653,7 @@ mod tests {
     /// request failed" are failures of the same kind.
     #[test]
     fn malformed_files_are_rejected_with_a_reason() {
-        let cases: [(&str, String, &str); 9] = [
+        let cases: [(&str, String, &str); 12] = [
             ("empty", String::new(), "header row"),
             (
                 "not a csv at all",
@@ -1633,6 +1694,25 @@ mod tests {
                 file(&[r#"20/01/2020,2020012001,EFTPOS,,"S","EFTPOS",-5.00"#]),
                 "YYYY/MM/DD",
             ),
+            // The one that `%Y/%m/%d` alone lets through: `%Y` takes one to four digits, so
+            // this parses as 0020-01-20 unless the year's shape is checked first. It is what
+            // Excel writes back on a `d/mm/yy` machine after someone opens the export.
+            (
+                "a two-digit-year day/month-first date",
+                file(&[r#"20/01/20,2020012001,EFTPOS,,"S","EFTPOS",-5.00"#]),
+                "YYYY/MM/DD",
+            ),
+            // Four digits and still not a statement date, so the shape check can't catch it.
+            (
+                "a four-digit year before the epoch",
+                file(&[r#"0020/01/20,2020012001,EFTPOS,,"S","EFTPOS",-5.00"#]),
+                "not a plausible statement date",
+            ),
+            (
+                "a four-digit year in the future",
+                file(&[r#"3020/01/20,2020012001,EFTPOS,,"S","EFTPOS",-5.00"#]),
+                "not a plausible statement date",
+            ),
             (
                 "a repeated unique id",
                 file(&[
@@ -1663,6 +1743,46 @@ mod tests {
             err.contains("truncated") || err.contains("as an amount"),
             "{err:?}"
         );
+    }
+
+    // ---------------------------------------------------------------- decoding
+
+    /// The common case must not copy: a valid export is borrowed straight out of the request
+    /// body, and only bad bytes pay for a replacement string.
+    #[test]
+    fn a_valid_body_is_decoded_without_copying_it() {
+        assert!(matches!(decode(b"Date,Unique Id\r\n"), Cow::Borrowed(_)));
+        // Excel writes a BOM when it saves a CSV; it is stripped off the bytes, so this is
+        // still a borrow rather than a re-allocated string.
+        let with_bom = b"\xef\xbb\xbfDate,Unique Id\r\n";
+        assert!(matches!(decode(with_bom), Cow::Borrowed(_)));
+        assert_eq!(decode(with_bom), "Date,Unique Id\r\n");
+    }
+
+    /// Lossy on purpose — one odd byte in a merchant name must not sink a seven-year import.
+    #[test]
+    fn an_odd_byte_in_a_description_is_replaced_not_fatal() {
+        let mut bytes =
+            file(&[r#"2020/01/20,2020012001,EFTPOS,,"SHOP","EFTPOS",-5.00"#]).into_bytes();
+        let at = bytes
+            .windows(4)
+            .position(|w| w == b"SHOP")
+            .expect("the payee");
+        bytes[at + 1] = 0xFF; // a byte no UTF-8 sequence can start
+        let out = only(parse_upload(&bytes).expect("parses"));
+        assert_eq!(out.rows_total, 1);
+        assert_eq!(out.transactions[0].description, "S\u{fffd}OP");
+    }
+
+    /// The parser's own ceiling, so it holds even if the route in front of it loses its body
+    /// limit. Checked before the bytes are decoded, which is where an all-invalid body would
+    /// otherwise cost three times its size again.
+    #[test]
+    fn an_upload_past_the_byte_ceiling_is_refused() {
+        let err = parse_upload(&vec![0xFF; limits::UPLOAD_BYTES + 1])
+            .expect_err("refused")
+            .to_string();
+        assert!(err.contains("at most"), "{err:?}");
     }
 
     // ---------------------------------------------------------------- zips

@@ -9,6 +9,12 @@
 //! It's read from each account's own ledger — the earliest date any *other* feed has posted
 //! — so the halves cannot be made to overlap by getting an argument wrong.
 //!
+//! Where that read can't answer the question — a feed is connected but hasn't posted anything
+//! yet, or the date it did post won't parse — the upload is *refused* (see [`decide_cutover`])
+//! rather than imported whole. "Nothing else posts here" and "we couldn't tell" would
+//! otherwise produce the same silent `cutover: None`, and the cost of guessing wrong is a
+//! permanently doubled ledger against the cost of one re-upload.
+//!
 //! Two entry points, differing only in how the target account is decided:
 //!
 //! * [`import`] — `/accounts/{id}/asb/import`. The account is the path. For one account's
@@ -30,7 +36,8 @@ use axum::routing::post;
 use axum::{Json, Router};
 use chrono::NaiveDate;
 use serde::Deserialize;
-use sure_core::{Account, AccountKind, AccountMetadata, AsbMatch};
+use sure_app::reports::ReportQuery;
+use sure_core::{Account, AccountKind, AccountMetadata, AsbMatch, Provider};
 use sure_providers::asb::AsbExport;
 use utoipa::IntoParams;
 
@@ -260,24 +267,21 @@ async fn import_one(
     };
 
     let provider_tag = provider_tag(account.id);
-    let cutover = st
-        .transactions
-        .earliest_posted_at_from_other_feed(account.id, &provider_tag)
-        .await?
-        // Stored as a full timestamp; the cutover is a whole day.
-        .and_then(|at| NaiveDate::parse_from_str(at.get(..10).unwrap_or(&at), "%Y-%m-%d").ok());
+    let cutover = cutover_for(st, account, &provider_tag).await?;
     export.hold_back_from(cutover);
     warnings.append(&mut export.warnings);
 
-    let account_balance_minor = latest_balance(st, account.id).await;
+    let account_balance_minor = latest_balance(st, account).await;
     // The strongest signal available that this export belongs to this account and reaches
     // all the way back: ASB's stated closing balance against Sure's own. A warning, not a
-    // refusal — a legitimate export can predate the latest valuation.
+    // refusal — a legitimate export can predate the latest valuation, and an account whose
+    // history is only now being reconstructed genuinely holds less than the bank says.
     if let (Some(stated), Some(held)) = (export.ledger_balance_minor, account_balance_minor) {
         if stated != held {
             warnings.push(format!(
                 "the export closes at {} but {} holds {} — check the export is for that \
-                 account, and that its date range reaches back far enough",
+                 account, and that its date range reaches back far enough; the two also differ \
+                 while the account's own history is still incomplete",
                 major(stated),
                 account.name,
                 major(held)
@@ -350,7 +354,13 @@ async fn import_one(
     // that window and its rows disagree, the difference shows up here and nowhere else.
     let ledger_sum = st.transactions.sum_amount_minor(account.id).await?;
     result.ledger_sum_minor = Some(ledger_sum);
-    if let Some(balance) = account_balance_minor {
+    // Re-read rather than reuse the figure from before the insert. For an account whose
+    // balance *is* its transaction sum — every kind this route accepts, unless a feed has
+    // left a valuation — that earlier figure is now stale by exactly what was imported, so
+    // comparing against it would warn on every successful import. Re-read, and the check
+    // still bites wherever there is a balance recorded independently of these rows to
+    // reconcile against, and is silent where there isn't one.
+    if let Some(balance) = latest_balance(st, account).await {
         if ledger_sum != balance {
             result.warnings.push(format!(
                 "{}'s transactions now sum to {} but the account is recorded at {}, a difference \
@@ -528,17 +538,126 @@ fn provider_tag(account_id: i64) -> String {
     format!("{TAG}{account_id}")
 }
 
-/// The account's most recent recorded balance, if it has one. Best-effort: it only feeds a
-/// warning, so a read failure must not fail the import.
-async fn latest_balance(st: &AppState, account_id: i64) -> Option<i64> {
-    match st.valuations.list_for_account(account_id).await {
-        // Newest first, per `valuations::list_for_account`.
-        Ok(vals) => vals.first().map(|v| v.value_minor),
-        Err(e) => {
-            tracing::warn!(account_id, error = %e, "asb import: could not read the account's balance");
-            None
-        }
+/// The date from which another feed already owns this account's movements — everything from
+/// it is the other feed's to post, and this import stops there. `None` only when nothing else
+/// posts to the account at all.
+///
+/// Reads the ledger, then the provider list, because the ledger alone cannot tell the two
+/// apart: see [`decide_cutover`], which makes the decision.
+async fn cutover_for(
+    st: &AppState,
+    account: &Account,
+    provider_tag: &str,
+) -> AppResult<Option<NaiveDate>> {
+    let earliest = st
+        .transactions
+        .earliest_posted_at_from_other_feed(account.id, provider_tag)
+        .await?;
+    // Listed unconditionally rather than only when the ledger came back empty: it is a
+    // handful of rows, and keeping the two reads together keeps the decision in one pure
+    // function that a test can drive.
+    let providers = st.providers.list().await?;
+    decide_cutover(
+        account.id,
+        &account.name,
+        earliest.as_deref(),
+        &providers,
+        |kind| st.provider_registry.get(kind).is_some(),
+    )
+}
+
+/// The cutover decision, from what the ledger and the provider list say. Pure, so both ways
+/// of *not* knowing stay covered by a unit test rather than by a live database.
+///
+/// `earliest_from_other_feed` is `MIN(posted_at)` over the rows some other feed wrote.
+/// `supplies_transactions` answers whether a provider kind posts transactions at all (the
+/// registry): a row whose kind is no longer registered has nothing pending to post.
+///
+/// Neither way of failing may return `None`. `None` means "no other feed owns any of this
+/// account", which holds nothing back and imports the file whole — and the only warning on
+/// this path fires on rows that *were* held back, so a failure to establish the cutover would
+/// be entirely silent. Both are therefore a 422 before anything is written:
+///
+/// * A connected, enabled feed with no rows yet. `routes::providers::link` deliberately keeps
+///   a link whose first sync failed, so this is also the state for the seconds after linking
+///   and for as long as credentials are wrong. Import seven years into that window and Akahu's
+///   next poll lands its own two on top of the same two: dedupe is `(provider, external_id)`
+///   and cannot see across `asb#N` and `akahu#M`, so every transaction in the overlap exists
+///   twice, permanently.
+/// * A `posted_at` that won't parse. It is `MIN()` under SQLite's BINARY collation, where a
+///   non-ISO date sorts ahead of every ISO one (`'0' < '2'`), so a single legacy row is
+///   exactly the one that decides the window — and an unreadable date in the account's
+///   history is a defect worth surfacing in its own right.
+fn decide_cutover(
+    account_id: i64,
+    account_name: &str,
+    earliest_from_other_feed: Option<&str>,
+    providers: &[Provider],
+    supplies_transactions: impl Fn(&str) -> bool,
+) -> AppResult<Option<NaiveDate>> {
+    if let Some(at) = earliest_from_other_feed {
+        // Stored as a full timestamp; the cutover is a whole day.
+        return match NaiveDate::parse_from_str(at.get(..10).unwrap_or(at), "%Y-%m-%d") {
+            Ok(date) => Ok(Some(date)),
+            Err(_) => Err(AppError::validation(format!(
+                "{account_name}'s earliest transaction from another feed is dated '{at}', which \
+                 is not a date this import can read, so it cannot tell which period that feed \
+                 owns — correct that row's date, then import again"
+            ))),
+        };
     }
+
+    let waiting: Vec<&str> = providers
+        .iter()
+        .filter(|p| p.account_id == account_id && p.enabled && supplies_transactions(&p.kind))
+        .map(|p| p.name.as_str())
+        .collect();
+    if waiting.is_empty() {
+        return Ok(None);
+    }
+    Err(AppError::validation(format!(
+        "{account_name} is connected to {}, which has not posted a transaction yet, so this \
+         import cannot tell which period belongs to it — importing now would count that period \
+         twice once it syncs. Sync it (or disable it), then import again",
+        waiting.join(", ")
+    )))
+}
+
+/// The account's current balance, if it has one, as the balances report derives it: its newest
+/// valuation on or before today, else the running sum of its transactions
+/// (`sure_app::reports::account_value_at`). Taken from the report service rather than
+/// re-derived here, so the figure an export is checked against is the one the account page
+/// shows.
+///
+/// It has to be that derivation and not the newest valuation alone: every kind
+/// [`accepts_asb_csv`] admits seeds its opening balance as a *transaction* (the DAL's
+/// `opening_balance_ledger`) and accumulates from its own transaction stream, so such an
+/// account has no valuation at all unless a provider sync wrote one — and reading valuations
+/// meant the reconciliation this feeds, the strongest wrong-account signal on this path, never
+/// ran for the only kinds the route accepts.
+///
+/// `None` — no comparison, no warning — in four cases, each of which has nothing to compare:
+/// a read failure (this only feeds a warning, so it must not fail the import); an archived
+/// account, which the balances report doesn't cover; a balance recorded in another currency,
+/// where minor units against the export's would be arithmetic on two different things; and a
+/// zero, which on this path is the absence of a balance rather than a balance of zero — an
+/// account nothing has been recorded on yet derives 0 from an empty ledger, and "the export
+/// closes at 3,412.09 but the account holds 0.00" on every first import would train the reader
+/// to ignore the one that matters.
+async fn latest_balance(st: &AppState, account: &Account) -> Option<i64> {
+    let report = match st.reports.balances(&ReportQuery::default()).await {
+        Ok(report) => report,
+        Err(e) => {
+            tracing::warn!(account_id = account.id, error = %e, "asb import: could not read the account's balance");
+            return None;
+        }
+    };
+    report
+        .accounts
+        .into_iter()
+        .find(|a| a.account_id == account.id && a.currency_code == account.currency_code)
+        .map(|a| a.value_minor)
+        .filter(|value| *value != 0)
 }
 
 /// Minor units as a plain decimal string, for a message a person reads.
@@ -549,11 +668,142 @@ fn major(minor: i64) -> String {
 }
 
 pub fn router(limits: &Limits) -> Router<AppState> {
-    let body_limit = DefaultBodyLimit::max(limits.max_import_body_bytes);
     Router::new()
         .route(
             "/accounts/{id}/asb/import",
-            post(import).delete(undo).layer(body_limit),
+            // The raised limit is layered onto the upload only, then `delete` is added after
+            // it, so undo keeps the global body limit: it takes no body, and a 50 MiB
+            // allowance on a route that ignores what arrives is an allowance nobody chose.
+            post(import)
+                .layer(DefaultBodyLimit::max(limits.max_import_body_bytes))
+                .delete(undo),
         )
-        .route("/asb/import", post(upload).layer(body_limit))
+        .route(
+            "/asb/import",
+            post(upload).layer(DefaultBodyLimit::max(limits.max_import_body_bytes)),
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider row in the shape the DAL hands one back. Only the four fields the cutover
+    /// decision reads carry anything; no real identifier belongs in a fixture (CLAUDE.md
+    /// rule 3).
+    fn provider(name: &str, kind: &str, account_id: i64, enabled: bool) -> Provider {
+        Provider {
+            id: 1,
+            name: name.to_string(),
+            kind: kind.to_string(),
+            account_id,
+            config: serde_json::Value::Null,
+            enabled,
+            last_synced_at: None,
+            created_at: "2026-01-01T00:00:00+00:00".to_string(),
+            updated_at: "2026-01-01T00:00:00+00:00".to_string(),
+        }
+    }
+
+    /// Every kind these tests name is one the registry knows, unless a test says otherwise.
+    fn registered(_kind: &str) -> bool {
+        true
+    }
+
+    fn refused(earliest: Option<&str>, providers: &[Provider]) -> String {
+        let err = decide_cutover(8, "Everyday", earliest, providers, registered)
+            .expect_err("the import should have been refused");
+        // A 422, not a 500: the upload is wrong (or premature), not the server.
+        assert!(
+            matches!(err, AppError::Validation(_)),
+            "expected a validation error, got {err:?}"
+        );
+        err.to_string()
+    }
+
+    #[test]
+    fn a_timestamp_from_another_feed_becomes_a_whole_day_cutover() {
+        let got = decide_cutover(
+            8,
+            "Everyday",
+            Some("2022-01-01T12:00:00+00:00"),
+            &[],
+            registered,
+        )
+        .expect("a parseable date is not a refusal");
+        assert_eq!(got, NaiveDate::from_ymd_opt(2022, 1, 1));
+    }
+
+    #[test]
+    fn an_account_nothing_else_posts_to_has_no_cutover() {
+        let got = decide_cutover(8, "Everyday", None, &[], registered)
+            .expect("no other feed is a legitimate answer, not a refusal");
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn an_enabled_feed_that_has_posted_nothing_yet_refuses_the_import() {
+        // The state after a link whose first sync failed (`routes::providers::link` keeps the
+        // link deliberately), and the one where importing the file whole doubles every row
+        // that feed later posts for the same period.
+        let msg = refused(None, &[provider("Akahu", "akahu", 8, true)]);
+        assert!(msg.contains("Akahu"), "the feed to sync is named: {msg}");
+        assert!(msg.contains("Everyday"), "the account is named: {msg}");
+    }
+
+    #[test]
+    fn every_waiting_feed_is_named_so_the_user_syncs_all_of_them() {
+        let msg = refused(
+            None,
+            &[
+                provider("Akahu", "akahu", 8, true),
+                provider("Statements", "csv", 8, true),
+            ],
+        );
+        assert!(msg.contains("Akahu") && msg.contains("Statements"), "{msg}");
+    }
+
+    #[test]
+    fn a_disabled_feed_or_one_on_another_account_is_not_waiting() {
+        let providers = [
+            provider("Akahu", "akahu", 8, false),
+            provider("Akahu", "akahu", 9, true),
+        ];
+        let got = decide_cutover(8, "Everyday", None, &providers, registered)
+            .expect("neither of these posts to account 8");
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn a_feed_whose_kind_is_no_longer_registered_is_not_waiting() {
+        // Nothing can sync it, so it has no window pending and must not block the import.
+        let providers = [provider("Retired", "decommissioned", 8, true)];
+        let got = decide_cutover(8, "Everyday", None, &providers, |_| false)
+            .expect("an unregistered kind posts nothing");
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn a_posted_at_that_is_not_a_date_refuses_the_import() {
+        // A CSV provider stores the date cell verbatim, and `MIN()` under SQLite's BINARY
+        // collation sorts a `0`-leading day ahead of every ISO date — so this one row is
+        // exactly the one that decides the window, and it can't.
+        let msg = refused(Some("03/07/2019"), &[]);
+        assert!(
+            msg.contains("03/07/2019"),
+            "the offending value is quoted: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_posted_at_too_short_to_hold_a_date_refuses_rather_than_panics() {
+        assert!(refused(Some("2019-07"), &[]).contains("2019-07"));
+    }
+
+    #[test]
+    fn a_posted_at_with_no_char_boundary_at_ten_refuses_rather_than_panics() {
+        // `str::get` returns `None` mid-codepoint rather than panicking the way slicing
+        // would; the point of this test is that the handler stays a 422 either way.
+        assert!(!refused(Some("2019-07-0\u{1f600}3"), &[]).is_empty());
+    }
 }
