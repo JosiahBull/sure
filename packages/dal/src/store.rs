@@ -993,3 +993,95 @@ impl SnapshotRepo for SqliteStore {
         crate::snapshot::import(&self.db, snap).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sure_app::reports::{ReportQuery, ReportService};
+    use sure_app::SystemClock;
+    use sure_core::{AccountKind, SaveAccount};
+
+    use super::*;
+
+    /// The end-to-end half of the money-magnitude guard: a balance report over rows that were
+    /// **not** written through the wire type.
+    ///
+    /// `sure_core::Money` bounds `POST /api/transactions` from now on, but it cannot reach a row
+    /// written before it existed — and two paths still bypass it by design (provider import,
+    /// snapshot restore). So this test inserts straight into the table with `sqlx`, which is the
+    /// only honest way to reproduce what is already on disk, and then asks the real
+    /// `ReportService` (over the real `SqliteStore`) for a balance sheet.
+    ///
+    /// Before the checked aggregation, this call was `[i64::MAX, i64::MAX].iter().sum()`:
+    /// `attempt to add with overflow` in debug — a scrubbed 500 on the balance sheet, net worth,
+    /// equity and forecast at once, with the offending rows unfindable because the pages that
+    /// would list them were the 500ing ones — and a wrap to a small negative in release, which
+    /// printed a plausible, wrong balance with no error anywhere.
+    #[tokio::test]
+    async fn a_balance_over_pre_existing_over_ceiling_rows_answers_instead_of_panicking() {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::migrate(&db).await.unwrap();
+
+        let account = crate::accounts::create(
+            &db,
+            SaveAccount {
+                name: "Legacy bank".to_string(),
+                kind: AccountKind::Bank,
+                institution: Some("ANZ".to_string()),
+                currency_code: "NZD".to_string(),
+                // Zero seeds no opening-balance row, so the only transactions are the two
+                // hostile ones inserted below.
+                opening_balance_minor: Some(0),
+                opening_balance_date: Some("2020-01-01".to_string()),
+                metadata: None,
+                archived: false,
+                sort_order: 0,
+                ownership: Ownership::Joint,
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+
+        // Straight into the table: no `SaveTransaction`, so no ceiling. This is the shape of a
+        // row that predates the type.
+        for posted_at in ["2026-01-05", "2026-01-06"] {
+            sqlx::query(
+                "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code, description)
+                 VALUES (?1, ?2, ?3, 'NZD', 'legacy')",
+            )
+            .bind(account)
+            .bind(posted_at)
+            .bind(i64::MAX)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        let store = Arc::new(SqliteStore::new(db.clone()));
+        let reports = ReportService::new(store.clone(), store.clone(), Arc::new(SystemClock));
+
+        let report = reports
+            .balances(&ReportQuery::default())
+            .await
+            .expect("a balance sheet must still answer over unbounded legacy rows");
+
+        let row = report
+            .accounts
+            .iter()
+            .find(|a| a.account_id == account)
+            .expect("the account is still listed");
+        assert_eq!(
+            row.value_minor,
+            i64::MAX,
+            "the balance saturates at the i64 ceiling — obviously wrong on screen, with a WARN \
+             naming the account — rather than wrapping to a plausible small negative"
+        );
+    }
+}

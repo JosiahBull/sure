@@ -12,6 +12,9 @@ path = "src/lib.rs"
 
 [dependencies]
 serde = { workspace = true }
+# Date parsing for `IsoDate` (packages/core/src/iso_date.rs). Calendar arithmetic only —
+# no clock, no I/O — so `sure-core` stays the zero-I/O layer it claims to be.
+chrono = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }

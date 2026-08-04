@@ -468,7 +468,15 @@
       params: { path: { id: t.id } },
       body: {
         account_id: t.account_id,
-        posted_at: t.posted_at,
+        // The stored value is a plain `YYYY-MM-DD` for anything entered here, but a full
+        // RFC-3339 datetime for a provider-imported row (Akahu reports `2026-01-05T09:30:00+00:00`,
+        // and the importer stores it verbatim). `SaveTransaction::posted_at` is a date, so
+        // restating the raw value would 422 an inline category edit on every imported row —
+        // and this is a fire-and-forget PUT, so the edit would just silently not stick.
+        // Truncating loses nothing: every reader — the groupings just above, the report
+        // loaders, SQLite's own `date()` in the list filter — already uses the first ten
+        // characters and nothing anywhere reads the time.
+        posted_at: t.posted_at.slice(0, 10),
         amount_minor: t.amount_minor,
         currency_code: t.currency_code,
         description: t.description,

@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::iso_date::IsoDate;
+use crate::money::Money;
+
 /// Where a valuation's value came from. Stored as `valuations.source` (a plain `TEXT`
 /// column — see `0001_core.sql`, whose comment only lists `manual`/`cron`/`provider`;
 /// `brokerage` (`sure_dal::valuations::upsert_from_brokerage`) and `equity`
@@ -69,8 +72,10 @@ pub struct Valuation {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct NewValuation {
-    pub as_of: String,
-    pub value_minor: i64,
+    #[schema(value_type = String)]
+    pub as_of: IsoDate,
+    #[schema(value_type = i64)]
+    pub value_minor: Money,
     /// Defaults to the account's currency.
     #[serde(default)]
     pub currency_code: Option<String>,

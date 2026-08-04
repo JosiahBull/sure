@@ -7,6 +7,9 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::iso_date::IsoDate;
+use crate::money::Money;
+
 /// What kind of thing a `forecast_assumptions` row tunes.
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -120,7 +123,9 @@ pub struct SaveForecastEvent {
     pub target_type: ForecastTargetType,
     pub target_id: i64,
     pub kind: ForecastEventKind,
-    pub effective_date: String,
-    pub amount_minor: i64,
+    #[schema(value_type = String)]
+    pub effective_date: IsoDate,
+    #[schema(value_type = i64)]
+    pub amount_minor: Money,
     pub label: String,
 }

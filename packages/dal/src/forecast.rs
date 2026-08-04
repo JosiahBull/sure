@@ -210,9 +210,6 @@ pub async fn create_event(db: &Db, input: SaveForecastEvent) -> AppResult<Foreca
     if input.label.trim().is_empty() {
         return Err(AppError::validation("label is required"));
     }
-    if chrono::NaiveDate::parse_from_str(&input.effective_date, "%Y-%m-%d").is_err() {
-        return Err(AppError::validation("effective_date must be YYYY-MM-DD"));
-    }
     sqlx::query_as::<_, ForecastEventRow>(
         "INSERT INTO forecast_events (target_type, target_id, kind, effective_date, amount_minor, label)
          VALUES (?1,?2,?3,?4,?5,?6) RETURNING *",
@@ -220,8 +217,8 @@ pub async fn create_event(db: &Db, input: SaveForecastEvent) -> AppResult<Foreca
     .bind(input.target_type.as_str())
     .bind(input.target_id)
     .bind(input.kind.as_str())
-    .bind(input.effective_date.trim())
-    .bind(input.amount_minor)
+    .bind(input.effective_date.to_string())
+    .bind(input.amount_minor.minor())
     .bind(input.label.trim())
     .fetch_one(db)
     .await?

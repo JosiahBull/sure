@@ -2,7 +2,7 @@
 
 use chrono::{Datelike, NaiveDate, Utc};
 use sqlx::{FromRow, SqliteConnection};
-use sure_core::{AppError, AppResult, ValuationSource};
+use sure_core::{AppError, AppResult, Money, ValuationSource};
 pub use sure_core::{Cron, CronKind, CronRun, CronRunResult, SaveCron};
 
 use crate::Db;
@@ -108,10 +108,10 @@ pub async fn create(db: &Db, input: SaveCron) -> AppResult<Cron> {
     .bind(input.account_id)
     .bind(input.kind.as_str())
     .bind(input.rate_bps)
-    .bind(input.amount_minor)
+    .bind(input.amount_minor.map(Money::minor))
     .bind(input.category_id)
     .bind(input.day_of_month.unwrap_or(1).clamp(1, 28))
-    .bind(input.start_date.trim())
+    .bind(input.start_date.to_string())
     .bind(input.enabled)
     .fetch_one(db)
     .await
@@ -133,10 +133,10 @@ pub async fn update(db: &Db, id: i64, input: SaveCron) -> AppResult<Cron> {
     .bind(input.account_id)
     .bind(input.kind.as_str())
     .bind(input.rate_bps)
-    .bind(input.amount_minor)
+    .bind(input.amount_minor.map(Money::minor))
     .bind(input.category_id)
     .bind(input.day_of_month.unwrap_or(1).clamp(1, 28))
-    .bind(input.start_date.trim())
+    .bind(input.start_date.to_string())
     .bind(input.enabled)
     .fetch_optional(db)
     .await
@@ -515,9 +515,6 @@ fn validate(input: &SaveCron) -> AppResult<()> {
             validate_rate_bps(input.kind, rate_bps)?;
         }
     }
-    if parse_date(&input.start_date).is_none() {
-        return Err(AppError::validation("start_date must be YYYY-MM-DD"));
-    }
     Ok(())
 }
 
@@ -597,6 +594,7 @@ fn map_fk(e: sqlx::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sure_core::IsoDate;
 
     /// A saved cron as the API would submit it: valid in every respect except whatever the
     /// individual test overrides. `rate_bps` is left `None` so each test states its own.
@@ -609,7 +607,7 @@ mod tests {
             amount_minor: None,
             category_id: None,
             day_of_month: Some(1),
-            start_date: "2026-01-01".to_string(),
+            start_date: IsoDate::parse("2026-01-01").unwrap(),
             enabled: true,
         }
     }
@@ -672,7 +670,7 @@ mod tests {
         assert!(validate(&save(CronKind::Appreciation, None)).is_err());
         assert!(validate(&save(CronKind::FixedTransaction, None)).is_err());
         let mut fixed = save(CronKind::FixedTransaction, None);
-        fixed.amount_minor = Some(-1999);
+        fixed.amount_minor = Some(Money::new(-1999).unwrap());
         assert!(validate(&fixed).is_ok());
     }
 

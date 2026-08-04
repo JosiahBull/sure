@@ -225,8 +225,103 @@ pub struct EquityPosition {
 
 // ---- helpers (pure, no repo access) ---------------------------------------
 
+/// Parse a date supplied by the *caller* — a `?from=`/`?to=` query parameter. Tolerant by
+/// design: an unparseable bound falls back to the report's own default (earliest row / today)
+/// rather than erroring, and a client typo is its own visible symptom (the window it asked
+/// for isn't the window it got). Leading-10 truncation is deliberate here so a UI that sends
+/// a full datetime still bounds correctly.
 pub(crate) fn parse_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s.get(0..10).unwrap_or(s), "%Y-%m-%d").ok()
+}
+
+/// Parse a date that came back out of the *database*, warning loudly when it won't parse.
+///
+/// Every write path now takes a [`sure_core::IsoDate`], so a stored value that fails here can
+/// only be legacy data — a row written before that type existed, when a `31/07/2026` was
+/// accepted with a 201 and then silently vanished from every report. Two choices, and neither
+/// "just work":
+///
+/// * refuse to read it (return an error, or `expect`) — that turns one bad historical row
+///   into a hard 500 on the balance sheet, net worth, category breakdown and forecast at
+///   once, for data the user can no longer see in order to fix;
+/// * skip it, as this has always done — the row is absent from the figure but present in the
+///   transaction list, which is the *original* bug: a permanent, unexplained disagreement.
+///
+/// So: still skip (a report stays answerable), but never silently. The WARN names the column,
+/// the offending text and — where the loader carries it — the owning account, which is enough
+/// to go and repair the row (`SELECT … WHERE posted_at = '31/07/2026'`): the gap in the figure
+/// now has a cause attached to it instead of being invisible. `account_id` is `None` for the
+/// spend loader, whose row shape doesn't carry one; the column and value still identify it.
+pub(crate) fn parse_stored_date(
+    field: &str,
+    account_id: Option<i64>,
+    s: &str,
+) -> Option<NaiveDate> {
+    match NaiveDate::parse_from_str(s.get(0..10).unwrap_or(s), "%Y-%m-%d") {
+        Ok(d) => Some(d),
+        Err(_) => {
+            tracing::warn!(
+                field,
+                account_id = ?account_id,
+                value = s,
+                "unparseable stored date: row excluded from this report — legacy data written \
+                 before the date was a validated type; repair the row to make it count again"
+            );
+            None
+        }
+    }
+}
+
+/// Narrow an `i128` running total of minor units back to the `i64` the wire and the column
+/// use — saturating, loudly — instead of panicking or wrapping.
+///
+/// This is the second half of the money-magnitude guard, and the half that covers rows
+/// *already on disk*. [`sure_core::Money`] bounds what can be written from now on, but it
+/// cannot retro-fix a row stored before it existed, and two paths still bypass it by design
+/// (provider import, snapshot restore). Left alone, `[i64::MAX, i64::MAX].iter().sum()` gives
+/// the worst pair of outcomes there is:
+///
+/// * debug (`overflow-checks` on): a panic inside the balance walk. `CatchPanicLayer` turns it
+///   into a scrubbed 500 on the balance sheet, net worth, equity position and forecast at once
+///   — and the rows responsible can't be found through the UI, because the pages that would
+///   list them are the 500ing ones;
+/// * release (the root `Cargo.toml` sets no `overflow-checks`): the total wraps to a small
+///   negative and the balance sheet prints a plausible, wrong number with no error anywhere.
+///
+/// So: accumulate in `i128` — which no realistic number of `i64` rows can overflow — and clamp
+/// once, here, with a WARN naming the report component, the owning account and the total that
+/// didn't fit. A saturated figure is obviously wrong on screen (it is `i64::MAX` minor units)
+/// and leaves a log line pointing at the account to go and repair, which is strictly better
+/// than both a 500 and a plausible lie. Same posture as [`parse_stored_date`]: tolerate legacy
+/// data, but never silently.
+pub(crate) fn narrow_minor(what: &str, account_id: Option<i64>, total: i128) -> i64 {
+    match i64::try_from(total) {
+        Ok(v) => v,
+        Err(_) => {
+            let clamped = if total > 0 { i64::MAX } else { i64::MIN };
+            tracing::warn!(
+                what,
+                account_id = ?account_id,
+                total = %total,
+                clamped,
+                "money total does not fit in i64: saturated rather than overflowing — some row \
+                 holds an amount past sure_core::MAX_MONEY_MINOR (legacy data, a provider \
+                 import or a snapshot restore); find it and repair it to make this figure real"
+            );
+            clamped
+        }
+    }
+}
+
+/// Add signed minor-unit amounts without `Iterator::sum`'s two `i64` failure modes. The
+/// accumulator is `i128`, so the addition itself cannot overflow for any number of rows SQLite
+/// could return; only the final narrowing can clamp, and [`narrow_minor`] says so when it does.
+pub(crate) fn sum_minor(
+    what: &str,
+    account_id: Option<i64>,
+    amounts: impl Iterator<Item = i64>,
+) -> i64 {
+    narrow_minor(what, account_id, amounts.map(i128::from).sum::<i128>())
 }
 
 pub(crate) fn last_day_of_month(y: i32, m: u32) -> NaiveDate {
@@ -275,26 +370,45 @@ pub(crate) fn account_value_at(
                 .and_then(|txs| txs.iter().map(|(d, _)| *d).min());
             return match first_txn {
                 Some(first) if date >= first => {
-                    let after_date: i64 = tx_by_acct
+                    // `i128` throughout: both the sum of the movements and the subtraction from
+                    // the anchor are unbounded in principle, and a stored amount past
+                    // `MAX_MONEY_MINOR` must not be able to panic (debug) or wrap (release)
+                    // this walk. Narrowed once, at the end, with a WARN if it had to clamp.
+                    let after_date: i128 = tx_by_acct
                         .get(&id)
                         .map(|txs| {
                             txs.iter()
                                 .filter(|(d, _)| *d > date && *d <= *anchor_date)
-                                .map(|(_, a)| a)
+                                .map(|(_, a)| i128::from(*a))
                                 .sum()
                         })
                         .unwrap_or(0);
-                    (anchor_value - after_date, ccy.clone())
+                    let reconstructed = i128::from(*anchor_value) - after_date;
+                    (
+                        narrow_minor(
+                            "account_value_at: valuation anchor minus later movements",
+                            Some(id),
+                            reconstructed,
+                        ),
+                        ccy.clone(),
+                    )
                 }
                 // Before the account's first transaction (or it has none) → not yet opened.
                 _ => (0, ccy.clone()),
             };
         }
     }
-    // Case 3.
+    // Case 3. The running balance of a plain cash account: the one aggregation the whole
+    // balance sheet rests on, and the one that used to be a bare `.sum()` over `i64`.
     let balance = tx_by_acct
         .get(&id)
-        .map(|txs| txs.iter().filter(|(d, _)| *d <= date).map(|(_, a)| a).sum())
+        .map(|txs| {
+            sum_minor(
+                "account_value_at: running transaction balance",
+                Some(id),
+                txs.iter().filter(|(d, _)| *d <= date).map(|(_, a)| *a),
+            )
+        })
         .unwrap_or(0);
     (balance, currency.to_string())
 }
@@ -503,7 +617,9 @@ pub(crate) async fn load_ledger(reports: &dyn ReportRepo) -> AppResult<Ledger> {
     let vals = reports.valuations().await?;
     let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
     for t in &txns {
-        if let Some(d) = parse_date(&t.posted_at) {
+        if let Some(d) =
+            parse_stored_date("transactions.posted_at", Some(t.account_id), &t.posted_at)
+        {
             tx_by_acct
                 .entry(t.account_id)
                 .or_default()
@@ -512,7 +628,7 @@ pub(crate) async fn load_ledger(reports: &dyn ReportRepo) -> AppResult<Ledger> {
     }
     let mut val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>> = HashMap::new();
     for v in &vals {
-        if let Some(d) = parse_date(&v.as_of) {
+        if let Some(d) = parse_stored_date("valuations.as_of", Some(v.account_id), &v.as_of) {
             val_by_acct.entry(v.account_id).or_default().push((
                 d,
                 v.value_minor,
@@ -556,7 +672,7 @@ pub(crate) async fn load_spend(
                     return false;
                 }
             }
-            match parse_date(&t.posted_at) {
+            match parse_stored_date("transactions.posted_at", None, &t.posted_at) {
                 Some(d) => d >= from && d <= to,
                 None => false,
             }
@@ -864,7 +980,9 @@ impl ReportService {
         // Index transactions/valuations per account, with parsed dates.
         let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
         for t in &txns {
-            if let Some(d) = parse_date(&t.posted_at) {
+            if let Some(d) =
+                parse_stored_date("transactions.posted_at", Some(t.account_id), &t.posted_at)
+            {
                 tx_by_acct
                     .entry(t.account_id)
                     .or_default()
@@ -873,7 +991,7 @@ impl ReportService {
         }
         let mut val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>> = HashMap::new();
         for v in &vals {
-            if let Some(d) = parse_date(&v.as_of) {
+            if let Some(d) = parse_stored_date("valuations.as_of", Some(v.account_id), &v.as_of) {
                 val_by_acct.entry(v.account_id).or_default().push((
                     d,
                     v.value_minor,
@@ -1056,10 +1174,19 @@ impl ReportService {
                          nodes: &mut Vec<SankeyNode>,
                          links: &mut Vec<SankeyLink>|
          -> i64 {
-            flow_order(&forest.roots, forest, &cats, &fx)
-                .into_iter()
-                .map(|root| emit_flow_node(root, CENTER, side, forest, &cats, &fx, nodes, links))
-                .sum()
+            // Each root's emitted value has already been through `fx.base_minor`, whose
+            // `as i64` cast *saturates* — so a poisoned category total arrives here as
+            // `i64::MAX` rather than as an error, and summing two of those is the same
+            // panic-or-wrap this report was fixed for. `i128` accumulation, one loud narrowing.
+            sum_minor(
+                "sankey: side total across root categories",
+                None,
+                flow_order(&forest.roots, forest, &cats, &fx)
+                    .into_iter()
+                    .map(|root| {
+                        emit_flow_node(root, CENTER, side, forest, &cats, &fx, nodes, links)
+                    }),
+            )
         };
         let income_minor = emit_side(&income, FlowSide::Income, &mut nodes, &mut links);
         let expense_minor = emit_side(&expense, FlowSide::Expense, &mut nodes, &mut links);
@@ -1080,7 +1207,14 @@ impl ReportService {
             links.push(SankeyLink {
                 source: CENTER.into(),
                 target: "savings".into(),
-                value_minor: income_minor - expense_minor,
+                // Both sides are already-saturated `i64`s in the worst case, so subtract in
+                // `i128` — `i64::MAX - i64::MIN` overflows, and the guard is worthless if the
+                // very next line can still panic.
+                value_minor: narrow_minor(
+                    "sankey: surplus to savings",
+                    None,
+                    i128::from(income_minor) - i128::from(expense_minor),
+                ),
             });
         }
 
@@ -1290,6 +1424,111 @@ mod tests {
         assert_eq!(
             account_value_at(3, "NZD", d("2026-01-31"), &tx, &val).0,
             380_00
+        );
+    }
+
+    /// Two rows at the wire ceiling — the largest amount `sure_core::Money` will accept — must
+    /// sum *exactly*, not saturate. This is the guard against over-tightening: the second layer
+    /// only exists for figures a legal ledger cannot reach, and a false clamp here would show a
+    /// wrong balance for data that was accepted correctly.
+    ///
+    /// The tuples are raw `i64`s, which is precisely how the DAL hands these rows over — so
+    /// this exercises the aggregation without the wire type in the picture at all.
+    #[test]
+    fn two_rows_at_the_wire_ceiling_still_sum_exactly() {
+        let ceiling = sure_core::MAX_MONEY_MINOR;
+        let mut tx = HashMap::new();
+        tx.insert(
+            11i64,
+            vec![(d("2026-01-05"), ceiling), (d("2026-01-06"), ceiling)],
+        );
+        let val = HashMap::new();
+
+        assert_eq!(
+            account_value_at(11, "NZD", d("2026-02-01"), &tx, &val).0,
+            2 * ceiling,
+            "the ceiling is chosen so this fits in an i64 with room to spare"
+        );
+    }
+
+    /// The failure this whole change exists for, at the layer that covers rows **already on
+    /// disk**: two `i64::MAX` transactions — which the wire type now refuses but which a row
+    /// written before it existed can still hold — used to panic here in debug (a scrubbed 500
+    /// on the balance sheet, net worth, equity and forecast at once) and wrap to a small
+    /// negative in release (a plausible, wrong balance with no error anywhere).
+    ///
+    /// Now it saturates: obviously-wrong on screen, and a WARN naming the account to repair.
+    /// Nothing about `Money` is involved — these tuples are raw `i64`s straight off a DAL row,
+    /// which is exactly the point of testing layer 2 on its own.
+    #[test]
+    fn a_pre_existing_over_ceiling_row_saturates_instead_of_panicking_or_wrapping() {
+        let mut tx = HashMap::new();
+        tx.insert(
+            12i64,
+            vec![(d("2026-01-05"), i64::MAX), (d("2026-01-06"), i64::MAX)],
+        );
+        let val = HashMap::new();
+
+        assert_eq!(
+            account_value_at(12, "NZD", d("2026-02-01"), &tx, &val).0,
+            i64::MAX,
+            "must clamp at the ceiling of the type, not wrap negative"
+        );
+
+        // The same in the other direction: `i64::MIN + i64::MIN` wraps to 0 in release, which
+        // reads as "this account is empty".
+        let mut tx = HashMap::new();
+        tx.insert(
+            13i64,
+            vec![(d("2026-01-05"), i64::MIN), (d("2026-01-06"), i64::MIN)],
+        );
+        assert_eq!(
+            account_value_at(13, "NZD", d("2026-02-01"), &tx, &val).0,
+            i64::MIN
+        );
+    }
+
+    /// Case 2 — the valuation-anchor reconstruction — subtracts, so it overflows on *opposite*
+    /// signs: an `i64::MIN` anchor less a positive movement. A guard on the forward sum alone
+    /// would have left this one panicking.
+    #[test]
+    fn the_valuation_anchor_subtraction_saturates_too() {
+        let mut tx = HashMap::new();
+        tx.insert(
+            14i64,
+            vec![(d("2026-01-05"), i64::MAX), (d("2026-01-06"), i64::MAX)],
+        );
+        let mut val = HashMap::new();
+        // The anchor is later than both movements, so `date` sits between the first
+        // transaction and the valuation: case 2 walks backwards from it.
+        val.insert(14i64, vec![(d("2026-03-01"), i64::MIN, "NZD".to_string())]);
+
+        assert_eq!(
+            account_value_at(14, "NZD", d("2026-01-05"), &tx, &val).0,
+            i64::MIN,
+            "anchor − later movements must clamp, not wrap"
+        );
+    }
+
+    /// The narrowing helper itself: exact in range, clamped and *signed correctly* outside it.
+    #[test]
+    fn narrow_minor_is_exact_in_range_and_clamps_outside_it() {
+        assert_eq!(narrow_minor("t", None, 0), 0);
+        assert_eq!(narrow_minor("t", None, -4250), -4250);
+        assert_eq!(narrow_minor("t", None, i128::from(i64::MAX)), i64::MAX);
+        assert_eq!(narrow_minor("t", None, i128::from(i64::MIN)), i64::MIN);
+        assert_eq!(narrow_minor("t", None, i128::from(i64::MAX) + 1), i64::MAX);
+        assert_eq!(narrow_minor("t", None, i128::from(i64::MIN) - 1), i64::MIN);
+
+        // `sum_minor` over an empty iterator is 0, not a clamp — an account with no
+        // transactions in the window is worth nothing, and must not warn.
+        assert_eq!(sum_minor("t", None, std::iter::empty()), 0);
+        assert_eq!(sum_minor("t", None, [1_00, -2_50, 3_00].into_iter()), 1_50);
+        // Enough ceiling-magnitude rows to leave `i64` behind entirely: the `i128`
+        // accumulator absorbs them all and only the narrowing clamps.
+        assert_eq!(
+            sum_minor("t", None, std::iter::repeat_n(i64::MAX, 1000)),
+            i64::MAX
         );
     }
 

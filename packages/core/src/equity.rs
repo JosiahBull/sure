@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::iso_date::IsoDate;
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct EquityGrant {
     pub id: i64,
@@ -23,7 +25,8 @@ pub struct EquityGrant {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveGrant {
     pub company: String,
-    pub grant_date: String,
+    #[schema(value_type = String)]
+    pub grant_date: IsoDate,
     pub quantity: i64,
     #[serde(default)]
     pub strike_minor: i64,
@@ -58,7 +61,8 @@ pub struct EquityExercise {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveExercise {
-    pub exercise_date: String,
+    #[schema(value_type = String)]
+    pub exercise_date: IsoDate,
     pub quantity: i64,
     #[serde(default)]
     pub price_minor: i64,

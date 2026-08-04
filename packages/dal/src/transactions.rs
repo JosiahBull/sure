@@ -182,8 +182,8 @@ pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) RETURNING *",
     )
     .bind(input.account_id)
-    .bind(input.posted_at.trim())
-    .bind(input.amount_minor)
+    .bind(input.posted_at.to_string())
+    .bind(input.amount_minor.minor())
     .bind(&currency)
     .bind(input.description.trim())
     .bind(&input.merchant)
@@ -213,8 +213,8 @@ pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Trans
     )
     .bind(id)
     .bind(input.account_id)
-    .bind(input.posted_at.trim())
-    .bind(input.amount_minor)
+    .bind(input.posted_at.to_string())
+    .bind(input.amount_minor.minor())
     .bind(&currency)
     .bind(input.description.trim())
     .bind(&input.merchant)
@@ -491,6 +491,10 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
             "transfer source and destination must differ",
         ));
     }
+    // Both `.abs()` calls are `Money::abs`, which is total. On the raw `i64` these fields used
+    // to be, `i64::MIN.abs()` panicked in debug and yielded `i64::MIN` in release — and the
+    // outflow bind below negates the result, so release turned a transfer of `i64::MIN` into
+    // two wrapped, wrong legs with a 201 on top. `Money` cannot hold that value at all.
     let out_amount = req.from_amount_minor.abs();
     let in_amount = req.to_amount_minor.unwrap_or(out_amount).abs();
     let from_ccy = account_currency(db, req.from_account_id)
@@ -507,8 +511,8 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
          VALUES (?1,?2,?3,?4,?5,?6) RETURNING *",
     )
     .bind(req.from_account_id)
-    .bind(req.posted_at.trim())
-    .bind(-out_amount)
+    .bind(req.posted_at.to_string())
+    .bind(out_amount.neg().minor())
     .bind(&from_ccy)
     .bind(req.description.trim())
     .bind(req.category_id)
@@ -520,8 +524,8 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
          VALUES (?1,?2,?3,?4,?5,?6,?7) RETURNING *",
     )
     .bind(req.to_account_id)
-    .bind(req.posted_at.trim())
-    .bind(in_amount)
+    .bind(req.posted_at.to_string())
+    .bind(in_amount.minor())
     .bind(&to_ccy)
     .bind(req.description.trim())
     .bind(req.category_id)
@@ -699,7 +703,7 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
     use sure_core::transactions::BulkIds;
-    use sure_core::{AccountKind, SaveAccount, SaveTransaction};
+    use sure_core::{AccountKind, IsoDate, Money, SaveAccount, SaveTransaction};
 
     /// A batch the cap accepts. Panics rather than returning a `Result` so a test that
     /// accidentally exceeds the cap says so instead of quietly asserting on an error path.
@@ -747,8 +751,8 @@ mod tests {
             db,
             SaveTransaction {
                 account_id,
-                posted_at: posted_at.to_string(),
-                amount_minor,
+                posted_at: IsoDate::parse(posted_at).unwrap(),
+                amount_minor: Money::new(amount_minor).unwrap(),
                 currency_code: Some("NZD".to_string()),
                 description: "t".to_string(),
                 merchant: None,
@@ -786,6 +790,42 @@ mod tests {
             fetch(&db, withdrawal).await.unwrap().linked_transaction_id,
             Some(deposit)
         );
+    }
+
+    /// A transfer's direction is normalised with `.abs()`, and the outflow leg is the negation
+    /// of that. On the raw `i64` these fields used to be, `i64::MIN` made both steps lie (a
+    /// debug panic, or two wrapped legs and a 201 in release); `sure_core::Money` makes the
+    /// hostile value unconstructible, so the only thing left to prove here is that the
+    /// normalisation is still *correct* — including from a caller who sent the source amount
+    /// negative, and at the ceiling, where an `i64` was previously one negation from wrapping.
+    #[tokio::test]
+    async fn a_transfer_normalises_its_legs_at_any_legal_magnitude() {
+        let db = test_db().await;
+        let from = account(&db, "Bank").await;
+        let to = account(&db, "Savings").await;
+
+        for sent in [250_00, -250_00, sure_core::MAX_MONEY_MINOR] {
+            let legs = create_transfer(
+                &db,
+                TransferRequest {
+                    from_account_id: from,
+                    to_account_id: to,
+                    posted_at: IsoDate::parse("2026-02-01").unwrap(),
+                    from_amount_minor: Money::new(sent).unwrap(),
+                    to_amount_minor: None,
+                    description: "t".to_string(),
+                    category_id: None,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(legs[0].amount_minor, -sent.abs(), "outflow leg for {sent}");
+            assert_eq!(legs[1].amount_minor, sent.abs(), "inflow leg for {sent}");
+        }
+
+        // And the value that used to break it cannot be built in the first place, so there is
+        // no `create_transfer` call to make with it.
+        assert!(Money::new(i64::MIN).is_err());
     }
 
     #[tokio::test]
@@ -1080,8 +1120,8 @@ mod tests {
             db,
             SaveTransaction {
                 account_id,
-                posted_at: "2026-02-01".to_string(),
-                amount_minor: -100,
+                posted_at: IsoDate::parse("2026-02-01").unwrap(),
+                amount_minor: Money::new(-100).unwrap(),
                 currency_code: Some("NZD".to_string()),
                 description: description.to_string(),
                 merchant: None,
@@ -1214,8 +1254,8 @@ mod tests {
             &db,
             SaveTransaction {
                 account_id: account,
-                posted_at: "2026-02-01".to_string(),
-                amount_minor: -100,
+                posted_at: IsoDate::parse("2026-02-01").unwrap(),
+                amount_minor: Money::new(-100).unwrap(),
                 currency_code: Some("NZD".to_string()),
                 description: "x".to_string(),
                 merchant: None,

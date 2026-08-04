@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use sqlx::FromRow;
 pub use sure_core::{Account, SaveAccount, SetSecuredBy};
 use sure_core::{
-    AccountClass, AccountKind, AccountMetadata, AppError, AppResult, Ownership, ValidationMode,
-    ValuationSource,
+    AccountClass, AccountKind, AccountMetadata, AppError, AppResult, IsoDate, Ownership,
+    ValidationMode, ValuationSource,
 };
 
 use crate::Db;
@@ -275,8 +275,16 @@ fn opening_balance_date(input: &SaveAccount) -> Option<&str> {
 /// back with the same `%Y-%m-%d` shape (see `sure_app::reports::parse_date`), so a value in
 /// any other format — `31/07/2026`, a datetime, garbage — would silently fail to parse there
 /// and the row would simply never show up in a report.
+///
+/// Defers to [`IsoDate`], the one definition of that shape (CLAUDE.md rule 1), rather than
+/// re-parsing here — which also tightens this check for free: the old local
+/// `NaiveDate::parse_from_str(s, "%Y-%m-%d")` accepted the unpadded `2026-7-1`, and a stored
+/// `2026-7-1` sorts *after* `2026-12-01` in the text comparisons every balance query uses.
+/// The field stays a `String` on [`SaveAccount`] on purpose: its errors are collected into
+/// one aggregated 422 alongside the rest of the form (see `opening_balance_problems`), which
+/// a deserialisation failure would short-circuit.
 fn is_iso_date(s: &str) -> bool {
-    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+    IsoDate::parse(s).is_ok()
 }
 
 fn opening_balance_problems(input: &SaveAccount, write: Write) -> Vec<String> {

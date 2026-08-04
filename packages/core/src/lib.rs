@@ -1,6 +1,12 @@
 //! Shared domain types and the workspace error type. No web framework, no database
 //! connection management — just the vocabulary every other crate speaks.
 
+// Money is held in minor units and written with a `dollars_cents` digit grouping
+// (e.g. `1_000_000_000_000_00` == $1,000,000,000,000.00 — see `money::MAX_MONEY_MINOR`);
+// clippy's grouping lint fights that convention, which `sure-api` and `sure-dal` already
+// allow crate-wide for the same reason.
+#![allow(clippy::inconsistent_digit_grouping)]
+
 pub mod brokerage;
 pub mod categories;
 pub mod crons;
@@ -8,7 +14,9 @@ pub mod currencies;
 pub mod equity;
 pub mod error;
 pub mod forecast;
+pub mod iso_date;
 pub mod merchants;
+pub mod money;
 pub mod people;
 pub mod providers;
 pub mod rules;
@@ -33,7 +41,9 @@ pub use forecast::{
     ForecastAssumption, ForecastEvent, ForecastEventKind, ForecastTargetType,
     SaveForecastAssumption, SaveForecastEvent,
 };
+pub use iso_date::IsoDate;
 pub use merchants::{Merchant, SaveMerchant};
+pub use money::{Money, MAX_MONEY_MINOR};
 pub use people::{
     effective_ownership, Ownership, Person, SavePerson, SetOwnership, SetOwnershipBulk,
 };

@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::iso_date::IsoDate;
+
 /// What kind of ledger entry a `holdings` row is. Stored as `holdings.kind` (plain `TEXT`).
 #[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -73,7 +75,8 @@ pub struct SaveHoldingLot {
     #[serde(default)]
     pub name: Option<String>,
     pub currency_code: String,
-    pub trade_date: String,
+    #[schema(value_type = String)]
+    pub trade_date: IsoDate,
     pub quantity: f64,
     #[serde(default)]
     pub unit_price: Option<f64>,

@@ -4,6 +4,9 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::iso_date::IsoDate;
+use crate::money::Money;
+
 /// What a scheduled adjustment does each period. Stored as `crons.kind` /
 /// `cron_runs.kind` (plain `TEXT` columns).
 #[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
@@ -74,13 +77,20 @@ pub struct SaveCron {
     pub kind: CronKind,
     #[serde(default)]
     pub rate_bps: Option<i64>,
+    // Required for `CronKind::FixedTransaction` and ignored otherwise (see
+    // `sure_dal::crons::validate`). Bounded like every other wire-edge money figure: a cron
+    // posts its amount again *every period*, so an absurd one compounds into the ledger
+    // unattended rather than being one bad row someone can spot. Kept as a plain comment so
+    // utoipa doesn't add a `description` and churn the generated client for no wire change.
     #[serde(default)]
-    pub amount_minor: Option<i64>,
+    #[schema(value_type = Option<i64>)]
+    pub amount_minor: Option<Money>,
     #[serde(default)]
     pub category_id: Option<i64>,
     #[serde(default)]
     pub day_of_month: Option<i64>,
-    pub start_date: String,
+    #[schema(value_type = String)]
+    pub start_date: IsoDate,
     #[serde(default = "yes")]
     pub enabled: bool,
 }

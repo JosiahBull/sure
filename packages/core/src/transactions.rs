@@ -2,6 +2,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::error::{AppError, AppResult};
+use crate::iso_date::IsoDate;
+use crate::money::Money;
 use crate::people::Ownership;
 
 /// The most ids one bulk mutation may carry.
@@ -127,8 +129,10 @@ pub struct Transaction {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveTransaction {
     pub account_id: i64,
-    pub posted_at: String,
-    pub amount_minor: i64,
+    #[schema(value_type = String)]
+    pub posted_at: IsoDate,
+    #[schema(value_type = i64)]
+    pub amount_minor: Money,
     /// Defaults to the account's currency when omitted.
     #[serde(default)]
     pub currency_code: Option<String>,
@@ -236,13 +240,21 @@ where
 pub struct TransferRequest {
     pub from_account_id: i64,
     pub to_account_id: i64,
-    pub posted_at: String,
+    #[schema(value_type = String)]
+    pub posted_at: IsoDate,
     /// Amount leaving the source account (positive minor units).
-    pub from_amount_minor: i64,
+    // `Money` rather than `i64` for a reason beyond the shared ceiling: the writer normalises
+    // the direction with `.abs()`, and on a raw `i64` the single input `i64::MIN` panics in
+    // debug and returns `i64::MIN` in release — which the outflow leg then negates again. See
+    // `Money::abs`. Not a doc comment, deliberately: utoipa would put it in the OpenAPI
+    // `description`, which regenerates `packages/client/src/schema.d.ts` for no wire change.
+    #[schema(value_type = i64)]
+    pub from_amount_minor: Money,
     /// Amount arriving in the destination account; defaults to `from_amount_minor`
     /// (set explicitly for cross-currency transfers).
     #[serde(default)]
-    pub to_amount_minor: Option<i64>,
+    #[schema(value_type = Option<i64>)]
+    pub to_amount_minor: Option<Money>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -345,6 +357,71 @@ mod tests {
         // The floor the SPA's select-all needs: a page of `limit: 2000` rows must fit in one
         // request (see the constant's docs).
         const { assert!(MAX_BULK_IDS >= 2000) };
+    }
+
+    /// The reported payload, at the extractor: `i64::MAX` was a 201 twice over, and the
+    /// balance walk then added the two rows together. It has to be a 422 before any statement
+    /// is built — the row must never reach the column, because from there the only options are
+    /// a 500 on every report or a wrong number.
+    #[test]
+    fn a_transaction_amount_past_the_ceiling_is_refused_at_the_extractor() {
+        let body = |amount: &str| {
+            format!(
+                r#"{{"account_id":1,"posted_at":"2026-07-31","amount_minor":{amount},"description":"x"}}"#
+            )
+        };
+        for amount in [
+            "9223372036854775807",
+            "-9223372036854775808",
+            "100000000000001",
+        ] {
+            let err = serde_json::from_str::<SaveTransaction>(&body(amount))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("out of range"),
+                "{amount} must be refused with a message that says why: {err}"
+            );
+        }
+        // Ordinary and at-the-ceiling amounts still parse, and keep their sign.
+        let ok: SaveTransaction = serde_json::from_str(&body("-4250")).unwrap();
+        assert_eq!(ok.amount_minor.minor(), -4250);
+        let at_cap: SaveTransaction =
+            serde_json::from_str(&body(&crate::MAX_MONEY_MINOR.to_string())).unwrap();
+        assert_eq!(at_cap.amount_minor.minor(), crate::MAX_MONEY_MINOR);
+    }
+
+    /// `i64::MIN` through the transfer route, which is the sharper half of the bug: the DAL
+    /// normalises the direction with `.abs()`, and `i64::MIN.abs()` panics in debug and stays
+    /// `i64::MIN` in release — which the outflow bind then negates *again*. Refusing the value
+    /// at the extractor is what makes `Money::abs` total downstream.
+    #[test]
+    fn a_transfer_amount_past_the_ceiling_is_refused_at_the_extractor() {
+        let body = |from: &str, to: &str| {
+            format!(
+                r#"{{"from_account_id":1,"to_account_id":2,"posted_at":"2026-07-31",
+                     "from_amount_minor":{from},"to_amount_minor":{to}}}"#
+            )
+        };
+        assert!(
+            serde_json::from_str::<TransferRequest>(&body("-9223372036854775808", "null"))
+                .unwrap_err()
+                .to_string()
+                .contains("out of range")
+        );
+        // The destination leg is bounded too — a cross-currency transfer sets it explicitly.
+        assert!(
+            serde_json::from_str::<TransferRequest>(&body("100", "9223372036854775807")).is_err()
+        );
+
+        let ok: TransferRequest = serde_json::from_str(&body("25000", "null")).unwrap();
+        assert_eq!(ok.from_amount_minor.minor(), 250_00);
+        assert_eq!(
+            ok.to_amount_minor, None,
+            "an omitted leg mirrors the source"
+        );
+        // …and the normalisation the DAL performs is total on the parsed value.
+        assert_eq!(crate::Money::new(-250_00).unwrap().abs().minor(), 250_00);
     }
 
     #[test]

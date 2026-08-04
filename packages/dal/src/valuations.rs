@@ -75,8 +75,8 @@ pub async fn create(db: &Db, account_id: i64, input: NewValuation) -> AppResult<
          VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING *",
     )
     .bind(account_id)
-    .bind(input.as_of.trim())
-    .bind(input.value_minor)
+    .bind(input.as_of.to_string())
+    .bind(input.value_minor.minor())
     .bind(currency)
     .bind(ValuationSource::Manual.as_str())
     .bind(&input.note)
@@ -168,7 +168,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
-    use sure_core::{AccountKind, SaveAccount};
+    use sure_core::{AccountKind, IsoDate, Money, SaveAccount};
 
     async fn test_db() -> Db {
         let pool = SqlitePoolOptions::new()
@@ -249,8 +249,8 @@ mod tests {
             &db,
             account_id,
             NewValuation {
-                as_of: "2026-07-18".to_string(),
-                value_minor: -1,
+                as_of: IsoDate::parse("2026-07-18").unwrap(),
+                value_minor: Money::new(-1).unwrap(),
                 currency_code: None,
                 note: None,
             },

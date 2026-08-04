@@ -16,19 +16,21 @@ use crate::Db;
 /// only ever be rejected later, at read time, on every request that touches the account.
 const MAX_GRANT_QUANTITY: i64 = 1_000_000_000_000;
 
-/// The largest per-unit money figure (strike or fair value) a grant may carry, in minor
-/// units: $10 trillion. i64 minor units run out around 9.2×10^16 dollars, so this leaves
-/// four orders of magnitude of headroom for the sums layered on top (`account_equity`
-/// adds every grant's intrinsic value into one i64, and that total is what `revalue`
-/// persists) while still admitting the most expensive share on earth many times over.
+/// The largest per-unit money figure (strike or fair value) a grant may carry: the shared
+/// wire-edge money ceiling, ±$1 trillion in minor units. Imported rather than redefined —
+/// this file used to carry its own `1_000_000_000_000_000`, and a second number meant a
+/// transaction and a strike price could disagree about what "absurd" means. See
+/// [`sure_core::MAX_MONEY_MINOR`] for how the value is justified (it is picked for the
+/// headroom it leaves the `i64` sums layered on top — `account_equity` adds every grant's
+/// intrinsic value into one total, and that total is what `revalue` persists).
 ///
-/// Note these two ceilings deliberately do *not* multiply safely into an i64 — a
-/// legitimate high-priced grant (Berkshire A at ~$700k a share) forces the money ceiling
+/// Note this ceiling and [`MAX_GRANT_QUANTITY`] deliberately do *not* multiply safely into an
+/// i64 — a legitimate high-priced grant (Berkshire A at ~$700k a share) needs a money ceiling
 /// well above `i64::MAX / MAX_GRANT_QUANTITY`. They are data-entry sanity checks, not the
 /// overflow guard: `validate_grant` separately rejects a *pair* whose product cannot fit,
 /// and `compute_status` still computes in i128 because neither check has ever run against
 /// the rows already on disk.
-const MAX_MONEY_MINOR: i64 = 1_000_000_000_000_000;
+const MAX_MONEY_MINOR: i64 = sure_core::MAX_MONEY_MINOR;
 
 #[derive(Debug, FromRow)]
 struct EquityGrantRow {
@@ -128,7 +130,7 @@ pub async fn create_grant(db: &Db, account_id: i64, input: SaveGrant) -> AppResu
     )
     .bind(account_id)
     .bind(input.company.trim())
-    .bind(input.grant_date.trim())
+    .bind(input.grant_date.to_string())
     .bind(input.quantity)
     .bind(input.strike_minor)
     .bind(ccy)
@@ -152,7 +154,7 @@ pub async fn update_grant(db: &Db, id: i64, input: SaveGrant) -> AppResult<Equit
     )
     .bind(id)
     .bind(input.company.trim())
-    .bind(input.grant_date.trim())
+    .bind(input.grant_date.to_string())
     .bind(input.quantity)
     .bind(input.strike_minor)
     .bind(input.vest_months.max(1))
@@ -200,7 +202,7 @@ pub async fn create_exercise(
     if input.quantity <= 0 {
         return Err(AppError::validation("exercise quantity must be positive"));
     }
-    let as_of = parse_date(&input.exercise_date).unwrap_or_else(|| Utc::now().date_naive());
+    let as_of = input.exercise_date.date();
     let status = compute_status(db, &grant, as_of).await?;
     if input.quantity > status.vested_unexercised {
         return Err(AppError::validation(format!(
@@ -213,7 +215,7 @@ pub async fn create_exercise(
          VALUES (?1,?2,?3,?4,?5) RETURNING *",
     )
     .bind(grant_id)
-    .bind(input.exercise_date.trim())
+    .bind(input.exercise_date.to_string())
     .bind(input.quantity)
     .bind(input.price_minor)
     .bind(&input.note)
@@ -426,9 +428,6 @@ fn validate_grant(input: &SaveGrant) -> AppResult<()> {
             ));
         }
     }
-    if parse_date(&input.grant_date).is_none() {
-        return Err(AppError::validation("grant_date must be YYYY-MM-DD"));
-    }
     Ok(())
 }
 
@@ -452,7 +451,7 @@ fn parse_date(s: &str) -> Option<NaiveDate> {
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
-    use sure_core::{AccountKind, AccountMetadata, Ownership, SaveAccount, SharesMeta};
+    use sure_core::{AccountKind, AccountMetadata, IsoDate, Ownership, SaveAccount, SharesMeta};
 
     async fn test_db() -> Db {
         let pool = SqlitePoolOptions::new()
@@ -520,7 +519,7 @@ mod tests {
     fn grant(quantity: i64, strike_minor: i64, unit_value_minor: Option<i64>) -> SaveGrant {
         SaveGrant {
             company: "Acme".to_string(),
-            grant_date: "2020-01-01".to_string(),
+            grant_date: IsoDate::parse("2020-01-01").unwrap(),
             quantity,
             strike_minor,
             currency_code: None,

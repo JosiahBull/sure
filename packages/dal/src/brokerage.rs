@@ -200,7 +200,7 @@ pub async fn create_holding(
     .bind(input.exchange.trim())
     .bind(&input.name)
     .bind(&currency)
-    .bind(input.trade_date.trim())
+    .bind(input.trade_date.to_string())
     .bind(input.quantity)
     .bind(input.unit_price)
     .bind(input.fee_minor)
@@ -737,7 +737,7 @@ fn map_fk(e: sqlx::Error) -> AppError {
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
-    use sure_core::{AccountKind, AccountMetadata, BrokerageMeta, SaveAccount};
+    use sure_core::{AccountKind, AccountMetadata, BrokerageMeta, IsoDate, SaveAccount};
 
     async fn test_db() -> Db {
         let pool = SqlitePoolOptions::new()
@@ -804,7 +804,7 @@ mod tests {
             exchange: "NZX".to_string(),
             name: Some("Meridian Energy".to_string()),
             currency_code: "NZD".to_string(),
-            trade_date: "2026-01-02".to_string(),
+            trade_date: IsoDate::parse("2026-01-02").unwrap(),
             quantity: qty,
             unit_price,
             fee_minor: 0,
