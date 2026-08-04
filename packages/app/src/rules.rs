@@ -8,7 +8,8 @@
 
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use zen_expression::{expression::Standard, vm::VM, Expression};
 
 use sure_core::{
     AppError, AppResult, PreviewMatch, PreviewRequest, Rule, RulePreview, RuleRunKind, RunResult,
@@ -89,8 +90,9 @@ impl RuleService {
     }
 
     /// Evaluate `rules` over every transaction, then persist the decided changes. The
-    /// evaluation (which fields matched, what a rule would set) is done here; the repo
-    /// writes the run, the transaction updates, and the audit rows in one transaction.
+    /// evaluation (which fields matched, what a rule would set) is done by [`plan_run`];
+    /// the repo writes the run, the transaction updates, and the audit rows in one
+    /// transaction.
     pub async fn run(
         &self,
         rules: &[Rule],
@@ -98,76 +100,7 @@ impl RuleService {
         kind: RuleRunKind,
     ) -> AppResult<RunResult> {
         let rows = self.rules.load_contexts().await?;
-        let mut matched = 0i64;
-        let mut applications = Vec::new();
-
-        for row in &rows {
-            let mut cur = Current::of(row);
-            for rule in rules {
-                if !rule.enabled {
-                    continue;
-                }
-                if !expr_matches(&rule.expression, &build_context(row, &cur)) {
-                    continue;
-                }
-                matched += 1;
-
-                // A category is "manual" when it's set but not by a rule.
-                let manual = cur.categorized_by_rule_id.is_none() && cur.category_id.is_some();
-                let mut new_category = cur.category_id;
-                let mut cat_changed = false;
-                if let Some(target) = rule.set_category_id {
-                    if (!manual || rule.overwrite_manual) && cur.category_id != Some(target) {
-                        new_category = Some(target);
-                        cat_changed = true;
-                    }
-                }
-                let mut new_one_off = cur.is_one_off;
-                let mut one_off_changed = false;
-                if let Some(v) = rule.set_one_off {
-                    if cur.is_one_off != v {
-                        new_one_off = v;
-                        one_off_changed = true;
-                    }
-                }
-                let mut new_merchant = cur.merchant_id;
-                let mut merchant_changed = false;
-                if let Some(m) = rule.set_merchant_id {
-                    if cur.merchant_id != Some(m) {
-                        new_merchant = Some(m);
-                        merchant_changed = true;
-                    }
-                }
-
-                if cat_changed || one_off_changed || merchant_changed {
-                    let new_cat_by_rule = if cat_changed {
-                        Some(rule.id)
-                    } else {
-                        cur.categorized_by_rule_id
-                    };
-                    applications.push(PlannedApplication {
-                        rule_id: rule.id,
-                        transaction_id: row.id,
-                        prev_category_id: cur.category_id,
-                        new_category_id: new_category,
-                        prev_categorized_by_rule_id: cur.categorized_by_rule_id,
-                        new_categorized_by_rule_id: new_cat_by_rule,
-                        prev_one_off: cur.is_one_off,
-                        new_one_off,
-                        prev_merchant_id: cur.merchant_id,
-                        new_merchant_id: new_merchant,
-                    });
-                    cur.category_id = new_category;
-                    cur.categorized_by_rule_id = new_cat_by_rule;
-                    cur.is_one_off = new_one_off;
-                    cur.merchant_id = new_merchant;
-                }
-
-                if rule.stop_on_match {
-                    break;
-                }
-            }
-        }
+        let (matched, applications) = plan_run(rules, &rows);
 
         self.rules
             .persist_run(rule_id, kind, matched, applications)
@@ -179,11 +112,19 @@ impl RuleService {
         validate_expression(&req.expression)?;
         let limit = req.limit.unwrap_or(25).clamp(1, 500) as usize;
         let rows = self.rules.load_contexts().await?;
+        // Compiled once for the whole scan rather than re-parsed per row: a preview walks
+        // every transaction in the ledger, and the expression is the same string each time.
+        // `validate_expression` above already lexed, parsed *and* ran this source, so a
+        // failure here is unreachable; it is mapped to the identical 400 rather than
+        // quietly reporting zero matches.
+        let program = zen_expression::compile_expression(&req.expression)
+            .map_err(|e| AppError::validation(format!("invalid expression: {e}")))?;
+        let mut vm = VM::new();
         let mut matched = 0i64;
         let mut sample = Vec::new();
         for row in &rows {
             let cur = Current::of(row);
-            if expr_matches(&req.expression, &build_context(row, &cur)) {
+            if program_matches(&program, &build_context(row, &cur), &mut vm) {
                 matched += 1;
                 if sample.len() < limit {
                     sample.push(PreviewMatch {
@@ -201,7 +142,156 @@ impl RuleService {
     }
 }
 
-fn build_context(row: &TxCtx, cur: &Current) -> Value {
+/// A rule paired with its expression compiled to `zen-expression` bytecode exactly once.
+///
+/// Disabled rules, and rules whose expression will not compile, are absent from the list
+/// [`compile_rules`] returns: both match nothing, which is precisely what the row loop used
+/// to conclude for them once per transaction.
+struct CompiledRule<'a> {
+    rule: &'a Rule,
+    program: Expression<Standard>,
+}
+
+/// Compile every enabled rule's expression up front, preserving the caller's order.
+///
+/// Order is load-bearing: [`RuleService::run`] is handed rules already sorted by priority,
+/// and priority is the only thing deciding which of two matching rules gets to set a
+/// category first and which one's `stop_on_match` ends the row — so this must not reorder,
+/// dedupe, or compact anything but the rules that can never match.
+fn compile_rules(rules: &[Rule]) -> Vec<CompiledRule<'_>> {
+    rules
+        .iter()
+        .filter(|rule| rule.enabled)
+        .filter_map(|rule| {
+            match zen_expression::compile_expression(&rule.expression) {
+                Ok(program) => Some(CompiledRule { rule, program }),
+                Err(err) => {
+                    // Same verdict as before — an expression that will not parse matched
+                    // nothing then and matches nothing now — just reported once per run
+                    // instead of silently discarded once per transaction.
+                    // `validate_expression` guards every write path, so reaching this means
+                    // a row predating that guard, or one written outside the API.
+                    tracing::warn!(
+                        rule_id = rule.id,
+                        error = %err,
+                        "rule expression does not compile; the rule will match nothing"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// Decide, for every transaction, which rules match and what each would change — the entire
+/// synchronous half of a run.
+///
+/// Split out of [`RuleService::run`] rather than inlined because the reused [`VM`] cannot
+/// otherwise exist: it holds `Rc`-backed `Variable`s, so were it in scope across
+/// `persist_run`'s await it would land in `run`'s future and make it `!Send`, which no Axum
+/// handler can hold. Being a plain function also makes the ordering and overwrite rules
+/// testable without a repo fake.
+///
+/// The reason it compiles first: `POST /api/rules/run` is synchronous and unpaginated, and
+/// this loop is R rules × T transactions. Passing expression *source* to the engine per pair
+/// meant a household with 200 rules and 50 000 transactions paid 10M parse+compile cycles
+/// for 200 distinct expressions; hoisting makes that 200 parses and 10M bytecode runs.
+///
+/// Two things this cost deliberately is *not*: `zen-expression` compiles to bytecode and has
+/// no backtracking matcher, so a crafted expression cannot blow up super-linearly the way a
+/// regex can; and rules cannot feed each other unboundedly, because a run makes exactly one
+/// forward pass per transaction in priority order. Together with the size and nesting
+/// ceilings in [`validate_expression`], what is left here is ordinary work, not a way to kill
+/// the process.
+fn plan_run(rules: &[Rule], rows: &[TxCtx]) -> (i64, Vec<PlannedApplication>) {
+    let compiled = compile_rules(rules);
+    // Reused across every evaluation in the run purely for its stack/scope allocations;
+    // `VM::run` clears both before each program, so nothing carries over between rules.
+    let mut vm = VM::new();
+    let mut matched = 0i64;
+    let mut applications = Vec::new();
+
+    for row in rows {
+        let mut cur = Current::of(row);
+        // Built once per row and patched in place when a rule actually changes something,
+        // instead of rebuilt (twenty-odd `json!` allocations, every string field cloned)
+        // once per rule per row.
+        let mut ctx = build_context(row, &cur);
+        for CompiledRule { rule, program } in &compiled {
+            if !program_matches(program, &ctx, &mut vm) {
+                continue;
+            }
+            matched += 1;
+
+            // A category is "manual" when it's set but not by a rule.
+            let manual = cur.categorized_by_rule_id.is_none() && cur.category_id.is_some();
+            let mut new_category = cur.category_id;
+            let mut cat_changed = false;
+            if let Some(target) = rule.set_category_id {
+                if (!manual || rule.overwrite_manual) && cur.category_id != Some(target) {
+                    new_category = Some(target);
+                    cat_changed = true;
+                }
+            }
+            let mut new_one_off = cur.is_one_off;
+            let mut one_off_changed = false;
+            if let Some(v) = rule.set_one_off {
+                if cur.is_one_off != v {
+                    new_one_off = v;
+                    one_off_changed = true;
+                }
+            }
+            let mut new_merchant = cur.merchant_id;
+            let mut merchant_changed = false;
+            if let Some(m) = rule.set_merchant_id {
+                if cur.merchant_id != Some(m) {
+                    new_merchant = Some(m);
+                    merchant_changed = true;
+                }
+            }
+
+            if cat_changed || one_off_changed || merchant_changed {
+                let new_cat_by_rule = if cat_changed {
+                    Some(rule.id)
+                } else {
+                    cur.categorized_by_rule_id
+                };
+                applications.push(PlannedApplication {
+                    rule_id: rule.id,
+                    transaction_id: row.id,
+                    prev_category_id: cur.category_id,
+                    new_category_id: new_category,
+                    prev_categorized_by_rule_id: cur.categorized_by_rule_id,
+                    new_categorized_by_rule_id: new_cat_by_rule,
+                    prev_one_off: cur.is_one_off,
+                    new_one_off,
+                    prev_merchant_id: cur.merchant_id,
+                    new_merchant_id: new_merchant,
+                });
+                cur.category_id = new_category;
+                cur.categorized_by_rule_id = new_cat_by_rule;
+                cur.is_one_off = new_one_off;
+                cur.merchant_id = new_merchant;
+                // The row's context is no longer rebuilt from `cur` on the next iteration,
+                // so the fields a rule can move have to be written back here — a later rule
+                // keying off `category_id`/`is_one_off`/`merchant_id` must see what this one
+                // just did, exactly as it did when every rule got a freshly built map.
+                write_current(&mut ctx, &cur);
+            }
+
+            if rule.stop_on_match {
+                break;
+            }
+        }
+    }
+
+    (matched, applications)
+}
+
+/// Build a row's evaluation context. Returns the bare map rather than a [`Value`] so
+/// [`plan_run`] can patch the three mutable fields in place between rules; the wrapping
+/// `Value::Object` happens once per evaluation, in [`program_matches`].
+fn build_context(row: &TxCtx, cur: &Current) -> Map<String, Value> {
     let amount = row.amount_minor as f64 / 10f64.powi(row.decimal_places as i32);
     let mut obj = serde_json::Map::new();
     obj.insert("amount".into(), json!(amount));
@@ -214,10 +304,6 @@ fn build_context(row: &TxCtx, cur: &Current) -> Value {
         "merchant".into(),
         json!(row.merchant.clone().unwrap_or_default()),
     );
-    obj.insert(
-        "merchant_id".into(),
-        cur.merchant_id.map(|v| json!(v)).unwrap_or(Value::Null),
-    );
     obj.insert("notes".into(), json!(row.notes.clone().unwrap_or_default()));
     obj.insert("currency".into(), json!(row.currency_code));
     obj.insert("account_id".into(), json!(row.account_id));
@@ -227,11 +313,6 @@ fn build_context(row: &TxCtx, cur: &Current) -> Value {
     // rather than staying the enum — an external expression-evaluator payload, not
     // domain storage, and it happens exactly once, right here.
     obj.insert("account_kind".into(), json!(row.account_kind.as_str()));
-    obj.insert(
-        "category_id".into(),
-        cur.category_id.map(|v| json!(v)).unwrap_or(Value::Null),
-    );
-    obj.insert("is_one_off".into(), json!(cur.is_one_off));
     obj.insert("date".into(), json!(row.posted_at));
     if let Some(y) = row.posted_at.get(0..4).and_then(|s| s.parse::<i64>().ok()) {
         obj.insert("year".into(), json!(y));
@@ -242,13 +323,39 @@ fn build_context(row: &TxCtx, cur: &Current) -> Value {
     if let Some(d) = row.posted_at.get(8..10).and_then(|s| s.parse::<i64>().ok()) {
         obj.insert("day".into(), json!(d));
     }
-    Value::Object(obj)
+    write_current(&mut obj, cur);
+    obj
 }
 
-/// Evaluate an expression against a context, treating any error or non-boolean
-/// result as "no match".
-fn expr_matches(expression: &str, ctx: &Value) -> bool {
-    zen_expression::evaluate_expression(expression, ctx.clone().into())
+/// Write the only three context fields a run can change while it is walking a row's rules.
+///
+/// The single place these keys are produced, called both when [`build_context`] first builds
+/// the map and whenever [`plan_run`] patches it after a rule applies — so the initial value
+/// and the patched value cannot drift into disagreeing about a key's name or its null shape.
+fn write_current(obj: &mut Map<String, Value>, cur: &Current) {
+    obj.insert(
+        "merchant_id".into(),
+        cur.merchant_id.map(|v| json!(v)).unwrap_or(Value::Null),
+    );
+    obj.insert(
+        "category_id".into(),
+        cur.category_id.map(|v| json!(v)).unwrap_or(Value::Null),
+    );
+    obj.insert("is_one_off".into(), json!(cur.is_one_off));
+}
+
+/// Evaluate a compiled rule against a context, treating any error or non-boolean result as
+/// "no match" — the verdict this engine has always given, kept deliberately: a rule set that
+/// quietly starts matching different rows is worse than a run that is slow.
+///
+/// `vm` is threaded in only to reuse its stack and scope allocations; `VM::run` clears both
+/// before each program, so no state crosses between evaluations. The context is converted to
+/// a `Variable` afresh every time for the same reason — a `Variable` object is an
+/// `Rc<RefCell<..>>` inside, so handing one to two evaluations would share interior-mutable
+/// state between them, which is exactly the coupling a per-row-per-rule rebuild never had.
+fn program_matches(program: &Expression<Standard>, ctx: &Map<String, Value>, vm: &mut VM) -> bool {
+    program
+        .evaluate_with(Value::Object(ctx.clone()).into(), vm)
         .ok()
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
@@ -460,6 +567,149 @@ mod tests {
 
         assert_eq!(result.matched, 1);
         assert_eq!(result.changed, 0); // manual category left untouched
+    }
+
+    /// The narrow claim hoisting compilation rests on: a program compiled once and run
+    /// against a context returns the same verdict `evaluate_expression` returned when it was
+    /// handed the source per row — including for the three ways a rule reaches "no match"
+    /// (a non-boolean result, a runtime error, and source that never compiles at all).
+    #[test]
+    fn a_compiled_program_agrees_with_evaluating_the_source() {
+        let row = ctx(1, -450, Some(7));
+        let cur = Current::of(&row);
+        let context = build_context(&row, &cur);
+        let mut vm = VM::new();
+
+        for expression in [
+            "merchant == \"The Roastery\"",
+            "is_expense and abs_amount > 4",
+            "is_income",
+            "contains(lower(description), 'flat')",
+            "category_id == 7",
+            "merchant_id == null",
+            "amount_minor",                          // non-boolean result → no match
+            "len(amount_minor)",                     // runtime type error → no match
+            "this is not zen-expression syntax +++", // never compiles → no match
+        ] {
+            let per_row = zen_expression::evaluate_expression(
+                expression,
+                Value::Object(context.clone()).into(),
+            )
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+            let hoisted = zen_expression::compile_expression(expression)
+                .ok()
+                .map(|program| program_matches(&program, &context, &mut vm))
+                .unwrap_or(false);
+            assert_eq!(per_row, hoisted, "verdict changed for `{expression}`");
+        }
+    }
+
+    /// Several rules over several transactions, asserting the planned changes field by field:
+    /// priority order decides who sets the category first, `stop_on_match` ends the row where
+    /// it always did, and a disabled rule is neither counted nor applied.
+    #[test]
+    fn a_rule_set_over_several_rows_plans_exactly_what_it_did_before() {
+        let rows = vec![ctx(1, -450, None), ctx(2, 500, None)];
+
+        let mut broad = rule(10, "is_expense", 10);
+        broad.stop_on_match = false; // lets the next rule have a turn
+        let stopper = rule(11, "abs_amount > 4", 11); // matches both rows, stop_on_match
+        let unreached = rule(12, "is_income", 12); // row 2 already stopped at rule 11
+        let mut off = rule(13, "is_expense", 13);
+        off.enabled = false;
+
+        let (matched, apps) = plan_run(&[broad, stopper, unreached, off], &rows);
+
+        // Row 1: rules 10 then 11. Row 2: rule 11 only. The disabled rule never evaluates.
+        assert_eq!(matched, 3);
+        assert_eq!(apps.len(), 3);
+
+        assert_eq!((apps[0].rule_id, apps[0].transaction_id), (10, 1));
+        assert_eq!(apps[0].prev_category_id, None);
+        assert_eq!(apps[0].new_category_id, Some(10));
+        assert_eq!(apps[0].prev_categorized_by_rule_id, None);
+        assert_eq!(apps[0].new_categorized_by_rule_id, Some(10));
+
+        assert_eq!((apps[1].rule_id, apps[1].transaction_id), (11, 1));
+        assert_eq!(apps[1].prev_category_id, Some(10));
+        assert_eq!(apps[1].new_category_id, Some(11));
+        assert_eq!(apps[1].prev_categorized_by_rule_id, Some(10));
+        assert_eq!(apps[1].new_categorized_by_rule_id, Some(11));
+
+        assert_eq!((apps[2].rule_id, apps[2].transaction_id), (11, 2));
+        assert_eq!(apps[2].prev_category_id, None);
+        assert_eq!(apps[2].new_category_id, Some(11));
+    }
+
+    /// Priority order is the only tie-breaker between two matching rules, and compiling up
+    /// front must not disturb it: the same three rules in the reverse order settle on the
+    /// other category and stop earlier.
+    #[test]
+    fn reversing_priority_order_changes_the_outcome() {
+        let rows = vec![ctx(1, -450, None)];
+        let mut broad = rule(10, "is_expense", 10);
+        broad.stop_on_match = false;
+        let stopper = rule(11, "abs_amount > 4", 11);
+
+        let (_, forward) = plan_run(&[broad.clone(), stopper.clone()], &rows);
+        let (matched_back, backward) = plan_run(&[stopper, broad], &rows);
+
+        assert_eq!(forward.last().unwrap().new_category_id, Some(11));
+        // Reversed, rule 11 matches first and stops the row before rule 10 is reached.
+        assert_eq!(matched_back, 1);
+        assert_eq!(backward.len(), 1);
+        assert_eq!(backward[0].rule_id, 11);
+    }
+
+    /// A rule whose source never compiles is dropped by `compile_rules` instead of failing
+    /// per row — it must still count as no match, and must not take the rest of the set with
+    /// it (the pre-hoist loop simply evaluated it to `false` on every transaction).
+    #[test]
+    fn an_uncompilable_expression_matches_nothing_and_leaves_the_rest_of_the_set_running() {
+        let rows = vec![ctx(1, -450, None)];
+        let broken = rule(10, "this is not zen-expression syntax +++", 10);
+        let good = rule(11, "is_expense", 11);
+
+        let (matched, apps) = plan_run(&[broken, good], &rows);
+
+        assert_eq!(matched, 1);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].rule_id, 11);
+        assert_eq!(apps[0].new_category_id, Some(11));
+    }
+
+    /// The context is built once per row now, so the write-back after a rule applies is what
+    /// keeps successive rules seeing each other's work. All three mutable fields are covered,
+    /// because each is patched by the same helper and a missing one would be silent.
+    #[test]
+    fn a_later_rule_sees_what_an_earlier_rule_changed() {
+        let rows = vec![ctx(1, -450, None)];
+
+        let mut categorize = rule(10, "is_expense", 10);
+        categorize.stop_on_match = false;
+
+        let mut flag = rule(11, "category_id == 10", 0);
+        flag.set_category_id = None;
+        flag.set_one_off = Some(true);
+        flag.set_merchant_id = Some(5);
+        flag.stop_on_match = false;
+
+        // Only reachable if both of rule 11's writes are visible in the patched context.
+        let mut confirm = rule(12, "is_one_off and merchant_id == 5", 99);
+        confirm.stop_on_match = true;
+
+        let (matched, apps) = plan_run(&[categorize, flag, confirm], &rows);
+
+        assert_eq!(
+            matched, 3,
+            "each rule must observe the previous rule's change"
+        );
+        assert_eq!(apps.len(), 3);
+        assert!(apps[1].new_one_off);
+        assert_eq!(apps[1].new_merchant_id, Some(5));
+        assert_eq!(apps[2].new_category_id, Some(99));
     }
 
     #[test]

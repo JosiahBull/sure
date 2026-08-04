@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate};
 
-use sure_core::{AccountClass, AccountKind, AppResult, CategoryKind, Interval, Ownership};
+use sure_core::{
+    AccountClass, AccountKind, AppError, AppResult, CategoryKind, Interval, Ownership,
+};
 
 use crate::fx::Fx;
 use crate::ports::{Clock, FxRatesRepo, ReportRepo, SpendTransaction};
@@ -764,6 +766,19 @@ fn emit_flow_node(
 
 // ---- service ---------------------------------------------------------------
 
+/// The error for a `?currency=` that isn't in the `currencies` table.
+///
+/// A [`AppError::BadRequest`] (400), matching how `sure-api`'s `routes::reports` already
+/// treats an unrecognised `interval` or `attributed_to`: an unusable query param is the
+/// request's fault, and naming the offending code is the only way the caller can tell a typo
+/// from an empty ledger. Shared with [`crate::forecast`], which takes the same param.
+pub(crate) fn unknown_currency(code: &str) -> AppError {
+    AppError::bad_request(format!(
+        "unknown currency '{code}': not in the currencies table, so it has neither a \
+         minor-unit scale nor any exchange rate"
+    ))
+}
+
 pub struct ReportService {
     reports: Arc<dyn ReportRepo>,
     fx: Arc<dyn FxRatesRepo>,
@@ -784,6 +799,33 @@ impl ReportService {
             return Ok(c.to_uppercase());
         }
         self.reports.base_currency().await
+    }
+
+    /// The report currency and the rate table loaded for it, refusing a `?currency=` that
+    /// names no currency at all.
+    ///
+    /// The check is free: [`Fx`] already loads the `currencies` table for its decimal places,
+    /// so [`Fx::try_dp`] answers "does this code exist" without another query. Every report
+    /// goes through here so the answer is the same on all of them.
+    ///
+    /// Why it has to be an error rather than a best effort: with no `currencies` row a code
+    /// has no minor-unit scale and no exchange rate (a rate row's currency is an FK into that
+    /// table), so `?currency=ZZZ` produced a 200 describing a currency that does not exist —
+    /// every account named in `unconverted`, every converted total zero. That reads as "the
+    /// household is worth nothing in ZZZ", not as "ZZZ isn't a currency". `PUT /api/settings`
+    /// has always refused an unknown base currency (`sure_dal::settings::update`); this is the
+    /// same value arriving through a different door and it gets the same answer.
+    async fn currency_and_fx(&self, override_: Option<&str>) -> AppResult<(String, Fx)> {
+        let base = self.base_currency(override_).await?;
+        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        // Only an *override* is the caller's mistake. A `settings.base_currency_code` with no
+        // `currencies` row is a server-side inconsistency, and answering a request that named
+        // no currency at all with "unknown currency" would send the user hunting through a
+        // query string they never wrote.
+        if override_.is_some_and(|s| !s.is_empty()) && fx.try_dp(&base).is_none() {
+            return Err(unknown_currency(&base));
+        }
+        Ok((base, fx))
     }
 
     /// Resolve the report window with data-driven defaults. A missing `from` defaults to
@@ -810,8 +852,7 @@ impl ReportService {
 
     /// Net worth over time, sampled at the requested interval.
     pub async fn net_worth(&self, q: &NetWorthQuery) -> AppResult<NetWorthSeries> {
-        let base = self.base_currency(q.currency.as_deref()).await?;
-        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
 
         let mut accounts = self.reports.account_currencies().await?;
         if let Some(owner) = q.attributed_to {
@@ -896,8 +937,7 @@ impl ReportService {
 
     /// Income/expense totals per top-level category for the period.
     pub async fn category_breakdown(&self, q: &ReportQuery) -> AppResult<CategoryBreakdown> {
-        let base = self.base_currency(q.currency.as_deref()).await?;
-        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let cats = Categories::load(self.reports.as_ref()).await?;
         let (from, to) = self.window(q.from.as_deref(), q.to.as_deref()).await?;
         let spend = load_spend(
@@ -966,8 +1006,7 @@ impl ReportService {
     /// hub on each side, so `Partly Group -> Employment -> Income -> Cash flow` reads as
     /// three columns rather than collapsing to one.
     pub async fn sankey(&self, q: &ReportQuery) -> AppResult<SankeyGraph> {
-        let base = self.base_currency(q.currency.as_deref()).await?;
-        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let cats = Categories::load(self.reports.as_ref()).await?;
         let (from, to) = self.window(q.from.as_deref(), q.to.as_deref()).await?;
         let spend = load_spend(
@@ -1054,8 +1093,7 @@ impl ReportService {
 
     /// Current value of each (non-archived) account plus a base-currency total.
     pub async fn balances(&self, q: &ReportQuery) -> AppResult<BalancesReport> {
-        let base = self.base_currency(q.currency.as_deref()).await?;
-        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let as_of =
             q.to.as_deref()
                 .and_then(parse_date)
@@ -1098,8 +1136,7 @@ impl ReportService {
     /// The equity position of an asset: its value, the liabilities secured against it,
     /// total debt, equity, and the paid-off percentage.
     pub async fn equity_position(&self, id: i64, q: &ReportQuery) -> AppResult<EquityPosition> {
-        let base = self.base_currency(q.currency.as_deref()).await?;
-        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let as_of =
             q.to.as_deref()
                 .and_then(parse_date)
@@ -1393,6 +1430,154 @@ mod tests {
             assert!(
                 !is_excluded_from_spend(kind),
                 "{kind:?} should not be excluded"
+            );
+        }
+    }
+
+    // ---- `?currency=` validation (fake ports) --------------------------------------
+
+    mod currency {
+        use super::*;
+        use crate::ports::{
+            AccountCurrency, ActiveAccount, AssetAccount, CurrencyDecimals, ExchangeRateRow,
+            LedgerTx, LedgerValuation, ReportCategory, SecuredLiabilityAccount,
+        };
+        use async_trait::async_trait;
+
+        /// Only the handful of reads a report of an empty ledger performs; everything else
+        /// would mean the test drifted into exercising aggregation, which the tests above
+        /// already cover directly.
+        struct FakeReports;
+        #[async_trait]
+        impl ReportRepo for FakeReports {
+            async fn base_currency(&self) -> AppResult<String> {
+                Ok("NZD".to_string())
+            }
+            async fn account_currencies(&self) -> AppResult<Vec<AccountCurrency>> {
+                Ok(Vec::new())
+            }
+            async fn transactions(&self) -> AppResult<Vec<LedgerTx>> {
+                Ok(Vec::new())
+            }
+            async fn valuations(&self) -> AppResult<Vec<LedgerValuation>> {
+                Ok(Vec::new())
+            }
+            async fn categories(&self) -> AppResult<Vec<ReportCategory>> {
+                Ok(Vec::new())
+            }
+            async fn spend_transactions(&self) -> AppResult<Vec<SpendTransaction>> {
+                Ok(Vec::new())
+            }
+            async fn earliest_transaction_date(&self) -> AppResult<Option<String>> {
+                Ok(None)
+            }
+            async fn active_accounts(&self) -> AppResult<Vec<ActiveAccount>> {
+                Ok(Vec::new())
+            }
+            async fn account(&self, _id: i64) -> AppResult<AssetAccount> {
+                unreachable!()
+            }
+            async fn secured_liabilities(
+                &self,
+                _asset_id: i64,
+            ) -> AppResult<Vec<SecuredLiabilityAccount>> {
+                unreachable!()
+            }
+        }
+
+        /// NZD and USD are real, ZZZ is not — exactly the shape of the `currencies` table,
+        /// which is what makes an unknown code detectable without a second query.
+        struct FakeFx;
+        #[async_trait]
+        impl FxRatesRepo for FakeFx {
+            async fn currency_decimals(&self) -> AppResult<Vec<CurrencyDecimals>> {
+                Ok(["NZD", "USD"]
+                    .into_iter()
+                    .map(|code| CurrencyDecimals {
+                        code: code.to_string(),
+                        decimal_places: 2,
+                    })
+                    .collect())
+            }
+            async fn exchange_rates(&self) -> AppResult<Vec<ExchangeRateRow>> {
+                Ok(vec![ExchangeRateRow {
+                    base_code: "NZD".into(),
+                    quote_code: "USD".into(),
+                    rate: "0.6".into(),
+                    as_of: "2026-08-01".into(),
+                }])
+            }
+        }
+
+        fn service() -> ReportService {
+            ReportService::new(
+                Arc::new(FakeReports),
+                Arc::new(FakeFx),
+                Arc::new(crate::test_clock::FixedClock(d("2026-08-03"))),
+            )
+        }
+
+        fn query(currency: Option<&str>) -> ReportQuery {
+            ReportQuery {
+                currency: currency.map(str::to_string),
+                ..Default::default()
+            }
+        }
+
+        /// The W-16 guard. `?currency=ZZZ` used to return 200 with every account named in
+        /// `unconverted` and every total zero — a report that reads as "the household is
+        /// worth nothing" rather than "that isn't a currency". It has to be a 400 naming the
+        /// code, like an unrecognised `interval`.
+        #[test]
+        fn an_unknown_currency_is_a_bad_request_on_every_report() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let svc = service();
+            let q = query(Some("ZZZ"));
+
+            let errors: Vec<AppError> = vec![
+                rt.block_on(svc.balances(&q)).expect_err("balances"),
+                rt.block_on(svc.category_breakdown(&q))
+                    .expect_err("category_breakdown"),
+                rt.block_on(svc.sankey(&q)).expect_err("sankey"),
+                rt.block_on(svc.net_worth(&NetWorthQuery {
+                    currency: Some("ZZZ".into()),
+                    ..Default::default()
+                }))
+                .expect_err("net_worth"),
+                rt.block_on(svc.equity_position(1, &q))
+                    .expect_err("equity_position"),
+            ];
+            for err in errors {
+                assert_eq!(err.code(), "bad_request", "got {err:?}");
+                assert!(
+                    err.to_string().contains("ZZZ"),
+                    "the message must name the offending code: {err}"
+                );
+            }
+        }
+
+        /// Lower case is normalised, not rejected — the check is on the currency's existence,
+        /// not on how the caller typed it.
+        #[test]
+        fn a_known_currency_still_works_in_any_case() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let svc = service();
+            for code in ["USD", "usd"] {
+                let report = rt.block_on(svc.balances(&query(Some(code)))).unwrap();
+                assert_eq!(report.currency, "USD");
+            }
+            // …and omitting it falls back to the configured base as before.
+            assert_eq!(
+                rt.block_on(svc.balances(&query(None))).unwrap().currency,
+                "NZD"
+            );
+            // An empty `?currency=` is "not supplied", which is how it has always behaved —
+            // rejecting it would break a client that renders the param unconditionally.
+            assert_eq!(
+                rt.block_on(svc.balances(&query(Some(""))))
+                    .unwrap()
+                    .currency,
+                "NZD"
             );
         }
     }

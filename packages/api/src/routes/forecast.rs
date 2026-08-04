@@ -128,7 +128,8 @@ pub struct ForecastQuery {
     /// Monte Carlo path count (100-5000, more = smoother percentiles, slower).
     /// Defaults to 2000.
     pub simulations: Option<i64>,
-    /// Report currency; defaults to the configured base currency.
+    /// Report currency; defaults to the configured base currency. An unknown code is a 400
+    /// rather than a projection at parity — see `sure_app::forecast`'s `currency_and_fx`.
     pub currency: Option<String>,
     /// Fixed RNG seed for reproducible output; omit for a fresh random draw each call.
     pub seed: Option<u64>,
@@ -244,7 +245,10 @@ pub async fn list_assumptions(
 /// paths out to `horizon_months`, aggregated into percentile bands (P10/P25/median/
 /// mean/P75/P90) per month, plus the resolved assumptions actually used.
 #[utoipa::path(get, path = "/api/forecast", tag = "forecast", params(ForecastQuery),
-    responses((status = 200, body = ForecastResult)))]
+    responses(
+        (status = 200, body = ForecastResult),
+        (status = 400, description = "unknown `currency`", body = crate::error::ErrorBody),
+    ))]
 #[tracing::instrument(
     name = FORECAST_SIMULATE,
     level = "debug",

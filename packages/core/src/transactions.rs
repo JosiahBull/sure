@@ -1,7 +1,97 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+use crate::error::{AppError, AppResult};
 use crate::people::Ownership;
+
+/// The most ids one bulk mutation may carry.
+///
+/// Each id becomes its own bound variable in the `WHERE id IN (…)` list the DAL builds
+/// (`sure_dal::transactions::bulk_update` / `bulk_delete`), and SQLite refuses to *prepare* a
+/// statement holding more than `SQLITE_MAX_VARIABLE_NUMBER` binds — 32766 by default. Roughly
+/// 130k ids still fit inside the 2 MiB request-body ceiling, so a select-all over a real
+/// ledger reaches that limit without anyone attacking anything; the failure arrives as a
+/// prepare error, which the DAL's `map_fk` catch-all folds into `AppError::Database` and the
+/// HTTP layer scrubs to a bare 500 "Internal Error" — no hint that a smaller batch would
+/// work. Capping here turns that into a 422 naming the limit.
+///
+/// The value has a floor and a ceiling, and 5000 sits between them with room to spare:
+///
+/// * it must stay *above* the SPA's transaction page size (`limit: 2000` in
+///   `Transactions.svelte`), because "select all" sends every loaded row's id in one request —
+///   a cap under that would turn a normal click into a 422;
+/// * it must stay well *under* 32766, with slack for the other binds a statement carries (the
+///   `SET` clause contributes a handful) and for that page size growing again later.
+pub const MAX_BULK_IDS: usize = 5000;
+
+/// A bulk mutation's id list, checked as it is parsed: never empty, never longer than
+/// [`MAX_BULK_IDS`].
+///
+/// The bound lives on the type, not in each handler (CLAUDE.md rule 1), so every caller —
+/// the HTTP body, a future CLI, a test — is refused identically, and the DAL may build its
+/// `IN (…)` list knowing the bind count is already bounded. The inner `Vec` is private: the
+/// only way to obtain a `BulkIds` is [`BulkIds::new`], so there is no path that skips the
+/// check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkIds(Vec<i64>);
+
+impl BulkIds {
+    /// The one constructor. The error is an `AppError::Validation` (422) whose message names
+    /// the limit *and* the offending count, so a client that hit it knows what batch size to
+    /// retry with instead of guessing.
+    pub fn new(ids: Vec<i64>) -> AppResult<Self> {
+        let count = ids.len();
+        if count == 0 {
+            return Err(AppError::validation(format!(
+                "ids must not be empty (1 to {MAX_BULK_IDS} ids per bulk request)"
+            )));
+        }
+        if count > MAX_BULK_IDS {
+            return Err(AppError::validation(format!(
+                "too many ids: {count} (maximum {MAX_BULK_IDS} per bulk request — split the selection into smaller batches)"
+            )));
+        }
+        Ok(Self(ids))
+    }
+
+    pub fn as_slice(&self) -> &[i64] {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> Vec<i64> {
+        self.0
+    }
+}
+
+/// Lets a `&BulkIds` stand in for the `&[i64]` the DAL and the repository ports take, so the
+/// cap costs the call sites nothing.
+impl std::ops::Deref for BulkIds {
+    type Target = [i64];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<i64>> for BulkIds {
+    type Error = AppError;
+
+    fn try_from(ids: Vec<i64>) -> Result<Self, Self::Error> {
+        Self::new(ids)
+    }
+}
+
+/// Parses as a plain JSON array of integers and then applies the bound, so an over-sized
+/// batch is rejected by the body extractor (422) before a statement is ever built.
+impl<'de> Deserialize<'de> for BulkIds {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let ids = Vec::<i64>::deserialize(de)?;
+        Self::new(ids).map_err(serde::de::Error::custom)
+    }
+}
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct Transaction {
@@ -90,7 +180,14 @@ pub struct LinkRequest {
 /// from an omitted field (leave as-is) — the same distinction the inline edits rely on.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct BulkUpdate {
-    pub ids: Vec<i64>,
+    /// The transactions to patch: 1 to 5000 ids. An empty or over-long list is refused by the
+    /// body extractor before any statement is built.
+    ///
+    /// The bound is [`MAX_BULK_IDS`]; the literal below has to stay in step with it, because
+    /// utoipa's `max_items` only accepts a number literal, and
+    /// `bulk_ids_cap_matches_the_documented_schema_bound` fails if the two drift apart.
+    #[schema(value_type = Vec<i64>, min_items = 1, max_items = 5000)]
+    pub ids: BulkIds,
     /// Present → set the category (or clear it with `null`); absent → leave unchanged.
     #[serde(default, deserialize_with = "double_option")]
     pub category_id: Option<Option<i64>>,
@@ -109,7 +206,13 @@ pub struct BulkUpdate {
 /// The ids to delete in a single bulk request.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct BulkDelete {
-    pub ids: Vec<i64>,
+    /// The transactions to delete: 1 to 5000 ids. An empty or over-long list is refused by the
+    /// body extractor before any statement is built.
+    ///
+    /// The bound is [`MAX_BULK_IDS`]; see the note on [`BulkUpdate::ids`] about keeping that
+    /// constant and the literal below in step.
+    #[schema(value_type = Vec<i64>, min_items = 1, max_items = 5000)]
+    pub ids: BulkIds,
 }
 
 /// Result of a bulk mutation: how many transactions were affected.
@@ -144,4 +247,110 @@ pub struct TransferRequest {
     pub description: String,
     #[serde(default)]
     pub category_id: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids(n: usize) -> Vec<i64> {
+        (1..=n as i64).collect()
+    }
+
+    fn bulk_update_json(ids: &[i64]) -> String {
+        let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        format!(r#"{{"ids":[{list}],"is_one_off":true}}"#)
+    }
+
+    #[test]
+    fn an_ordinary_batch_is_accepted() {
+        let parsed: BulkUpdate = serde_json::from_str(&bulk_update_json(&[7, 9])).unwrap();
+        assert_eq!(parsed.ids.as_slice(), &[7, 9]);
+        assert_eq!(parsed.is_one_off, Some(true));
+
+        let parsed: BulkDelete = serde_json::from_str(r#"{"ids":[7,9]}"#).unwrap();
+        // The `Deref` is what lets the DAL and the repository port keep taking `&[i64]`: this
+        // is the exact shape of the `bulk_delete(&input.ids)` call in `sure_api`, and it has to
+        // keep compiling without a change there.
+        fn port_signature(ids: &[i64]) -> usize {
+            ids.len()
+        }
+        assert_eq!(port_signature(&parsed.ids), 2);
+        assert_eq!(&*parsed.ids, &[7, 9]);
+    }
+
+    #[test]
+    fn a_batch_at_exactly_the_cap_is_accepted() {
+        let at_cap = ids(MAX_BULK_IDS);
+        assert_eq!(BulkIds::new(at_cap.clone()).unwrap().len(), MAX_BULK_IDS);
+
+        let parsed: BulkDelete = serde_json::from_str(&format!(
+            r#"{{"ids":[{}]}}"#,
+            at_cap
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ))
+        .unwrap();
+        assert_eq!(parsed.ids.len(), MAX_BULK_IDS);
+    }
+
+    #[test]
+    fn a_batch_over_the_cap_is_a_validation_error_naming_the_limit() {
+        let over = ids(MAX_BULK_IDS + 1);
+        let err = BulkIds::new(over.clone()).unwrap_err();
+        assert_eq!(err.code(), "validation", "must be a 422, not a 500");
+        let message = err.to_string();
+        assert!(
+            message.contains(&MAX_BULK_IDS.to_string()),
+            "message must name the limit so a client can batch: {message}"
+        );
+        assert!(
+            message.contains(&over.len().to_string()),
+            "message must name the offending count: {message}"
+        );
+
+        // …and the same through the wire form, which is where it actually bites: the body
+        // extractor refuses it before any statement is prepared, so SQLite's bind-variable
+        // limit is never reached and the client gets a message instead of a scrubbed 500.
+        let err = serde_json::from_str::<BulkUpdate>(&bulk_update_json(&over)).unwrap_err();
+        assert!(
+            err.to_string().contains(&MAX_BULK_IDS.to_string()),
+            "deserialize error must carry the limit through: {err}"
+        );
+    }
+
+    #[test]
+    fn an_empty_batch_is_rejected() {
+        let err = BulkIds::new(vec![]).unwrap_err();
+        assert_eq!(err.code(), "validation");
+        assert!(
+            err.to_string().contains("empty"),
+            "message should say the list was empty: {err}"
+        );
+
+        // A caller sending `{"ids":[]}` meant to select something; answering "0 affected"
+        // hides a bug in whatever built the selection.
+        assert!(serde_json::from_str::<BulkDelete>(r#"{"ids":[]}"#).is_err());
+        assert!(serde_json::from_str::<BulkUpdate>(&bulk_update_json(&[])).is_err());
+    }
+
+    #[test]
+    fn bulk_ids_cap_matches_the_documented_schema_bound() {
+        // utoipa's `max_items` only takes a literal, so the OpenAPI bound on `BulkUpdate::ids`
+        // and `BulkDelete::ids` is hand-written. If this constant moves, those two literals
+        // (and the generated client) have to move with it.
+        assert_eq!(MAX_BULK_IDS, 5000);
+        // The floor the SPA's select-all needs: a page of `limit: 2000` rows must fit in one
+        // request (see the constant's docs).
+        const { assert!(MAX_BULK_IDS >= 2000) };
+    }
+
+    #[test]
+    fn try_from_is_the_same_check() {
+        assert!(BulkIds::try_from(ids(2)).is_ok());
+        assert!(BulkIds::try_from(ids(MAX_BULK_IDS + 1)).is_err());
+        assert_eq!(BulkIds::new(ids(3)).unwrap().into_inner(), vec![1, 2, 3]);
+    }
 }

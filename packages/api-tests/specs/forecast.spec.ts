@@ -148,6 +148,68 @@ test("an assumption override round-trips and clears back to the derived default"
   expect(cleared?.source).toBe("insufficient_history");
 });
 
+// The permanent-500 case. Volatility is the standard deviation of a lognormal monthly draw, so
+// it sets the exponent the simulation raises `e` to; `exp()` saturates past ±745, and a σ in the
+// millions of bps makes both an underflow to 0.0 and an overflow to inf routine inside one
+// path. 0.0 * inf is NaN, which the percentile sort used to panic on — a 500 on GET /api/forecast
+// that could only be cleared through a control on the page the 500 broke. Refused on the way in,
+// and the projection stays healthy either way.
+test("an out-of-range volatility override is refused, and GET /api/forecast keeps working", async ({ api }) => {
+  const house = await createAccount(api, "House", "real_estate");
+  await api.POST("/api/accounts/{id}/valuations", {
+    params: { path: { id: house.id } },
+    body: { as_of: "2026-01-01", value_minor: 770_000_00 },
+  });
+
+  const absurd = await api.PUT("/api/forecast/assumptions", {
+    body: { target_type: "account", target_id: house.id, annual_volatility_bps: 1_000_000_000_000_00 },
+  });
+  expect(absurd.response.status).toBe(422);
+  expect(JSON.stringify(absurd.error)).toContain("annual_volatility_bps");
+
+  const negative = await api.PUT("/api/forecast/assumptions", {
+    body: { target_type: "account", target_id: house.id, annual_volatility_bps: -1 },
+  });
+  expect(negative.response.status).toBe(422);
+
+  // Nothing was stored, so the account is still on its derived default…
+  const assumptions = await api.GET("/api/forecast/assumptions", {});
+  expect(findAssumption(assumptions.data!, "account", house.id)?.source).toBe("insufficient_history");
+
+  // …and the endpoint the bad value would have taken down still answers.
+  const forecast = await api.GET("/api/forecast", { params: { query: { horizon_months: 6, simulations: 200, seed: 42 } } });
+  expect(forecast.response.status).toBe(200);
+  for (const m of forecast.data!.months) {
+    expect(m.net_worth.p10_minor).toBeLessThanOrEqual(m.net_worth.median_minor);
+    expect(m.net_worth.median_minor).toBeLessThanOrEqual(m.net_worth.p90_minor);
+  }
+
+  // A usable volatility — up to and including the 300%/yr a genuinely lumpy series measures —
+  // is still accepted.
+  for (const annual_volatility_bps of [0, 2_000, 30_000]) {
+    const ok = await api.PUT("/api/forecast/assumptions", {
+      body: { target_type: "account", target_id: house.id, annual_volatility_bps },
+    });
+    expect(ok.response.status, `${annual_volatility_bps}`).toBe(200);
+    expect(ok.data?.annual_volatility_bps).toBe(annual_volatility_bps);
+  }
+});
+
+// Same door, same answer as the reports: a projection denominated in a currency with no
+// `currencies` row has no scale and no rate, so every account falls out of it. That was a 200
+// describing nothing; it is a 400 naming the code.
+test("an unknown ?currency= on the forecast is a 400", async ({ api }) => {
+  await createAccount(api, "Everyday", "bank");
+
+  const bad = await api.GET("/api/forecast", { params: { query: { currency: "ZZZ", horizon_months: 3, simulations: 100 } } });
+  expect(bad.response.status).toBe(400);
+  expect(JSON.stringify(bad.error)).toContain("ZZZ");
+
+  const good = await api.GET("/api/forecast", { params: { query: { currency: "NZD", horizon_months: 3, simulations: 100 } } });
+  expect(good.response.status).toBe(200);
+  expect(good.data?.currency).toBe("NZD");
+});
+
 test("forecast events CRUD, and deleting a nonexistent one 404s", async ({ api }) => {
   const cat = await createCategory(api, "Salary", "income");
   const created = await api.POST("/api/forecast/events", {

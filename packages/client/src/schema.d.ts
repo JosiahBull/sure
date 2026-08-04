@@ -818,7 +818,12 @@ export interface paths {
                     to?: string;
                     /** @description Include one-off transactions (default false). */
                     include_one_off?: boolean;
-                    /** @description Report currency; defaults to the configured base currency. */
+                    /**
+                     * @description Report currency; defaults to the configured base currency. A code that isn't in the
+                     *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
+                     *     with every account listed as `unconverted` — see `sure_app::reports`'s
+                     *     `currency_and_fx`.
+                     */
                     currency?: string;
                     /**
                      * @description Whose spending to report: `joint`, or a household member's id. Omitted reports the
@@ -840,6 +845,14 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["EquityPosition"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
                 404: {
@@ -2278,7 +2291,10 @@ export interface paths {
                      *     Defaults to 2000.
                      */
                     simulations?: number;
-                    /** @description Report currency; defaults to the configured base currency. */
+                    /**
+                     * @description Report currency; defaults to the configured base currency. An unknown code is a 400
+                     *     rather than a projection at parity — see `sure_app::forecast`'s `currency_and_fx`.
+                     */
                     currency?: string;
                     /** @description Fixed RNG seed for reproducible output; omit for a fresh random draw each call. */
                     seed?: number;
@@ -2295,6 +2311,15 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["ForecastResult"];
+                    };
+                };
+                /** @description unknown `currency` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
             };
@@ -3376,7 +3401,12 @@ export interface paths {
                     to?: string;
                     /** @description Include one-off transactions (default false). */
                     include_one_off?: boolean;
-                    /** @description Report currency; defaults to the configured base currency. */
+                    /**
+                     * @description Report currency; defaults to the configured base currency. A code that isn't in the
+                     *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
+                     *     with every account listed as `unconverted` — see `sure_app::reports`'s
+                     *     `currency_and_fx`.
+                     */
                     currency?: string;
                     /**
                      * @description Whose spending to report: `joint`, or a household member's id. Omitted reports the
@@ -3396,6 +3426,15 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["BalancesReport"];
+                    };
+                };
+                /** @description unknown `currency` or `attributed_to` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
             };
@@ -3425,7 +3464,12 @@ export interface paths {
                     to?: string;
                     /** @description Include one-off transactions (default false). */
                     include_one_off?: boolean;
-                    /** @description Report currency; defaults to the configured base currency. */
+                    /**
+                     * @description Report currency; defaults to the configured base currency. A code that isn't in the
+                     *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
+                     *     with every account listed as `unconverted` — see `sure_app::reports`'s
+                     *     `currency_and_fx`.
+                     */
                     currency?: string;
                     /**
                      * @description Whose spending to report: `joint`, or a household member's id. Omitted reports the
@@ -3445,6 +3489,15 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["CategoryBreakdown"];
+                    };
+                };
+                /** @description unknown `currency` or `attributed_to` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
             };
@@ -3475,6 +3528,10 @@ export interface paths {
                      *     400, not a silent fall back to `month`.
                      */
                     interval?: string;
+                    /**
+                     * @description Report currency; defaults to the configured base currency. An unknown code is a 400,
+                     *     on the same rule as `interval` above.
+                     */
                     currency?: string;
                     /**
                      * @description Whose accounts to include: `joint`, or a household member's id. Omitted is the whole
@@ -3494,6 +3551,15 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["NetWorthSeries"];
+                    };
+                };
+                /** @description unrecognised `interval` or unknown `currency` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
             };
@@ -3523,7 +3589,12 @@ export interface paths {
                     to?: string;
                     /** @description Include one-off transactions (default false). */
                     include_one_off?: boolean;
-                    /** @description Report currency; defaults to the configured base currency. */
+                    /**
+                     * @description Report currency; defaults to the configured base currency. A code that isn't in the
+                     *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
+                     *     with every account listed as `unconverted` — see `sure_app::reports`'s
+                     *     `currency_and_fx`.
+                     */
                     currency?: string;
                     /**
                      * @description Whose spending to report: `joint`, or a household member's id. Omitted reports the
@@ -3543,6 +3614,15 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["SankeyGraph"];
+                    };
+                };
+                /** @description unknown `currency` or `attributed_to` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
             };
@@ -4865,6 +4945,13 @@ export interface components {
         };
         /** @description The ids to delete in a single bulk request. */
         BulkDelete: {
+            /**
+             * @description The transactions to delete: 1 to 5000 ids. An empty or over-long list is refused by the
+             *     body extractor before any statement is built.
+             *
+             *     The bound is [`MAX_BULK_IDS`]; see the note on [`BulkUpdate::ids`] about keeping that
+             *     constant and the literal below in step.
+             */
             ids: number[];
         };
         /** @description Result of a bulk mutation: how many transactions were affected. */
@@ -4879,6 +4966,14 @@ export interface components {
          *     from an omitted field (leave as-is) — the same distinction the inline edits rely on.
          */
         BulkUpdate: {
+            /**
+             * @description The transactions to patch: 1 to 5000 ids. An empty or over-long list is refused by the
+             *     body extractor before any statement is built.
+             *
+             *     The bound is [`MAX_BULK_IDS`]; the literal below has to stay in step with it, because
+             *     utoipa's `max_items` only accepts a number literal, and
+             *     `bulk_ids_cap_matches_the_documented_schema_bound` fails if the two drift apart.
+             */
             ids: number[];
             /**
              * Format: int64

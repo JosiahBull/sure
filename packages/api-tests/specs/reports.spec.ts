@@ -33,6 +33,25 @@ test("an unrecognised net-worth interval is rejected, not silently defaulted", a
   expect(response.status).toBe(400);
 });
 
+// A code that isn't in `currencies` has no minor-unit scale and no exchange rate (a rate row's
+// currency is an FK into that table), so every report used to answer 200 with every account
+// named in `unconverted` and every total zero — indistinguishable from an empty ledger. Same
+// treatment as `interval` above: 400, naming the code.
+test("an unknown ?currency= is rejected on every report, not answered with an empty one", async ({ api }) => {
+  await createAccount(api, "Everyday", "bank");
+
+  for (const path of ["/api/reports/net-worth", "/api/reports/category-breakdown", "/api/reports/sankey", "/api/reports/balances"] as const) {
+    const { response, error } = await api.GET(path, { params: { query: { currency: "ZZZ" } } });
+    expect(response.status, path).toBe(400);
+    expect(JSON.stringify(error), path).toContain("ZZZ");
+  }
+
+  // The configured base is still fine when named explicitly, and so is omitting it.
+  const explicit = await api.GET("/api/reports/balances", { params: { query: { currency: "NZD" } } });
+  expect(explicit.response.status).toBe(200);
+  expect(explicit.data?.currency).toBe("NZD");
+});
+
 // A US$600 holding, with and without a rate to reach NZD by. No public fx-rate endpoint
 // yet, so the rate is seeded through config import — which also exercises the snapshot
 // restore path.

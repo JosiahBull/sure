@@ -9,6 +9,99 @@ pub use sure_core::{Dividend, DividendDetail, DividendWithholding, HoldingLot, S
 
 use crate::Db;
 
+/// The largest share count one lot may carry. No real trade moves a trillion units — the
+/// entire issued float of the largest listed company is around 1.5×10^10 — so a figure past
+/// this is data entry (a minor-unit amount pasted into the quantity field, most often).
+/// Mirrors `equity::MAX_GRANT_QUANTITY`, and is deliberately the *same* number the read path
+/// uses to exclude an already-stored poisoned row, so the write edge and the read edge can
+/// never disagree about which lots are walkable.
+const MAX_LOT_QUANTITY: f64 = 1e12;
+
+/// The largest per-share price one lot may carry, in whole currency units: a billion. The
+/// most expensive share on earth (Berkshire A, ~$700k) sits three orders of magnitude under
+/// it, so this only ever catches a slip. `unit_price` is informational as far as the schema
+/// is concerned, but `sure_app::brokerage::cost_basis_by_ticker` multiplies it by quantity
+/// into an f64 that is then `round() as i64` — and an `as` cast *saturates* silently, so an
+/// absurd price becomes a plausible-looking cost basis rather than an error.
+const MAX_UNIT_PRICE: f64 = 1e9;
+
+/// Reject a float that JSON accepts and `f64` parses happily but no downstream arithmetic
+/// survives. `1e308`, `Infinity` (as the literal `9e999`) and `NaN` all deserialize into a
+/// [`SaveHoldingLot`] without complaint; once persisted they poison
+/// `sure_app::brokerage::cost_basis_by_ticker`'s running total for the whole ticker, and —
+/// because every comparison against `NaN` is false — make the position *silently vanish*
+/// from the snapshot rather than erroring. There is no honest read-time repair for a number
+/// nobody can recover, so it has to be refused at the one edge that still knows which field
+/// the user typed.
+fn check_amount(field: &str, value: f64, max: f64) -> AppResult<()> {
+    if !value.is_finite() {
+        return Err(AppError::validation(format!(
+            "{field} must be a finite number"
+        )));
+    }
+    if value.abs() > max {
+        return Err(AppError::validation(format!(
+            "{field} must be within +/-{max:e}"
+        )));
+    }
+    Ok(())
+}
+
+/// Every numeric and sign invariant a holding lot must satisfy, shared by the manual-entry
+/// path ([`create_holding`], which surfaces the message as a 422) and the bulk importer
+/// ([`import_export`], which skips and warns) — a provider export must not be able to write
+/// what a form is refused.
+fn check_lot(kind: LotKind, quantity: f64, unit_price: Option<f64>) -> AppResult<()> {
+    check_amount("quantity", quantity, MAX_LOT_QUANTITY)?;
+    if quantity == 0.0 {
+        return Err(AppError::validation("quantity must be non-zero"));
+    }
+    if let Some(price) = unit_price {
+        check_amount("unit_price", price, MAX_UNIT_PRICE)?;
+        if price < 0.0 {
+            return Err(AppError::validation("unit_price must not be negative"));
+        }
+    }
+    // `holdings.quantity` is signed by convention (0012_brokerage.sql: "+buy/corporate
+    // credit, -sell") and the cost-basis walk depends on it: a `sell` stored positive *adds*
+    // to the position it was meant to exit, and a `buy` stored negative silently shorts one.
+    // Matched exhaustively per CLAUDE.md rule 2 — a fourth `LotKind` must state its sign rule
+    // here rather than inherit "anything goes" from a wildcard arm.
+    match kind {
+        LotKind::Buy => {
+            if quantity < 0.0 {
+                return Err(AppError::validation(
+                    "a buy lot's quantity must be positive",
+                ));
+            }
+        }
+        LotKind::Sell => {
+            if quantity > 0.0 {
+                return Err(AppError::validation(
+                    "a sell lot's quantity must be negative (it exits the position)",
+                ));
+            }
+        }
+        // A corporate action legitimately goes either way: a split or bonus issue credits
+        // units, a consolidation/reverse split debits them.
+        LotKind::Corporate => {}
+    }
+    Ok(())
+}
+
+/// Whether an *already stored* lot's numbers can be walked without poisoning the result.
+///
+/// Deliberately narrower than [`check_lot`]: it re-checks only what breaks arithmetic
+/// (finiteness and magnitude), not the sign convention, because a pre-`check_lot` row with an
+/// oddly-signed quantity still sums to a meaningful position, whereas an `Infinity` does not.
+/// Only ±Inf and absurd-but-finite values can actually be on disk — SQLite has no `NaN`, it
+/// stores one as `NULL`, which `quantity REAL NOT NULL` refuses outright.
+fn lot_amounts_usable(quantity: f64, unit_price: Option<f64>) -> bool {
+    quantity.is_finite()
+        && quantity.abs() <= MAX_LOT_QUANTITY
+        && unit_price.is_none_or(|p| p.is_finite() && p.abs() <= MAX_UNIT_PRICE)
+}
+
 /// Parse a stored `kind` TEXT column into the domain enum, exactly like
 /// `sure_dal::accounts::AccountRow`'s `TryFrom<AccountRow> for Account` does — every
 /// writer goes through `LotKind::as_str`, so an unparseable value means the row came
@@ -84,8 +177,17 @@ pub async fn create_holding(
     if ticker.is_empty() {
         return Err(AppError::validation("ticker is required"));
     }
-    if input.quantity == 0.0 {
-        return Err(AppError::validation("quantity must be non-zero"));
+    check_lot(input.kind, input.quantity, input.unit_price)?;
+    // The same check the account create path runs (`accounts::validate`). `currency_code` does
+    // carry a FK to `currencies(code)`, so an unknown code is already refused — but only as
+    // `map_fk`'s generic "referenced account or currency does not exist", which never says
+    // which of the two it was, and only *after* the write is attempted. Checking here names
+    // the field and the value, and the FK stays as the backstop.
+    let currency = input.currency_code.trim().to_uppercase();
+    if !crate::currencies::exists(db, &currency).await? {
+        return Err(AppError::validation(format!(
+            "unknown currency '{currency}'"
+        )));
     }
     sqlx::query_as::<_, HoldingLotRow>(
         "INSERT INTO holdings
@@ -97,7 +199,7 @@ pub async fn create_holding(
     .bind(&ticker)
     .bind(input.exchange.trim())
     .bind(&input.name)
-    .bind(input.currency_code.to_uppercase())
+    .bind(&currency)
     .bind(input.trade_date.trim())
     .bind(input.quantity)
     .bind(input.unit_price)
@@ -225,9 +327,12 @@ pub struct PositionRow {
     pub quantity: f64,
 }
 
-/// The raw row shape for [`CostLotRow`] — `kind` as stored, before parsing.
+/// The raw row shape for [`CostLotRow`] — `kind` as stored, before parsing. Carries `id`,
+/// which [`CostLotRow`] has no use for, purely so a row rejected by [`lot_amounts_usable`]
+/// can be named in the WARN that explains why the panel is missing it.
 #[derive(Debug, FromRow, Clone)]
 struct CostLotRowRaw {
+    id: i64,
     ticker: String,
     exchange: String,
     currency_code: String,
@@ -267,10 +372,19 @@ impl TryFrom<CostLotRowRaw> for CostLotRow {
 
 /// Every lot up to `as_of`, ordered per-ticker by trade date — the cost-basis walk needs
 /// them in that order and groups them by `(ticker, exchange)` itself.
+///
+/// Lots whose numbers can't be walked are dropped here rather than handed on, because the
+/// walk has no way to contain them: one `Infinity` quantity makes the running `cost_minor`
+/// for that whole ticker `Inf` (or `NaN`, once an `Inf` meets a subtraction), and `round() as
+/// i64` then saturates that into a cost basis that looks like a number. [`check_lot`] keeps
+/// such a row out of the table today, but rows written before it existed — or edited by hand
+/// — are still on disk, and a read path that dies on one of them takes the whole brokerage
+/// panel down for good. Each dropped lot gets a WARN naming its id so it can be found and
+/// deleted; the position itself survives on its remaining lots.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn lots_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<CostLotRow>> {
-    sqlx::query_as::<_, CostLotRowRaw>(
-        "SELECT ticker, exchange, currency_code, quantity, unit_price, fee_minor, kind
+    let rows = sqlx::query_as::<_, CostLotRowRaw>(
+        "SELECT id, ticker, exchange, currency_code, quantity, unit_price, fee_minor, kind
          FROM holdings
          WHERE account_id=?1 AND date(trade_date) <= date(?2)
          ORDER BY ticker, exchange, date(trade_date), id",
@@ -278,10 +392,23 @@ pub async fn lots_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<Cos
     .bind(account_id)
     .bind(as_of)
     .fetch_all(db)
-    .await?
-    .into_iter()
-    .map(CostLotRow::try_from)
-    .collect()
+    .await?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        if !lot_amounts_usable(row.quantity, row.unit_price) {
+            tracing::warn!(
+                lot_id = row.id,
+                ticker = %row.ticker,
+                quantity = row.quantity,
+                unit_price = ?row.unit_price,
+                "excluding holding lot with an unusable quantity/price from the cost-basis walk"
+            );
+            continue;
+        }
+        out.push(CostLotRow::try_from(row)?);
+    }
+    Ok(out)
 }
 
 /// Rolling 30-days-to-`as_of` activity: an exact trade count, plus a heuristic
@@ -337,18 +464,29 @@ pub async fn activity_30d(db: &Db, account_id: i64, as_of: &str) -> AppResult<Ac
 
 /// Net quantity held per `(ticker, exchange)` as of `as_of`, dropping fully-exited
 /// positions (and float dust from fractional buy/sell rounding).
+///
+/// `ABS(quantity) <= ?3` excludes an unwalkable row from the sum for the same reason
+/// [`lots_at`] drops it, and by the same [`MAX_LOT_QUANTITY`] bound (bound rather than
+/// inlined so the two can't drift): `SUM` over a single `Infinity` is `Infinity` for the
+/// whole ticker, and `ABS(Inf) > 0.0000001` holds, so the position would be reported with a
+/// quantity that serialises to JSON `null` and prices into a saturated `i64`. SQLite compares
+/// `Inf` numerically, so this one predicate covers both `±Inf` and absurd finite magnitudes;
+/// there is no `NaN` to consider, as SQLite cannot store one in a `NOT NULL REAL` column. The
+/// WARN naming the excluded lot comes from `lots_at`, which the snapshot always fetches
+/// alongside this (see `sure_app::brokerage::BrokerageService::snapshot`).
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn positions_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<PositionRow>> {
     Ok(sqlx::query_as::<_, PositionRow>(
         "SELECT ticker, exchange, currency_code, MAX(name) AS name, SUM(quantity) AS quantity
          FROM holdings
-         WHERE account_id=?1 AND date(trade_date) <= date(?2)
+         WHERE account_id=?1 AND date(trade_date) <= date(?2) AND ABS(quantity) <= ?3
          GROUP BY ticker, exchange
          HAVING ABS(SUM(quantity)) > 0.0000001
          ORDER BY ticker",
     )
     .bind(account_id)
     .bind(as_of)
+    .bind(MAX_LOT_QUANTITY)
     .fetch_all(db)
     .await?)
 }
@@ -494,6 +632,24 @@ pub async fn import_export(
     // withholdings foreign key, and an all-or-nothing write for the ledger half.
     let mut tx = db.begin().await?;
     for h in holdings {
+        // A provider export must not be able to store what the manual form is refused: one
+        // `Infinity`/`NaN`/absurd quantity from a mangled upstream row would otherwise poison
+        // the cost basis of that ticker forever. Skipped (and counted as such) rather than
+        // failing the whole import — the other few thousand rows in the export are fine, and
+        // an all-or-nothing failure here means the user gets *nothing* and no way to see why.
+        // `ImportCounts` has no per-row warning channel, so the reason goes to the log.
+        if let Err(e) = check_lot(h.kind, h.quantity, h.unit_price) {
+            tracing::warn!(
+                external_id = %h.external_id,
+                ticker = %h.ticker,
+                quantity = h.quantity,
+                unit_price = ?h.unit_price,
+                error = %e,
+                "skipping imported holding lot with unusable numbers"
+            );
+            counts.holdings_skipped += 1;
+            continue;
+        }
         let res = sqlx::query(
             "INSERT OR IGNORE INTO holdings
                 (account_id, ticker, exchange, name, currency_code, trade_date, quantity,
@@ -620,6 +776,9 @@ mod tests {
         .id
     }
 
+    /// A lot's `kind` follows the sign of its quantity, because `check_lot` now requires the
+    /// two to agree (`holdings.quantity` is signed: +buy, -sell) — a fixture that pairs a
+    /// negative quantity with `Buy` describes a row the importer would refuse.
     fn holding(external_id: &str, ticker: &str, trade_date: &str, qty: f64) -> HoldingImport {
         HoldingImport {
             ticker: ticker.to_string(),
@@ -630,8 +789,33 @@ mod tests {
             quantity: qty,
             unit_price: Some(1.0),
             fee_minor: 0,
-            kind: LotKind::Buy,
+            kind: if qty < 0.0 {
+                LotKind::Sell
+            } else {
+                LotKind::Buy
+            },
             external_id: external_id.to_string(),
+        }
+    }
+
+    fn lot(qty: f64, unit_price: Option<f64>, kind: LotKind) -> SaveHoldingLot {
+        SaveHoldingLot {
+            ticker: "MEL".to_string(),
+            exchange: "NZX".to_string(),
+            name: Some("Meridian Energy".to_string()),
+            currency_code: "NZD".to_string(),
+            trade_date: "2026-01-02".to_string(),
+            quantity: qty,
+            unit_price,
+            fee_minor: 0,
+            kind,
+        }
+    }
+
+    fn validation_message<T: std::fmt::Debug>(result: AppResult<T>) -> String {
+        match result {
+            Err(AppError::Validation(msg)) => msg,
+            other => panic!("expected a validation error, got {other:?}"),
         }
     }
 
@@ -673,7 +857,7 @@ mod tests {
             &[
                 holding("h1", "MEL", "2026-01-02", 100.0),
                 holding("h2", "MEL", "2026-01-10", 50.0),
-                holding("h3", "AIR", "2026-01-11", -10.0), // net-negative alone → excluded
+                holding("h3", "AIR", "2026-01-11", -10.0), // a sell; net-negative alone
             ],
             &[],
         )
@@ -772,5 +956,238 @@ mod tests {
                 .as_deref(),
             Some("2026-01-15")
         );
+    }
+
+    #[tokio::test]
+    async fn a_non_finite_quantity_or_price_is_refused() {
+        let db = test_db().await;
+        let account_id = brokerage_account(&db).await;
+
+        // JSON has no `Infinity` token, but `1e999` overflows to one on parse, and a provider
+        // payload or a hand-rolled client can send either. `f64` takes them without complaint.
+        for bad in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let message = validation_message(
+                create_holding(&db, account_id, lot(bad, Some(1.0), LotKind::Buy)).await,
+            );
+            assert!(
+                message.contains("quantity must be a finite number"),
+                "got {message:?} for {bad}"
+            );
+        }
+        for bad in [f64::INFINITY, f64::NAN] {
+            let message = validation_message(
+                create_holding(&db, account_id, lot(10.0, Some(bad), LotKind::Buy)).await,
+            );
+            assert!(
+                message.contains("unit_price must be a finite number"),
+                "got {message:?} for {bad}"
+            );
+        }
+
+        // Nothing reached the table, so no later read has to cope with any of it.
+        assert!(list_holdings(&db, account_id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_absurd_but_finite_quantity_or_price_is_refused() {
+        let db = test_db().await;
+        let account_id = brokerage_account(&db).await;
+
+        // `1e308` is perfectly finite and still multiplies into an overflow two operations
+        // later, which is why the ceiling exists on top of the finiteness check.
+        let message = validation_message(
+            create_holding(&db, account_id, lot(1e308, Some(1.0), LotKind::Buy)).await,
+        );
+        assert!(
+            message.contains("quantity must be within"),
+            "got {message:?}"
+        );
+        let message = validation_message(
+            create_holding(&db, account_id, lot(-1e308, Some(1.0), LotKind::Sell)).await,
+        );
+        assert!(
+            message.contains("quantity must be within"),
+            "got {message:?}"
+        );
+        let message = validation_message(
+            create_holding(&db, account_id, lot(10.0, Some(1e308), LotKind::Buy)).await,
+        );
+        assert!(
+            message.contains("unit_price must be within"),
+            "got {message:?}"
+        );
+        let message = validation_message(
+            create_holding(&db, account_id, lot(10.0, Some(-1.0), LotKind::Buy)).await,
+        );
+        assert!(
+            message.contains("unit_price must not be negative"),
+            "got {message:?}"
+        );
+        // A share count right at the ceiling is still a (bizarre but) storable trade.
+        create_holding(
+            &db,
+            account_id,
+            lot(MAX_LOT_QUANTITY, Some(1.0), LotKind::Buy),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_lots_quantity_must_be_signed_to_match_its_kind() {
+        let db = test_db().await;
+        let account_id = brokerage_account(&db).await;
+
+        let message = validation_message(
+            create_holding(&db, account_id, lot(-5.0, Some(1.0), LotKind::Buy)).await,
+        );
+        assert!(message.contains("buy lot's quantity"), "got {message:?}");
+        let message = validation_message(
+            create_holding(&db, account_id, lot(5.0, Some(1.0), LotKind::Sell)).await,
+        );
+        assert!(message.contains("sell lot's quantity"), "got {message:?}");
+        let message =
+            validation_message(create_holding(&db, account_id, lot(0.0, None, LotKind::Buy)).await);
+        assert!(message.contains("non-zero"), "got {message:?}");
+
+        // A sell exits the position, so it is negative; a corporate action goes either way (a
+        // bonus issue credits units, a consolidation debits them) and is accepted both ways.
+        create_holding(&db, account_id, lot(-5.0, Some(1.0), LotKind::Sell))
+            .await
+            .unwrap();
+        create_holding(&db, account_id, lot(5.0, None, LotKind::Corporate))
+            .await
+            .unwrap();
+        create_holding(&db, account_id, lot(-5.0, None, LotKind::Corporate))
+            .await
+            .unwrap();
+        assert_eq!(list_holdings(&db, account_id).await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_currency_is_named_rather_than_left_to_the_fk() {
+        let db = test_db().await;
+        let account_id = brokerage_account(&db).await;
+
+        let mut input = lot(10.0, Some(1.0), LotKind::Buy);
+        input.currency_code = "XyZ".to_string();
+        let message = validation_message(create_holding(&db, account_id, input).await);
+        assert!(
+            message.contains("unknown currency 'XYZ'"),
+            "the message should name the field and the value it rejected, got {message:?}"
+        );
+
+        // A known code still stores, trimmed and upper-cased on the way in — the FK is on
+        // `currencies(code)`, so an untrimmed ' nzd ' would otherwise be refused as a generic
+        // foreign-key violation naming neither field.
+        let mut input = lot(10.0, Some(1.0), LotKind::Buy);
+        input.currency_code = " nzd ".to_string();
+        let stored = create_holding(&db, account_id, input).await.unwrap();
+        assert_eq!(stored.currency_code, "NZD");
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_lot_still_stores() {
+        let db = test_db().await;
+        let account_id = brokerage_account(&db).await;
+
+        let stored = create_holding(&db, account_id, lot(123.456, Some(6.78), LotKind::Buy))
+            .await
+            .unwrap();
+        assert_eq!(stored.ticker, "MEL");
+        assert_eq!(stored.quantity, 123.456);
+        assert_eq!(stored.unit_price, Some(6.78));
+        assert_eq!(stored.kind, LotKind::Buy);
+        assert_eq!(
+            positions_at(&db, account_id, "2026-12-31").await.unwrap()[0].quantity,
+            123.456
+        );
+    }
+
+    /// Insert a lot straight through SQL, bypassing [`check_lot`] — the only way to reproduce a
+    /// row written before the guard existed (or edited by hand in `sqlite3`). SQLite parses
+    /// `9e999` as `Inf`; it has no `NaN`, storing one as `NULL`, which `quantity REAL NOT NULL`
+    /// refuses outright, so `Inf` and absurd-but-finite are the only two cases on disk.
+    async fn insert_unvalidated(db: &Db, account_id: i64, ticker: &str, quantity_sql: &str) {
+        sqlx::query(&format!(
+            "INSERT INTO holdings
+                (account_id, ticker, exchange, currency_code, trade_date, quantity, unit_price,
+                 fee_minor, kind)
+             VALUES (?1, ?2, 'NZX', 'NZD', '2026-01-03', {quantity_sql}, 1.0, 0, 'buy')"
+        ))
+        .bind(account_id)
+        .bind(ticker)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stored_unusable_quantity_neither_panics_nor_vanishes_the_position() {
+        let db = test_db().await;
+        let account_id = brokerage_account(&db).await;
+        import_export(
+            &db,
+            account_id,
+            "NZD",
+            "sharesies#1",
+            &[],
+            &[holding("h1", "MEL", "2026-01-02", 100.0)],
+            &[],
+        )
+        .await
+        .unwrap();
+        insert_unvalidated(&db, account_id, "MEL", "9e999").await; // +Inf
+        insert_unvalidated(&db, account_id, "MEL", "1e308").await; // finite, still absurd
+
+        // The raw ledger keeps showing every row: the bad ones have to stay visible to be
+        // deleted, and this listing does no arithmetic on them.
+        let all = list_holdings(&db, account_id).await.unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().any(|l| !l.quantity.is_finite()));
+
+        // The cost-basis walk is handed only the walkable lot (each exclusion logs a WARN
+        // naming the lot id) instead of an `Inf` that would poison MEL's whole running total.
+        let lots = lots_at(&db, account_id, "2026-12-31").await.unwrap();
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].quantity, 100.0);
+
+        // And the position survives on its remaining lots rather than being reported as `Inf`
+        // (which serialises to JSON `null` and prices into a saturated i64) or disappearing —
+        // before the guard, `SUM(quantity)` over these three rows was `Inf`.
+        let positions = positions_at(&db, account_id, "2026-12-31").await.unwrap();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].ticker, "MEL");
+        assert_eq!(positions[0].quantity, 100.0);
+    }
+
+    #[tokio::test]
+    async fn the_importer_skips_lots_with_unusable_numbers() {
+        let db = test_db().await;
+        let account_id = brokerage_account(&db).await;
+
+        let counts = import_export(
+            &db,
+            account_id,
+            "NZD",
+            "sharesies#1",
+            &[],
+            &[
+                holding("h1", "MEL", "2026-01-02", 100.0),
+                holding("h2", "AIR", "2026-01-03", f64::INFINITY),
+                holding("h3", "CEN", "2026-01-04", 1e308),
+            ],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        // The good row lands; the two unusable ones are skipped (with a WARN each) rather than
+        // failing the whole export, which would leave the user with nothing and no explanation.
+        assert_eq!(counts.holdings_imported, 1);
+        assert_eq!(counts.holdings_skipped, 2);
+        let positions = positions_at(&db, account_id, "2026-12-31").await.unwrap();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].ticker, "MEL");
     }
 }

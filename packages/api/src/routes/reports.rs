@@ -32,7 +32,10 @@ pub struct ReportQuery {
     pub to: Option<String>,
     /// Include one-off transactions (default false).
     pub include_one_off: Option<bool>,
-    /// Report currency; defaults to the configured base currency.
+    /// Report currency; defaults to the configured base currency. A code that isn't in the
+    /// `currencies` table is a 400, not a report denominated in a currency that doesn't exist
+    /// with every account listed as `unconverted` — see `sure_app::reports`'s
+    /// `currency_and_fx`.
     pub currency: Option<String>,
     /// Whose spending to report: `joint`, or a household member's id. Omitted reports the
     /// whole household.
@@ -70,6 +73,8 @@ pub struct NetWorthQuery {
     /// Sampling interval: `month` (default), `week`, or `day`. An unrecognised value is a
     /// 400, not a silent fall back to `month`.
     pub interval: Option<String>,
+    /// Report currency; defaults to the configured base currency. An unknown code is a 400,
+    /// on the same rule as `interval` above.
     pub currency: Option<String>,
     /// Whose accounts to include: `joint`, or a household member's id. Omitted is the whole
     /// household. Filters accounts, not transactions — see the domain type's doc comment.
@@ -365,7 +370,9 @@ impl From<sure_app::reports::EquityPosition> for EquityPosition {
 
 /// Net worth over time, sampled at the requested interval.
 #[utoipa::path(get, path = "/api/reports/net-worth", tag = "reports", params(NetWorthQuery),
-    responses((status = 200, body = NetWorthSeries)))]
+    responses((status = 200, body = NetWorthSeries),
+        (status = 400, description = "unrecognised `interval` or unknown `currency`",
+            body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = REPORTS_NET_WORTH,
     level = "debug",
@@ -384,7 +391,9 @@ pub async fn net_worth(
 
 /// Income/expense totals per top-level category for the period.
 #[utoipa::path(get, path = "/api/reports/category-breakdown", tag = "reports", params(ReportQuery),
-    responses((status = 200, body = CategoryBreakdown)))]
+    responses((status = 200, body = CategoryBreakdown),
+        (status = 400, description = "unknown `currency` or `attributed_to`",
+            body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = REPORTS_CATEGORY_BREAKDOWN,
     level = "debug",
@@ -407,7 +416,9 @@ pub async fn category_breakdown(
 
 /// Money-flow graph: income categories -> cash flow -> expense categories (+ savings).
 #[utoipa::path(get, path = "/api/reports/sankey", tag = "reports", params(ReportQuery),
-    responses((status = 200, body = SankeyGraph)))]
+    responses((status = 200, body = SankeyGraph),
+        (status = 400, description = "unknown `currency` or `attributed_to`",
+            body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = REPORTS_SANKEY,
     level = "debug",
@@ -425,7 +436,9 @@ pub async fn sankey(
 
 /// Current value of each (non-archived) account plus a base-currency total.
 #[utoipa::path(get, path = "/api/reports/balances", tag = "reports", params(ReportQuery),
-    responses((status = 200, body = BalancesReport)))]
+    responses((status = 200, body = BalancesReport),
+        (status = 400, description = "unknown `currency` or `attributed_to`",
+            body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = REPORTS_BALANCES,
     level = "debug",
@@ -449,7 +462,8 @@ pub async fn balances(
 /// outright. There is no partial answer worth returning here.
 #[utoipa::path(get, path = "/api/accounts/{id}/equity-position", tag = "reports",
     params(("id" = i64, Path,), ReportQuery),
-    responses((status = 200, body = EquityPosition), (status = 404, body = crate::error::ErrorBody),
+    responses((status = 200, body = EquityPosition), (status = 400, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
         (status = 422, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = REPORTS_EQUITY_POSITION,

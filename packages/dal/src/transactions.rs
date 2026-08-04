@@ -1,4 +1,5 @@
 use sqlx::{FromRow, QueryBuilder, Sqlite};
+use sure_core::transactions::MAX_BULK_IDS;
 use sure_core::{AppError, AppResult, Ownership};
 pub use sure_core::{
     BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,
@@ -243,7 +244,12 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 }
 
 /// Apply a partial patch to every transaction in `ids`. Returns the number of rows
-/// actually changed. A no-op (no ids, or no fields to set) short-circuits to 0.
+/// actually changed. A no-op (no fields to set) short-circuits to 0.
+///
+/// The id list can be neither empty nor unbounded: [`BulkIds`](sure_core::transactions::BulkIds)
+/// refuses both as it is parsed, so the `IN (…)` list below is guaranteed to stay under
+/// SQLite's bind-variable ceiling — one bind per id, and a statement past
+/// `SQLITE_MAX_VARIABLE_NUMBER` fails to *prepare*.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
     let BulkUpdate {
@@ -253,11 +259,7 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
         is_one_off,
         ownership,
     } = input;
-    if ids.is_empty()
-        || (category_id.is_none()
-            && merchant_id.is_none()
-            && is_one_off.is_none()
-            && ownership.is_none())
+    if category_id.is_none() && merchant_id.is_none() && is_one_off.is_none() && ownership.is_none()
     {
         return Ok(0);
     }
@@ -302,7 +304,7 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
     qb.push(" WHERE id IN (");
     {
         let mut list = qb.separated(", ");
-        for id in &ids {
+        for id in ids.iter() {
             list.push_bind(*id);
         }
     }
@@ -315,10 +317,23 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
 /// Delete every transaction in `ids`. The `linked_transaction_id` FK is `ON DELETE SET
 /// NULL`, so the other side of any transfer is unlinked automatically. Returns the
 /// number of rows deleted.
+///
+/// Takes a bare slice — that is the repository port's signature — so unlike [`bulk_update`]
+/// it cannot lean on [`BulkIds`](sure_core::transactions::BulkIds) for the bound and re-checks
+/// it here. Without the check a longer list fails at *prepare* time, and that error is
+/// `AppError::Database` → a scrubbed 500 the caller can do nothing with; with it, every caller
+/// that assembles a slice by hand still gets a 422 naming the limit. An empty slice stays a
+/// harmless 0 for in-process callers (an HTTP body carrying one is already refused).
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn bulk_delete(db: &Db, ids: &[i64]) -> AppResult<i64> {
     if ids.is_empty() {
         return Ok(0);
+    }
+    if ids.len() > MAX_BULK_IDS {
+        return Err(AppError::validation(format!(
+            "too many ids: {} (maximum {MAX_BULK_IDS} per bulk request — split the selection into smaller batches)",
+            ids.len()
+        )));
     }
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("DELETE FROM transactions WHERE id IN (");
     {
@@ -683,7 +698,14 @@ fn map_fk(e: sqlx::Error) -> AppError {
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
+    use sure_core::transactions::BulkIds;
     use sure_core::{AccountKind, SaveAccount, SaveTransaction};
+
+    /// A batch the cap accepts. Panics rather than returning a `Result` so a test that
+    /// accidentally exceeds the cap says so instead of quietly asserting on an error path.
+    fn batch(ids: Vec<i64>) -> BulkIds {
+        BulkIds::new(ids).expect("test batch should be within the bulk cap")
+    }
 
     async fn test_db() -> Db {
         let pool = SqlitePoolOptions::new()
@@ -811,7 +833,7 @@ mod tests {
         let affected = bulk_update(
             &db,
             BulkUpdate {
-                ids: vec![a, b],
+                ids: batch(vec![a, b]),
                 category_id: Some(Some(groceries)),
                 merchant_id: None,
                 is_one_off: Some(true),
@@ -842,7 +864,7 @@ mod tests {
         bulk_update(
             &db,
             BulkUpdate {
-                ids: vec![a],
+                ids: batch(vec![a]),
                 category_id: Some(Some(groceries)),
                 merchant_id: None,
                 is_one_off: None,
@@ -857,7 +879,7 @@ mod tests {
         bulk_update(
             &db,
             BulkUpdate {
-                ids: vec![a],
+                ids: batch(vec![a]),
                 category_id: Some(None),
                 merchant_id: None,
                 is_one_off: None,
@@ -870,32 +892,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bulk_update_is_a_noop_with_no_ids_or_no_fields() {
+    async fn bulk_update_is_a_noop_with_no_fields_to_set() {
         let db = test_db().await;
         let acc = account(&db, "Bank").await;
         let a = tx(&db, acc, "2026-01-01", -100).await;
-        // No ids.
+        // An empty id list can no longer reach here at all — `BulkIds` refuses it while the
+        // body is parsed (see `sure_core::transactions`), which is why this test no longer has
+        // a "no ids" half. Ids, but nothing to set, is still a legitimate 0.
         assert_eq!(
             bulk_update(
                 &db,
                 BulkUpdate {
-                    ids: vec![],
-                    category_id: Some(None),
-                    merchant_id: None,
-                    is_one_off: None,
-                    ownership: None,
-                }
-            )
-            .await
-            .unwrap(),
-            0
-        );
-        // Ids, but nothing to set.
-        assert_eq!(
-            bulk_update(
-                &db,
-                BulkUpdate {
-                    ids: vec![a],
+                    ids: batch(vec![a]),
                     category_id: None,
                     merchant_id: None,
                     is_one_off: None,
@@ -923,6 +931,57 @@ mod tests {
         // Deleting an empty set / already-gone ids is a harmless 0.
         assert_eq!(bulk_delete(&db, &[]).await.unwrap(), 0);
         assert_eq!(bulk_delete(&db, &[a]).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_batch_at_the_cap_still_executes() {
+        let db = test_db().await;
+        let acc = account(&db, "Bank").await;
+        let real = tx(&db, acc, "2026-01-01", -100).await;
+        // One real row plus filler ids that match nothing: what is under test is that a
+        // statement with `MAX_BULK_IDS` binds prepares and runs, not what it matches.
+        let mut ids = vec![real];
+        ids.extend((1..MAX_BULK_IDS as i64).map(|i| 1_000_000 + i));
+        assert_eq!(ids.len(), MAX_BULK_IDS);
+
+        assert_eq!(
+            bulk_update(
+                &db,
+                BulkUpdate {
+                    ids: batch(ids.clone()),
+                    category_id: None,
+                    merchant_id: None,
+                    is_one_off: Some(true),
+                    ownership: None,
+                }
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        assert!(fetch(&db, real).await.unwrap().is_one_off);
+        assert_eq!(bulk_delete(&db, &ids).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_over_the_cap_is_a_validation_error_not_a_500() {
+        let db = test_db().await;
+        let acc = account(&db, "Bank").await;
+        let a = tx(&db, acc, "2026-01-01", -100).await;
+        // `bulk_delete` takes a bare slice, so it is the one bulk entry point a caller can
+        // hand an unbounded list to. Past SQLite's bind ceiling the *prepare* fails and the
+        // client sees a scrubbed 500; the guard makes it a 422 naming the limit instead.
+        let over: Vec<i64> = (0..=MAX_BULK_IDS as i64).collect();
+        let err = bulk_delete(&db, &over).await.unwrap_err();
+        assert_eq!(err.code(), "validation", "got {err:?}");
+        let message = err.to_string();
+        assert!(
+            message.contains(&MAX_BULK_IDS.to_string())
+                && message.contains(&over.len().to_string()),
+            "message must name the limit and the offending count: {message}"
+        );
+        // Refused whole, not half-applied.
+        assert!(fetch(&db, a).await.is_ok());
     }
 
     #[tokio::test]
@@ -1123,7 +1182,7 @@ mod tests {
             .collect();
 
         let set = BulkUpdate {
-            ids: ids.clone(),
+            ids: batch(ids.clone()),
             category_id: None,
             merchant_id: None,
             is_one_off: None,
@@ -1137,7 +1196,7 @@ mod tests {
 
         // A present `null` clears the override, so both go back to following the account.
         let clear = BulkUpdate {
-            ids,
+            ids: batch(ids),
             category_id: None,
             merchant_id: None,
             is_one_off: None,

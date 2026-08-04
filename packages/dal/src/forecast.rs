@@ -59,6 +59,27 @@ pub async fn list_assumptions(db: &Db) -> AppResult<Vec<ForecastAssumption>> {
         .collect()
 }
 
+/// Ceiling on an explicit `annual_volatility_bps` override, 300%/yr in basis points.
+///
+/// Volatility is the standard deviation of a lognormal monthly draw, so it sets the
+/// *exponent* the simulation raises `e` to: `exp()` saturates past ±745, and an
+/// `annual_volatility_bps` in the millions makes both an underflow to `0.0` and an overflow
+/// to `inf` routine within a single path. `0.0 * inf` is `NaN`, `NaN >= 0.0` is false so it
+/// files itself as a liability, and it reaches the percentile bands — which used to sort with
+/// `partial_cmp().unwrap()` and panic. `CatchPanicLayer` turned that into a 500 on
+/// `GET /api/forecast` that persisted until the offending row was deleted, through an endpoint
+/// on the page that was down.
+///
+/// So it is rejected here rather than silently clamped: the user typed a number and is told
+/// it is out of range, instead of getting a projection quietly computed from a different one.
+/// `sure_app::forecast` clamps the same value at the use site regardless — that clamp is the
+/// last line of defence for a row written before this validation existed, and for one written
+/// by anything that isn't this function. The bound matches
+/// `sure_app::forecast::MAX_DERIVED_CATEGORY_VOL_BPS`, which is a numerical guard rather than
+/// an opinion about how lumpy a real series can be: measured category volatilities do reach
+/// several hundred percent and that is a true description of them.
+const MAX_VOLATILITY_BPS: i64 = 30_000;
+
 /// Insert or replace the override for `(target_type, target_id)`. A `None` field clears
 /// that knob back to "derive from history" — this replaces the whole row, it doesn't
 /// patch individual fields.
@@ -67,6 +88,18 @@ pub async fn upsert_assumption(
     db: &Db,
     input: SaveForecastAssumption,
 ) -> AppResult<ForecastAssumption> {
+    // Validated on the way in, like `create_event` below: nothing downstream can tell a
+    // deliberate 1e14 from a fat-fingered one, and by the time it reaches the simulation the
+    // only honest options left are clamping it (a projection of an assumption the user never
+    // made) or refusing the whole report.
+    if let Some(vol) = input.annual_volatility_bps {
+        if !(0..=MAX_VOLATILITY_BPS).contains(&vol) {
+            return Err(AppError::validation(format!(
+                "annual_volatility_bps must be between 0 and {MAX_VOLATILITY_BPS} \
+                 (0-300%/yr), got {vol}"
+            )));
+        }
+    }
     sqlx::query_as::<_, ForecastAssumptionRow>(
         "INSERT INTO forecast_assumptions
             (target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps, notes)
@@ -205,4 +238,97 @@ pub async fn delete_event(db: &Db, id: i64) -> AppResult<()> {
         return Err(AppError::NotFound("forecast event"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn test_db() -> Db {
+        // A single connection so all queries hit the same in-memory database — a pool
+        // with >1 connection would give each connection its own empty :memory: db.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::migrate(&pool).await.unwrap();
+        pool
+    }
+
+    fn assumption(annual_volatility_bps: Option<i64>) -> SaveForecastAssumption {
+        SaveForecastAssumption {
+            target_type: ForecastTargetType::Account,
+            target_id: 1,
+            annual_growth_bps: Some(700),
+            annual_volatility_bps,
+            dividend_yield_bps: None,
+            notes: None,
+        }
+    }
+
+    /// The `GET /api/forecast` permanent-500 guard. A volatility this large makes both an
+    /// `exp()` underflow to `0.0` and an overflow to `inf` routine inside one simulated path;
+    /// `0.0 * inf` is `NaN`, and a `NaN` used to reach the percentile sort and panic the
+    /// request. Refused on the way *in*, so the forecast page can never be taken down by a
+    /// row only reachable through a control on that same page.
+    #[tokio::test]
+    async fn refuses_a_volatility_that_would_overflow_the_simulation() {
+        let db = test_db().await;
+        let err = upsert_assumption(&db, assumption(Some(10_000_000_000)))
+            .await
+            .expect_err("an absurd volatility must be refused, not stored");
+        assert!(
+            matches!(err, AppError::Validation(ref m) if m.contains("annual_volatility_bps")),
+            "expected a validation error naming the field, got {err:?}"
+        );
+        // …and nothing was written, so a retry with a sane value is the whole recovery.
+        assert!(list_assumptions(&db).await.unwrap().is_empty());
+    }
+
+    /// Negative variance is not a thing. The use-site clamp used to absorb it silently, which
+    /// meant a typed minus sign produced a projection with no noise at all rather than a
+    /// complaint.
+    #[tokio::test]
+    async fn refuses_a_negative_volatility() {
+        let db = test_db().await;
+        assert!(matches!(
+            upsert_assumption(&db, assumption(Some(-1))).await,
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    /// The bound is a numerical guard, not an opinion: everything up to it — including the
+    /// 300%/yr a genuinely lumpy category really does measure — still stores, and `None`
+    /// (derive from history) is untouched by the check.
+    #[tokio::test]
+    async fn accepts_every_usable_volatility_including_the_ceiling() {
+        let db = test_db().await;
+        for vol in [None, Some(0), Some(1_500), Some(MAX_VOLATILITY_BPS)] {
+            let saved = upsert_assumption(&db, assumption(vol))
+                .await
+                .unwrap_or_else(|e| panic!("{vol:?} should be accepted: {e:?}"));
+            assert_eq!(saved.annual_volatility_bps, vol);
+        }
+    }
+
+    /// An explicit *growth* override is deliberately unbounded here — that is the user
+    /// asserting something about returns, and `sure_app::forecast` clamps it into a safe log
+    /// return at the use site. Only volatility, a variance feeding a numerical method, is
+    /// refused.
+    #[tokio::test]
+    async fn leaves_an_explicit_growth_override_alone() {
+        let db = test_db().await;
+        let saved = upsert_assumption(
+            &db,
+            SaveForecastAssumption {
+                annual_growth_bps: Some(500_000),
+                ..assumption(Some(1_000))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved.annual_growth_bps, Some(500_000));
+    }
 }

@@ -299,9 +299,34 @@ async fn apply_period(
         // Interest compounds a loan/mortgage balance upward exactly like appreciation
         // grows an asset's.
         CronKind::Appreciation | CronKind::Interest => {
-            apply_valuation_cron(conn, cron, &period_s, 1.0).await
+            apply_valuation_cron(conn, cron, &period_s, ValuationDirection::Grow).await
         }
-        CronKind::Depreciation => apply_valuation_cron(conn, cron, &period_s, -1.0).await,
+        CronKind::Depreciation => {
+            apply_valuation_cron(conn, cron, &period_s, ValuationDirection::Shrink).await
+        }
+    }
+}
+
+/// Which way a valuation cron moves the balance each period. This was a bare `sign: f64`
+/// parameter, whose two legal values (`1.0` / `-1.0`) were indistinguishable from any
+/// other float a future caller could pass — and an out-of-band sign lands straight in the
+/// `NaN` arithmetic [`monthly_factor`] now guards. As an enum, "which way does this kind
+/// go" stays exhaustive for the same reason [`apply_period`]'s own `match cron.kind` does
+/// (CLAUDE.md rule 2): a new kind has to say, or the build breaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValuationDirection {
+    /// Appreciation / interest: compound the balance upward.
+    Grow,
+    /// Depreciation: compound it downward.
+    Shrink,
+}
+
+impl ValuationDirection {
+    fn signum(self) -> f64 {
+        match self {
+            ValuationDirection::Grow => 1.0,
+            ValuationDirection::Shrink => -1.0,
+        }
     }
 }
 
@@ -332,13 +357,13 @@ async fn apply_fixed_transaction(
     ))
 }
 
-/// Grow (`sign = 1.0`) or shrink (`sign = -1.0`) the account's latest valuation by
-/// `cron.rate_bps` annually, compounded monthly.
+/// Grow or shrink the account's latest valuation by `cron.rate_bps` annually, compounded
+/// monthly, per `direction`.
 async fn apply_valuation_cron(
     conn: &mut SqliteConnection,
     cron: &Cron,
     period_s: &str,
-    sign: f64,
+    direction: ValuationDirection,
 ) -> AppResult<Option<CronRun>> {
     let latest = sqlx::query_scalar::<_, i64>(
         "SELECT value_minor FROM valuations WHERE account_id=?1 AND as_of <= ?2
@@ -362,9 +387,7 @@ async fn apply_valuation_cron(
         ));
     };
 
-    let r = sign * (cron.rate_bps.unwrap_or(0) as f64 / 10_000.0);
-    let monthly = (1.0 + r).powf(1.0 / 12.0);
-    let new_value = (latest as f64 * monthly).round() as i64;
+    let new_value = compounded_value(cron, latest, direction)?;
     let ccy = sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
         .bind(cron.account_id)
         .fetch_one(&mut *conn)
@@ -384,6 +407,51 @@ async fn apply_valuation_cron(
     Ok(Some(
         record_run(conn, cron, period_s, Some(val_id), None, None).await?,
     ))
+}
+
+/// One period's compounding factor: the twelfth root of `1 ± rate`.
+///
+/// The `is_finite` check is the second half of W-19's fix and the half that survives a
+/// future kind whose maths differs from today's. `validate` keeps an out-of-range
+/// `rate_bps` out of the table in the first place, but rows predating that guard (and any
+/// arithmetic a later kind invents) still reach here, and the failure mode is silent
+/// rather than loud: for a depreciation rate past 100%/yr the base `1 + r` is negative, a
+/// fractional power of a negative base is `NaN`, `NaN.round()` is `NaN`, and `NaN as i64`
+/// *saturates to 0* in Rust — no panic, no error, just a persisted `source='cron'`
+/// valuation of zero for every period from the start date, with `last_run_on` advanced as
+/// if it had worked. Refusing to write is recoverable; a zeroed account that every later
+/// date reads back verbatim is not.
+fn monthly_factor(cron: &Cron, direction: ValuationDirection) -> AppResult<f64> {
+    let r = direction.signum() * (cron.rate_bps.unwrap_or(0) as f64 / 10_000.0);
+    let monthly = (1.0 + r).powf(1.0 / 12.0);
+    if !monthly.is_finite() {
+        return Err(AppError::validation(format!(
+            "cron '{}' (#{}) has an unusable rate_bps {}: it compounds to a non-finite \
+             monthly factor, so no valuation can be written",
+            cron.name.trim(),
+            cron.id,
+            cron.rate_bps.unwrap_or(0),
+        )));
+    }
+    Ok(monthly)
+}
+
+/// `latest` compounded by one period, rounded to whole minor units.
+///
+/// The result is range-checked as well as the factor: `f64 as i64` is a *saturating* cast,
+/// so an out-of-range product would silently become `i64::MAX`/`MIN` (or `0` for `NaN`)
+/// and be persisted as a real valuation. Same principle as [`monthly_factor`] — fail the
+/// run, don't invent a number.
+fn compounded_value(cron: &Cron, latest: i64, direction: ValuationDirection) -> AppResult<i64> {
+    let scaled = (latest as f64 * monthly_factor(cron, direction)?).round();
+    if !scaled.is_finite() || scaled < i64::MIN as f64 || scaled > i64::MAX as f64 {
+        return Err(AppError::validation(format!(
+            "cron '{}' (#{}) compounds {latest} to a value outside the representable range",
+            cron.name.trim(),
+            cron.id,
+        )));
+    }
+    Ok(scaled as i64)
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -410,20 +478,78 @@ async fn record_run(
     .try_into()
 }
 
+/// Deliberately the same number, for the same reason, as `sure_app::forecast`'s
+/// `MAX_RATE_BPS`: 1000%/yr. Past this a "rate" is a data-entry slip, not a rate, and the
+/// compounding it feeds is exactly where a projection turns into `inf`/`NaN`. A cron rate
+/// is also never *negative* — which way it moves the balance is [`ValuationDirection`]'s
+/// job, not the sign of `rate_bps`, and a negative rate just flips the direction back
+/// while smuggling the same negative base into `powf` (see [`monthly_factor`]).
+const MAX_RATE_BPS: i64 = 100_000;
+
+/// Exclusive ceiling on a depreciation rate: a decline of 100%/yr or more is not
+/// expressible by `(1 - r).powf(1/12)`. At exactly 10_000 bps the base is `0.0` and the
+/// account legitimately zeroes out; beyond it the base is negative and the whole
+/// computation is `NaN` — which, cast to `i64`, is a *persisted valuation of 0* rather
+/// than an error (see [`monthly_factor`]). Both readings are worthless in a balance sheet,
+/// so the boundary is rejected too.
+const MAX_DEPRECIATION_BPS: i64 = 10_000;
+
 fn validate(input: &SaveCron) -> AppResult<()> {
     if input.name.trim().is_empty() {
         return Err(AppError::validation("cron name is required"));
     }
-    if input.kind == CronKind::FixedTransaction && input.amount_minor.is_none() {
-        return Err(AppError::validation(
-            "fixed_transaction requires amount_minor",
-        ));
-    }
-    if input.kind != CronKind::FixedTransaction && input.rate_bps.is_none() {
-        return Err(AppError::validation("valuation crons require rate_bps"));
+    // Exhaustive over `CronKind` (rule 2): each kind states which of the two mutually
+    // exclusive fields it needs, so a new kind cannot inherit the wrong requirement.
+    match input.kind {
+        CronKind::FixedTransaction => {
+            if input.amount_minor.is_none() {
+                return Err(AppError::validation(
+                    "fixed_transaction requires amount_minor",
+                ));
+            }
+        }
+        CronKind::Appreciation | CronKind::Interest | CronKind::Depreciation => {
+            let Some(rate_bps) = input.rate_bps else {
+                return Err(AppError::validation("valuation crons require rate_bps"));
+            };
+            validate_rate_bps(input.kind, rate_bps)?;
+        }
     }
     if parse_date(&input.start_date).is_none() {
         return Err(AppError::validation("start_date must be YYYY-MM-DD"));
+    }
+    Ok(())
+}
+
+/// Keep an unusable rate out of the table entirely, so `apply_cron` never has to decide
+/// what a run of up to 1200 nonsense periods should do. Without this, `rate_bps: 20000` on
+/// a depreciation cron was accepted, and every period from the start date then wrote a
+/// `source='cron'` valuation of `0` (see [`monthly_factor`] for why) — each one
+/// individually undoable, none of them corrected by any later transaction.
+fn validate_rate_bps(kind: CronKind, rate_bps: i64) -> AppResult<()> {
+    if rate_bps < 0 {
+        return Err(AppError::validation(
+            "rate_bps must not be negative — use the cron kind to choose the direction",
+        ));
+    }
+    if rate_bps > MAX_RATE_BPS {
+        return Err(AppError::validation(format!(
+            "rate_bps must be at most {MAX_RATE_BPS} ({}%/yr)",
+            MAX_RATE_BPS / 100
+        )));
+    }
+    // Exhaustive over `CronKind` (rule 2): only depreciation subtracts the rate from 1, so
+    // only depreciation has the tighter ceiling. Growth kinds are already bounded above.
+    match kind {
+        CronKind::Depreciation => {
+            if rate_bps >= MAX_DEPRECIATION_BPS {
+                return Err(AppError::validation(format!(
+                    "depreciation rate_bps must be under {MAX_DEPRECIATION_BPS} \
+                     (100%/yr) — a faster decline than that is not expressible"
+                )));
+            }
+        }
+        CronKind::Appreciation | CronKind::Interest | CronKind::FixedTransaction => {}
     }
     Ok(())
 }
@@ -465,5 +591,143 @@ fn map_fk(e: sqlx::Error) -> AppError {
             AppError::validation("referenced account or category does not exist")
         }
         other => AppError::from(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A saved cron as the API would submit it: valid in every respect except whatever the
+    /// individual test overrides. `rate_bps` is left `None` so each test states its own.
+    fn save(kind: CronKind, rate_bps: Option<i64>) -> SaveCron {
+        SaveCron {
+            name: "Hilux depreciation".to_string(),
+            account_id: 1,
+            kind,
+            rate_bps,
+            amount_minor: None,
+            category_id: None,
+            day_of_month: Some(1),
+            start_date: "2026-01-01".to_string(),
+            enabled: true,
+        }
+    }
+
+    /// A stored cron, i.e. what the run engine actually reads. Only `id`, `name` and
+    /// `rate_bps` matter to the arithmetic under test.
+    fn stored(kind: CronKind, rate_bps: Option<i64>) -> Cron {
+        Cron {
+            id: 7,
+            name: "Hilux depreciation".to_string(),
+            account_id: 1,
+            kind,
+            rate_bps,
+            amount_minor: None,
+            category_id: None,
+            frequency: "monthly".to_string(),
+            day_of_month: 1,
+            start_date: "2026-01-01".to_string(),
+            last_run_on: None,
+            enabled: true,
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_depreciation_faster_than_100_percent_a_year_is_rejected() {
+        // 200%/yr: the rate that used to be accepted and then wrote a $0 valuation for
+        // every period from the start date.
+        let err = validate(&save(CronKind::Depreciation, Some(20_000))).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+        // The boundary itself is out too: it zeroes the account exactly rather than via
+        // `NaN`, which is no more useful in a balance sheet.
+        assert!(validate(&save(CronKind::Depreciation, Some(10_000))).is_err());
+        // Just under it is still a legal (if brutal) cron.
+        assert!(validate(&save(CronKind::Depreciation, Some(9_999))).is_ok());
+    }
+
+    #[test]
+    fn a_rate_outside_the_sane_band_is_rejected_for_every_valuation_kind() {
+        for kind in [
+            CronKind::Appreciation,
+            CronKind::Interest,
+            CronKind::Depreciation,
+        ] {
+            // Negative rates flip the direction behind the kind's back and smuggle a
+            // negative base into `powf`.
+            assert!(
+                validate(&save(kind, Some(-1))).is_err(),
+                "{kind:?} accepted a negative rate"
+            );
+            assert!(
+                validate(&save(kind, Some(MAX_RATE_BPS + 1))).is_err(),
+                "{kind:?} accepted a rate past MAX_RATE_BPS"
+            );
+        }
+        assert!(validate(&save(CronKind::Appreciation, Some(MAX_RATE_BPS))).is_ok());
+        // Unchanged: a valuation cron with no rate at all is still a 422, and a
+        // fixed-transaction cron needs an amount rather than a rate.
+        assert!(validate(&save(CronKind::Appreciation, None)).is_err());
+        assert!(validate(&save(CronKind::FixedTransaction, None)).is_err());
+        let mut fixed = save(CronKind::FixedTransaction, None);
+        fixed.amount_minor = Some(-1999);
+        assert!(validate(&fixed).is_ok());
+    }
+
+    #[test]
+    fn a_non_finite_factor_is_an_error_not_a_silently_persisted_zero() {
+        // Bypasses `validate` on purpose: this is a row that predates the guard above, or
+        // a future kind whose arithmetic goes somewhere `validate` doesn't police.
+        let cron = stored(CronKind::Depreciation, Some(20_000));
+        let err = monthly_factor(&cron, ValuationDirection::Shrink).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+        // The message names the offending cron so a failed run is diagnosable.
+        assert!(format!("{err:?}").contains("Hilux depreciation"), "{err:?}");
+        let err = compounded_value(&cron, 3_000_000, ValuationDirection::Shrink).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+
+        // What the old code did instead, and why this matters: the cast is saturating, so
+        // the caller persisted a valuation of exactly zero with no panic and no error.
+        let unguarded = (1.0 - 2.0_f64).powf(1.0 / 12.0);
+        assert!(unguarded.is_nan());
+        assert_eq!((3_000_000.0 * unguarded).round() as i64, 0);
+    }
+
+    #[test]
+    fn an_ordinary_depreciation_still_compounds_monthly() {
+        // 15%/yr on a $30,000 vehicle: 0.85^(1/12) per month.
+        let cron = stored(CronKind::Depreciation, Some(1_500));
+        let factor = monthly_factor(&cron, ValuationDirection::Shrink).unwrap();
+        assert!(
+            (factor - 0.986_548_052_988_131_1).abs() < 1e-12,
+            "factor was {factor}"
+        );
+        assert_eq!(
+            compounded_value(&cron, 3_000_000, ValuationDirection::Shrink).unwrap(),
+            2_959_644
+        );
+    }
+
+    #[test]
+    fn appreciation_still_grows_the_balance() {
+        // 1%/yr on a $1,000,000 house — the case `crons.spec.ts` exercises end to end.
+        let cron = stored(CronKind::Appreciation, Some(100));
+        let factor = monthly_factor(&cron, ValuationDirection::Grow).unwrap();
+        assert!(
+            (factor - 1.000_829_538_114_346_2).abs() < 1e-12,
+            "factor was {factor}"
+        );
+        assert_eq!(
+            compounded_value(&cron, 100_000_000, ValuationDirection::Grow).unwrap(),
+            100_082_954
+        );
+        // A zero-rate cron is a no-op rather than an error.
+        let flat = stored(CronKind::Interest, Some(0));
+        assert_eq!(
+            compounded_value(&flat, -47_921_483, ValuationDirection::Grow).unwrap(),
+            -47_921_483
+        );
     }
 }

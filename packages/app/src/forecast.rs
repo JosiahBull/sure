@@ -76,6 +76,24 @@ const MAX_DERIVED_CATEGORY_GROWTH_BPS: i64 = 2_500;
 /// the run-rate (see the category step in `simulate`); while it did, anything above ~75%
 /// compounded into a meaningless spread and the ceiling had to do the model's job for it.
 const MAX_DERIVED_CATEGORY_VOL_BPS: i64 = 30_000;
+/// Ceiling on *any* volatility reaching the simulation — derived, cron-sourced, or an
+/// explicit override — in basis points.
+///
+/// The same bound as [`MAX_DERIVED_CATEGORY_VOL_BPS`], for the same reason it exists: it
+/// bounds the exponent of a lognormal draw, so it is a numerical guard rather than an opinion
+/// about how volatile a real holding can be. Growth has had [`MIN_ANNUAL_RATE`]/
+/// [`MAX_ANNUAL_RATE`] for exactly this since the beginning; volatility is the one knob that
+/// escaped it, and an override arrived from the HTTP edge completely untouched.
+///
+/// Unbounded, it is a permanent 500 on `GET /api/forecast`: `exp()` saturates past ±745, so a
+/// σ in the millions of bps makes a draw of −1e14 (underflowing the month's factor to `0.0`)
+/// and one of +1e14 (overflowing it to `inf`) both routine across a few thousand samples.
+/// `0.0 * inf` is `NaN`; `NaN >= 0.0` is false, so it files itself under liabilities and
+/// lands in the percentile bands. `sure_dal::forecast::upsert_assumption` now refuses such a
+/// value at the write edge — the point of clamping *here* as well is that a row written before
+/// that check existed, or by anything that isn't that function, still cannot take the endpoint
+/// down.
+const MAX_VOLATILITY_BPS: i64 = MAX_DERIVED_CATEGORY_VOL_BPS;
 const MIN_HORIZON_MONTHS: i64 = 1;
 const MAX_HORIZON_MONTHS: i64 = 60;
 const MIN_SIMULATIONS: i64 = 100;
@@ -233,10 +251,23 @@ impl ForecastService {
         self.reports.base_currency().await
     }
 
+    /// The projection currency plus the rate table loaded for it, with an unknown
+    /// `?currency=` refused. Same contract and same reasoning as
+    /// [`crate::reports::ReportService::currency_and_fx`] — a forecast in a currency that
+    /// does not exist is the same nonsense as a report in one, and both parse the value at
+    /// the one edge it arrives as text.
+    async fn currency_and_fx(&self, override_: Option<&str>) -> AppResult<(String, Fx)> {
+        let base = self.base_currency(override_).await?;
+        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        if override_.is_some_and(|s| !s.is_empty()) && fx.try_dp(&base).is_none() {
+            return Err(reports::unknown_currency(&base));
+        }
+        Ok((base, fx))
+    }
+
     /// Every account/category's resolved forecast assumption.
     pub async fn resolved_assumptions(&self) -> AppResult<Vec<ResolvedAssumption>> {
-        let base = self.base_currency(None).await?;
-        let fx = Fx::load(self.fx.as_ref(), base).await?;
+        let (_, fx) = self.currency_and_fx(None).await?;
         self.resolved_assumptions_with(&fx).await
     }
 
@@ -510,8 +541,7 @@ impl ForecastService {
             .clamp(MIN_HORIZON_MONTHS, MAX_HORIZON_MONTHS);
         let n_paths = params.simulations.clamp(MIN_SIMULATIONS, MAX_SIMULATIONS) as usize;
 
-        let base = self.base_currency(params.currency.as_deref()).await?;
-        let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
+        let (base, fx) = self.currency_and_fx(params.currency.as_deref()).await?;
 
         let assumptions = self.resolved_assumptions_with(&fx).await?;
         let by_target: HashMap<(ForecastTargetType, i64), &ResolvedAssumption> = assumptions
@@ -556,7 +586,7 @@ impl ForecastService {
                 let annual_growth = resolved.map(|r| r.annual_growth_bps).unwrap_or(0);
                 let annual_vol = resolved.map(|r| r.annual_volatility_bps).unwrap_or(0);
                 let monthly_log_return = annual_rate_to_monthly_log_return(annual_growth);
-                let monthly_vol = (annual_vol as f64 / 10_000.0).max(0.0) / 12f64.sqrt();
+                let monthly_vol = annual_vol_to_monthly_sd(annual_vol);
                 if class == AccountClass::Liability {
                     // Project a debt the same way its rate was measured. `derive_account_rate`
                     // fits a liability with a *linear* trend (a log-return is undefined once a
@@ -622,8 +652,7 @@ impl ForecastService {
                 is_income: source_kind_is_income(self, a.target_id).await?,
                 baseline,
                 monthly_log_return: annual_rate_to_monthly_log_return(a.annual_growth_bps),
-                monthly_vol_fraction: (a.annual_volatility_bps as f64 / 10_000.0).max(0.0)
-                    / 12f64.sqrt(),
+                monthly_vol_fraction: annual_vol_to_monthly_sd(a.annual_volatility_bps),
                 step_changes,
                 one_offs,
             });
@@ -1017,6 +1046,18 @@ fn annual_rate_to_monthly_log_return(annual_bps: i64) -> f64 {
     (1.0 + annual).ln() / 12.0
 }
 
+/// An annual volatility (in bps) as the standard deviation of one month's draw, clamped to
+/// `0..=`[`MAX_VOLATILITY_BPS`].
+///
+/// Both ends matter. The lower bound keeps a negative value out of `Normal::new`, whose
+/// `unwrap` would otherwise panic on a bad variance; the upper bound — the half this used to
+/// be missing — keeps `exp()` in its finite range, so no path can produce the `0.0 * inf`
+/// that makes a `NaN` and takes `GET /api/forecast` down permanently. √12 because volatility
+/// scales with the square root of time.
+fn annual_vol_to_monthly_sd(annual_bps: i64) -> f64 {
+    (annual_bps.clamp(0, MAX_VOLATILITY_BPS) as f64 / 10_000.0) / 12f64.sqrt()
+}
+
 fn percentile(sorted: &[f64], p: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
@@ -1025,8 +1066,32 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     sorted[idx.min(sorted.len() - 1)]
 }
 
-fn band_from_samples(samples: &mut [f64], fx: &Fx) -> Band {
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+/// One month's samples reduced to percentile bands, in the report currency's minor units.
+///
+/// Deliberately unpanickable on any input, because this is the funnel every knob in the
+/// simulation eventually pours through and it runs on a live GET. Two independent measures:
+///
+/// * non-finite samples are dropped rather than ranked — an `inf` or a `NaN` is not a net
+///   worth, and averaging one in makes every percentile of the month meaningless too;
+/// * the sort uses [`f64::total_cmp`], a total order over *all* f64s including `NaN`, so
+///   there is no `partial_cmp(..).unwrap()` left to panic even if a future knob smuggles one
+///   past the filter.
+///
+/// The old `partial_cmp().unwrap()` is what turned one unbounded volatility override into a
+/// 500 that outlived the request — see [`MAX_VOLATILITY_BPS`]. Clamping the knobs is the fix;
+/// this is the layer that survives the *next* one.
+fn band_from_samples(samples: &mut Vec<f64>, fx: &Fx) -> Band {
+    let before = samples.len();
+    samples.retain(|v| v.is_finite());
+    if samples.len() < before {
+        tracing::warn!(
+            dropped = before - samples.len(),
+            of = before,
+            "non-finite simulated values excluded from this month's bands: some assumption is \
+             producing an overflowing projection"
+        );
+    }
+    samples.sort_by(f64::total_cmp);
     let mean = if samples.is_empty() {
         0.0
     } else {
@@ -2267,6 +2332,60 @@ mod tests {
         assert_eq!(add_months(d("2026-01-31"), 1), d("2026-02-28"));
     }
 
+    /// The W-08 clamp. Volatility used to be bounded below (so `Normal::new` never saw a
+    /// negative variance) and not above, so an override of a few million bps put ±1e14 into
+    /// `exp()` — which saturates past ±745 — and made `0.0 * inf` = `NaN` routine within one
+    /// path. Both ends are needed, and everything a real series measures is untouched.
+    #[test]
+    fn annual_vol_to_monthly_sd_clamps_both_ends() {
+        let sqrt12 = 12f64.sqrt();
+        // 20%/yr, the ordinary case: passes through as σ/√12.
+        assert!((annual_vol_to_monthly_sd(2_000) - 0.2 / sqrt12).abs() < 1e-12);
+        // Negative variance is not a thing; zero means "no noise", not "panic".
+        assert_eq!(annual_vol_to_monthly_sd(-5_000), 0.0);
+        assert_eq!(annual_vol_to_monthly_sd(0), 0.0);
+        // The ceiling holds however absurd the input, and the exponent it implies stays
+        // nowhere near the ~745 at which `exp()` saturates, even compounded over the longest
+        // horizon at several standard deviations.
+        let ceiling = annual_vol_to_monthly_sd(MAX_VOLATILITY_BPS);
+        for bps in [MAX_VOLATILITY_BPS + 1, 1_000_000_000_000_00, i64::MAX] {
+            assert_eq!(annual_vol_to_monthly_sd(bps), ceiling);
+        }
+        assert!(
+            (ceiling * 10.0 * MAX_HORIZON_MONTHS as f64)
+                .exp()
+                .is_finite(),
+            "ten sigma every month for the whole horizon must still be finite"
+        );
+    }
+
+    /// Belt and braces for the same failure: whatever produced them, a `NaN` or an `inf` in
+    /// the samples must not panic the sort. The old `partial_cmp().unwrap()` did, and
+    /// `CatchPanicLayer` turned that into a 500 that outlived the request.
+    #[test]
+    fn band_from_samples_is_unpanickable_on_non_finite_samples() {
+        let fx = Fx::parity("NZD");
+        let mut samples = vec![
+            100.0,
+            f64::NAN,
+            300.0,
+            f64::INFINITY,
+            200.0,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        let band = band_from_samples(&mut samples, &fx);
+        // The finite samples alone decide the bands — 100/200/300, so the median is 200 and
+        // the mean is not dragged to `NaN` by the discarded ones.
+        assert_eq!(band.median_minor, 200_00);
+        assert_eq!(band.mean_minor, 200_00);
+        assert_eq!(band.p10_minor, 100_00);
+        assert_eq!(band.p90_minor, 300_00);
+        // And a month in which *nothing* was finite is an empty band, not a panic.
+        let mut all_bad = vec![f64::NAN, f64::INFINITY];
+        assert_eq!(band_from_samples(&mut all_bad, &fx).median_minor, 0);
+    }
+
     // ---- simulate() integration (fake ports) ---------------------------------------
 
     mod sim {
@@ -2424,11 +2543,34 @@ mod tests {
         #[derive(Default)]
         struct FakeForecast {
             events: Vec<ForecastEvent>,
+            /// Account-target overrides, as `(target_id, annual_growth_bps,
+            /// annual_volatility_bps)` — rows a user wrote through `PUT
+            /// /api/forecast/assumptions`, the only route by which a user-chosen growth or
+            /// volatility reaches the simulation. Held as the three fields that matter rather
+            /// than whole `ForecastAssumption`s because that type isn't `Clone` and this port
+            /// hands out owned values.
+            overrides: Vec<(i64, Option<i64>, Option<i64>)>,
         }
         #[async_trait]
         impl ForecastRepo for FakeForecast {
             async fn list_assumptions(&self) -> AppResult<Vec<ForecastAssumption>> {
-                Ok(Vec::new())
+                Ok(self
+                    .overrides
+                    .iter()
+                    .map(|&(target_id, annual_growth_bps, annual_volatility_bps)| {
+                        ForecastAssumption {
+                            id: target_id,
+                            target_type: ForecastTargetType::Account,
+                            target_id,
+                            annual_growth_bps,
+                            annual_volatility_bps,
+                            dividend_yield_bps: None,
+                            notes: None,
+                            created_at: "2026-08-01T00:00:00Z".to_string(),
+                            updated_at: "2026-08-01T00:00:00Z".to_string(),
+                        }
+                    })
+                    .collect())
             }
             async fn upsert_assumption(
                 &self,
@@ -2517,7 +2659,10 @@ mod tests {
                 })
                 .collect();
             ForecastService::new(
-                Arc::new(FakeForecast { events }),
+                Arc::new(FakeForecast {
+                    events,
+                    ..Default::default()
+                }),
                 Arc::new(FakeReports {
                     base_currency: "NZD".into(),
                     account_currencies,
@@ -3128,6 +3273,132 @@ mod tests {
                 "payment {} should be about $2,763/mo",
                 s.monthly_payment_minor
             );
+        }
+
+        /// A brokerage account with a stored volatility override, and a valuation so it has a
+        /// balance to compound.
+        fn service_with_override(
+            annual_volatility_bps: Option<i64>,
+            today: NaiveDate,
+        ) -> ForecastService {
+            let accounts = vec![account(1, AK::Brokerage, "NZD")];
+            ForecastService::new(
+                Arc::new(FakeForecast {
+                    events: Vec::new(),
+                    overrides: vec![(1, Some(700), annual_volatility_bps)],
+                }),
+                Arc::new(FakeReports {
+                    base_currency: "NZD".into(),
+                    account_currencies: accounts
+                        .iter()
+                        .map(|a| AccountCurrency {
+                            id: a.id,
+                            currency_code: a.currency_code.clone(),
+                            ownership: sure_core::Ownership::Joint,
+                        })
+                        .collect(),
+                    valuations: vec![valued(1, today - chrono::Duration::days(1), 500_000_00)],
+                    ..Default::default()
+                }),
+                Arc::new(FakeFx),
+                Arc::new(FakeAccounts(accounts)),
+                Arc::new(FakeCrons),
+                Arc::new(crate::test_clock::FixedClock(today)),
+            )
+        }
+
+        /// The W-08 recurrence guard, end to end. `upsert_assumption` now refuses a volatility
+        /// this large, but a row written before that check existed is still sitting in the
+        /// table — and it must not be able to take `GET /api/forecast` down, because the only
+        /// control that could clear it lives on the page the 500 breaks.
+        ///
+        /// Unclamped, ~1e14 bps makes `exp()` both underflow to `0.0` and overflow to `inf`
+        /// within a single path; `0.0 * inf` is `NaN`, `NaN >= 0.0` is false so it files itself
+        /// under liabilities, and the percentile sort panicked on it.
+        #[test]
+        fn simulate_survives_an_absurd_stored_volatility_override() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let params = SimulationParams {
+                horizon_months: 24,
+                simulations: 2000,
+                currency: None,
+                seed: Some(13),
+            };
+            let result = rt
+                .block_on(
+                    service_with_override(Some(1_000_000_000_000_00), today).simulate(&params),
+                )
+                .expect("an absurd stored volatility must not fail the projection");
+
+            for m in &result.months {
+                for band in [&m.net_worth, &m.assets, &m.liabilities] {
+                    // `i64` cannot hold a `NaN`, so the assertion that matters is ordering:
+                    // `NaN` sorted anywhere and the percentiles came out unordered even when
+                    // the sort didn't panic outright.
+                    assert!(band.p10_minor <= band.median_minor, "{}", m.as_of);
+                    assert!(band.median_minor <= band.p90_minor, "{}", m.as_of);
+                }
+                // Clamped to 300%/yr the projection is wild but finite: no month may collapse
+                // a $500k holding to nothing, which is what an `exp()` underflow looked like.
+                assert!(m.assets.p90_minor > 0, "{} lost the account", m.as_of);
+            }
+        }
+
+        /// …and the clamp is a ceiling, not a flattening: an ordinary override still drives
+        /// the noise it asks for, so the guard cannot be mistaken for "volatility ignored".
+        #[test]
+        fn simulate_still_honours_an_ordinary_volatility_override() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let params = SimulationParams {
+                horizon_months: 12,
+                simulations: 1000,
+                currency: None,
+                seed: Some(13),
+            };
+            let spread = |vol| {
+                let r = rt
+                    .block_on(service_with_override(vol, today).simulate(&params))
+                    .unwrap();
+                let m = &r.months[11];
+                m.net_worth.p90_minor - m.net_worth.p10_minor
+            };
+            assert_eq!(spread(Some(0)), 0, "no volatility, no band");
+            assert!(spread(Some(2_000)) > 0, "20%/yr must open the band");
+            assert!(
+                spread(Some(10_000)) > spread(Some(2_000)),
+                "more volatility, wider band"
+            );
+        }
+
+        /// W-16 on the forecast: `?currency=` takes the same door as the reports' and gets the
+        /// same answer. A projection denominated in a currency that has no `currencies` row
+        /// has no scale and no rate, so every account falls out of it — a 200 describing
+        /// nothing, where a 400 naming the code belongs.
+        #[test]
+        fn simulate_rejects_an_unknown_currency() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let svc = service_with_override(Some(1_500), today);
+            let at = |currency: Option<&str>| {
+                rt.block_on(svc.simulate(&SimulationParams {
+                    horizon_months: 3,
+                    simulations: 100,
+                    currency: currency.map(str::to_string),
+                    seed: Some(2),
+                }))
+            };
+
+            let err = at(Some("ZZZ")).expect_err("ZZZ is not a currency");
+            assert_eq!(err.code(), "bad_request", "got {err:?}");
+            assert!(err.to_string().contains("ZZZ"), "{err}");
+
+            // The base currency (the only one `FakeFx` knows) still works, in either case, and
+            // omitting the param is unchanged.
+            for currency in [None, Some("NZD"), Some("nzd"), Some("")] {
+                assert_eq!(at(currency).unwrap().currency, "NZD", "{currency:?}");
+            }
         }
     }
 }
