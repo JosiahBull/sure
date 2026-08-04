@@ -34,7 +34,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// daily Yahoo closes ~200KB — so 8MiB is already ~40× the largest thing either API has
 /// reason to send, while capping the damage a compromised or malfunctioning upstream can do
 /// to this process's memory.
-const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
+///
+/// `pub(crate)` because Akahu needs the same number and cannot get it the same way: that
+/// body is read inside `akahu-client`, so the ceiling is handed to `AkahuClient` instead of
+/// being enforced by [`json_capped`] here — see [`akahu_client`] below. One const for both,
+/// so "how much of a response may this process buffer?" has a single answer rather than two
+/// that drift apart.
+pub(crate) const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 
 /// The bounded client the workspace-version providers share (Frankfurter, Yahoo).
 ///
@@ -62,6 +68,13 @@ pub(crate) fn client() -> reqwest::Client {
 /// The same, for `akahu-client`, which takes a `reqwest` 0.13 client — a different major
 /// from the workspace's 0.12, so the two builders cannot be one function. Same limits, on
 /// purpose: the provider poll is a scheduled task like the others.
+///
+/// One limit is missing here and cannot be added here: the byte ceiling. `akahu-client`
+/// executes the request and reads the body itself, so by the time a caller sees anything the
+/// buffering has already happened — [`json_capped`] never gets a `Response` to bound. Since
+/// 0.3 the crate takes the ceiling as a setting instead, and `akahu::AkahuProvider::client`
+/// hands it [`MAX_BODY_BYTES`]; a client built from this function and left at the crate's own
+/// default is bounded, but by *its* number rather than ours.
 pub(crate) fn akahu_client() -> reqwest_akahu::Client {
     reqwest_akahu::Client::builder()
         .timeout(REQUEST_TIMEOUT)

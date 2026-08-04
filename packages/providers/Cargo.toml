@@ -27,7 +27,11 @@ reqwest = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-akahu-client = "0.2"
+# 0.3 is resolved through the root manifest's `[patch.crates-io]` — see the comment there;
+# it is not published yet. 0.3 is what makes an Akahu enum value this crate has never seen
+# (`Unknown`) cost one field instead of the whole page it arrived in, and what keeps the
+# response body out of a deserialisation error's `Display`.
+akahu-client = "0.3"
 # akahu-client depends on reqwest 0.13, one major ahead of the workspace's 0.12 (used by
 # the other providers above) — renamed so both can coexist without touching the rest of
 # this crate. Feature set mirrors what akahu-client itself requests.

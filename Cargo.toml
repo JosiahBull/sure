@@ -131,6 +131,21 @@ sure-providers = { path = "packages/providers" }
 sure-app = { path = "packages/app" }
 sure-api = { path = "packages/api" }
 
+# `akahu-client` 0.3 is not on crates.io yet. It is the user's own crate, developed in a
+# sibling checkout and published by hand, and 0.3 is the release that stops one unrecognised
+# Akahu enum value (a transaction `type`, an account `type`/`status`) from failing the whole
+# 100-item page it arrived in — which, because a sync cursor only advances on success, wedged
+# that account's import permanently rather than for one poll. `sure-providers` needs that
+# behaviour now, so the version requirement stays `"0.3"` (a real requirement, satisfiable
+# from the registry the moment it is published) and this patch is what resolves it in the
+# meantime.
+#
+# DO NOT DELETE until 0.3.0 is on crates.io: without it `cargo` cannot resolve `"0.3"` at all
+# and the whole workspace fails to build. Once published, deleting these two lines is the
+# entire change — no manifest in `packages/` mentions the path.
+[patch.crates-io]
+akahu-client = { path = "../akahu-client" }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

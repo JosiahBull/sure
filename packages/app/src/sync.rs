@@ -17,11 +17,15 @@ pub const MAX_SYNC_DETAIL_CHARS: usize = 500;
 
 /// Bound a provider error's text before it is stored or shown.
 ///
-/// A provider error is third-party text, and some of it carries the upstream payload with
-/// it: `akahu-client`'s `AkahuError::JsonDeserialization` interpolates the *entire*
-/// response body into its `Display`, so a schema change on Akahu's side turns a successful
-/// 200 holding a page of 100 real bank transactions — merchants, amounts, descriptions,
-/// external account ids — into the error message. Both places that message lands are
+/// A provider error is third-party text, and some of it has carried the upstream payload
+/// with it: `akahu-client`'s `AkahuError::JsonDeserialization` used to interpolate the
+/// *entire* response body into its `Display`, so a schema change on Akahu's side turned a
+/// successful 200 holding a page of 100 real bank transactions — merchants, amounts,
+/// descriptions, external account ids — into the error message. That crate stopped doing it
+/// in 0.3 (the body now sits behind a `ResponseBody` newtype absent from `Display` and
+/// redacted in `Debug`), which is a fix at *one* provider, not a reason to stop bounding
+/// here: every other provider's error text is still someone else's `Display` to write, and
+/// this is the one place both copies of it are made. Both places that message lands are
 /// exposures: `provider_syncs.detail` is an unbounded `TEXT` column served back by
 /// `GET /api/providers/{id}/syncs`, and [`AppError::validation`] is a 4xx, which
 /// `sure-core`'s error mapping passes to the client verbatim (only 5xx is scrubbed). The
@@ -214,9 +218,11 @@ impl SyncService {
 mod tests {
     use super::*;
 
-    /// Stands in for `akahu-client`'s deser error, whose `Display` appends the whole
-    /// response body. Deliberately synthetic filler, not transaction-shaped text — this
-    /// test is about the byte count, and a fixture never carries real data's identifiers.
+    /// Stands in for any provider error whose `Display` appends the payload it choked on —
+    /// `akahu-client`'s deser error did exactly this before 0.3, and nothing stops the next
+    /// adapter's from doing it again. Deliberately synthetic filler, not transaction-shaped
+    /// text — this test is about the byte count, and a fixture never carries real data's
+    /// identifiers.
     fn oversized_error() -> anyhow::Error {
         anyhow::anyhow!(
             "failed to deserialize response: {}",

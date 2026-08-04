@@ -124,13 +124,24 @@ impl AkahuProvider {
             crate::http::akahu_client(),
             app_token,
             Some(BASE_URL.to_string()),
-        );
+        )
+        // The one bound `crate::http` cannot apply from the outside: `akahu-client` reads the
+        // response body itself, so `json_capped` never sees a `Response` to cut short. Passing
+        // `MAX_BODY_BYTES` explicitly — rather than accepting the crate's own default, which
+        // happens to be the same 8MiB today — is what keeps the two providers on one number
+        // when either side changes its mind.
+        .with_max_response_bytes(crate::http::MAX_BODY_BYTES);
         Ok((client, UserToken::new(user_token)))
     }
 }
 
 /// Best-effort suggestion only — the user confirms/edits the local account's `kind` when
 /// linking, so this doesn't need to be exact.
+// CLAUDE.md rule 2's escape hatch: `BankAccountKind` is `#[non_exhaustive]` upstream
+// (`akahu-client` 0.3), so the compiler *requires* a wildcard arm here no matter how many
+// variants are named — see the `Unknown` arm at the bottom for what an unrecognised type is
+// taken to mean, and why that is the right answer for one we haven't seen yet either.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn map_kind_hint(kind: &BankAccountKind, name: &str, has_credit_limit: bool) -> AccountKind {
     match kind {
         BankAccountKind::Checking => AccountKind::Bank,
@@ -176,6 +187,25 @@ fn map_kind_hint(kind: &BankAccountKind, name: &str, has_credit_limit: bool) -> 
         // and a credit balance still totals correctly from its sign.
         BankAccountKind::Tax => AccountKind::Liability,
         BankAccountKind::Foreign | BankAccountKind::Rewards => AccountKind::Cash,
+        // An account type Akahu has added since `akahu-client` was published. Since 0.3 that
+        // costs one field instead of the whole listing — the account still arrives with its
+        // name, balance, currency and attributes, and only `type` is lost — so there is a real
+        // account here to suggest a kind for.
+        //
+        // `Asset` is the honest suggestion: `Profile::Generic`, no required metadata, and it
+        // asserts only that the thing has a value. Every alternative claims something we have
+        // no evidence for — `Bank`/`Cash` says the balance is spendable and (being
+        // `AccountClass::Cash`) that it is the sum of transactions we may not even be allowed
+        // to fetch; `Liability` says it is owed; `Brokerage` demands a broker before it can be
+        // saved. A negative balance still subtracts from net worth from its sign alone, and the
+        // user retypes the kind in the connect dialog anyway — which is exactly the prompt an
+        // unrecognised account should produce, rather than a confident wrong guess.
+        BankAccountKind::Unknown => AccountKind::Asset,
+        // Unreachable via `Deserialize` today — `#[serde(other)]` funnels everything
+        // unrecognised into `Unknown` above — but `#[non_exhaustive]` means a *named* variant
+        // can also appear in a future 0.3.x without a major bump, and then it lands here. Same
+        // answer for the same reason: we know nothing about it beyond its balance.
+        _ => AccountKind::Asset,
     }
 }
 
@@ -512,12 +542,90 @@ mod tests {
         );
     }
 
+    /// The wedge `akahu-client` 0.3 exists to remove, seen from this side of the boundary.
+    ///
+    /// A page is deserialised as one value, so a single `"type"` Akahu had added since the
+    /// crate was published used to fail all 100 transactions it arrived with. That failure
+    /// propagates out of [`TransactionProvider::fetch`], and `sure_app::sync` only reaches
+    /// `update_last_synced` on success — so the next poll asked for the same window, hit the
+    /// same value, and imported nothing for that account every six hours until the crate was
+    /// republished. The unrecognised type now costs exactly one field: the transaction it is
+    /// attached to still maps, and `map_transaction` never looked at `type` in the first place.
+    #[test]
+    fn a_transaction_page_survives_one_unrecognised_type() {
+        let txn = |id: &str, kind: &str, amount: &str, description: &str| {
+            format!(
+                r#"{{
+                    "_id": "{id}",
+                    "_account": "acc_123",
+                    "_connection": "conn_1",
+                    "created_at": "2026-01-06T10:00:00.000Z",
+                    "date": "2026-01-06T09:30:00.000Z",
+                    "description": "{description}",
+                    "amount": {amount},
+                    "type": "{kind}"
+                }}"#
+            )
+        };
+        // "CARBON CREDITS" stands in for whatever Akahu adds next; the point is only that this
+        // crate has never heard of it.
+        let json = format!(
+            r#"{{ "success": true, "items": [{}, {}, {}], "cursor": {{ "next": null }} }}"#,
+            txn("trans_794", "CREDIT", "2500.00", "Salary"),
+            txn("trans_795", "CARBON CREDITS", "-12.34", "Offset purchase"),
+            txn("trans_796", "DEBIT", "-4.50", "Coffee"),
+        );
+
+        let page: akahu_client::PaginatedResponse<akahu_client::Transaction> =
+            serde_json::from_str(&json).expect("an unrecognised type must not fail the page");
+        assert_eq!(page.items.len(), 3, "the whole page has to survive");
+
+        // Exactly what `fetch` does with a page, so the assertion covers the mapping too.
+        let mapped: Vec<_> = page.items.into_iter().filter_map(map_transaction).collect();
+        assert_eq!(mapped.len(), 3, "every transaction on the page maps");
+        let odd = &mapped[1];
+        assert_eq!(odd.external_id, "trans_795");
+        assert_eq!(odd.amount_minor, -1_234);
+        assert_eq!(odd.description, "Offset purchase");
+    }
+
+    /// The account-listing half of the same problem, end to end through [`map_account`]: one
+    /// account of a type Akahu added after the crate was published used to fail
+    /// `list_accounts` outright, so *no* account could be linked. It now arrives with a
+    /// deliberately neutral kind hint for the user to correct in the connect dialog.
+    #[test]
+    fn an_account_of_an_unrecognised_type_is_still_offered_for_linking() {
+        let json = r#"{
+            "_id": "acc_127",
+            "_authorisation": "auth_456",
+            "connection": { "_id": "conn_789", "name": "ASB", "connection_type": "official" },
+            "name": "Carbon Credits",
+            "status": "ACTIVE",
+            "refreshed": {},
+            "balance": { "current": 42.00, "currency": "NZD" },
+            "type": "CARBON CREDITS",
+            "attributes": ["TRANSACTIONS"]
+        }"#;
+        let a: akahu_client::Account =
+            serde_json::from_str(json).expect("an unrecognised type must not fail the account");
+        assert_eq!(a.kind, BankAccountKind::Unknown);
+
+        let acc = map_account(a).expect("a representable balance maps");
+        assert_eq!(acc.kind_hint, AccountKind::Asset);
+        assert_eq!(acc.balance_minor, 4_200);
+        assert_eq!(acc.institution, Some("ASB".to_string()));
+        // The rest of the account is intact — only `type` was lost, so a recognised attribute
+        // still answers correctly.
+        assert!(acc.supports_transactions);
+    }
+
     #[test]
     fn kind_hints_cover_every_bank_account_kind() {
-        // Exercises the match arms directly so a new BankAccountKind variant added
-        // upstream fails to compile here rather than silently falling through. A
-        // generic name/no-limit combination that doesn't match any loan-disambiguation
-        // signal.
+        // Exercises the match arms directly. `BankAccountKind` is `#[non_exhaustive]` since
+        // `akahu-client` 0.3, so a variant added upstream reaches `map_kind_hint`'s wildcard
+        // rather than failing to compile — this test is the compensating check that every
+        // variant that exists today still maps where it is supposed to. A generic
+        // name/no-limit combination that doesn't match any loan-disambiguation signal.
         let n = "Everyday Account";
         assert_eq!(
             map_kind_hint(&BankAccountKind::Checking, n, false),
@@ -563,6 +671,19 @@ mod tests {
         assert_eq!(
             map_kind_hint(&BankAccountKind::Wallet, n, false),
             AccountKind::Brokerage
+        );
+        // The decision this file makes about a type Akahu has added since: a generic valued
+        // asset, which is the only thing an unrecognised account's balance actually tells us.
+        // Pinned here so changing it is a deliberate edit rather than a drifting default.
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::Unknown, n, false),
+            AccountKind::Asset
+        );
+        // And the loan-name/credit-limit signals must not leak into it: `Unknown` is not a
+        // loan, so neither a mortgage-shaped name nor an ongoing limit may change the answer.
+        assert_eq!(
+            map_kind_hint(&BankAccountKind::Unknown, "Prime Housing Lending", true),
+            AccountKind::Asset
         );
     }
 
