@@ -12,12 +12,13 @@
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::routing::post;
-use axum::{Json, Router};
+use axum::Router;
 use chrono::NaiveDate;
 use sure_core::AccountKind;
 
 use crate::config::Limits;
 use crate::error::{AppError, AppResult};
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub use sure_core::StudentLoanImportResult;

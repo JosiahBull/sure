@@ -44,6 +44,8 @@ dependencies = [
 [[package]]
 name = "akahu-client"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7659adf04840445f9aa09ed25b4a344016fbac737e180c7ebd128cbabe1514a1"
 dependencies = [
  "chrono",
  "iso_currency",

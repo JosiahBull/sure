@@ -1,11 +1,12 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::Router;
 use serde::Deserialize;
 use utoipa::IntoParams;
 
 use crate::error::AppResult;
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub use sure_core::{

@@ -10,7 +10,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::Router;
 use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 use sure_appbase::Shutdown;
@@ -20,6 +20,7 @@ use utoipa::IntoParams;
 
 use crate::config::Limits;
 use crate::error::{AppError, AppResult};
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub use sure_core::{

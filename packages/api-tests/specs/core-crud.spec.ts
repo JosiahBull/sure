@@ -246,11 +246,15 @@ test("a transaction date the reports cannot read is refused, not stored", async 
     const { response, error } = await api.POST("/api/transactions", {
       body: { account_id: acc.id, posted_at, amount_minor: -1_000, description: "bad date" },
     });
-    // 422, not the 201 this used to be. The envelope's code is the framework's rejection
-    // slug; the field-level message lives in `sure-core`'s own tests, since axum's body
-    // rejection text is re-clothed generically by `request_context`.
+    // 422, not the 201 this used to be.
     expect(response.status, posted_at).toBe(422);
     expect(error?.error.code, posted_at).toBe("validation");
+    // And the message names the field. This used to be the framework's generic
+    // "Unprocessable Entity." — axum renders a body rejection as text/plain, so
+    // `request_context` re-clothed it and serde's text was lost. `crate::extract::Json`
+    // answers the rejection itself now, so a caller can tell *which* field it got wrong.
+    expect(error?.error.message, posted_at).toContain("posted_at");
+    expect(error?.error.message, posted_at).not.toBe("Unprocessable Entity.");
   }
 
   // And nothing was written — a refusal that still inserted would be the same bug wearing a
@@ -413,6 +417,9 @@ test("an absurd amount is refused on every write that carries one", async ({ api
     body: { as_of: "2026-07-31", value_minor: over },
   });
   expect(valuation.response.status).toBe(422);
+  // Names the field and the bound, so a caller can tell a scaled-twice figure from a typo
+  // rather than being told only that something was unprocessable.
+  expect(valuation.error?.error.message).toContain("value_minor");
   expect((await api.GET("/api/accounts/{id}/valuations", { params: { path: { id: house.id } } })).data)
     .toHaveLength(0);
 

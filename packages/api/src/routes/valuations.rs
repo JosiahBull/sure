@@ -1,9 +1,10 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 
 use crate::error::AppResult;
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub use sure_core::{NewValuation, Valuation};

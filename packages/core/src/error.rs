@@ -131,6 +131,26 @@ pub struct ErrorDetail {
     pub message: String,
 }
 
+/// Bound a message that came from outside before it is stored or returned.
+///
+/// Both callers hold text someone else wrote: a provider's error `Display` (which has
+/// historically carried the upstream payload with it) and `serde`'s deserialisation error
+/// (which quotes the offending value out of the request body). Neither is length-bounded by
+/// anything upstream of it, and both end up somewhere that matters — a durable `TEXT`
+/// column served back over HTTP, or a 4xx body, which the error mapping passes to the client
+/// verbatim because only 5xx is scrubbed.
+///
+/// Truncation is by `char`, not by byte: the byte at `max_chars` may be mid-codepoint in
+/// UTF-8 input and slicing there panics. The marker is appended so a reader can tell the
+/// text is not the whole message.
+pub fn truncate_for_wire(text: &str, max_chars: usize) -> String {
+    let mut out: String = text.chars().take(max_chars).collect();
+    if out.len() < text.len() {
+        out.push_str("… (truncated)");
+    }
+    out
+}
+
 /// The response-shaping helpers live in the `axum`-gated module below; re-exported here so
 /// callers name them as `sure_core::error::{clothe_error, ..}` (and `sure_api::limits`
 /// re-exports them again, where the middleware that uses them lives).

@@ -6,6 +6,7 @@
 pub mod cache;
 pub mod config;
 pub mod etag;
+pub mod extract;
 pub mod limits;
 pub mod openapi;
 pub mod routes;

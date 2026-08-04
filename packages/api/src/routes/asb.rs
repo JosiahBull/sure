@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::routing::post;
-use axum::{Json, Router};
+use axum::Router;
 use chrono::NaiveDate;
 use serde::Deserialize;
 use sure_app::reports::ReportQuery;
@@ -43,6 +43,7 @@ use utoipa::IntoParams;
 
 use crate::config::Limits;
 use crate::error::{AppError, AppResult};
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub use sure_core::{AsbImportResult, AsbUndoResult, AsbUploadResult};

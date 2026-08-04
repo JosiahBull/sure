@@ -1,12 +1,13 @@
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 use sure_core::{AccountKind, AccountMetadata};
 use utoipa::IntoParams;
 
 use crate::error::{AppError, AppResult};
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub use sure_core::StockPrice;

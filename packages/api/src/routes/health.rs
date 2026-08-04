@@ -1,7 +1,8 @@
-use axum::{routing::get, Json, Router};
+use axum::{routing::get, Router};
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::extract::Json;
 use crate::state::AppState;
 
 // OTEL span names for this module's handlers.

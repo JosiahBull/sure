@@ -1,10 +1,11 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::Router;
 use serde::Deserialize;
 
 use crate::error::AppResult;
+use crate::extract::Json;
 use crate::state::AppState;
 
 // Account kinds/classes + typed metadata come from sure-core; the data model lives there

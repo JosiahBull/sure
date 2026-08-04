@@ -34,16 +34,12 @@ pub const MAX_SYNC_DETAIL_CHARS: usize = 500;
 /// from a route whose *inbound* cap is 2 MiB.
 ///
 /// So cap it here, at the one place both copies are made, rather than trusting every
-/// provider's `Display` to be terse. Truncation is on a char boundary (the byte at
-/// [`MAX_SYNC_DETAIL_CHARS`] may be mid-codepoint in a UTF-8 body, and slicing there
-/// panics) and appends a marker so a reader knows the text is not the whole error.
+/// provider's `Display` to be terse. The bounding itself is
+/// [`sure_core::error::truncate_for_wire`], shared with the request-body extractor, which has
+/// the same problem from the other direction: `serde`'s error quotes the offending value out
+/// of a body nothing has bounded.
 pub fn sync_detail(e: &anyhow::Error) -> String {
-    let text = e.to_string();
-    let mut out: String = text.chars().take(MAX_SYNC_DETAIL_CHARS).collect();
-    if out.len() < text.len() {
-        out.push_str("… (truncated)");
-    }
-    out
+    sure_core::error::truncate_for_wire(&e.to_string(), MAX_SYNC_DETAIL_CHARS)
 }
 
 /// Holds one provider's single-flight slot for the duration of a sync and gives it back on

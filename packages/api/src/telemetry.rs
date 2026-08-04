@@ -375,7 +375,7 @@ fn is_json(response: &Response) -> bool {
 
 /// A stable machine-readable code for a framework-generated rejection, in the same style
 /// as [`AppError::code`](crate::error::AppError::code).
-fn status_code_slug(status: StatusCode) -> &'static str {
+pub(crate) fn status_code_slug(status: StatusCode) -> &'static str {
     match status {
         StatusCode::PAYLOAD_TOO_LARGE => "payload_too_large",
         StatusCode::METHOD_NOT_ALLOWED => "method_not_allowed",

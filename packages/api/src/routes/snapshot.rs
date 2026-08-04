@@ -5,12 +5,13 @@
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
-use axum::{Json, Router};
+use axum::Router;
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
 use crate::config::Limits;
 use crate::error::AppResult;
+use crate::extract::Json;
 use crate::limits::overloaded_response;
 use crate::state::AppState;
 

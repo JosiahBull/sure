@@ -6,12 +6,13 @@
 //! `docs/architecture-refactor.md`).
 
 use axum::extract::{Path, Query, State};
-use axum::{Json, Router};
+use axum::Router;
 use serde::{Deserialize, Serialize};
 use sure_core::{AccountClass, AccountKind, Ownership};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::error::{AppError, AppResult};
+use crate::extract::Json;
 use crate::state::AppState;
 
 // ---- query params --------------------------------------------------------
