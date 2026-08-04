@@ -184,6 +184,40 @@ impl Default for SimulationParams {
     }
 }
 
+/// Everything a Monte Carlo run needs, loaded and owned — the boundary between the awaiting
+/// half of a simulation and the purely computational half.
+///
+/// Produced by [`ForecastService::simulate_inputs`], consumed by
+/// [`ForecastService::simulate_from`]. Owned and `Send + 'static` on purpose: that is what
+/// lets a request handler move it onto the blocking pool (`Shutdown::spawn_blocking`) and get
+/// the several-hundred-millisecond RNG loop off the async workers, without `sure-app` having
+/// to know that a runtime exists. Every field is a value, never a borrow of the service or of
+/// the params — a `&SimulationParams` here would tie the compute to the request's lifetime and
+/// defeat the whole arrangement, which is why the one field it needs (`seed`) is copied in.
+///
+/// The fields are deliberately not `pub`: nothing outside this module has any business
+/// assembling a half-built simulation, and the two functions above are the only legal way to
+/// obtain or spend one.
+pub struct SimulationInputs {
+    accounts: Vec<sure_core::Account>,
+    today: NaiveDate,
+    tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>>,
+    val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>>,
+    fx: Fx,
+    /// The projection currency's code.
+    base: String,
+    horizon: i64,
+    n_paths: usize,
+    /// Already resolved from `SimulationParams::seed` (or drawn) on the async side, so the
+    /// compute half is a pure function of this struct.
+    seed: u64,
+    /// Reported back out in [`ForecastResult::assumptions`]; the projection itself has
+    /// already been distilled into `account_sims`/`category_sims`.
+    assumptions: Vec<ResolvedAssumption>,
+    account_sims: Vec<AccountSim>,
+    category_sims: Vec<CategorySim>,
+}
+
 /// A percentile band across every simulated path, in the report currency's minor units.
 #[derive(Debug, Clone, Default)]
 pub struct Band {
@@ -534,7 +568,26 @@ impl ForecastService {
 
     /// Monte Carlo projection: `params.simulations` independent monthly paths out to
     /// `params.horizon_months`, aggregated into percentile bands per month.
+    ///
+    /// The whole operation, loads and arithmetic together, for every caller that is not a
+    /// request handler — tests, the scheduler, anything holding the service directly. It is
+    /// exactly [`Self::simulate_inputs`] followed by [`Self::simulate_from`]; `GET
+    /// /api/forecast` calls those two halves itself so the second one can run on the
+    /// blocking pool instead of on an async worker (see [`SimulationInputs`]). Both routes
+    /// through the code do identical arithmetic in identical order, which
+    /// `simulate_matches_the_two_step_split` pins for a fixed seed.
     pub async fn simulate(&self, params: &SimulationParams) -> AppResult<ForecastResult> {
+        let inputs = self.simulate_inputs(params).await?;
+        Self::simulate_from(inputs)
+    }
+
+    /// The awaiting half of [`Self::simulate`]: everything that reads the database, plus the
+    /// per-account/per-category setup that needs an `await` to build.
+    ///
+    /// Returns an owned, `Send + 'static` bundle so the caller can hand the arithmetic to a
+    /// thread that is allowed to block. Nothing here is expensive in CPU; the loads dominate,
+    /// and they are all `await`s, so a runtime worker can park on them like any other query.
+    pub async fn simulate_inputs(&self, params: &SimulationParams) -> AppResult<SimulationInputs> {
         let today = self.clock.today();
         let horizon = params
             .horizon_months
@@ -658,6 +711,60 @@ impl ForecastService {
             });
         }
 
+        // Drawn here, on the async side, and carried into the compute half by value. It must
+        // *not* move inside `simulate_from`: a caller that passes an explicit seed is asking
+        // for a reproducible run, and re-drawing per invocation would make the same
+        // `SimulationInputs` produce different numbers each time it were used.
+        let seed = params.seed.unwrap_or_else(rand::random);
+
+        Ok(SimulationInputs {
+            accounts,
+            today,
+            tx_by_acct,
+            val_by_acct,
+            fx,
+            base,
+            horizon,
+            n_paths,
+            seed,
+            assumptions,
+            account_sims,
+            category_sims,
+        })
+    }
+
+    /// The synchronous half of [`Self::simulate`]: the Monte Carlo loop and the percentile
+    /// aggregation, over inputs already loaded by [`Self::simulate_inputs`].
+    ///
+    /// Free of `self`, free of `.await`, and therefore safe to run on the blocking pool —
+    /// which is the point. `simulations × horizon_months × accounts` random draws is tens of
+    /// milliseconds to seconds of *uninterrupted* CPU, and on an async worker that is a
+    /// thread the runtime cannot use for anything else in the meantime: on a four-worker box
+    /// four concurrent `GET /api/forecast`s stop the whole process — no connections accepted,
+    /// `/api/health` silent, no scheduler tick, no shutdown watcher — and no external failure
+    /// is needed to get there, since one dashboard load fans out several report calls. It also
+    /// makes the request deadline real: `tokio::time::timeout` can only fire at an `.await`
+    /// inside the future it wraps, so while this ran inline the timeout was not observed until
+    /// the work had already finished and the completed response was thrown away.
+    ///
+    /// The RNG is owned (`StdRng::seed_from_u64`), never thread-local, so which thread runs
+    /// this cannot change a single figure.
+    pub fn simulate_from(inputs: SimulationInputs) -> AppResult<ForecastResult> {
+        let SimulationInputs {
+            accounts,
+            today,
+            tx_by_acct,
+            val_by_acct,
+            fx,
+            base,
+            horizon,
+            n_paths,
+            seed,
+            assumptions,
+            account_sims,
+            category_sims,
+        } = inputs;
+
         let cash_start: f64 = accounts
             .iter()
             .filter(|a| {
@@ -687,7 +794,6 @@ impl ForecastService {
             })
             .sum();
 
-        let seed = params.seed.unwrap_or_else(rand::random);
         let mut rng = StdRng::seed_from_u64(seed);
 
         let mut month_samples: Vec<MonthSamples> = (0..horizon)
@@ -2689,6 +2795,100 @@ mod tests {
                 Arc::new(FakeCrons),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
+        }
+
+        /// The two-step path `GET /api/forecast` takes — [`ForecastService::simulate_inputs`]
+        /// on a runtime worker, then [`ForecastService::simulate_from`] on the blocking pool —
+        /// must be the *same* simulation as one-shot [`ForecastService::simulate`], down to
+        /// the last minor unit of every band and every reported assumption.
+        ///
+        /// This is the acceptance criterion for having moved the Monte Carlo loop off the
+        /// async workers at all. Getting the CPU off the reactor is a *scheduling* change; a
+        /// scheduling change that moves a figure is not an optimisation, it is a wrong number
+        /// in the household's forecast. The two live risks it pins: the seed being re-drawn on
+        /// the compute side (which would make the split path non-reproducible even under an
+        /// explicit `seed`), and the per-account/per-category setup loops being reordered
+        /// relative to the draws they feed, since `StdRng` is a stream and the *order* of
+        /// samples is part of the answer.
+        ///
+        /// It also runs `simulate_from` outside `block_on` entirely, which is the other half
+        /// of the contract: the compute half must not need a reactor, because on the blocking
+        /// pool there isn't one.
+        #[test]
+        fn simulate_matches_the_two_step_split() {
+            let today = d("2026-07-01");
+
+            // A stochastic account (valuation series), a cash account with real movements,
+            // and an income category — so all three of `account_sims`, the cash pool, and
+            // `category_sims` are exercised rather than just the first.
+            let monthly = (1.08f64).powf(1.0 / 12.0);
+            let mut v = 250_000_00i64;
+            let mut valuations = Vec::new();
+            for i in 0..24 {
+                let date = today - chrono::Duration::days((24 - i) * 30);
+                valuations.push(valued(1, date, v));
+                v = (v as f64 * monthly) as i64;
+            }
+            let mut txns = Vec::new();
+            let mut spend = Vec::new();
+            for i in 0..24 {
+                let date = today - chrono::Duration::days((24 - i) * 30);
+                txns.push(LedgerTx {
+                    account_id: 2,
+                    posted_at: date.to_string(),
+                    amount_minor: 400_000 + i * 1_000,
+                });
+                spend.push(SpendTransaction {
+                    posted_at: date.to_string(),
+                    amount_minor: 400_000 + i * 1_000,
+                    currency_code: "NZD".into(),
+                    category_id: Some(10),
+                    is_one_off: false,
+                    linked_transaction_id: None,
+                    account_kind: AK::Bank,
+                    attribution: sure_core::Ownership::Joint,
+                });
+            }
+
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let svc = make_service(
+                vec![
+                    account(1, AK::Brokerage, "NZD"),
+                    account(2, AK::Bank, "NZD"),
+                ],
+                valuations,
+                txns,
+                vec![ReportCategory {
+                    id: 10,
+                    parent_id: None,
+                    name: "Salary".into(),
+                    color: None,
+                    kind: CategoryKind::Income,
+                }],
+                spend,
+                Vec::new(),
+                today,
+            );
+
+            let params = SimulationParams {
+                horizon_months: 6,
+                simulations: 300,
+                currency: None,
+                seed: Some(1234),
+            };
+
+            let one_shot = rt.block_on(svc.simulate(&params)).unwrap();
+            let inputs = rt.block_on(svc.simulate_inputs(&params)).unwrap();
+            let split = ForecastService::simulate_from(inputs).unwrap();
+
+            // Guards the assertion below against passing on two empty results.
+            assert_eq!(one_shot.months.len(), 6);
+            assert!(!one_shot.assumptions.is_empty());
+            assert_ne!(one_shot.months[0].net_worth.median_minor, 0);
+
+            // Whole-result structural equality, rather than a field-by-field list that a new
+            // field could silently escape.
+            assert_eq!(format!("{one_shot:#?}"), format!("{split:#?}"));
         }
 
         /// A brokerage account with two years of steady 10%/yr appreciation should

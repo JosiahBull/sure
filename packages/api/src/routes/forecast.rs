@@ -6,10 +6,12 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Router;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+use crate::compute;
 use crate::error::{AppError, AppResult};
 use crate::extract::Json;
 use crate::state::AppState;
@@ -245,24 +247,71 @@ pub async fn list_assumptions(
 /// A Monte Carlo net-worth/cash-flow projection: `simulations` independent monthly
 /// paths out to `horizon_months`, aggregated into percentile bands (P10/P25/median/
 /// mean/P75/P90) per month, plus the resolved assumptions actually used.
+// Kept out of the doc comment (utoipa publishes that verbatim as the endpoint description, and
+// an internal scheduling detail tells an API consumer nothing):
+//
+// This is the most CPU-bound handler in the crate (the report aggregations are the other kind)
+// — `simulations × horizon_months × accounts` random draws, with no `.await` anywhere inside
+// the loop. Two consequences followed from running that inline, and both are why it is split
+// here:
+//
+//  * the deadline was fiction. `tokio::time::timeout` (`crate::cache::timeout`) can only fire
+//    at an await point *inside* the future it wraps, and there is none in the loop — so the
+//    30s budget was not observed until the work had already finished, at which point a
+//    complete response was thrown away and the client got a 408 for CPU already spent.
+//  * the worker was held. On a four-worker box four concurrent `GET /api/forecast`s meant no
+//    connections accepted, `/api/health` silent, no scheduler tick and no shutdown watcher —
+//    with no external failure needed, since one SPA dashboard load fans out several report
+//    calls.
+//
+// So: `simulate_inputs` awaits the loads on the runtime as before, then the arithmetic runs on
+// the blocking pool under a `compute` slot. Not a single figure changes — the RNG is an owned
+// `StdRng` seeded before the closure is built, never a thread-local — which
+// `sure_app::forecast`'s `simulate_matches_the_two_step_split` pins.
 #[utoipa::path(get, path = "/api/forecast", tag = "forecast", params(ForecastQuery),
     responses(
         (status = 200, body = ForecastResult),
         (status = 400, description = "unknown `currency`", body = crate::error::ErrorBody),
+        // Declared, because the refusal arrives in the standard `{ error: { code, message } }`
+        // envelope with code `overloaded` like every other "busy" answer — a client that
+        // expected an empty 503 body would fail to read it.
+        (status = 503, description = "every compute slot is busy; retry after `Retry-After`",
+         body = crate::error::ErrorBody),
     ))]
 #[tracing::instrument(
     name = FORECAST_SIMULATE,
     level = "debug",
     skip_all,
     fields(query = ?q),
-    ret(level = tracing::Level::DEBUG),
+    // No `ret`: the response is now a `Response`, which logs as opaque bytes rather than the
+    // bands a reader would want. `err` still carries the interesting case.
     err(level = tracing::Level::WARN),
 )]
 pub async fn simulate(
     State(st): State<AppState>,
     Query(q): Query<ForecastQuery>,
-) -> AppResult<Json<ForecastResult>> {
-    Ok(Json(st.forecast.simulate(&(&q).into()).await?.into()))
+) -> AppResult<Response> {
+    let inputs = st.forecast.simulate_inputs(&(&q).into()).await?;
+
+    // Acquired *after* the loads and released when the handler returns, so a slot is only held
+    // while a core is actually being used. Shed rather than queued: a client waiting behind a
+    // pile of full simulations has given up long before its turn arrives.
+    let Some(_slot) = compute::try_slot() else {
+        return Ok(compute::shed(FORECAST_SIMULATE));
+    };
+
+    // `spawn_blocking` yields a `JoinHandle`, hence the two nested results: the outer is
+    // "did the task complete", the inner is the simulation's own. A `JoinError` means the
+    // closure panicked — mapped to the same scrubbed 500 `CatchPanicLayer` produces for an
+    // inline panic, never unwrapped (that would re-panic here, on the runtime worker awaiting
+    // the join). See `crate::compute::joined`.
+    let result = st
+        .shutdown
+        .spawn_blocking(move || sure_app::forecast::ForecastService::simulate_from(inputs))
+        .await
+        .map_err(|e| compute::joined(e, FORECAST_SIMULATE))??;
+
+    Ok(Json(ForecastResult::from(result)).into_response())
 }
 
 // ---- assumption overrides ---------------------------------------------------------

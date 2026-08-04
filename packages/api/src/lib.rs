@@ -4,6 +4,7 @@
 #![allow(clippy::inconsistent_digit_grouping)]
 
 pub mod cache;
+pub mod compute;
 pub mod config;
 pub mod etag;
 pub mod extract;

@@ -6,11 +6,13 @@
 //! `docs/architecture-refactor.md`).
 
 use axum::extract::{Path, Query, State};
+use axum::response::{IntoResponse, Response};
 use axum::Router;
 use serde::{Deserialize, Serialize};
 use sure_core::{AccountClass, AccountKind, Ownership};
 use utoipa::{IntoParams, ToSchema};
 
+use crate::compute;
 use crate::error::{AppError, AppResult};
 use crate::extract::Json;
 use crate::state::AppState;
@@ -369,70 +371,139 @@ impl From<sure_app::reports::EquityPosition> for EquityPosition {
 
 // ---- handlers -------------------------------------------------------------
 
+// Kept out of the doc comments below (utoipa publishes those verbatim as the endpoint
+// description, and an internal scheduling detail tells an API consumer nothing):
+//
+// Three of the five handlers here run their aggregation on the blocking pool rather than on the
+// runtime worker that accepted the request, under `crate::compute`'s process-wide slot. Both
+// halves of the reason are in `sure_app::reports::NetWorthInputs`: there is no `.await` inside a
+// report aggregation, so (a) `crate::cache::timeout`'s deadline could not fire until the work had
+// already finished — a completed response thrown away and a 408 returned for CPU already spent —
+// and (b) the worker was held throughout, so on a four-worker box four concurrent report requests
+// meant no connections accepted, `/api/health` silent, no scheduler tick and no shutdown watcher,
+// with no external failure required (one SPA dashboard load fans out several of these).
+//
+// `balances` and `equity_position` stay inline: their arithmetic is one `account_value_at` call
+// per account on a *single* date, bounded by how many accounts a household has rather than by the
+// ledger or a date range. See those two service methods' doc comments.
+
 /// Net worth over time, sampled at the requested interval.
 #[utoipa::path(get, path = "/api/reports/net-worth", tag = "reports", params(NetWorthQuery),
     responses((status = 200, body = NetWorthSeries),
         (status = 400, description = "unrecognised `interval` or unknown `currency`",
+            body = crate::error::ErrorBody),
+        // Declared, because the refusal arrives in the standard `{ error: { code, message } }`
+        // envelope with code `overloaded` like every other "busy" answer — a client that
+        // expected an empty 503 body would fail to read it.
+        (status = 503, description = "every compute slot is busy; retry after `Retry-After`",
             body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = REPORTS_NET_WORTH,
     level = "debug",
     skip_all,
     fields(query = ?q),
-    ret(level = tracing::Level::DEBUG),
+    // No `ret`: the response is now a `Response`, which logs as opaque bytes rather than the
+    // series a reader would want. `err` still carries the interesting case.
     err(level = tracing::Level::WARN),
 )]
 pub async fn net_worth(
     State(st): State<AppState>,
     Query(q): Query<NetWorthQuery>,
-) -> AppResult<Json<NetWorthSeries>> {
+) -> AppResult<Response> {
     let query: sure_app::reports::NetWorthQuery = (&q).try_into()?;
-    Ok(Json(st.reports.net_worth(&query).await?.into()))
+    let inputs = st.reports.net_worth_inputs(&query).await?;
+
+    // Acquired *after* the loads and released when the handler returns, so a slot is only held
+    // while a core is actually being used. Shed rather than queued: a client waiting behind a
+    // pile of full-ledger walks has given up long before its turn arrives.
+    let Some(_slot) = compute::try_slot() else {
+        return Ok(compute::shed(REPORTS_NET_WORTH));
+    };
+
+    // One `?`, not two: `net_worth_from` is infallible, so the only failure is the join itself.
+    // A `JoinError` means the closure panicked — mapped to the same scrubbed 500
+    // `CatchPanicLayer` produces for an inline panic, never unwrapped (that would re-panic here,
+    // on the runtime worker awaiting the join). See `crate::compute::joined`.
+    let series = st
+        .shutdown
+        .spawn_blocking(move || sure_app::reports::ReportService::net_worth_from(inputs))
+        .await
+        .map_err(|e| compute::joined(e, REPORTS_NET_WORTH))?;
+
+    Ok(Json(NetWorthSeries::from(series)).into_response())
 }
 
 /// Income/expense totals per top-level category for the period.
 #[utoipa::path(get, path = "/api/reports/category-breakdown", tag = "reports", params(ReportQuery),
     responses((status = 200, body = CategoryBreakdown),
         (status = 400, description = "unknown `currency` or `attributed_to`",
+            body = crate::error::ErrorBody),
+        // Same `overloaded` envelope as every other "busy" answer — see `net_worth` above.
+        (status = 503, description = "every compute slot is busy; retry after `Retry-After`",
             body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = REPORTS_CATEGORY_BREAKDOWN,
     level = "debug",
     skip_all,
     fields(query = ?q),
-    ret(level = tracing::Level::DEBUG),
+    // No `ret`: an opaque `Response` now, as in `net_worth`.
     err(level = tracing::Level::WARN),
 )]
 pub async fn category_breakdown(
     State(st): State<AppState>,
     Query(q): Query<ReportQuery>,
-) -> AppResult<Json<CategoryBreakdown>> {
-    Ok(Json(
-        st.reports
-            .category_breakdown(&(&q).try_into()?)
-            .await?
-            .into(),
-    ))
+) -> AppResult<Response> {
+    let inputs = st
+        .reports
+        .category_breakdown_inputs(&(&q).try_into()?)
+        .await?;
+
+    let Some(_slot) = compute::try_slot() else {
+        return Ok(compute::shed(REPORTS_CATEGORY_BREAKDOWN));
+    };
+
+    let breakdown = st
+        .shutdown
+        .spawn_blocking(move || sure_app::reports::ReportService::category_breakdown_from(inputs))
+        .await
+        .map_err(|e| compute::joined(e, REPORTS_CATEGORY_BREAKDOWN))?;
+
+    Ok(Json(CategoryBreakdown::from(breakdown)).into_response())
 }
 
 /// Money-flow graph: income categories -> cash flow -> expense categories (+ savings).
 #[utoipa::path(get, path = "/api/reports/sankey", tag = "reports", params(ReportQuery),
     responses((status = 200, body = SankeyGraph),
         (status = 400, description = "unknown `currency` or `attributed_to`",
+            body = crate::error::ErrorBody),
+        // Same `overloaded` envelope as every other "busy" answer — see `net_worth` above.
+        (status = 503, description = "every compute slot is busy; retry after `Retry-After`",
             body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = REPORTS_SANKEY,
     level = "debug",
     skip_all,
     fields(query = ?q),
-    ret(level = tracing::Level::DEBUG),
+    // No `ret`: an opaque `Response` now, as in `net_worth`.
     err(level = tracing::Level::WARN),
 )]
 pub async fn sankey(
     State(st): State<AppState>,
     Query(q): Query<ReportQuery>,
-) -> AppResult<Json<SankeyGraph>> {
-    Ok(Json(st.reports.sankey(&(&q).try_into()?).await?.into()))
+) -> AppResult<Response> {
+    let inputs = st.reports.sankey_inputs(&(&q).try_into()?).await?;
+
+    let Some(_slot) = compute::try_slot() else {
+        return Ok(compute::shed(REPORTS_SANKEY));
+    };
+
+    let graph = st
+        .shutdown
+        .spawn_blocking(move || sure_app::reports::ReportService::sankey_from(inputs))
+        .await
+        .map_err(|e| compute::joined(e, REPORTS_SANKEY))?;
+
+    Ok(Json(SankeyGraph::from(graph)).into_response())
 }
 
 /// Current value of each (non-archived) account plus a base-currency total.

@@ -2331,6 +2331,15 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
+                /** @description every compute slot is busy; retry after `Retry-After` */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
             };
         };
         put?: never;
@@ -3520,6 +3529,15 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
+                /** @description every compute slot is busy; retry after `Retry-After` */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
             };
         };
         put?: never;
@@ -3575,6 +3593,15 @@ export interface paths {
                 };
                 /** @description unrecognised `interval` or unknown `currency` */
                 400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                /** @description every compute slot is busy; retry after `Retry-After` */
+                503: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -3638,6 +3665,15 @@ export interface paths {
                 };
                 /** @description unknown `currency` or `attributed_to` */
                 400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                /** @description every compute slot is busy; retry after `Retry-After` */
+                503: {
                     headers: {
                         [name: string]: unknown;
                     };

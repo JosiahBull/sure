@@ -17,7 +17,7 @@ use sure_core::{
 };
 
 use crate::fx::Fx;
-use crate::ports::{Clock, FxRatesRepo, ReportRepo, SpendTransaction};
+use crate::ports::{AccountCurrency, Clock, FxRatesRepo, ReportRepo, SpendTransaction};
 
 // ---- query params --------------------------------------------------------
 
@@ -915,6 +915,71 @@ fn emit_flow_node(
     value_minor
 }
 
+// ---- loaded inputs: the boundary between awaiting and computing -------------
+
+/// Everything [`ReportService::net_worth_from`] needs, loaded and owned.
+///
+/// **Why the three `*Inputs` types in this section exist at all.** A report aggregation is
+/// CPU-bound and has no `.await` anywhere in it: [`ReportService::net_worth`] walks
+/// `sample_dates × accounts` through [`account_value_at`], and the two spend reports walk
+/// every transaction in the window through a category-ancestor chain. Run inline on a runtime
+/// worker — as all of this was — that costs two things at once:
+///
+/// * **the request deadline was fiction.** `tokio::time::timeout` (`sure-api`'s
+///   `cache::timeout`) can only fire at an await point *inside* the future it wraps, and there
+///   is none here, so the budget was not observed until the work had already finished — at
+///   which point a complete response was thrown away and the client got a 408 for CPU already
+///   spent.
+/// * **the worker was held for the whole run.** On a four-worker box four concurrent report
+///   requests mean no connections accepted, `/api/health` silent, no scheduler tick and no
+///   shutdown watcher. No external failure is needed to get there: one SPA dashboard load fans
+///   out several of these calls.
+///
+/// So each expensive report splits in two — a `*_inputs` method holding every `.await` and
+/// returning one of these bundles, and a `*_from` associated function that is the arithmetic
+/// alone, `self`-free and await-free and therefore safe to hand to a thread that may block.
+/// `sure-api`'s `routes::reports` does exactly that, under a process-wide compute slot, and
+/// `sure-app` still knows nothing about a runtime. The one-shot `async fn` is kept for every
+/// other caller and *is* the two halves in sequence, which
+/// `windowing::the_split_compute_path_is_the_same_report` pins figure-for-figure — a
+/// scheduling change that moves a number is not an optimisation, it is a wrong balance.
+///
+/// Every field is a value, never a borrow of the service or of the query: a borrow would tie
+/// the compute to the request's lifetime and defeat the whole arrangement. They are private
+/// because nothing outside this module has any business assembling a half-built report.
+pub struct NetWorthInputs {
+    base: String,
+    fx: Fx,
+    accounts: Vec<AccountCurrency>,
+    tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>>,
+    val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>>,
+    /// Already resolved from the window and interval, so the compute half is a pure function
+    /// of this struct — the defaulted `from` costs two `MIN` queries to find.
+    sample_dates: Vec<NaiveDate>,
+}
+
+/// Everything [`ReportService::category_breakdown_from`] needs, loaded and owned. See
+/// [`NetWorthInputs`] for why the split exists and what the shape guarantees.
+pub struct CategoryBreakdownInputs {
+    base: String,
+    fx: Fx,
+    cats: Categories,
+    spend: Vec<SpendTransaction>,
+    /// The resolved window, echoed back in the report. Carried as dates rather than the
+    /// caller's strings so the rendering stays where it always was.
+    from: NaiveDate,
+    to: NaiveDate,
+}
+
+/// Everything [`ReportService::sankey_from`] needs, loaded and owned. See [`NetWorthInputs`]
+/// for why the split exists and what the shape guarantees.
+pub struct SankeyInputs {
+    base: String,
+    fx: Fx,
+    cats: Categories,
+    spend: Vec<SpendTransaction>,
+}
+
 // ---- service ---------------------------------------------------------------
 
 /// The error for a `?currency=` that isn't in the `currencies` table.
@@ -1002,7 +1067,24 @@ impl ReportService {
     }
 
     /// Net worth over time, sampled at the requested interval.
+    ///
+    /// Loads and arithmetic together, for every caller that is not a request handler — tests,
+    /// the scheduler, anything holding the service directly. It is exactly
+    /// [`Self::net_worth_inputs`] followed by [`Self::net_worth_from`]; `GET
+    /// /api/reports/net-worth` calls those two halves itself so the second can run on the
+    /// blocking pool instead of on an async worker (see [`NetWorthInputs`]).
     pub async fn net_worth(&self, q: &NetWorthQuery) -> AppResult<NetWorthSeries> {
+        let inputs = self.net_worth_inputs(q).await?;
+        Ok(Self::net_worth_from(inputs))
+    }
+
+    /// The awaiting half of [`Self::net_worth`]: the rate table, the account list, the window
+    /// resolution, and the windowed ledger read.
+    ///
+    /// Returns an owned, `Send + 'static` bundle so a handler can hand the arithmetic to a
+    /// thread that is allowed to block. Nothing here is expensive in CPU: the loads dominate
+    /// and they are all `await`s, so a runtime worker parks on them like any other query.
+    pub async fn net_worth_inputs(&self, q: &NetWorthQuery) -> AppResult<NetWorthInputs> {
         let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
 
         let mut accounts = self.reports.account_currencies().await?;
@@ -1040,6 +1122,35 @@ impl ReportService {
 
         let sample_dates = sample_dates(from, to, q.interval.unwrap_or(Interval::Month));
 
+        Ok(NetWorthInputs {
+            base,
+            fx,
+            accounts,
+            tx_by_acct,
+            val_by_acct,
+            sample_dates,
+        })
+    }
+
+    /// The synchronous half of [`Self::net_worth`]: a point-in-time valuation of every account
+    /// on every sample date, converted and split into assets and liabilities.
+    ///
+    /// Free of `self`, free of `.await`, and therefore safe to run on the blocking pool — which
+    /// is the point, because this is the most expensive aggregation in the module. It is
+    /// `sample_dates × accounts` calls to [`account_value_at`], each of which re-walks that
+    /// account's transactions and valuations, so the cost scales with the *product* of the
+    /// requested date range and the ledger; a daily year is 400 samples over every account.
+    /// See [`NetWorthInputs`] for what running that on an async worker cost.
+    pub fn net_worth_from(inputs: NetWorthInputs) -> NetWorthSeries {
+        let NetWorthInputs {
+            base,
+            fx,
+            accounts,
+            tx_by_acct,
+            val_by_acct,
+            sample_dates,
+        } = inputs;
+
         let mut points = Vec::with_capacity(sample_dates.len());
         for date in sample_dates {
             let mut assets = 0.0f64;
@@ -1067,16 +1178,30 @@ impl ReportService {
             });
         }
 
-        Ok(NetWorthSeries {
+        NetWorthSeries {
             currency: base,
             points,
             unconverted: fx.unconverted(),
             rates_as_of: fx.rates_as_of().map(str::to_string),
-        })
+        }
     }
 
     /// Income/expense totals per top-level category for the period.
+    ///
+    /// As with [`Self::net_worth`]: exactly [`Self::category_breakdown_inputs`] followed by
+    /// [`Self::category_breakdown_from`], kept whole for every caller that is not a request
+    /// handler.
     pub async fn category_breakdown(&self, q: &ReportQuery) -> AppResult<CategoryBreakdown> {
+        let inputs = self.category_breakdown_inputs(q).await?;
+        Ok(Self::category_breakdown_from(inputs))
+    }
+
+    /// The awaiting half of [`Self::category_breakdown`]: the rate table, the category tree,
+    /// the window, and the transactions in it.
+    pub async fn category_breakdown_inputs(
+        &self,
+        q: &ReportQuery,
+    ) -> AppResult<CategoryBreakdownInputs> {
         let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let cats = Categories::load(self.reports.as_ref()).await?;
         let (from, to) = self.window(q.from.as_deref(), q.to.as_deref()).await?;
@@ -1089,6 +1214,33 @@ impl ReportService {
             q.attributed_to,
         )
         .await?;
+
+        Ok(CategoryBreakdownInputs {
+            base,
+            fx,
+            cats,
+            spend,
+            from,
+            to,
+        })
+    }
+
+    /// The synchronous half of [`Self::category_breakdown`]: one pass over every transaction in
+    /// the window, each rolled up to its top-level ancestor and converted.
+    ///
+    /// `self`- and await-free, for the blocking pool. Cheaper per row than
+    /// [`Self::net_worth_from`] but linear in the *whole* window, which defaults to every
+    /// transaction on record: each row costs an ancestor walk (up to 64 hops of hash lookups)
+    /// plus a currency conversion, and the sort at the end is over the surviving categories.
+    pub fn category_breakdown_from(inputs: CategoryBreakdownInputs) -> CategoryBreakdown {
+        let CategoryBreakdownInputs {
+            base,
+            fx,
+            cats,
+            spend,
+            from,
+            to,
+        } = inputs;
 
         // key 0 => uncategorised.
         let mut income: HashMap<i64, f64> = HashMap::new();
@@ -1132,20 +1284,31 @@ impl ReportService {
             v
         };
 
-        Ok(CategoryBreakdown {
+        CategoryBreakdown {
             currency: base,
             from: from.to_string(),
             to: to.to_string(),
             income: to_totals(income),
             expense: to_totals(expense),
-        })
+        }
     }
 
     /// Money-flow graph: income categories -> cash flow -> expense categories (+ savings),
     /// with up to [`SANKEY_MAX_DEPTH`] levels of category hierarchy fanning out from the
     /// hub on each side, so `Partly Group -> Employment -> Income -> Cash flow` reads as
     /// three columns rather than collapsing to one.
+    ///
+    /// As with [`Self::net_worth`]: exactly [`Self::sankey_inputs`] followed by
+    /// [`Self::sankey_from`], kept whole for every caller that is not a request handler.
     pub async fn sankey(&self, q: &ReportQuery) -> AppResult<SankeyGraph> {
+        let inputs = self.sankey_inputs(q).await?;
+        Ok(Self::sankey_from(inputs))
+    }
+
+    /// The awaiting half of [`Self::sankey`] — the same four loads as
+    /// [`Self::category_breakdown_inputs`], which reads the same rows into a different
+    /// aggregation.
+    pub async fn sankey_inputs(&self, q: &ReportQuery) -> AppResult<SankeyInputs> {
         let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let cats = Categories::load(self.reports.as_ref()).await?;
         let (from, to) = self.window(q.from.as_deref(), q.to.as_deref()).await?;
@@ -1158,6 +1321,31 @@ impl ReportService {
             q.attributed_to,
         )
         .await?;
+
+        Ok(SankeyInputs {
+            base,
+            fx,
+            cats,
+            spend,
+        })
+    }
+
+    /// The synchronous half of [`Self::sankey`]: build both roll-up forests from the window's
+    /// transactions, then walk them into nodes and links.
+    ///
+    /// `self`- and await-free, for the blocking pool — and the most allocation-heavy of the
+    /// three splits: a chain `Vec` per transaction on the way in, then a recursive emission
+    /// whose ordering comparator materialises a label `String` per comparison (see
+    /// [`flow_order`], which has to sort because a `HashMap`'s iteration order would otherwise
+    /// move the chart between two identical requests). Linear in the window, which defaults to
+    /// every transaction on record.
+    pub fn sankey_from(inputs: SankeyInputs) -> SankeyGraph {
+        let SankeyInputs {
+            base,
+            fx,
+            cats,
+            spend,
+        } = inputs;
 
         let mut income = FlowForest::default();
         let mut expense = FlowForest::default();
@@ -1240,14 +1428,22 @@ impl ReportService {
             });
         }
 
-        Ok(SankeyGraph {
+        SankeyGraph {
             currency: base,
             nodes,
             links,
-        })
+        }
     }
 
     /// Current value of each (non-archived) account plus a base-currency total.
+    ///
+    /// Deliberately *not* split into a loaded/compute pair the way [`Self::net_worth`],
+    /// [`Self::category_breakdown`] and [`Self::sankey`] are. Its arithmetic is one
+    /// [`account_value_at`] call per account on a single date — tens of calls, over a ledger
+    /// already narrowed to that one day plus its per-account seed — so it is bounded by the
+    /// number of accounts a household has rather than by the ledger or a date range. The
+    /// ceremony (a public inputs type, a second entry point, a figure-equality test to maintain)
+    /// would cost more than the microseconds it moves off the worker.
     pub async fn balances(&self, q: &ReportQuery) -> AppResult<BalancesReport> {
         let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let as_of =
@@ -1294,6 +1490,10 @@ impl ReportService {
 
     /// The equity position of an asset: its value, the liabilities secured against it,
     /// total debt, equity, and the paid-off percentage.
+    ///
+    /// Not split, for the same reason as [`Self::balances`] and more so: one date, one asset and
+    /// its handful of secured debts, so the arithmetic is a fixed handful of
+    /// [`account_value_at`] calls whatever the ledger's size.
     pub async fn equity_position(&self, id: i64, q: &ReportQuery) -> AppResult<EquityPosition> {
         let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let as_of =
@@ -2314,6 +2514,107 @@ mod tests {
                     .collect::<Vec<_>>()
             };
             assert_eq!(links(&before), links(&after));
+        }
+
+        /// The two-step path `GET /api/reports/*` takes — `*_inputs` on a runtime worker, then
+        /// `*_from` on the blocking pool — must be the *same* report as the one-shot `async fn`,
+        /// down to the last minor unit.
+        ///
+        /// This is the acceptance criterion for having moved the aggregations off the async
+        /// workers at all. Getting the CPU off the reactor is a *scheduling* change, and a
+        /// scheduling change that moves a figure is not an optimisation — it is a wrong balance
+        /// on the household's dashboard. The live risks it pins: an input dropped or defaulted
+        /// on the way through the bundle (a `from`/`to` that no longer echoes back, an account
+        /// list filtered on one path and not the other), and the ordering-dependent parts of
+        /// each aggregation — `sample_dates`, and the `HashMap`-iteration sorts the sankey
+        /// emitter relies on — being rebuilt differently on the split path.
+        ///
+        /// It also runs each `*_from` outside `block_on` entirely, which is the other half of
+        /// the contract: the compute halves must not need a reactor, because on the blocking
+        /// pool there isn't one.
+        #[test]
+        fn the_split_compute_path_is_the_same_report() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let q = window("2026-01-01", "2026-02-28");
+            let svc = service(Mode::Windowed);
+
+            // Whole-result structural equality via `Debug`, rather than a field-by-field list a
+            // newly-added field could silently escape. These shapes have no `PartialEq` (they
+            // are report DTOs, only ever serialised), and pinning the rendered form is what the
+            // forecast's `simulate_matches_the_two_step_split` does for the same reason.
+            let one_shot = rt.block_on(svc.category_breakdown(&q)).unwrap();
+            let inputs = rt.block_on(svc.category_breakdown_inputs(&q)).unwrap();
+            let split = ReportService::category_breakdown_from(inputs);
+            // Guards the comparison below against passing on two empty breakdowns.
+            assert_eq!(one_shot.income.len(), 1);
+            assert_eq!(one_shot.expense.len(), 1);
+            assert_eq!(format!("{one_shot:#?}"), format!("{split:#?}"));
+
+            let one_shot = rt.block_on(svc.sankey(&q)).unwrap();
+            let inputs = rt.block_on(svc.sankey_inputs(&q)).unwrap();
+            let split = ReportService::sankey_from(inputs);
+            assert!(one_shot.links.len() >= 2, "income and expense both flow");
+            assert_eq!(format!("{one_shot:#?}"), format!("{split:#?}"));
+
+            // A *pinned* series, not only an agreement between two code paths. The equality
+            // assertions here are symmetric, so a change inside a `*_from` half moves both
+            // sides together and passes — and nothing else in this crate holds the net-worth
+            // walk to an absolute figure. These three month-ends do: the bank's $700 and the
+            // house's $770,000 across the window, the mortgage reconstructed backwards from
+            // July's valuation less each repayment made after the sample date, and the bank's
+            // March deposit arriving in the last point.
+            let series = rt
+                .block_on(svc.net_worth(&NetWorthQuery {
+                    from: Some("2026-01-01".to_string()),
+                    to: Some("2026-03-31".to_string()),
+                    ..Default::default()
+                }))
+                .unwrap();
+            assert_eq!(
+                series
+                    .points
+                    .iter()
+                    .map(|p| (
+                        p.as_of.as_str(),
+                        p.assets_minor,
+                        p.liabilities_minor,
+                        p.net_worth_minor
+                    ))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("2026-01-31", 770_700_00, -484_686_19, 286_013_81),
+                    ("2026-02-28", 770_700_00, -484_251_49, 286_448_51),
+                    ("2026-03-31", 770_750_00, -484_251_49, 286_498_51),
+                ]
+            );
+
+            // Net worth on all three windows the series test uses: the explicit one, the
+            // defaulted one (whose `from` comes from two `MIN` queries on the loading side), and
+            // a weekly sampling that lands several points between the ledger's rows.
+            for q in [
+                NetWorthQuery {
+                    from: Some("2026-01-01".to_string()),
+                    to: Some("2026-03-31".to_string()),
+                    ..Default::default()
+                },
+                NetWorthQuery::default(),
+                NetWorthQuery {
+                    from: Some("2026-01-01".to_string()),
+                    to: Some("2026-02-15".to_string()),
+                    interval: Some(Interval::Week),
+                    ..Default::default()
+                },
+            ] {
+                let one_shot = rt.block_on(svc.net_worth(&q)).unwrap();
+                let inputs = rt.block_on(svc.net_worth_inputs(&q)).unwrap();
+                let split = ReportService::net_worth_from(inputs);
+                assert!(!one_shot.points.is_empty(), "query: {q:?}");
+                assert_eq!(
+                    format!("{one_shot:#?}"),
+                    format!("{split:#?}"),
+                    "query: {q:?}"
+                );
+            }
         }
     }
 }
