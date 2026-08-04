@@ -55,7 +55,7 @@ impl TransactionProvider for AkahuProvider {
             let page = client
                 .get_account_transactions(&user_token, &account_id, start, None, cursor)
                 .await?;
-            out.extend(page.items.into_iter().map(map_transaction));
+            out.extend(page.items.into_iter().filter_map(map_transaction));
             match page.cursor.next {
                 Some(next) => cursor = Some(next),
                 None => break,
@@ -70,7 +70,7 @@ impl TransactionProvider for AkahuProvider {
     async fn list_accounts(&self) -> anyhow::Result<Vec<ProviderAccount>> {
         let (client, user_token) = self.client()?;
         let accounts = client.get_accounts(&user_token).await?;
-        Ok(accounts.items.into_iter().map(map_account).collect())
+        accounts.items.into_iter().map(map_account).collect()
     }
 
     async fn current_balance(
@@ -80,23 +80,25 @@ impl TransactionProvider for AkahuProvider {
         let account_id = external_account_id(ctx.config)?;
         let (client, user_token) = self.client()?;
         let resp = client.get_account(&user_token, &account_id).await?;
-        Ok(Some(map_balance(&resp.item)))
+        Ok(Some(map_balance(&resp.item)?))
     }
 }
 
-fn map_balance(a: &akahu_client::Account) -> ProviderBalance {
-    ProviderBalance {
-        minor: decimal_to_minor(a.balance.current),
+fn map_balance(a: &akahu_client::Account) -> anyhow::Result<ProviderBalance> {
+    Ok(ProviderBalance {
+        minor: required_balance_minor(a)?,
         currency_code: a.balance.currency.code().to_string(),
-        limit_minor: a.balance.limit.map(decimal_to_minor),
+        limit_minor: optional_minor(a.balance.limit, "balance.limit", &a.id),
         institution: a.connection.as_ref().map(|c| c.name.clone()),
-        initial_principal_minor: a
-            .meta
-            .as_ref()
-            .and_then(|m| m.loan_details.as_ref())
-            .and_then(|l| l.initial_principal)
-            .map(decimal_to_minor),
-    }
+        initial_principal_minor: optional_minor(
+            a.meta
+                .as_ref()
+                .and_then(|m| m.loan_details.as_ref())
+                .and_then(|l| l.initial_principal),
+            "meta.loan_details.initial_principal",
+            &a.id,
+        ),
+    })
 }
 
 /// Read and validate the Akahu account id stashed in a provider's `config` at link time.
@@ -178,14 +180,68 @@ fn map_kind_hint(kind: &BankAccountKind, name: &str, has_credit_limit: bool) -> 
 }
 
 /// Convert a decimal dollar amount to minor units (cents), rounding to the nearest cent.
-fn decimal_to_minor(amount: Decimal) -> i64 {
-    (amount * Decimal::from(100)).round().to_i64().unwrap_or(0)
+/// `None` if it doesn't fit.
+///
+/// Both halves have to be checked. `Decimal`'s `Mul` **panics** on overflow
+/// (`panic!("Multiplication overflowed")` — `checked_mul` is the non-panicking form), and
+/// every balance, credit limit, initial principal and transaction amount here is a
+/// `Decimal` deserialized straight off the wire at arbitrary precision, so a single absurd
+/// value would take down whatever is driving the sync — the scheduler's provider poll
+/// included. The `to_i64` then catches the values that scale without overflowing `Decimal`
+/// but still don't fit an `i64` of cents.
+///
+/// Returning `Option` rather than an error is deliberate: this function has no idea *which*
+/// account or transaction it is converting, so the caller — which does — owns the message
+/// and the decision. What no caller may do is substitute a zero (as this used to, via
+/// `to_i64().unwrap_or(0)`): a balance silently reported as $0.00 is indistinguishable from
+/// a real one and lands straight in net worth.
+fn decimal_to_minor(amount: Decimal) -> Option<i64> {
+    amount.checked_mul(Decimal::from(100))?.round().to_i64()
 }
 
-fn map_account(a: akahu_client::Account) -> ProviderAccount {
+/// The `balance.current` of an account, which is load-bearing: every net-worth and
+/// allocation figure downstream is a sum of these, so an unrepresentable one is a hard
+/// error that fails the sync (or the account listing) rather than a number nobody can tell
+/// apart from a real balance.
+fn required_balance_minor(a: &akahu_client::Account) -> anyhow::Result<i64> {
+    decimal_to_minor(a.balance.current).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Akahu account {} reported a balance of {} that does not fit in minor units",
+            a.id,
+            a.balance.current
+        )
+    })
+}
+
+/// A supplementary optional amount (`balance.limit`, `meta.loan_details.initial_principal`)
+/// that doesn't fit is dropped with a WARN instead of failing the sync: these are already
+/// `Option`, "Akahu didn't report one" is a case every caller handles, and losing a credit
+/// limit is not worth losing the balance and transactions that came with it.
+fn optional_minor(
+    amount: Option<Decimal>,
+    field: &'static str,
+    account: &AccountId,
+) -> Option<i64> {
+    let amount = amount?;
+    let minor = decimal_to_minor(amount);
+    if minor.is_none() {
+        tracing::warn!(
+            account = %account,
+            field,
+            amount = %amount,
+            "Akahu amount does not fit in minor units; ignoring this field"
+        );
+    }
+    minor
+}
+
+fn map_account(a: akahu_client::Account) -> anyhow::Result<ProviderAccount> {
     let kind_hint = map_kind_hint(&a.kind, &a.name, a.balance.limit.is_some());
     let institution = a.connection.as_ref().map(|c| c.name.clone());
-    ProviderAccount {
+    // Before `a.id` is consumed below, and fatal for the same reason as in `map_balance`:
+    // an account offered for linking with a bogus balance is worse than one not offered.
+    let balance_minor = required_balance_minor(&a)?;
+    Ok(ProviderAccount {
         external_id: a.id.into_inner(),
         name: a.name,
         currency_code: a.balance.currency.code().to_string(),
@@ -196,15 +252,28 @@ fn map_account(a: akahu_client::Account) -> ProviderAccount {
         authorisation_id: Some(a.authorisation.into_inner()),
         account_number: a.formatted_account,
         kind_hint,
-        balance_minor: decimal_to_minor(a.balance.current),
+        balance_minor,
         supports_transactions: a
             .attributes
             .iter()
             .any(|attr| matches!(attr, Attribute::Transactions)),
-    }
+    })
 }
 
-fn map_transaction(t: akahu_client::Transaction) -> ProviderTransaction {
+/// `None` for a transaction whose amount can't be represented in minor units: one bad row
+/// out of a 100k-transaction history is dropped with a WARN naming it, rather than sinking
+/// the whole sync (and, because a failed sync isn't recorded, re-fetching the same bad row
+/// on every check from then on).
+fn map_transaction(t: akahu_client::Transaction) -> Option<ProviderTransaction> {
+    let Some(amount_minor) = decimal_to_minor(t.amount) else {
+        tracing::warn!(
+            transaction = %t.id,
+            amount = %t.amount,
+            "skipping Akahu transaction whose amount does not fit in minor units"
+        );
+        return None;
+    };
+
     // `category` and `merchant` always arrive together from Akahu's enrichment engine
     // (both fields of the same flattened `enriched_data`), so pull both from one match.
     let (merchant, category) = match t.enriched_data {
@@ -219,10 +288,10 @@ fn map_transaction(t: akahu_client::Transaction) -> ProviderTransaction {
         None => (None, None),
     };
 
-    ProviderTransaction {
+    Some(ProviderTransaction {
         external_id: t.id.into_inner(),
         posted_at: t.date.to_rfc3339(),
-        amount_minor: decimal_to_minor(t.amount),
+        amount_minor,
         // Akahu doesn't expose a distinct per-transaction currency (`amount` is already in
         // the account's own currency); let the import defer to the local account's
         // configured currency, same as the CSV provider's no-currency-column case.
@@ -230,7 +299,7 @@ fn map_transaction(t: akahu_client::Transaction) -> ProviderTransaction {
         description: t.description,
         merchant,
         category,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -255,7 +324,7 @@ mod tests {
 
     #[test]
     fn maps_a_typical_account() {
-        let acc = map_account(fixture_account());
+        let acc = map_account(fixture_account()).expect("a representable balance maps");
         assert_eq!(acc.external_id, "acc_123");
         assert_eq!(acc.name, "Spending Account");
         assert_eq!(acc.currency_code, "NZD");
@@ -290,7 +359,7 @@ mod tests {
                     "attributes": []
                 }}"#
             );
-            map_account(serde_json::from_str::<akahu_client::Account>(&json).unwrap())
+            map_account(serde_json::from_str::<akahu_client::Account>(&json).unwrap()).unwrap()
         };
 
         let mine = account("acc_1", "auth_mine", "Emergency Fund", "12-3456-0000001-51");
@@ -328,7 +397,7 @@ mod tests {
             "attributes": []
         }"#;
         let a: akahu_client::Account = serde_json::from_str(json).unwrap();
-        assert_eq!(map_account(a).institution, Some("ASB".to_string()));
+        assert_eq!(map_account(a).unwrap().institution, Some("ASB".to_string()));
     }
 
     #[test]
@@ -356,7 +425,7 @@ mod tests {
             "attributes": []
         }"#;
         let a: akahu_client::Account = serde_json::from_str(json).unwrap();
-        let bal = map_balance(&a);
+        let bal = map_balance(&a).expect("a representable balance maps");
         assert_eq!(bal.minor, -47_921_483);
         assert_eq!(bal.currency_code, "NZD");
         assert_eq!(bal.limit_minor, None);
@@ -377,7 +446,7 @@ mod tests {
             "type": "CREDIT"
         }"#;
         let t: akahu_client::Transaction = serde_json::from_str(json).unwrap();
-        let txn = map_transaction(t);
+        let txn = map_transaction(t).expect("a representable amount maps");
         assert_eq!(txn.external_id, "trans_790");
         assert_eq!(txn.posted_at, "2026-01-06T09:30:00+00:00");
         assert_eq!(txn.amount_minor, 250_000);
@@ -413,7 +482,7 @@ mod tests {
             }
         }"#;
         let t: akahu_client::Transaction = serde_json::from_str(json).unwrap();
-        let txn = map_transaction(t);
+        let txn = map_transaction(t).expect("a representable amount maps");
         assert_eq!(txn.merchant, Some("The Roastery".to_string()));
         let category = txn
             .category
@@ -435,7 +504,12 @@ mod tests {
             "type": "DEBIT"
         }"#;
         let t: akahu_client::Transaction = serde_json::from_str(json).unwrap();
-        assert_eq!(map_transaction(t).amount_minor, -450);
+        assert_eq!(
+            map_transaction(t)
+                .expect("a representable amount maps")
+                .amount_minor,
+            -450
+        );
     }
 
     #[test]
@@ -555,8 +629,64 @@ mod tests {
             "attributes": []
         }"#;
         let a: akahu_client::Account = serde_json::from_str(json).unwrap();
-        let acc = map_account(a);
+        let acc = map_account(a).expect("a representable balance maps");
         assert_eq!(acc.kind_hint, AccountKind::Mortgage);
         assert_eq!(acc.balance_minor, -47_921_483);
+    }
+
+    #[test]
+    fn refuses_an_amount_that_will_not_fit_in_minor_units() {
+        // Scaling by 100 is what gives out first: `Decimal::MAX` is ~7.9e28, so the value
+        // itself is representable and the product is not. Unchecked, that multiplication
+        // *panicked* (`Multiplication overflowed`) — on the scheduler's provider poll, where
+        // nothing above it catches a panic, that one wire value ended all background work.
+        assert_eq!(decimal_to_minor(Decimal::MAX), None);
+        assert_eq!(decimal_to_minor(Decimal::MIN), None);
+        // Ordinary amounts still convert: sign kept, rounded to the nearest cent, and a
+        // genuine zero still reads as `Some(0)` — the case the old `unwrap_or(0)` made
+        // indistinguishable from failure.
+        assert_eq!(decimal_to_minor(Decimal::new(123_456, 2)), Some(123_456));
+        assert_eq!(decimal_to_minor(Decimal::new(-450, 2)), Some(-450));
+        assert_eq!(decimal_to_minor(Decimal::new(4_567, 3)), Some(457));
+        assert_eq!(decimal_to_minor(Decimal::ZERO), Some(0));
+    }
+
+    #[test]
+    fn an_unrepresentable_balance_is_an_error_not_a_zero() {
+        // Set on the deserialized fixture rather than in its JSON: what matters is the
+        // conversion, and a literal this large in a fixture would only be testing serde.
+        let mut a = fixture_account();
+        a.balance.current = Decimal::MAX;
+        assert!(map_balance(&a).is_err());
+        // And the same account is refused for linking rather than offered as worth $0.00.
+        assert!(map_account(a).is_err());
+    }
+
+    #[test]
+    fn an_unrepresentable_credit_limit_is_dropped_rather_than_fatal() {
+        // A supplementary field is not worth the balance and transactions it arrived with.
+        let mut a = fixture_account();
+        a.balance.limit = Some(Decimal::MAX);
+        let bal = map_balance(&a).expect("the balance itself is representable");
+        assert_eq!(bal.minor, 123_456);
+        assert_eq!(bal.limit_minor, None);
+    }
+
+    #[test]
+    fn skips_a_transaction_whose_amount_will_not_fit() {
+        let json = r#"{
+            "_id": "trans_793",
+            "_account": "acc_123",
+            "_connection": "conn_1",
+            "created_at": "2026-01-06T10:00:00.000Z",
+            "date": "2026-01-06T09:30:00.000Z",
+            "description": "Salary",
+            "amount": 2500.00,
+            "type": "CREDIT"
+        }"#;
+        let mut t: akahu_client::Transaction = serde_json::from_str(json).unwrap();
+        t.amount = Decimal::MAX;
+        // One unusable row is dropped; `fetch` keeps the other 99,999.
+        assert!(map_transaction(t).is_none());
     }
 }

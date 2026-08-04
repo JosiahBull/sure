@@ -261,10 +261,67 @@ pub fn validate_rule(input: &SaveRule) -> AppResult<()> {
     validate_expression(&input.expression)
 }
 
+/// Hard ceiling on an expression's size. `zen-expression`'s parser recurses once per
+/// nesting level and has no depth guard of its own, so a body that is trivially small by
+/// HTTP standards can still bury a tokio worker's 2 MiB stack — and a Rust stack overflow
+/// `abort()`s the process rather than panicking, so `CatchPanicLayer` never sees it: every
+/// in-flight request dies, the WAL is left unchecked, and `sure-appbase`'s drain never
+/// runs. 16 KiB is already two orders of magnitude past the longest honest rule over the
+/// ~20 documented context fields, so nothing a person writes ever meets it.
+const MAX_EXPRESSION_BYTES: usize = 16 * 1024;
+
+/// Hard ceiling on bracket-nesting depth, measured in one non-recursive pass before the
+/// parser is handed the string. [`MAX_EXPRESSION_BYTES`] alone does not close the hole:
+/// `[[[[1]]]]` nested 40 000 deep is only 80 KB, 4% of the stack cap, and reliably
+/// overflows a 2 MiB worker in a *release* build. A real rule nests a handful of levels —
+/// a couple of `and`/`or` groups around a `contains(...)` call — so 64 leaves enormous
+/// headroom while keeping the recursion depth the parser reaches trivially small.
+const MAX_EXPRESSION_DEPTH: usize = 64;
+
+/// Deepest run of unclosed `(`/`[`/`{` in `expression`, counted in a single pass over the
+/// bytes — the point is to bound the parser's recursion *without* recursing ourselves.
+///
+/// Brackets inside string literals are counted too. That is a deliberate
+/// over-approximation: tracking quoting would mean half a lexer, and no honest rule puts
+/// 64 unclosed brackets inside a quoted merchant name.
+fn max_bracket_depth(expression: &str) -> usize {
+    let mut depth = 0usize;
+    let mut deepest = 0usize;
+    for &b in expression.as_bytes() {
+        if matches!(b, b'(' | b'[' | b'{') {
+            depth += 1;
+            deepest = deepest.max(depth);
+        } else if matches!(b, b')' | b']' | b'}') {
+            // Saturating: an unbalanced closer is the parser's error to report, not ours.
+            depth = depth.saturating_sub(1);
+        }
+    }
+    deepest
+}
+
 /// Ensure the expression parses by evaluating it against a representative context.
+///
+/// The two structural limits are checked *first*, before `zen_expression` ever sees the
+/// string: past them the parser does not return an error, it kills the process (see
+/// [`MAX_EXPRESSION_BYTES`]). This is the only gate in front of the parser for all three
+/// entry points — `POST /api/rules`, `PUT /api/rules/{id}` (both via [`validate_rule`])
+/// and `POST /api/rules/preview` (via [`RuleService::preview`]) — so it has to hold for
+/// unstored expressions too, not just ones on their way into the database.
 pub fn validate_expression(expression: &str) -> AppResult<()> {
     if expression.trim().is_empty() {
         return Err(AppError::validation("expression is required"));
+    }
+    if expression.len() > MAX_EXPRESSION_BYTES {
+        return Err(AppError::validation(format!(
+            "expression is too long ({} bytes, limit {MAX_EXPRESSION_BYTES})",
+            expression.len()
+        )));
+    }
+    let depth = max_bracket_depth(expression);
+    if depth > MAX_EXPRESSION_DEPTH {
+        return Err(AppError::validation(format!(
+            "expression nesting is too deep ({depth} levels, limit {MAX_EXPRESSION_DEPTH})"
+        )));
     }
     let sample = json!({
         "amount": -12.5, "amount_minor": -1250, "abs_amount": 12.5,
@@ -413,5 +470,68 @@ mod tests {
     #[test]
     fn a_syntactically_invalid_expression_is_rejected() {
         assert!(validate_expression("this is not zen-expression syntax +++").is_err());
+    }
+
+    /// Asserts the message, not just the `is_err()`, because the whole point is that the
+    /// *structural* guard fired: had this reached `zen_expression`, the parser would have
+    /// recursed 40 000 frames deep and aborted the process instead of returning at all.
+    #[test]
+    fn a_deeply_nested_expression_is_rejected_before_the_parser_sees_it() {
+        let deep = format!("{}1{}", "[".repeat(40_000), "]".repeat(40_000));
+        let err = validate_expression(&deep).expect_err("40 000 levels must be rejected");
+        if let AppError::Validation(msg) = &err {
+            assert!(
+                msg.contains("too long") || msg.contains("too deep"),
+                "expected a structural rejection, got: {msg}"
+            );
+            assert!(
+                !msg.contains("invalid expression"),
+                "the parser was reached: {msg}"
+            );
+        } else {
+            panic!("expected a validation error, got: {err:?}");
+        }
+    }
+
+    /// The depth guard has to stand on its own: this body is well under
+    /// `MAX_EXPRESSION_BYTES`, so only the nesting check can catch it.
+    #[test]
+    fn nesting_alone_is_rejected_even_within_the_byte_ceiling() {
+        let nested = "[".repeat(4_000);
+        assert!(nested.len() < MAX_EXPRESSION_BYTES);
+        let err = validate_expression(&nested).expect_err("4 000 levels must be rejected");
+        if let AppError::Validation(msg) = &err {
+            assert!(msg.contains("too deep"), "expected the depth guard: {msg}");
+        } else {
+            panic!("expected a validation error, got: {err:?}");
+        }
+    }
+
+    #[test]
+    fn an_expression_over_the_byte_ceiling_is_rejected() {
+        // Flat, unnested, and syntactically fine — only the size limit can reject it.
+        let long = format!("description == \"{}\"", "x".repeat(MAX_EXPRESSION_BYTES));
+        let err = validate_expression(&long).expect_err("an oversize expression must be rejected");
+        if let AppError::Validation(msg) = &err {
+            assert!(msg.contains("too long"), "expected the size guard: {msg}");
+        } else {
+            panic!("expected a validation error, got: {err:?}");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_rule_expression_still_validates() {
+        validate_expression(
+            "is_expense and (contains(lower(description),'countdown') or abs_amount > 40)",
+        )
+        .expect("a realistic rule must still be accepted");
+    }
+
+    #[test]
+    fn a_modestly_nested_expression_still_validates() {
+        // Depth 10 — deeper than any rule in the UI, comfortably inside the ceiling.
+        let nested = format!("{}amount_minor < 0{}", "(".repeat(10), ")".repeat(10));
+        assert_eq!(max_bracket_depth(&nested), 10);
+        validate_expression(&nested).expect("ten levels of grouping must still be accepted");
     }
 }

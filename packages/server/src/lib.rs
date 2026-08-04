@@ -164,7 +164,20 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         // Tracked, so the drain below waits for a sweep that is mid-flight when the
         // shutdown signal lands — a provider poll part-way through writing a sync row is
         // exactly the thing that must not be cut off.
-        shutdown.spawn(scheduler.run(shutdown.child_token()));
+        let scheduler_task = shutdown.spawn(scheduler.run(shutdown.child_token()));
+        // …and watched, because until now this handle was dropped on the floor. A panic
+        // inside a job is contained by the scheduler itself, so the only way this resolves
+        // abnormally is the loop machinery coming apart — but nothing observed that, and the
+        // result was every background job dead for the life of the process while
+        // `/api/health` went on answering `ok`. Taking the process down instead is strictly
+        // better: a supervisor restarts it with its background work intact.
+        let watchdog = shutdown.clone();
+        shutdown.spawn(async move {
+            if let Err(err) = scheduler_task.await {
+                tracing::error!(error = %err, "the scheduler loop ended abnormally; shutting down");
+                watchdog.cancel();
+            }
+        });
     }
 
     let state = build_state(pool.clone(), registry, stock_price_provider);

@@ -2972,6 +2972,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "futures-util",
  "tokio",
  "tokio-util",
  "tracing",
