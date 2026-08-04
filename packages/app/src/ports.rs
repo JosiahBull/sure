@@ -287,12 +287,19 @@ pub struct CurrencyDecimals {
     pub decimal_places: i32,
 }
 
-/// A stored (historical) exchange rate. `rate` is exact decimal text.
+/// The current exchange rate for one pair — the latest dated row of the series. `rate` is
+/// exact decimal text.
 #[derive(Debug, Clone)]
 pub struct ExchangeRateRow {
     pub base_code: String,
     pub quote_code: String,
     pub rate: String,
+    /// Upstream's reference date for this rate (ISO-8601 date). Carried across the port
+    /// because the poller only writes on success: without a date, a feed that has been down
+    /// for a year is indistinguishable from one that polled this morning, and every figure
+    /// derived from it reads as current. [`crate::fx::Fx::rates_as_of`] surfaces the newest
+    /// of these on the reports that convert.
+    pub as_of: String,
 }
 
 /// An account and its currency (all accounts, including archived) — for net-worth history.
@@ -577,6 +584,8 @@ pub trait ValuationRepo: Send + Sync {
 #[async_trait]
 pub trait FxRatesRepo: Send + Sync {
     async fn currency_decimals(&self) -> AppResult<Vec<CurrencyDecimals>>;
+    /// One row per currency pair, each already the latest date on record — the reduction
+    /// belongs in SQL, not in a caller re-scanning a growing dated series.
     async fn exchange_rates(&self) -> AppResult<Vec<ExchangeRateRow>>;
 }
 
@@ -650,12 +659,20 @@ pub trait ProviderRepo: Send + Sync {
 pub trait ExchangeRateRepo: Send + Sync {
     async fn base_currency(&self) -> AppResult<String>;
     async fn known_currency_codes(&self) -> AppResult<std::collections::HashSet<String>>;
+    /// Record one pair's rate for one date, into the same table [`FxRatesRepo`] reads. The
+    /// two used to address different tables, so polling had no effect on any figure —
+    /// `sure_dal::exchange_rates`' port-crossing test exists to keep them joined.
+    ///
+    /// `as_of` precedes `rate` to match the `exchange_rates` column order, the DAL function
+    /// behind this, and `upsert_stock_price`'s identical date-then-value shape. They are both
+    /// `&str`, so a transposition would compile and store the date as the rate: keeping every
+    /// layer in one order is what stops that, rather than a comment at the adapter.
     async fn upsert_rate(
         &self,
         base_code: &str,
         quote_code: &str,
-        rate: &str,
         as_of: &str,
+        rate: &str,
     ) -> AppResult<()>;
 }
 

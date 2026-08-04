@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, type Schemas } from "../lib/api";
   import ForecastChart from "../lib/charts/ForecastChart.svelte";
+  import FxNotice from "../lib/FxNotice.svelte";
 
   type ResolvedAssumption = Schemas["ResolvedAssumption"];
   type ForecastEvent = Schemas["ForecastEvent"];
@@ -227,6 +228,14 @@
       </div>
     {/if}
     <ForecastChart {history} months={result?.months ?? []} {currency} onhover={(p) => (hoverPoint = p)} />
+    <!-- An account whose currency has no rate is left out of the simulation entirely rather
+         than projected from a parity starting balance, which would be wrong in every month of
+         every path. Both the history line and the bands are then partial. -->
+    <FxNotice
+      unconverted={result?.unconverted ?? []}
+      ratesAsOf={result?.rates_as_of}
+      {currency}
+    />
   </section>
 
   {#if checkpointMonths.length > 0}

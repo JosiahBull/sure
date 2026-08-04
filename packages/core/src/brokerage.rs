@@ -128,7 +128,18 @@ pub struct BrokerageSnapshot {
     pub currency_code: String,
     pub positions: Vec<Position>,
     pub wallets: Vec<WalletBalance>,
+    /// Sum of every position and wallet balance that *could* be converted into
+    /// `currency_code`. Anything in `unconverted` is missing from it — read the two together
+    /// or the figure reads as complete when it isn't.
     pub total_value_minor: i64,
+    /// Currency codes held here that have no exchange rate to `currency_code`, so their
+    /// value is absent from `total_value_minor` rather than counted at parity. Non-empty
+    /// makes the snapshot unpersistable — see `sure_app::brokerage::BrokerageService::revalue`.
+    pub unconverted: Vec<String>,
+    /// Newest date across the exchange rates used (ISO-8601), `null` if none are on record.
+    /// The rate poller only writes on success, so this is the only signal that the feed has
+    /// been down and these figures are converted at last year's rates.
+    pub rates_as_of: Option<String>,
     pub activity_30d: BrokerageActivity30d,
 }
 

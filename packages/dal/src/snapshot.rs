@@ -434,6 +434,18 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             .await?;
     }
 
+    // The wipe above clears `exchange_rates`, and a snapshot taken before the poller existed
+    // (or from a database that never polled) restores none — so import can leave the FX table
+    // empty and every foreign-currency figure at parity. `scheduled_task_runs` is *not*
+    // wiped (it is process state, not user data, and re-running every task on import would be
+    // worse), which means the scheduler still believes the rate poll ran recently and would
+    // sit on that parity for up to the 24h poll interval. Forget just that task's last run so
+    // the next scheduler tick re-polls immediately.
+    sqlx::query("DELETE FROM scheduled_task_runs WHERE task_name = ?1")
+        .bind(sure_app::tasks::exchange_rates::TASK_NAME)
+        .execute(&mut *txn)
+        .await?;
+
     for c in &snap.currencies {
         sqlx::query("INSERT INTO currencies (code, name, symbol, decimal_places, created_at) VALUES (?1,?2,?3,?4,?5)")
             .bind(&c.code).bind(&c.name).bind(&c.symbol).bind(c.decimal_places).bind(&c.created_at)

@@ -280,7 +280,7 @@ classic `sqlx::migrate!` staleness trap).
 
 Queries live in per-entity repository modules (`sure_dal::{accounts, transactions,
 categories, merchants, rules, reports, crons, equity, providers, snapshot, valuations,
-currencies, settings, exchange_rate_cache, scheduled_tasks, forecast}`). Each module owns its
+currencies, settings, exchange_rates, scheduled_tasks, forecast}`). Each module owns its
 row/request/response types (they derive `FromRow`) and its functions, which take `&Db` and
 return `AppResult<T>` — so no `sqlx` type ever crosses the crate boundary. Conventions are
 uniform: `list → Vec<T>`, `create → T`, `get`/`update → T` (`NotFound` if absent),

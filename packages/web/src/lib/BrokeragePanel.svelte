@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, formatMoney, type Schemas } from "./api";
+  import FxNotice from "./FxNotice.svelte";
 
   let { accountId, onchange }: { accountId: number; onchange?: () => void } = $props();
 
@@ -24,7 +25,9 @@
     const { error: e } = await api.POST("/api/accounts/{id}/brokerage/revalue", {
       params: { path: { id: accountId } },
     });
-    if (e) error = "Revalue failed.";
+    // Surface the server's own words: a 422 here names the currency that has no rate, which
+    // is the one thing that tells the user what to fix. "Revalue failed." does not.
+    if (e) error = (e as { error?: { message?: string } }).error?.message ?? "Revalue failed.";
     else notice = "Revalued.";
     await load();
     onchange?.();
@@ -37,7 +40,7 @@
     const { data, error: e } = await api.POST("/api/accounts/{id}/brokerage/backfill", {
       params: { path: { id: accountId } },
     });
-    if (e) error = "Backfill failed.";
+    if (e) error = (e as { error?: { message?: string } }).error?.message ?? "Backfill failed.";
     else if (data) notice = `Backfilled ${data.days} day(s) of history.`;
     await load();
     onchange?.();
@@ -112,6 +115,15 @@
         />
       </div>
     </div>
+
+    <!-- Same story as the dashboard's Investments card, and the reason a Revalue can 422:
+         an unconvertible holding is outside "Portfolio value" and must not be written into a
+         valuation, where nothing would ever reveal it was understated. -->
+    <FxNotice
+      unconverted={snapshot.unconverted}
+      ratesAsOf={snapshot.rates_as_of}
+      currency={snapshot.currency_code}
+    />
 
     {#if snapshot.positions.length}
       <table class="holdings">

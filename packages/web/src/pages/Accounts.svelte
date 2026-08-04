@@ -16,6 +16,7 @@
   import StudentLoanPanel from "../lib/StudentLoanPanel.svelte";
   import AsbImportPanel from "../lib/AsbImportPanel.svelte";
   import AsbUploadPanel from "../lib/AsbUploadPanel.svelte";
+  import FxNotice from "../lib/FxNotice.svelte";
   import { navigate } from "../lib/router.svelte";
   import { balances, refresh as refreshBalances } from "../lib/balances.svelte";
   import {
@@ -143,6 +144,13 @@
           >{formatMoney(balances.data.total_minor, balances.data.currency)}</strong
         >
       </div>
+      <!-- An account whose currency has no rate is still listed below at its own-currency
+           balance — it is only this roll-up it cannot join. -->
+      <FxNotice
+        unconverted={balances.data.unconverted}
+        ratesAsOf={balances.data.rates_as_of}
+        currency={balances.data.currency}
+      />
     {/if}
   </div>
   <div class="row wrap" style="gap:6px">

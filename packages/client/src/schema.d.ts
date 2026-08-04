@@ -636,6 +636,8 @@ export interface paths {
         /**
          * Snapshot the account's current value into a `source='brokerage'` valuation (mirrors
          *     equity's "Revalue").
+         * @description 422 when a holding's currency has no exchange rate to the account's: the snapshot would
+         *     understate the account, and a stored valuation carries no hint that it did.
          */
         post: {
             parameters: {
@@ -663,6 +665,14 @@ export interface paths {
                     };
                 };
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -795,6 +805,9 @@ export interface paths {
         /**
          * The equity position of an asset: its value, the liabilities secured against it,
          *     total debt, equity, and the paid-off percentage.
+         * @description 422 when the asset or one of its secured debts has no exchange rate to the report
+         *     currency: equity is a subtraction, so a silently dropped debt reads as an asset owned
+         *     outright. There is no partial answer worth returning here.
          */
         get: {
             parameters: {
@@ -830,6 +843,14 @@ export interface paths {
                     };
                 };
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -4726,9 +4747,18 @@ export interface components {
         BalancesReport: {
             currency: string;
             as_of: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Total of the accounts that could be converted into `currency`. An account whose
+             *     currency is in `unconverted` is still in `accounts` (its own-currency balance is
+             *     true) but is **not** inside this figure.
+             */
             total_minor: number;
             accounts: components["schemas"]["AccountBalance"][];
+            /** @description Currency codes excluded from `total_minor` for want of an exchange rate. */
+            unconverted: string[];
+            /** @description Newest date across the exchange rates used (ISO-8601), `null` if none are on record. */
+            rates_as_of?: string | null;
         };
         Band: {
             /** Format: int64 */
@@ -4812,8 +4842,25 @@ export interface components {
             currency_code: string;
             positions: components["schemas"]["Position"][];
             wallets: components["schemas"]["WalletBalance"][];
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Sum of every position and wallet balance that *could* be converted into
+             *     `currency_code`. Anything in `unconverted` is missing from it — read the two together
+             *     or the figure reads as complete when it isn't.
+             */
             total_value_minor: number;
+            /**
+             * @description Currency codes held here that have no exchange rate to `currency_code`, so their
+             *     value is absent from `total_value_minor` rather than counted at parity. Non-empty
+             *     makes the snapshot unpersistable — see `sure_app::brokerage::BrokerageService::revalue`.
+             */
+            unconverted: string[];
+            /**
+             * @description Newest date across the exchange rates used (ISO-8601), `null` if none are on record.
+             *     The rate poller only writes on success, so this is the only signal that the feed has
+             *     been down and these figures are converted at last year's rates.
+             */
+            rates_as_of?: string | null;
             activity_30d: components["schemas"]["BrokerageActivity30d"];
         };
         /** @description The ids to delete in a single bulk request. */
@@ -5168,6 +5215,14 @@ export interface components {
             months: components["schemas"]["ForecastMonth"][];
             /** @description The resolved assumptions this projection actually used, for transparency. */
             assumptions: components["schemas"]["ResolvedAssumption"][];
+            /**
+             * @description Currency codes left out of every band above, for want of an exchange rate to
+             *     `currency`. Their accounts are not projected at all rather than projected at parity,
+             *     so a non-empty list means these figures describe part of the household.
+             */
+            unconverted: string[];
+            /** @description Newest date across the exchange rates used (ISO-8601), `null` if none are on record. */
+            rates_as_of?: string | null;
         };
         /**
          * @description What kind of thing a `forecast_assumptions` row tunes.
@@ -5438,6 +5493,19 @@ export interface components {
         NetWorthSeries: {
             currency: string;
             points: components["schemas"]["NetWorthPoint"][];
+            /**
+             * @description Currency codes whose accounts are **missing** from every point, because no exchange
+             *     rate links them to `currency`. They are excluded rather than counted at parity — an
+             *     unconverted foreign balance is a wrong number, not a missing one — so a non-empty list
+             *     means this series describes part of the household's net worth. Render it.
+             */
+            unconverted: string[];
+            /**
+             * @description Newest date across the exchange rates used (ISO-8601), `null` if none are on record.
+             *     The poller only writes on success, so a stale date is the only sign that a feed has
+             *     been down and these conversions are running on old rates.
+             */
+            rates_as_of?: string | null;
         };
         NewCurrency: {
             code: string;

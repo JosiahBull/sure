@@ -114,7 +114,12 @@ impl BrokerageService {
                     .as_ref()
                     .map(|sp| sp.currency_code.as_str())
                     .unwrap_or(&p.currency_code);
-                total_major += fx.to_base_major(v, value_ccy);
+                // No rate reaching the account's currency: the position keeps its own-currency
+                // market value in the response, but stays out of the total, and `unconverted`
+                // says so. `revalue` then refuses to persist that total at all.
+                if let Some(base_major) = fx.try_to_base_major(v, value_ccy) {
+                    total_major += base_major;
+                }
             }
             let cost_basis_minor = cost_by_ticker
                 .get(&(p.ticker.clone(), p.exchange.clone()))
@@ -144,7 +149,9 @@ impl BrokerageService {
             .wallet_balances_at(account_id, &as_of_str)
             .await?
         {
-            total_major += fx.to_base_major(w.amount_minor, &w.currency_code);
+            if let Some(base_major) = fx.try_to_base_major(w.amount_minor, &w.currency_code) {
+                total_major += base_major;
+            }
             wallets.push(WalletBalance {
                 currency_code: w.currency_code,
                 amount_minor: w.amount_minor,
@@ -160,6 +167,8 @@ impl BrokerageService {
             positions,
             wallets,
             total_value_minor: fx.base_minor(total_major),
+            unconverted: fx.unconverted(),
+            rates_as_of: fx.rates_as_of().map(str::to_string),
             activity_30d: BrokerageActivity30d {
                 contributions_minor: a.contributions_minor,
                 withdrawals_minor: a.withdrawals_minor,
@@ -171,6 +180,14 @@ impl BrokerageService {
     /// Snapshot the account's value as of `as_of` and persist it as a `source='brokerage'`
     /// valuation (upserting the day in place), so it flows into net worth. Mirrors
     /// `equity::revalue`.
+    ///
+    /// Refuses outright when any holding or wallet balance could not be converted into the
+    /// account's currency. A snapshot may be shown partial — the response says which
+    /// currencies it left out — but a *stored* valuation cannot: once it is a row in
+    /// `valuations` it is indistinguishable from a complete figure, feeds net worth, and
+    /// nothing downstream can tell it understated the account. That is precisely how 2,325
+    /// parity-converted valuations came to exist. A day left unvalued is recoverable by
+    /// re-running once a rate exists.
     pub async fn revalue(
         &self,
         provider: Option<&dyn StockPriceProvider>,
@@ -178,6 +195,15 @@ impl BrokerageService {
         as_of: NaiveDate,
     ) -> AppResult<BrokerageSnapshot> {
         let snap = self.snapshot(provider, account_id, as_of).await?;
+        if !snap.unconverted.is_empty() {
+            return Err(AppError::validation(format!(
+                "account {account_id}: no exchange rate between {} and {} as of {} — refusing \
+                 to persist a valuation that would silently omit it",
+                snap.unconverted.join(", "),
+                snap.currency_code,
+                snap.as_of,
+            )));
+        }
         self.valuations
             .upsert_from_brokerage(
                 account_id,
@@ -194,6 +220,10 @@ impl BrokerageService {
     /// the account's first activity to today, upserting a `source='brokerage'` valuation
     /// per day from the (now warm) cache. Idempotent — safe to re-run as a retry. Returns
     /// the number of days valued.
+    ///
+    /// A currency with no exchange rate stops the walk at the first day, by [`Self::revalue`]'s
+    /// refusal: every day would be understated identically, so writing 3,000 of them and
+    /// reporting success is the worst available outcome. Add the rate and re-run.
     pub async fn backfill_history(
         &self,
         provider: &dyn StockPriceProvider,
@@ -674,6 +704,26 @@ mod tests {
         brokerage: FakeBrokerage,
         clock: NaiveDate,
     ) -> (BrokerageService, Arc<FakePrices>, Arc<FakeValuations>) {
+        service_with_fx(
+            account,
+            brokerage,
+            clock,
+            FakeFx {
+                decimals: vec![CurrencyDecimals {
+                    code: "NZD".to_string(),
+                    decimal_places: 2,
+                }],
+                rates: vec![],
+            },
+        )
+    }
+
+    fn service_with_fx(
+        account: Account,
+        brokerage: FakeBrokerage,
+        clock: NaiveDate,
+        fx: FakeFx,
+    ) -> (BrokerageService, Arc<FakePrices>, Arc<FakeValuations>) {
         let prices = Arc::new(FakePrices::default());
         let valuations = Arc::new(FakeValuations::default());
         let svc = BrokerageService::new(
@@ -681,16 +731,117 @@ mod tests {
             Arc::new(brokerage),
             prices.clone(),
             valuations.clone(),
-            Arc::new(FakeFx {
-                decimals: vec![CurrencyDecimals {
-                    code: "NZD".to_string(),
-                    decimal_places: 2,
-                }],
-                rates: vec![],
-            }),
+            Arc::new(fx),
             Arc::new(FixedClock(clock)),
         );
         (svc, prices, valuations)
+    }
+
+    /// A US-priced holding in an NZD account, seeded with the currencies but no rate between
+    /// them. The snapshot may be partial and say so; the *valuation* must not exist at all.
+    /// A stored `source='brokerage'` row is indistinguishable from a complete one, feeds net
+    /// worth, and is how 2,325 parity-converted valuations came to be on the live database.
+    #[tokio::test]
+    async fn revalue_refuses_rather_than_persisting_an_unconverted_total() {
+        let as_of = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let (svc, _prices, valuations) = service_with_fx(
+            brokerage_account(1, "NZD"),
+            FakeBrokerage {
+                positions: vec![HoldingRow {
+                    ticker: "VOO".to_string(),
+                    exchange: "NYSE".to_string(),
+                    currency_code: "USD".to_string(),
+                    name: Some("Vanguard S&P 500".to_string()),
+                    quantity: 100.0,
+                }],
+                ..Default::default()
+            },
+            as_of,
+            FakeFx {
+                decimals: vec![
+                    CurrencyDecimals {
+                        code: "NZD".to_string(),
+                        decimal_places: 2,
+                    },
+                    CurrencyDecimals {
+                        code: "USD".to_string(),
+                        decimal_places: 2,
+                    },
+                ],
+                rates: vec![], // the whole point: no NZD/USD rate on record
+            },
+        );
+        let provider = FakeProvider {
+            close: "5.60".parse().unwrap(),
+            currency: "USD".to_string(),
+        };
+
+        let snap = svc.snapshot(Some(&provider), 1, as_of).await.unwrap();
+        // The position keeps its own-currency market value — that figure is true.
+        assert_eq!(snap.positions[0].market_value_minor, Some(56_000));
+        // …but nothing convertible went into the total, and the response says which currency.
+        assert_eq!(snap.total_value_minor, 0);
+        assert_eq!(snap.unconverted, vec!["USD".to_string()]);
+
+        let err = svc
+            .revalue(Some(&provider), 1, as_of)
+            .await
+            .expect_err("an unconverted total must not become a valuation");
+        assert!(err.to_string().contains("USD"), "names the currency: {err}");
+        assert!(valuations.rows.lock().unwrap().is_empty());
+    }
+
+    /// The same account once a rate exists: converted, persisted, and nothing withheld.
+    /// 100 × US$5.60 = US$560 at 1 NZD = 0.6 USD => NZ$933.33.
+    #[tokio::test]
+    async fn revalue_persists_once_a_rate_exists() {
+        let as_of = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let (svc, _prices, valuations) = service_with_fx(
+            brokerage_account(1, "NZD"),
+            FakeBrokerage {
+                positions: vec![HoldingRow {
+                    ticker: "VOO".to_string(),
+                    exchange: "NYSE".to_string(),
+                    currency_code: "USD".to_string(),
+                    name: Some("Vanguard S&P 500".to_string()),
+                    quantity: 100.0,
+                }],
+                ..Default::default()
+            },
+            as_of,
+            FakeFx {
+                decimals: vec![
+                    CurrencyDecimals {
+                        code: "NZD".to_string(),
+                        decimal_places: 2,
+                    },
+                    CurrencyDecimals {
+                        code: "USD".to_string(),
+                        decimal_places: 2,
+                    },
+                ],
+                rates: vec![ExchangeRateRow {
+                    base_code: "NZD".to_string(),
+                    quote_code: "USD".to_string(),
+                    rate: "0.6".to_string(),
+                    as_of: "2026-01-09".to_string(),
+                }],
+            },
+        );
+        let provider = FakeProvider {
+            close: "5.60".parse().unwrap(),
+            currency: "USD".to_string(),
+        };
+
+        let snap = svc.revalue(Some(&provider), 1, as_of).await.unwrap();
+        assert!(snap.unconverted.is_empty());
+        assert_eq!(snap.total_value_minor, 93_333);
+        // The rate's own date rides along, so a year-old rate is visible as one.
+        assert_eq!(snap.rates_as_of.as_deref(), Some("2026-01-09"));
+        assert_eq!(
+            valuations.rows.lock().unwrap().get(&(1, as_of.to_string())),
+            Some(&(93_333, "NZD".to_string()))
+        );
     }
 
     #[tokio::test]

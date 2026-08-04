@@ -30,14 +30,6 @@ pub struct CurrencyDecimals {
     pub decimal_places: i64,
 }
 
-/// A stored exchange rate. `rate` is kept as text (exact decimal) and parsed by the caller.
-#[derive(Debug, FromRow)]
-pub struct ExchangeRate {
-    pub base_code: String,
-    pub quote_code: String,
-    pub rate: String,
-}
-
 /// An account and its currency (all accounts, including archived) — for net-worth history.
 #[derive(Debug, FromRow)]
 pub struct AccountCurrencyRow {
@@ -267,16 +259,6 @@ pub async fn currency_decimals(db: &Db) -> AppResult<Vec<CurrencyDecimals>> {
             .fetch_all(db)
             .await?,
     )
-}
-
-/// All stored exchange rates, oldest first (so callers can let later rows win).
-#[tracing::instrument(level = "debug", skip_all)]
-pub async fn exchange_rates(db: &Db) -> AppResult<Vec<ExchangeRate>> {
-    Ok(sqlx::query_as::<_, ExchangeRate>(
-        "SELECT base_code, quote_code, rate FROM exchange_rates ORDER BY as_of",
-    )
-    .fetch_all(db)
-    .await?)
 }
 
 /// Every account's id + currency (net-worth history spans archived accounts too).

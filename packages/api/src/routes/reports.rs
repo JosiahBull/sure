@@ -124,6 +124,15 @@ impl From<sure_app::reports::NetWorthPoint> for NetWorthPoint {
 pub struct NetWorthSeries {
     pub currency: String,
     pub points: Vec<NetWorthPoint>,
+    /// Currency codes whose accounts are **missing** from every point, because no exchange
+    /// rate links them to `currency`. They are excluded rather than counted at parity — an
+    /// unconverted foreign balance is a wrong number, not a missing one — so a non-empty list
+    /// means this series describes part of the household's net worth. Render it.
+    pub unconverted: Vec<String>,
+    /// Newest date across the exchange rates used (ISO-8601), `null` if none are on record.
+    /// The poller only writes on success, so a stale date is the only sign that a feed has
+    /// been down and these conversions are running on old rates.
+    pub rates_as_of: Option<String>,
 }
 
 impl From<sure_app::reports::NetWorthSeries> for NetWorthSeries {
@@ -131,6 +140,8 @@ impl From<sure_app::reports::NetWorthSeries> for NetWorthSeries {
         NetWorthSeries {
             currency: s.currency,
             points: s.points.into_iter().map(Into::into).collect(),
+            unconverted: s.unconverted,
+            rates_as_of: s.rates_as_of,
         }
     }
 }
@@ -273,8 +284,15 @@ impl From<sure_app::reports::AccountBalance> for AccountBalance {
 pub struct BalancesReport {
     pub currency: String,
     pub as_of: String,
+    /// Total of the accounts that could be converted into `currency`. An account whose
+    /// currency is in `unconverted` is still in `accounts` (its own-currency balance is
+    /// true) but is **not** inside this figure.
     pub total_minor: i64,
     pub accounts: Vec<AccountBalance>,
+    /// Currency codes excluded from `total_minor` for want of an exchange rate.
+    pub unconverted: Vec<String>,
+    /// Newest date across the exchange rates used (ISO-8601), `null` if none are on record.
+    pub rates_as_of: Option<String>,
 }
 
 impl From<sure_app::reports::BalancesReport> for BalancesReport {
@@ -284,6 +302,8 @@ impl From<sure_app::reports::BalancesReport> for BalancesReport {
             as_of: r.as_of,
             total_minor: r.total_minor,
             accounts: r.accounts.into_iter().map(Into::into).collect(),
+            unconverted: r.unconverted,
+            rates_as_of: r.rates_as_of,
         }
     }
 }
@@ -423,9 +443,14 @@ pub async fn balances(
 
 /// The equity position of an asset: its value, the liabilities secured against it,
 /// total debt, equity, and the paid-off percentage.
+///
+/// 422 when the asset or one of its secured debts has no exchange rate to the report
+/// currency: equity is a subtraction, so a silently dropped debt reads as an asset owned
+/// outright. There is no partial answer worth returning here.
 #[utoipa::path(get, path = "/api/accounts/{id}/equity-position", tag = "reports",
     params(("id" = i64, Path,), ReportQuery),
-    responses((status = 200, body = EquityPosition), (status = 404, body = crate::error::ErrorBody)))]
+    responses((status = 200, body = EquityPosition), (status = 404, body = crate::error::ErrorBody),
+        (status = 422, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = REPORTS_EQUITY_POSITION,
     level = "debug",

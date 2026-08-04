@@ -46,6 +46,55 @@ test("export then import restores the exact state", async ({ api }) => {
   expect(restored.description).toBe("Countdown");
 });
 
+/**
+ * FX rates and the currencies they reference are both wiped and both restored by an import,
+ * so a snapshot may legitimately drop a currency the database currently holds a rate for.
+ *
+ * Background: the poller used to write a second, latest-only `exchange_rate_cache` table which
+ * was *not* in the import wipe list while `currencies` was, and because import defers
+ * foreign-key checks to COMMIT, any such import died there with a bare `FOREIGN KEY constraint
+ * failed` naming no table. Folding the cache into `exchange_rates` removed that dangling
+ * reference.
+ *
+ * Note what this test can and cannot do: it seeds the rate through `/api/config/import`, which
+ * is the only route that ever wrote a rate over HTTP — the old cache was written *solely* by
+ * the background poller, so this test would have passed before the fix too. It pins the
+ * property that matters going forward (dropping a currency is safe for every table that
+ * references it), not the historical cache bug, which is now unreachable by construction: the
+ * table is gone and `exchange_rates` is in the wipe list.
+ */
+test("a snapshot that drops a currency the database has a rate for still imports", async ({
+  api,
+}) => {
+  const exported = (await api.GET("/api/config/export", {})).data as Record<string, unknown>;
+  const currencies = exported.currencies as { code: string }[];
+  expect(currencies.map((c) => c.code)).toContain("USD");
+
+  // Give the database a NZD/USD rate, the shape a completed poll leaves behind.
+  const seeded = await api.POST("/api/config/import", {
+    body: {
+      ...exported,
+      exchange_rates: [
+        { base_code: "NZD", quote_code: "USD", as_of: "2026-01-01", rate: "0.6" },
+      ],
+    } as never,
+  });
+  expect(seeded.response.status).toBe(200);
+
+  // Now an older/leaner snapshot that knows nothing about USD or any rate.
+  const withoutUsd = await api.POST("/api/config/import", {
+    body: {
+      ...exported,
+      currencies: currencies.filter((c) => c.code !== "USD"),
+      exchange_rates: [],
+    } as never,
+  });
+  expect(withoutUsd.response.status).toBe(200);
+
+  // And the server is still serving, i.e. the transaction committed rather than poisoning it.
+  expect((await api.GET("/api/health", {})).response.status).toBe(200);
+});
+
 test("import rejects garbage", async ({ api }) => {
   const res = await api.POST("/api/config/import", { body: { not: "a snapshot" } as never });
   expect(res.response.status).toBe(422);

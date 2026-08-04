@@ -13,6 +13,7 @@
   import { groupByKind, groupByOwner } from "../lib/balanceGroups";
   import { people } from "../lib/people.svelte";
   import Icon from "../lib/Icon.svelte";
+  import FxNotice from "../lib/FxNotice.svelte";
 
   let nw = $state<Schemas["NetWorthSeries"] | null>(null);
   let breakdown = $state<Schemas["CategoryBreakdown"] | null>(null);
@@ -161,6 +162,20 @@
   );
   const hasSnapshots = $derived(Object.keys(snapshots).length > 0);
 
+  // Currencies missing from the snapshots' own totals, deduped across accounts, plus the
+  // oldest rate date any of them used — the pessimistic one, since a single stale account is
+  // enough to make the combined figures stale.
+  const snapshotList = $derived(Object.values(snapshots));
+  const holdingsUnconverted = $derived([
+    ...new Set(snapshotList.flatMap((s) => s.unconverted)),
+  ]);
+  const holdingsRatesAsOf = $derived(
+    snapshotList
+      .map((s) => s.rates_as_of)
+      .filter((d): d is string => d != null)
+      .sort()[0] ?? null
+  );
+
   const currency = $derived(breakdown?.currency ?? nw?.currency ?? "NZD");
   // Whole-dollar money (no cents) — keeps the donut centre from overflowing on hover.
   const money0 = (v: number) => formatMoney(v, currency).replace(/\.\d+$/, "");
@@ -264,6 +279,9 @@
       onhover={(i) => (hoverIndex = i)}
       onbrush={(r) => (filters.custom = { from: r.from, to: r.to })}
     />
+    <!-- Accounts the series could not convert are missing from every point above; saying so
+         is the difference between an incomplete figure and a wrong one. -->
+    <FxNotice unconverted={nw?.unconverted ?? []} ratesAsOf={nw?.rates_as_of} {currency} />
   </section>
 
   <div class="grid two">
@@ -453,6 +471,13 @@
       <div class="stat" style="margin-bottom:4px">
         <div class="value tabular">{formatMoney(investmentTotal, balances.data?.currency)}</div>
       </div>
+      <!-- A holding priced in a currency with no rate is listed below in its own currency but
+           is not inside any account total — the same figure `revalue` refuses to persist. -->
+      <FxNotice
+        unconverted={holdingsUnconverted}
+        ratesAsOf={holdingsRatesAsOf}
+        currency={balances.data?.currency}
+      />
       {#if totalReturnPct != null}
         <div class="small" style="margin-bottom:14px">
           <span class="muted">Total return:</span>

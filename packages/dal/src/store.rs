@@ -383,13 +383,14 @@ impl FxRatesRepo for SqliteStore {
     }
 
     async fn exchange_rates(&self) -> AppResult<Vec<ExchangeRateRow>> {
-        Ok(crate::reports::exchange_rates(&self.db)
+        Ok(crate::exchange_rates::latest_per_pair(&self.db)
             .await?
             .into_iter()
             .map(|r| ExchangeRateRow {
                 base_code: r.base_code,
                 quote_code: r.quote_code,
                 rate: r.rate,
+                as_of: r.as_of,
             })
             .collect())
     }
@@ -703,10 +704,10 @@ impl ExchangeRateRepo for SqliteStore {
         &self,
         base_code: &str,
         quote_code: &str,
-        rate: &str,
         as_of: &str,
+        rate: &str,
     ) -> AppResult<()> {
-        crate::exchange_rate_cache::upsert(&self.db, base_code, quote_code, rate, as_of)
+        crate::exchange_rates::upsert(&self.db, base_code, quote_code, as_of, rate)
             .await
             .map(|_| ())
     }

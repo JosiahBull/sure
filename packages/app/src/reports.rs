@@ -68,6 +68,13 @@ pub struct NetWorthPoint {
 pub struct NetWorthSeries {
     pub currency: String,
     pub points: Vec<NetWorthPoint>,
+    /// Currency codes whose accounts are **absent** from every point above, because no rate
+    /// links them to `currency`. See [`Fx::try_factor`] for why they are left out rather
+    /// than counted at parity.
+    pub unconverted: Vec<String>,
+    /// Newest date across the rates used (ISO-8601), or `None` if none are on record — a
+    /// year-old date means a dead feed, not a stable market.
+    pub rates_as_of: Option<String>,
 }
 
 #[derive(Debug)]
@@ -177,8 +184,15 @@ pub struct AccountBalance {
 pub struct BalancesReport {
     pub currency: String,
     pub as_of: String,
+    /// Every account whose currency converts. An account in an unconvertible currency is
+    /// still listed in `accounts` (in its own currency, which is a true figure) but is not
+    /// inside this total, and its currency is named in `unconverted`.
     pub total_minor: i64,
     pub accounts: Vec<AccountBalance>,
+    /// Currency codes excluded from `total_minor` for want of a rate.
+    pub unconverted: Vec<String>,
+    /// Newest date across the rates used (ISO-8601), or `None` if none are on record.
+    pub rates_as_of: Option<String>,
 }
 
 #[derive(Debug)]
@@ -852,7 +866,12 @@ impl ReportService {
             for a in &accounts {
                 let (value_minor, ccy) =
                     account_value_at(a.id, &a.currency_code, date, &tx_by_acct, &val_by_acct);
-                let base_major = fx.to_base_major(value_minor, &ccy);
+                let Some(base_major) = fx.try_to_base_major(value_minor, &ccy) else {
+                    // No rate: this account is outside the series entirely, and `ccy` is
+                    // reported below. Counting it at parity is what made a $600 US holding
+                    // read as $600 of net worth for years.
+                    continue;
+                };
                 if base_major >= 0.0 {
                     assets += base_major;
                 } else {
@@ -870,6 +889,8 @@ impl ReportService {
         Ok(NetWorthSeries {
             currency: base,
             points,
+            unconverted: fx.unconverted(),
+            rates_as_of: fx.rates_as_of().map(str::to_string),
         })
     }
 
@@ -894,7 +915,14 @@ impl ReportService {
         let mut expense: HashMap<i64, f64> = HashMap::new();
         for t in &spend {
             let key = t.category_id.map(|c| cats.top_ancestor(c)).unwrap_or(0);
-            let base_major = fx.to_base_major(t.amount_minor.abs(), &t.currency_code);
+            // An unconvertible transaction is left out of the breakdown rather than added at
+            // parity; `Fx` warns the pair once. This shape has no `unconverted` field to
+            // carry the exclusion to the client the way [`NetWorthSeries`] does — a
+            // per-category total is already a partial view, so a missing slice reads as one.
+            let Some(base_major) = fx.try_to_base_major(t.amount_minor.abs(), &t.currency_code)
+            else {
+                continue;
+            };
             if t.amount_minor >= 0 {
                 *income.entry(key).or_default() += base_major;
             } else {
@@ -959,7 +987,12 @@ impl ReportService {
                 Some(cid) => cats.chain_to_depth(cid, SANKEY_MAX_DEPTH),
                 None => vec![UNCATEGORISED],
             };
-            let base_major = fx.to_base_major(t.amount_minor.abs(), &t.currency_code);
+            // As in `category_breakdown`: no rate means the row is outside the graph, not
+            // drawn at parity.
+            let Some(base_major) = fx.try_to_base_major(t.amount_minor.abs(), &t.currency_code)
+            else {
+                continue;
+            };
             // Sign of the amount, not the category's `kind` — see `FlowSide`.
             if t.amount_minor >= 0 {
                 income.add(&chain, base_major);
@@ -1036,7 +1069,11 @@ impl ReportService {
         for a in &accounts {
             let (value_minor, ccy) =
                 account_value_at(a.id, &a.currency_code, as_of, &tx_by_acct, &val_by_acct);
-            total += fx.to_base_major(value_minor, &ccy);
+            // The row is listed either way — its own-currency balance is a true figure. Only
+            // the base-currency roll-up has to leave it out when no rate reaches it.
+            if let Some(base_major) = fx.try_to_base_major(value_minor, &ccy) {
+                total += base_major;
+            }
             out.push(AccountBalance {
                 ownership: a.ownership,
                 account_id: a.id,
@@ -1053,6 +1090,8 @@ impl ReportService {
             as_of: as_of.to_string(),
             total_minor: fx.base_minor(total),
             accounts: out,
+            unconverted: fx.unconverted(),
+            rates_as_of: fx.rates_as_of().map(str::to_string),
         })
     }
 
@@ -1078,7 +1117,14 @@ impl ReportService {
             &tx_by_acct,
             &val_by_acct,
         );
-        let value_base = fx.to_base_major(v_minor, &v_ccy).max(0.0);
+        // Equity is a subtraction, so it cannot survive a dropped term: an asset counted and
+        // a secured debt silently omitted reads as a house owned outright. Either every leg
+        // converts or this report refuses — unlike net worth, there is no partial answer here
+        // worth showing.
+        let Some(value_base) = fx.try_to_base_major(v_minor, &v_ccy) else {
+            return Err(fx.missing_rate_error());
+        };
+        let value_base = value_base.max(0.0);
 
         let mut total_debt = 0.0;
         let mut liabilities = Vec::new();
@@ -1086,7 +1132,10 @@ impl ReportService {
             let (lm, lccy) =
                 account_value_at(l.id, &l.currency_code, as_of, &tx_by_acct, &val_by_acct);
             // Liabilities carry a negative balance; the debt is its magnitude.
-            let debt = fx.to_base_major(lm, &lccy).min(0.0).abs();
+            let Some(lm_base) = fx.try_to_base_major(lm, &lccy) else {
+                return Err(fx.missing_rate_error());
+            };
+            let debt = lm_base.min(0.0).abs();
             total_debt += debt;
             liabilities.push(SecuredLiability {
                 account_id: l.id,

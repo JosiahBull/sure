@@ -33,18 +33,19 @@ test("an unrecognised net-worth interval is rejected, not silently defaulted", a
   expect(response.status).toBe(400);
 });
 
-test("net worth converts foreign-currency holdings (seeded via import)", async ({ api }) => {
-  // No public fx-rate endpoint yet, so seed a rate + USD holding through config import —
-  // which also exercises the snapshot restore path. 1 NZD = 0.6 USD => $600 USD = $1000 NZD.
+// A US$600 holding, with and without a rate to reach NZD by. No public fx-rate endpoint
+// yet, so the rate is seeded through config import — which also exercises the snapshot
+// restore path.
+const usdHoldingSnapshot = (rates: { base_code: string; quote_code: string; as_of: string; rate: string }[]) => {
   const ts = "2026-01-01T00:00:00.000Z";
-  const snapshot = {
+  return {
     version: 1,
     base_currency_code: "NZD",
     currencies: [
       { code: "NZD", name: "NZ Dollar", symbol: "$", decimal_places: 2, created_at: ts },
       { code: "USD", name: "US Dollar", symbol: "$", decimal_places: 2, created_at: ts },
     ],
-    exchange_rates: [{ base_code: "NZD", quote_code: "USD", as_of: "2026-01-01", rate: "0.6" }],
+    exchange_rates: rates,
     categories: [],
     merchants: [],
     accounts: [
@@ -60,11 +61,45 @@ test("net worth converts foreign-currency holdings (seeded via import)", async (
     equity_grants: [],
     equity_exercises: [],
   };
+};
+
+test("net worth converts foreign-currency holdings (seeded via import)", async ({ api }) => {
+  // 1 NZD = 0.6 USD => $600 USD = $1000 NZD.
+  const snapshot = usdHoldingSnapshot([
+    { base_code: "NZD", quote_code: "USD", as_of: "2026-01-01", rate: "0.6" },
+  ]);
   const imported = await api.POST("/api/config/import", { body: snapshot as never });
   expect(imported.response.status).toBe(200);
 
   const series = await api.GET("/api/reports/net-worth", { params: { query: { from: "2026-01-01", to: "2026-01-31" } } });
   expect(series.data!.points.at(-1)!.net_worth_minor).toBe(100_000);
+  // Nothing withheld, and the rate's own date is reported so a dead feed is visible.
+  expect(series.data!.unconverted).toEqual([]);
+  expect(series.data!.rates_as_of).toBe("2026-01-01");
+});
+
+test("a currency with no rate is reported as unconverted, never counted at parity", async ({ api }) => {
+  // The identical holding with the rate removed. The failure this pins: for years an empty
+  // rate table made every foreign amount convert at 1.0, so this US$600 read as NZ$600 of
+  // net worth. It must now be absent from the total and named instead.
+  const imported = await api.POST("/api/config/import", { body: usdHoldingSnapshot([]) as never });
+  expect(imported.response.status).toBe(200);
+
+  const series = await api.GET("/api/reports/net-worth", { params: { query: { from: "2026-01-01", to: "2026-01-31" } } });
+  expect(series.data!.unconverted).toEqual(["USD"]);
+  expect(series.data!.rates_as_of).toBeNull();
+  const last = series.data!.points.at(-1)!;
+  expect(last.net_worth_minor).toBe(0); // not 60_000 — that would be the parity bug
+  expect(last.assets_minor).toBe(0);
+
+  // Balances still lists the account at its true own-currency value; only the NZD roll-up
+  // leaves it out, and says which currency it left out.
+  const balances = await api.GET("/api/reports/balances", { params: { query: { to: "2026-01-31" } } });
+  expect(balances.data!.unconverted).toEqual(["USD"]);
+  expect(balances.data!.total_minor).toBe(0);
+  const usAccount = balances.data!.accounts.find((a) => a.name === "US Shares")!;
+  expect(usAccount.currency_code).toBe("USD");
+  expect(usAccount.value_minor).toBe(60_000);
 });
 
 test("category breakdown splits income and expense", async ({ api }) => {

@@ -1,5 +1,8 @@
 //! The exchange-rate [`ScheduledTask`]: pull fresh rates from the configured
-//! [`ExchangeRateProvider`] and persist them to `exchange_rate_cache`. Persistence goes
+//! [`ExchangeRateProvider`] and persist them to `exchange_rates` — the same table every
+//! conversion reads through [`crate::fx::Fx`], so a poll actually moves reported figures.
+//! (It used to write a separate latest-only cache that nothing read, leaving foreign-currency
+//! amounts silently at parity; see `0018_fx_rates_single_table.sql`.) Persistence goes
 //! through the [`ExchangeRateRepo`] port, not `sure-providers` — matching the split used
 //! for transaction providers: the provider only fetches and normalizes. Scheduling
 //! (including surviving process restarts without re-fetching early) is handled
@@ -17,6 +20,12 @@ use crate::ports::{ExchangeRateProvider, ExchangeRateRepo};
 /// needed here, so there's no value in polling more often than this.
 const POLL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// The scheduler's key for this task in `scheduled_task_runs`. Public because config-snapshot
+/// import has to clear this task's last-run row (an import can wipe the rates, and the
+/// scheduler would otherwise wait out `POLL_INTERVAL` before refilling them) — and a
+/// hand-copied string there would drift the day this task is renamed.
+pub const TASK_NAME: &str = "exchange_rate_poll";
+
 pub struct ExchangeRateTask {
     rates: Arc<dyn ExchangeRateRepo>,
     provider: Arc<dyn ExchangeRateProvider>,
@@ -31,7 +40,7 @@ impl ExchangeRateTask {
 #[async_trait]
 impl ScheduledTask for ExchangeRateTask {
     fn name(&self) -> &'static str {
-        "exchange_rate_poll"
+        TASK_NAME
     }
 
     fn interval(&self) -> Duration {
@@ -45,7 +54,7 @@ impl ScheduledTask for ExchangeRateTask {
         let quotes = self.provider.fetch_rates(&base_code).await?;
         let mut stored = 0;
         for quote in quotes {
-            // The upstream knows far more currencies than we track; only cache the
+            // The upstream knows far more currencies than we track; only store the
             // ones we actually have a `currencies` row for (the table's FK requires
             // it).
             if !known_codes.contains(&quote.quote_code) {
@@ -55,8 +64,8 @@ impl ScheduledTask for ExchangeRateTask {
                 .upsert_rate(
                     &base_code,
                     &quote.quote_code,
-                    &quote.rate.to_string(),
                     &quote.as_of,
+                    &quote.rate.to_string(),
                 )
                 .await?;
             stored += 1;

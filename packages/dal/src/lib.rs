@@ -21,7 +21,7 @@ pub mod categories;
 pub mod crons;
 pub mod currencies;
 pub mod equity;
-pub mod exchange_rate_cache;
+pub mod exchange_rates;
 pub mod forecast;
 pub mod merchants;
 pub mod people;

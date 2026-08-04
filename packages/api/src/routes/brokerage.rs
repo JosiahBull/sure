@@ -293,9 +293,13 @@ pub async fn import(
 
 /// Snapshot the account's current value into a `source='brokerage'` valuation (mirrors
 /// equity's "Revalue").
+///
+/// 422 when a holding's currency has no exchange rate to the account's: the snapshot would
+/// understate the account, and a stored valuation carries no hint that it did.
 #[utoipa::path(post, path = "/api/accounts/{id}/brokerage/revalue", tag = "brokerage",
     params(("id" = i64, Path,), AsOfQuery),
-    responses((status = 200, body = BrokerageSnapshot), (status = 404, body = crate::error::ErrorBody)))]
+    responses((status = 200, body = BrokerageSnapshot), (status = 404, body = crate::error::ErrorBody),
+        (status = 422, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = BROKERAGE_REVALUE,
     level = "debug",

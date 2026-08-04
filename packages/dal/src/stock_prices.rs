@@ -1,7 +1,9 @@
 //! Historical daily stock price cache, refreshed by the background poller in
 //! `sure-api` and backfilled on demand for a date not yet cached. One row per
-//! (ticker, exchange, as_of) — unlike `exchange_rate_cache`, this table itself is the
-//! historical series, since a point-in-time lookup already needs to query by date.
+//! (ticker, exchange, as_of) — this table itself is the historical series, since a
+//! point-in-time lookup already needs to query by date. `exchange_rates` is the same shape
+//! for the same reason (it once had a latest-only cache beside it; that ended badly — see
+//! `crate::exchange_rates`).
 
 use sqlx::FromRow;
 use sure_core::AppResult;

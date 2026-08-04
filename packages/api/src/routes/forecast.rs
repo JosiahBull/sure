@@ -194,6 +194,12 @@ pub struct ForecastResult {
     pub months: Vec<ForecastMonth>,
     /// The resolved assumptions this projection actually used, for transparency.
     pub assumptions: Vec<ResolvedAssumption>,
+    /// Currency codes left out of every band above, for want of an exchange rate to
+    /// `currency`. Their accounts are not projected at all rather than projected at parity,
+    /// so a non-empty list means these figures describe part of the household.
+    pub unconverted: Vec<String>,
+    /// Newest date across the exchange rates used (ISO-8601), `null` if none are on record.
+    pub rates_as_of: Option<String>,
 }
 
 impl From<sure_app::forecast::ForecastResult> for ForecastResult {
@@ -202,6 +208,8 @@ impl From<sure_app::forecast::ForecastResult> for ForecastResult {
             currency: r.currency,
             months: r.months.into_iter().map(Into::into).collect(),
             assumptions: r.assumptions.into_iter().map(Into::into).collect(),
+            unconverted: r.unconverted,
+            rates_as_of: r.rates_as_of,
         }
     }
 }

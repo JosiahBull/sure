@@ -190,6 +190,12 @@ pub struct ForecastResult {
     pub currency: String,
     pub months: Vec<ForecastMonth>,
     pub assumptions: Vec<ResolvedAssumption>,
+    /// Currency codes whose accounts and transactions are **not** in this projection,
+    /// because no rate links them to `currency`. Projecting them at parity would compound a
+    /// wrong starting balance for the whole horizon.
+    pub unconverted: Vec<String>,
+    /// Newest date across the rates used (ISO-8601), or `None` if none are on record.
+    pub rates_as_of: Option<String>,
 }
 
 pub struct ForecastService {
@@ -229,6 +235,19 @@ impl ForecastService {
 
     /// Every account/category's resolved forecast assumption.
     pub async fn resolved_assumptions(&self) -> AppResult<Vec<ResolvedAssumption>> {
+        let base = self.base_currency(None).await?;
+        let fx = Fx::load(self.fx.as_ref(), base).await?;
+        self.resolved_assumptions_with(&fx).await
+    }
+
+    /// As [`Self::resolved_assumptions`], against a caller-supplied `Fx`.
+    ///
+    /// `simulate` passes its own, for two reasons: the currencies a category baseline could
+    /// not convert land on the same `Fx` whose [`Fx::unconverted`] the forecast reports, and
+    /// the baselines are fitted in the same currency the projection runs in — this used to
+    /// load a second `Fx` on the *default* base while `simulate` ran on the requested one,
+    /// so `?currency=` produced baselines in one currency and totals in another.
+    async fn resolved_assumptions_with(&self, fx: &Fx) -> AppResult<Vec<ResolvedAssumption>> {
         let overrides = self.forecast.list_assumptions().await?;
         let mut by_target: HashMap<(ForecastTargetType, i64), ForecastAssumption> = HashMap::new();
         for o in overrides {
@@ -237,7 +256,10 @@ impl ForecastService {
 
         let today = self.clock.today();
         let mut out = self.resolve_account_assumptions(today, &by_target).await?;
-        out.extend(self.resolve_category_assumptions(today, &by_target).await?);
+        out.extend(
+            self.resolve_category_assumptions(today, &by_target, fx)
+                .await?,
+        );
         Ok(out)
     }
 
@@ -358,9 +380,8 @@ impl ForecastService {
         &self,
         today: NaiveDate,
         overrides: &HashMap<(ForecastTargetType, i64), ForecastAssumption>,
+        fx: &Fx,
     ) -> AppResult<Vec<ResolvedAssumption>> {
-        let base = self.base_currency(None).await?;
-        let fx = Fx::load(self.fx.as_ref(), base).await?;
         let cats = reports::Categories::load(self.reports.as_ref()).await?;
         let from = today - chrono::Duration::days(31 * (CATEGORY_TREND_MONTHS + 1));
         // The whole household: a forecast projects the household's finances, and splitting
@@ -376,7 +397,7 @@ impl ForecastService {
                 CategoryKind::Income | CategoryKind::Expense => {}
             }
 
-            let totals = category_monthly_totals(&spend, &cats, id, today, &fx);
+            let totals = category_monthly_totals(&spend, &cats, id, today, fx);
             let fit = category_fit(&totals);
             // The baseline survives even when no trend could be fitted. Previously it came
             // only from a successful regression, so a category with a few months of history
@@ -492,7 +513,7 @@ impl ForecastService {
         let base = self.base_currency(params.currency.as_deref()).await?;
         let fx = Fx::load(self.fx.as_ref(), base.clone()).await?;
 
-        let assumptions = self.resolved_assumptions().await?;
+        let assumptions = self.resolved_assumptions_with(&fx).await?;
         let by_target: HashMap<(ForecastTargetType, i64), &ResolvedAssumption> = assumptions
             .iter()
             .map(|a| ((a.target_type, a.target_id), a))
@@ -518,6 +539,15 @@ impl ForecastService {
             let (current_minor, _) =
                 reports::account_value_at(a.id, &a.currency_code, today, &tx_by_acct, &val_by_acct);
             let current = current_minor as f64;
+
+            // Resolved once per account, not once per (path × month × account): the whole
+            // projection is carried in native units and only converted for the monthly
+            // totals. `None` means no rate reaches the projection currency, so the account is
+            // out of the simulation entirely and its currency is reported in `unconverted` —
+            // a starting balance taken at parity would be wrong in every month of every path.
+            let Some(base_scale) = fx.try_base_scale(&a.currency_code) else {
+                continue;
+            };
 
             let projection = if let Some(terms) = loan_terms(&a.metadata, today) {
                 AccountProjection::Deterministic(terms)
@@ -558,7 +588,7 @@ impl ForecastService {
                 };
 
             account_sims.push(AccountSim {
-                currency_code: a.currency_code.clone(),
+                base_scale,
                 current,
                 projection,
                 // Exactly the kinds whose own ledger rows are kept out of the income/
@@ -580,7 +610,12 @@ impl ForecastService {
             let Some(baseline_minor) = a.baseline_minor else {
                 continue; // no derived trend to anchor to — contributes nothing
             };
-            let baseline = fx.to_base_major(baseline_minor, &base);
+            // Already a base-currency figure (see `category_monthly_totals`), so this only
+            // rescales minor→major; it can still fail if the base currency itself has no
+            // `currencies` row, in which case there is no projection to run.
+            let Some(baseline) = fx.try_to_base_major(baseline_minor, &base) else {
+                continue;
+            };
             let (step_changes, one_offs) =
                 category_events(&events, a.target_id, today, horizon, &fx, &base);
             category_sims.push(CategorySim {
@@ -609,7 +644,9 @@ impl ForecastService {
                         AccountKind::CreditCard | AccountKind::RevolvingCredit
                     )
             })
-            .map(|a| {
+            // An unconvertible cash account is left out of the pool (and named in
+            // `unconverted`) on the same argument as `account_sims` above.
+            .filter_map(|a| {
                 let (v, _) = reports::account_value_at(
                     a.id,
                     &a.currency_code,
@@ -617,7 +654,7 @@ impl ForecastService {
                     &tx_by_acct,
                     &val_by_acct,
                 );
-                fx.to_base_major(v, &a.currency_code)
+                fx.try_to_base_major(v, &a.currency_code)
             })
             .sum();
 
@@ -671,7 +708,7 @@ impl ForecastService {
                             let paid = schedule.advance(m);
                             acc_values[i] = schedule.signed_balance();
                             if sim.repayment_debits_cash {
-                                repayments += to_base(&fx, paid.cash_out(), &sim.currency_code);
+                                repayments += paid.cash_out() * sim.base_scale;
                             }
                         }
                         AccountProjection::Stochastic {
@@ -781,7 +818,7 @@ impl ForecastService {
                 let mut assets = 0.0;
                 let mut liabilities = 0.0;
                 for (i, sim) in account_sims.iter().enumerate() {
-                    let base_val = to_base(&fx, acc_values[i], &sim.currency_code);
+                    let base_val = acc_values[i] * sim.base_scale;
                     if base_val >= 0.0 {
                         assets += base_val;
                     } else {
@@ -816,6 +853,8 @@ impl ForecastService {
             currency: base,
             months,
             assumptions,
+            unconverted: fx.unconverted(),
+            rates_as_of: fx.rates_as_of().map(str::to_string),
         })
     }
 }
@@ -856,7 +895,10 @@ enum AccountProjection {
 }
 
 struct AccountSim {
-    currency_code: String,
+    /// Multiplier from this account's native minor units to base-currency major units
+    /// ([`Fx::try_base_scale`]), resolved before the simulation starts — an account whose
+    /// currency has no rate never becomes an `AccountSim` at all.
+    base_scale: f64,
     current: f64,
     projection: AccountProjection,
     /// Whether this loan's repayment should be debited from the projected cash pool.
@@ -973,13 +1015,6 @@ fn category_events(
 fn annual_rate_to_monthly_log_return(annual_bps: i64) -> f64 {
     let annual = (annual_bps as f64 / 10_000.0).clamp(MIN_ANNUAL_RATE, MAX_ANNUAL_RATE);
     (1.0 + annual).ln() / 12.0
-}
-
-/// Convert a raw (float) minor-unit amount in `ccy` into base-currency major units —
-/// `Fx::to_base_major` without requiring an `i64`, since simulated account values are
-/// carried as floats between months.
-fn to_base(fx: &Fx, minor: f64, ccy: &str) -> f64 {
-    (minor / 10f64.powi(fx.dp(ccy))) * fx.factor(ccy)
 }
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
@@ -1649,7 +1684,13 @@ fn category_monthly_totals(
         if key == this_month {
             continue;
         }
-        *totals.entry(key).or_default() += fx.to_base_major(t.amount_minor, &t.currency_code).abs();
+        // No rate to the projection's currency: the row is left out of the fitted run-rate
+        // (and named in `ForecastResult::unconverted`) rather than folded in at parity, which
+        // would then compound over the whole horizon.
+        let Some(base_major) = fx.try_to_base_major(t.amount_minor, &t.currency_code) else {
+            continue;
+        };
+        *totals.entry(key).or_default() += base_major.abs();
         earliest = Some(earliest.map_or(d, |e| e.min(d)));
     }
     let Some(earliest) = earliest else {
