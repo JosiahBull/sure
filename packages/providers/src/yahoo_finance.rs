@@ -161,7 +161,10 @@ impl StockPriceProvider for YahooFinanceProvider {
             return Ok(Vec::new());
         }
 
-        let body: ChartResponse = response.error_for_status()?.json().await?;
+        // `json_capped`, not `.json()`: a decade of daily closes is ~200KB, and the request
+        // timeout bounds how long this undocumented endpoint may talk, not how much it may
+        // say. See `http.rs`.
+        let body: ChartResponse = crate::http::json_capped(response.error_for_status()?).await?;
 
         let result = body
             .chart

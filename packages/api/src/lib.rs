@@ -22,6 +22,7 @@ pub use sure_core::error; // crate::error::{AppError, AppResult, ErrorBody, Erro
 
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::{routing::get, Json, Router};
 use tower_http::catch_panic::CatchPanicLayer;
@@ -60,6 +61,7 @@ pub use sure_core::{AppError, AppResult};
 /// | CORS | Above the limiters so a `429`/`503` carries the headers a browser needs to read it, and so a preflight is answered without touching them. |
 /// | security headers | Same reasoning: they belong on every response, not just handler output. |
 /// | rate limit → in-flight shed → deadline | Cheapest rejection first: refuse the over-eager client, then the overloaded server, then bound whatever is left. |
+/// | body limit | Sets the *default* ceiling only — see [`with_global_body_limit`] for why a per-route override still wins from further in. |
 /// | compression | Outside the ETag layer, so tags are computed over identity bytes and an empty `304` costs no compression work. |
 /// | ETag | Needs the `Cache-Control` the layer below sets, in order to copy it onto a `304`. |
 /// | cache headers | Innermost, so it sees the handler's real status before deciding. |
@@ -104,7 +106,7 @@ pub fn build_app(state: AppState, web_dir: Option<&str>, config: &ApiConfig) -> 
         );
     }
 
-    let app = app
+    let app = with_global_body_limit(app, limits)
         .layer(from_fn_with_state(
             Deadlines {
                 normal: limits.request_timeout,
@@ -143,6 +145,29 @@ pub fn build_app(state: AppState, web_dir: Option<&str>, config: &ApiConfig) -> 
         .layer(CatchPanicLayer::new())
 }
 
+/// Apply [`Limits::max_body_bytes`] (`MAX_BODY_BYTES`) as the request-body ceiling for
+/// every route that does not set its own.
+///
+/// This has to be a whole-router layer, and the direction of the resulting override is the
+/// entire point. `DefaultBodyLimit` is not a check — it inserts a request extension that
+/// the body extractors read, and **the last insert wins**. A layer added here runs *outside*
+/// routing, so the four import routes' own `DefaultBodyLimit` (added inside their
+/// `MethodRouter` in `routes::{asb,brokerage,snapshot,student_loan}`) inserts afterwards and
+/// keeps its larger cap. Reversed — a global limit applied nearer the handler than the
+/// per-route one — a 32 MiB config snapshot and a 50 MiB import zip would both be clamped
+/// to 2 MiB, which is what `specs/http.spec.ts`'s over-cap snapshot test and the 51 MB
+/// import tests are there to catch.
+///
+/// Until this existed the knob was inert in both directions: the effective ceiling was
+/// axum's own built-in default, which happens to be 2 MB as well, so `MAX_BODY_BYTES=524288`
+/// did not tighten anything and 10 MiB did not loosen it. The refusal still comes back as a
+/// bare-text 413 from the extractor and is re-clothed in the standard
+/// `{ "error": { code, message } }` envelope by [`telemetry::request_context`] on the way
+/// out, exactly as before.
+fn with_global_body_limit(app: Router, limits: &Limits) -> Router {
+    app.layer(DefaultBodyLimit::max(limits.max_body_bytes))
+}
+
 /// Serialise the live OpenAPI document. Handy for debugging; the build-time client
 /// generation uses the `gen-openapi` binary instead.
 async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
@@ -152,3 +177,102 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
 /// Initialise tracing from `RUST_LOG`, defaulting to something useful in dev.
 /// See the [`telemetry`] module for the request-logging model this sets up.
 pub use telemetry::init_tracing;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::{Body, Bytes};
+    use axum::http::{Request as HttpRequest, StatusCode};
+    use axum::routing::post;
+    use tower::ServiceExt;
+
+    /// axum's own built-in ceiling, which every assertion below has to be measured against:
+    /// a limit that merely *matches* it proves nothing, because that is the value the knob
+    /// silently had while it was applied nowhere.
+    const AXUM_DEFAULT: usize = 2 * 1000 * 1000;
+
+    /// A stand-in with the same shape as [`routes::router`]: everything nested under `/api`,
+    /// one plain route on the global ceiling, one carrying its own larger
+    /// `DefaultBodyLimit` inside its `MethodRouter` the way the four import routes do. Wired
+    /// through the same [`with_global_body_limit`] `build_app` uses, so a change to where
+    /// that layer sits is what these tests actually exercise.
+    fn app(limits: &Limits) -> Router {
+        async fn echo(body: Bytes) -> String {
+            body.len().to_string()
+        }
+        let api = Router::new().route("/plain", post(echo)).route(
+            "/import",
+            post(echo).layer(DefaultBodyLimit::max(limits.max_import_body_bytes)),
+        );
+        with_global_body_limit(Router::new().nest("/api", api), limits)
+    }
+
+    async fn post_bytes(limits: &Limits, path: &str, bytes: usize) -> StatusCode {
+        let request = HttpRequest::post(path)
+            .body(Body::from(vec![b'x'; bytes]))
+            .expect("request builds");
+        app(limits)
+            .oneshot(request)
+            .await
+            .expect("router is infallible")
+            .status()
+    }
+
+    #[tokio::test]
+    async fn the_global_ceiling_tightens_below_axums_default() {
+        let limits = Limits {
+            max_body_bytes: 1024,
+            ..Limits::default()
+        };
+        assert_eq!(
+            post_bytes(&limits, "/api/plain", 1024).await,
+            StatusCode::OK
+        );
+        // Both sides of the boundary are orders of magnitude under `AXUM_DEFAULT`, so only
+        // the configured limit can be producing this refusal.
+        assert_eq!(
+            post_bytes(&limits, "/api/plain", 1025).await,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    #[tokio::test]
+    async fn the_global_ceiling_loosens_above_axums_default() {
+        let limits = Limits {
+            max_body_bytes: 4 * 1024 * 1024,
+            ..Limits::default()
+        };
+        // Over axum's default and under ours: refused before this layer existed, accepted now.
+        assert_eq!(
+            post_bytes(&limits, "/api/plain", 3 * 1024 * 1024).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_bytes(&limits, "/api/plain", 5 * 1024 * 1024).await,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    #[tokio::test]
+    async fn a_per_route_override_still_wins_over_the_global_ceiling() {
+        let limits = Limits {
+            max_body_bytes: 1024,
+            ..Limits::default()
+        };
+        let body = 3 * 1024 * 1024;
+        assert!(body > AXUM_DEFAULT, "must also clear axum's own default");
+        assert!(body < limits.max_import_body_bytes);
+        // The import route's own limit is inserted from further in and therefore last. If
+        // the global layer ever ends up nearer the handler this flips to 413 — and the
+        // 32 MiB snapshot and 50 MiB import routes break in production with it.
+        assert_eq!(
+            post_bytes(&limits, "/api/import", body).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_bytes(&limits, "/api/plain", body).await,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+}

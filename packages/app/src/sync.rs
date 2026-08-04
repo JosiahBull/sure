@@ -11,6 +11,36 @@ use crate::ports::{
     AccountRepo, Clock, ImportRow, ProviderRegistry, ProviderRepo, SyncContext, ValuationRepo,
 };
 
+/// How much of a provider's error text [`sync_detail`] keeps. 500 chars is enough to name
+/// the failing field and offset, which is all a diagnosis needs.
+pub const MAX_SYNC_DETAIL_CHARS: usize = 500;
+
+/// Bound a provider error's text before it is stored or shown.
+///
+/// A provider error is third-party text, and some of it carries the upstream payload with
+/// it: `akahu-client`'s `AkahuError::JsonDeserialization` interpolates the *entire*
+/// response body into its `Display`, so a schema change on Akahu's side turns a successful
+/// 200 holding a page of 100 real bank transactions — merchants, amounts, descriptions,
+/// external account ids — into the error message. Both places that message lands are
+/// exposures: `provider_syncs.detail` is an unbounded `TEXT` column served back by
+/// `GET /api/providers/{id}/syncs`, and [`AppError::validation`] is a 4xx, which
+/// `sure-core`'s error mapping passes to the client verbatim (only 5xx is scrubbed). The
+/// size is unbounded too — a 75 MB body would become a 75 MB row and a 75 MB 422 response
+/// from a route whose *inbound* cap is 2 MiB.
+///
+/// So cap it here, at the one place both copies are made, rather than trusting every
+/// provider's `Display` to be terse. Truncation is on a char boundary (the byte at
+/// [`MAX_SYNC_DETAIL_CHARS`] may be mid-codepoint in a UTF-8 body, and slicing there
+/// panics) and appends a marker so a reader knows the text is not the whole error.
+pub fn sync_detail(e: &anyhow::Error) -> String {
+    let text = e.to_string();
+    let mut out: String = text.chars().take(MAX_SYNC_DETAIL_CHARS).collect();
+    if out.len() < text.len() {
+        out.push_str("… (truncated)");
+    }
+    out
+}
+
 pub struct SyncService {
     providers: Arc<dyn ProviderRepo>,
     accounts: Arc<dyn AccountRepo>,
@@ -60,11 +90,14 @@ impl SyncService {
         let fetched = match p.fetch(ctx).await {
             Ok(txns) => txns,
             Err(e) => {
+                // One bounded rendering, used for both the durable row and the 422 — see
+                // `sync_detail` for what an unbounded one would leak.
+                let detail = sync_detail(&e);
                 let _ = self
                     .providers
-                    .record_sync(id, 0, 0, SyncOutcome::Error, Some(&e.to_string()))
+                    .record_sync(id, 0, 0, SyncOutcome::Error, Some(&detail))
                     .await?;
-                return Err(AppError::validation(format!("sync failed: {e}")));
+                return Err(AppError::validation(format!("sync failed: {detail}")));
             }
         };
 
@@ -174,5 +207,66 @@ impl SyncService {
         self.providers
             .record_sync(id, imported, skipped, SyncOutcome::Ok, None)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Stands in for `akahu-client`'s deser error, whose `Display` appends the whole
+    /// response body. Deliberately synthetic filler, not transaction-shaped text — this
+    /// test is about the byte count, and a fixture never carries real data's identifiers.
+    fn oversized_error() -> anyhow::Error {
+        anyhow::anyhow!(
+            "failed to deserialize response: {}",
+            "SYNTHETIC-BODY-FILLER ".repeat(200)
+        )
+    }
+
+    #[test]
+    fn truncates_an_oversized_provider_error() {
+        let detail = sync_detail(&oversized_error());
+        assert!(detail.ends_with("… (truncated)"));
+        // The marker is the only thing past the cap.
+        assert_eq!(
+            detail.chars().count(),
+            MAX_SYNC_DETAIL_CHARS + "… (truncated)".chars().count()
+        );
+        assert!(detail.starts_with("failed to deserialize response: SYNTHETIC-BODY-FILLER"));
+    }
+
+    #[test]
+    fn leaves_a_short_provider_error_alone() {
+        let detail = sync_detail(&anyhow::anyhow!("upstream timed out"));
+        assert_eq!(detail, "upstream timed out");
+    }
+
+    /// A UTF-8 body can put a multi-byte codepoint exactly astride the cap; slicing the
+    /// `String` by bytes there panics, so the cut has to be on a char boundary.
+    #[test]
+    fn cuts_multibyte_text_on_a_char_boundary() {
+        // Every char here is 3 bytes, so a byte-slice at MAX_SYNC_DETAIL_CHARS lands
+        // mid-codepoint.
+        let body: String = "ゑ".repeat(MAX_SYNC_DETAIL_CHARS + 10);
+        let detail = sync_detail(&anyhow::anyhow!("{body}"));
+        assert!(detail.ends_with("… (truncated)"));
+        assert_eq!(
+            detail.chars().filter(|c| *c == 'ゑ').count(),
+            MAX_SYNC_DETAIL_CHARS
+        );
+    }
+
+    /// The boundary itself: text of exactly the cap is whole, one char more is cut.
+    #[test]
+    fn marks_only_when_it_actually_cut() {
+        let exact: String = "x".repeat(MAX_SYNC_DETAIL_CHARS);
+        assert_eq!(sync_detail(&anyhow::anyhow!("{exact}")), exact);
+
+        let one_over: String = "x".repeat(MAX_SYNC_DETAIL_CHARS + 1);
+        assert_eq!(
+            sync_detail(&anyhow::anyhow!("{one_over}")),
+            format!("{exact}… (truncated)")
+        );
     }
 }

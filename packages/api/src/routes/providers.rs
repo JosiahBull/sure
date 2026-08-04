@@ -59,10 +59,13 @@ pub async fn discover_accounts(
         .get(&kind)
         .ok_or_else(|| AppError::validation(format!("unknown provider kind '{kind}'")))?;
 
+    // Discovery talks to the upstream too, so the same leak as a failed sync applies: an
+    // Akahu deser error carries the whole response body, and a 422's message reaches the
+    // client verbatim. Bound it with the one shared cap.
     let discovered = provider
         .list_accounts()
         .await
-        .map_err(|e| AppError::validation(e.to_string()))?;
+        .map_err(|e| AppError::validation(sure_app::sync::sync_detail(&e)))?;
 
     let already_linked: HashSet<String> = st
         .providers

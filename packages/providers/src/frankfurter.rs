@@ -51,14 +51,10 @@ impl ExchangeRateProvider for FrankfurterProvider {
 
     async fn fetch_rates(&self, base: &str) -> anyhow::Result<Vec<ExchangeRateQuote>> {
         let url = format!("{}/latest?base={base}", self.base_url);
-        let body: LatestResponse = self
-            .client
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let response = self.client.get(&url).send().await?.error_for_status()?;
+        // `json_capped`, not `.json()`: the whole rate table is ~2KB, and the request timeout
+        // bounds how long an upstream may talk, not how much it may say. See `http.rs`.
+        let body: LatestResponse = crate::http::json_capped(response).await?;
         Ok(parse_quotes(body))
     }
 }
@@ -98,5 +94,20 @@ mod tests {
         assert_eq!(quotes[0].as_of, "2026-07-16");
         assert_eq!(quotes[1].quote_code, "NZD");
         assert_eq!(quotes[1].rate.to_string(), "1.7078");
+    }
+
+    #[test]
+    fn decodes_the_body_bytes_the_capped_reader_accumulates() {
+        // `crate::http::json_capped` ends in `serde_json::from_slice` over the buffer it
+        // built chunk-by-chunk, not `Response::json`'s own decode — so the same payload has
+        // to deserialise from raw bytes, split across chunk boundaries and all. A realistic
+        // body is ~2KB, three orders of magnitude under the 8MiB ceiling.
+        let wire = br#"{"amount":1.0,"base":"USD","date":"2026-07-16","rates":{"NZD":1.7078}}"#;
+        let body: LatestResponse = serde_json::from_slice(wire).unwrap();
+        let quotes = parse_quotes(body);
+
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0].quote_code, "NZD");
+        assert_eq!(quotes[0].rate.to_string(), "1.7078");
     }
 }
