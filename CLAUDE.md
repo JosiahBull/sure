@@ -141,9 +141,12 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
 
 - **Scripts** (`package.json`): `pnpm dev` runs API + web together; `pnpm build` runs
   `gen:client` then `cargo build --release` then the web build; `pnpm test` runs
-  `test:api` (`@sure/api-tests`, Playwright-driven backend e2e) then `test:web`;
+  `test:rust` (`cargo test --workspace --all-features`) then `test:api`
+  (`@sure/api-tests`, Playwright-driven backend e2e) then `test:web`;
   `pnpm lint:rust` is `cargo clippy --all-targets -- -D warnings`; `pnpm fmt:rust` is
-  `cargo fmt --all`.
+  `cargo fmt --all`. `test:rust` carries `--all-features` but deliberately *not*
+  `--all-targets`: for `cargo test` that flag excludes doctests rather than adding to
+  them, which would silently drop `sure_appbase`'s usage example.
 - **Blocking-code detector** (development only): `pnpm dev:api:blocked` and
   `pnpm test:api:blocked` build with `sure-api`'s `blocking-detector` feature *and*
   `RUSTFLAGS="--cfg tokio_unstable"` — both are needed, the feature alone reports nothing —
@@ -164,6 +167,9 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   `node scripts/pii-scan.mjs` (rule 3; first, because it is the cheapest gate and the only
   one guarding something a later gate cannot undo), then `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+  `cargo test --workspace --all-features` (directly after clippy, which has already
+  compiled the workspace, so the marginal cost is linking and running the test binaries;
+  CI runs the same command as the `test` job in `checks.yml`),
   `pnpm test:api`, `pnpm --filter @sure/web check`. It deliberately skips the web
   *visual* Playwright suite (only deterministic in CI's pinned container). Bypass in
   an emergency with `git commit --no-verify`, not by weakening a lint.

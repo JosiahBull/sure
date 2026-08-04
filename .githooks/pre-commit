@@ -3,10 +3,14 @@
 # Pre-commit checks for the sure repo. Mirrors the deterministic gates in
 # .github/workflows/checks.yml so most failures are caught before they reach CI.
 #
-# Runs: the personal-data scan, rustfmt (check), clippy (-D warnings), the backend e2e
-# suite, and the web type-check. The scan goes first because it costs milliseconds and
-# guards something a later gate cannot undo — see CLAUDE.md rule 3, and
-# `node scripts/pii-scan.mjs --all` to sweep the whole tree rather than staged additions.
+# Runs: the personal-data scan, rustfmt (check), clippy (-D warnings), the Rust unit and
+# integration tests, the backend e2e suite, and the web type-check. The scan goes first
+# because it costs milliseconds and guards something a later gate cannot undo — see
+# CLAUDE.md rule 3, and `node scripts/pii-scan.mjs --all` to sweep the whole tree rather
+# than staged additions. `cargo test` sits directly after clippy: clippy has already
+# compiled the workspace by then, so the marginal cost is linking and running the test
+# binaries, and a type error is reported by the cheaper gate first rather than surfacing
+# as a confusing test-compile failure.
 #
 # Deliberately does NOT run the web *visual* suite (`pnpm test:web`): those
 # screenshot tests are only deterministic inside the pinned Playwright container CI uses
@@ -26,6 +30,9 @@ run() {
 run node scripts/pii-scan.mjs
 run cargo fmt --all --check
 run cargo clippy --workspace --all-targets --all-features -- -D warnings
+# Feature set mirrors clippy's so feature-gated tests are compiled; no --all-targets,
+# which for `cargo test` would drop the doctests. See the `test` job in checks.yml.
+run cargo test --workspace --all-features
 run pnpm test:api
 run pnpm --filter @sure/web check
 

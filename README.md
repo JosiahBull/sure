@@ -204,7 +204,8 @@ you're looking at.
 | `pnpm gen:client` | Regenerate the OpenAPI spec and the typed client |
 | `pnpm build` | Generate client, build the release backend, build the SPA |
 | `pnpm seed` | Seed a running backend with demo data |
-| `pnpm test` | API e2e tests, then the web Playwright suite |
+| `pnpm test` | Rust tests, then the API e2e tests, then the web Playwright suite |
+| `pnpm test:rust` | Rust unit, integration and doc tests (`cargo test --workspace --all-features`) |
 | `pnpm test:api` | API e2e tests (TS + Playwright, through the client) |
 | `pnpm test:api:blocked` | The same suite, serially, against a build that reports blocking code ([above](#finding-blocking-code)) |
 | `pnpm test:api:check` | Type-check the API tests against the client contract (`tsc`) |
