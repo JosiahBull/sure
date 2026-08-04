@@ -247,9 +247,19 @@ pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResul
 
 /// Sync a provider: fetch upstream transactions, import new ones (dedupe on
 /// external id), and record the result.
+///
+/// Single-flight per provider: while one sync of this provider is running — whether started
+/// here, by the initial sync after linking, or by the 6-hourly poll — a second request gets a
+/// 409 instead of a duplicate run.
+// Below the doc comment on purpose: utoipa publishes that as the public OpenAPI description, and
+// which internal type holds the guard is not the caller's business. The guard lives in
+// `SyncService` (`sure_app::sync`) precisely so it spans all three callers; see its `in_flight`
+// doc for why duplicating the run is worse than refusing it (upstream rate limits are per
+// household, and this route holds an in-flight permit for its whole 300s deadline).
 #[utoipa::path(post, path = "/api/providers/{id}/sync", tag = "providers", params(("id" = i64, Path,)),
     request_body = SyncRequest,
     responses((status = 200, body = ProviderSync), (status = 404, body = crate::error::ErrorBody),
+              (status = 409, body = crate::error::ErrorBody),
               (status = 422, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = PROVIDERS_SYNC,

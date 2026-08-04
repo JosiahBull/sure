@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sure_scheduler::ScheduledTask;
+use sure_scheduler::{ScheduledTask, TaskRun};
+use tokio_util::sync::CancellationToken;
 
 use crate::ports::TransferRepo;
 
@@ -43,11 +44,16 @@ impl ScheduledTask for TransferLinkTask {
         POLL_INTERVAL
     }
 
-    async fn run(&self) -> anyhow::Result<()> {
+    /// `cancel` is deliberately unused: this task is a *single* call into the repo, which
+    /// links every matchable pair in one statement pair. There is no "between items" to stop
+    /// at — checking the token before starting would only skip a scan that takes a couple of
+    /// indexed lookups, and checking it after is pointless. The drain waits out one
+    /// `link_transfers`, which is bounded by SQLite rather than by any network.
+    async fn run(&self, _cancel: &CancellationToken) -> anyhow::Result<TaskRun> {
         let linked = self.transfers.link_transfers(WINDOW_DAYS).await?;
         if linked > 0 {
             tracing::info!(linked, "auto-linked transfer pairs");
         }
-        Ok(())
+        Ok(TaskRun::Completed)
     }
 }

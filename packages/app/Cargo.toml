@@ -14,6 +14,9 @@ path = "src/lib.rs"
 [dependencies]
 sure-core = { workspace = true }
 sure-scheduler = { workspace = true }
+# `CancellationToken` only — `ScheduledTask::run` is handed the shutdown token so a sweep can
+# stop between items. Already in the lock via sqlx/tokio-util, so nothing new is built.
+tokio-util = { workspace = true }
 chrono = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json = { workspace = true }

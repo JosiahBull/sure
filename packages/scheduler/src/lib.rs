@@ -6,7 +6,10 @@
 //! cause extra (or missed) work. A failed run is not recorded, so it's retried on the
 //! next check rather than waiting out the full interval — and a *panicking* run is
 //! contained and treated the same way, so one broken job can't take the others down with
-//! it (see `Scheduler::run_if_due`).
+//! it (see `Scheduler::run_if_due`). Shutdown is cooperative in both directions: the loop
+//! stops between tasks, and each task is handed the same [`CancellationToken`] so a long
+//! multi-item sweep can stop between items and say so ([`TaskRun::Interrupted`]) rather than
+//! being waited out — or, past the drain deadline, abandoned mid-write.
 
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
@@ -18,6 +21,21 @@ use chrono::{DateTime, Utc};
 use futures_util::FutureExt;
 use tokio_util::sync::CancellationToken;
 
+/// How much of its work a run got done. Decides whether the run is recorded, so it is a
+/// two-variant enum rather than a `bool`: [`Scheduler::run_if_due`] matches it exhaustively
+/// (CLAUDE.md rule 2) and a third outcome added later has to be answered there, not defaulted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskRun {
+    /// Everything this run had to do is done. Recorded, so the interval starts again from now.
+    Completed,
+    /// The run stopped early because the cancellation token fired part-way through — a
+    /// shutdown, not a failure. **Deliberately not recorded**: the schedule keeps claiming
+    /// the task hasn't run since its last *complete* run, so the next process start picks it
+    /// up immediately instead of leaving the half-done sweep to age out its full interval.
+    /// Reported at DEBUG, not WARN: nothing went wrong.
+    Interrupted,
+}
+
 /// A recurring background job.
 #[async_trait]
 pub trait ScheduledTask: Send + Sync {
@@ -27,7 +45,19 @@ pub trait ScheduledTask: Send + Sync {
     /// How often this task needs to run.
     fn interval(&self) -> Duration;
     /// Do the work.
-    async fn run(&self) -> anyhow::Result<()>;
+    ///
+    /// `cancel` is the process-wide shutdown token, handed down so a task that loops over
+    /// many items (every provider, every ticker, every currency) can stop *between* items and
+    /// return [`TaskRun::Interrupted`]. Checking it is what makes the drain fast rather than
+    /// merely bounded: without it, shutdown waits out whatever sweep was in flight and — once
+    /// past `SHUTDOWN_DRAIN_GRACE_SECS` (10s, see `docs/HTTP.md`) — abandons the task
+    /// mid-write, which is the difference between "finished" and "abandoned" in the shutdown
+    /// report.
+    ///
+    /// What a task must **not** do is check it mid-write: the contract is "stop at a point
+    /// where stopping loses nothing", i.e. between whole items, never between the two halves
+    /// of one item's writes.
+    async fn run(&self, cancel: &CancellationToken) -> anyhow::Result<TaskRun>;
 }
 
 /// Durable "when did each named task last run" state — the persistence port. Only
@@ -63,11 +93,14 @@ impl Scheduler {
     /// Run the check loop until `cancel` fires. The first check happens immediately, so a
     /// never-run task executes on startup rather than waiting a full `check_interval`.
     ///
-    /// Cancellation is checked *between* tasks, never during one. Dropping a task's
-    /// future part-way through would abandon whatever write it was in the middle of and
-    /// — because only successful runs are recorded — leave the schedule claiming the task
-    /// still hasn't run. The cost is that shutdown waits out the task in flight, which is
-    /// why the caller drains this under a deadline rather than trusting it to be quick.
+    /// The loop never *drops* a task's future: cancellation is checked between tasks here, and
+    /// handed to the task itself so it can stop between its own items (see
+    /// [`ScheduledTask::run`] and [`TaskRun::Interrupted`]). Dropping the future part-way
+    /// through would abandon whatever write it was in the middle of, and — because only
+    /// completed runs are recorded — leave the schedule claiming the task still hasn't run.
+    /// Cooperative cancellation is what keeps the drain quick without that cost; the caller
+    /// still drains this under a deadline, because a task is free to ignore the token and a
+    /// single in-flight upstream request is bounded by its own timeout rather than by us.
     pub async fn run(self, cancel: CancellationToken) {
         let mut interval = tokio::time::interval(self.check_interval);
         loop {
@@ -83,13 +116,14 @@ impl Scheduler {
                 if cancel.is_cancelled() {
                     break;
                 }
-                self.run_if_due(task.as_ref()).await;
+                self.run_if_due(task.as_ref(), &cancel).await;
             }
         }
         tracing::debug!("scheduler stopped");
     }
 
-    /// Run one task if it's due, recording the run only if it succeeded.
+    /// Run one task if it's due, recording the run only if it ran to completion — not if it
+    /// failed, panicked, or stopped early for shutdown.
     ///
     /// The `catch_unwind` is load-bearing: this whole loop is a *single* task, so a panic
     /// escaping one job's `run` would unwind the sweep, the loop and the spawned future
@@ -109,7 +143,7 @@ impl Scheduler {
     /// records — lives behind `store`, whose SQLite transactions do their own recovery. The
     /// worst case is the same one a returned `Err` already has: a job that panicked
     /// half-way through its writes is re-run from the top.
-    async fn run_if_due(&self, task: &dyn ScheduledTask) {
+    async fn run_if_due(&self, task: &dyn ScheduledTask, cancel: &CancellationToken) {
         let last_run_at = match self.store.last_run_at(task.name()).await {
             Ok(v) => v,
             Err(err) => {
@@ -120,11 +154,20 @@ impl Scheduler {
         if !is_due(last_run_at, Utc::now(), task.interval()) {
             return;
         }
-        match AssertUnwindSafe(task.run()).catch_unwind().await {
-            Ok(Ok(())) => {
+        match AssertUnwindSafe(task.run(cancel)).catch_unwind().await {
+            Ok(Ok(TaskRun::Completed)) => {
                 if let Err(err) = self.store.record_run(task.name(), Utc::now()).await {
                     tracing::warn!(task = task.name(), error = %err, "could not record task run");
                 }
+            }
+            // Not recorded on purpose — see `TaskRun::Interrupted`. A shutdown that lands
+            // half-way through a sweep must not look like a completed run, or the work skipped
+            // on the way out waits out a full interval after the restart.
+            Ok(Ok(TaskRun::Interrupted)) => {
+                tracing::debug!(
+                    task = task.name(),
+                    "scheduled task stopped early for shutdown; not recorded, so it runs again on the next check"
+                );
             }
             Ok(Err(err)) => {
                 tracing::warn!(task = task.name(), error = %err, "scheduled task failed");
@@ -202,6 +245,7 @@ mod tests {
 
     const PANICKING: &str = "panicking_task";
     const HEALTHY: &str = "healthy_task";
+    const COOPERATIVE: &str = "cooperative_task";
 
     /// Stands in for the real failure mode: an `unwrap` inside a provider poll, say, that
     /// nothing between here and the runtime catches.
@@ -215,7 +259,7 @@ mod tests {
         fn interval(&self) -> Duration {
             Duration::ZERO
         }
-        async fn run(&self) -> anyhow::Result<()> {
+        async fn run(&self, _cancel: &CancellationToken) -> anyhow::Result<TaskRun> {
             self.0.fetch_add(1, Ordering::SeqCst);
             panic!("scheduled task blew up");
         }
@@ -231,9 +275,44 @@ mod tests {
         fn interval(&self) -> Duration {
             Duration::ZERO
         }
-        async fn run(&self) -> anyhow::Result<()> {
+        async fn run(&self, _cancel: &CancellationToken) -> anyhow::Result<TaskRun> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            Ok(TaskRun::Completed)
+        }
+    }
+
+    /// The shape every real task now has: a loop over many items that checks the token at the
+    /// top of each iteration. `ITEMS` is far more work than the test lets it finish, so
+    /// "stopped because it was cancelled" is distinguishable from "ran out of items".
+    struct CooperativeTask {
+        started: Arc<AtomicUsize>,
+        processed: Arc<AtomicUsize>,
+    }
+
+    impl CooperativeTask {
+        const ITEMS: usize = 1_000_000;
+    }
+
+    #[async_trait]
+    impl ScheduledTask for CooperativeTask {
+        fn name(&self) -> &'static str {
+            COOPERATIVE
+        }
+        fn interval(&self) -> Duration {
+            Duration::ZERO
+        }
+        async fn run(&self, cancel: &CancellationToken) -> anyhow::Result<TaskRun> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            for _ in 0..Self::ITEMS {
+                if cancel.is_cancelled() {
+                    return Ok(TaskRun::Interrupted);
+                }
+                self.processed.fetch_add(1, Ordering::SeqCst);
+                // Yield rather than sleep: the test needs the task to be *interruptible*, not
+                // slow, and a timer would make the assertion depend on wall-clock timing.
+                tokio::task::yield_now().await;
+            }
+            Ok(TaskRun::Completed)
         }
     }
 
@@ -281,6 +360,95 @@ mod tests {
         assert!(
             !recorded.iter().any(|name| name == PANICKING),
             "a panicked run must not be recorded: {recorded:?}"
+        );
+    }
+
+    /// W-17, the scheduler half: the drain has to be *fast*, not merely bounded. Before the
+    /// token reached `run`, a sweep in flight when `SIGTERM` landed ran to its own end — up to
+    /// 83 minutes for a paginated Akahu fetch against a slow-but-up upstream — so the 10s
+    /// drain grace expired and the task was abandoned mid-write. Here the task is mid-sweep
+    /// with ~a million items left when cancellation lands, and the whole loop still returns
+    /// well inside the grace.
+    #[tokio::test]
+    async fn a_cancelled_task_stops_mid_sweep_instead_of_running_to_its_end() {
+        let store = Arc::new(RecordingStore::default());
+        let started = Arc::new(AtomicUsize::new(0));
+        let processed = Arc::new(AtomicUsize::new(0));
+
+        let mut scheduler = Scheduler::new(store.clone(), Duration::from_millis(1));
+        scheduler.register(Box::new(CooperativeTask {
+            started: started.clone(),
+            processed: processed.clone(),
+        }));
+
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(scheduler.run(cancel.clone()));
+
+        // Wait until the task is genuinely inside its loop, so this asserts "interrupted
+        // part-way" rather than "never started".
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while processed.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the task should start on the first sweep");
+
+        cancel.cancel();
+        // The number that matters: comfortably under `SHUTDOWN_DRAIN_GRACE_SECS` (10s), and
+        // nowhere near the time the full million items would take.
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the loop must return promptly once cancelled")
+            .expect("the scheduler loop must not unwind");
+
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        assert!(
+            processed.load(Ordering::SeqCst) < CooperativeTask::ITEMS,
+            "the sweep must have stopped early, not run to its end"
+        );
+
+        // And an interrupted run is not recorded, so the restart picks it straight back up
+        // instead of waiting out its interval with half the work done.
+        let recorded = store.recorded.lock().unwrap();
+        assert!(
+            !recorded.iter().any(|name| name == COOPERATIVE),
+            "an interrupted run must not be recorded: {recorded:?}"
+        );
+    }
+
+    /// The other half of the same contract, at the unit level: a run that *completes* is
+    /// recorded, an `Interrupted` one is not. Asserted through `run_if_due` so it covers the
+    /// match arms rather than the enum alone.
+    #[tokio::test]
+    async fn records_a_completed_run_and_not_an_interrupted_one() {
+        let store = Arc::new(RecordingStore::default());
+        let scheduler = Scheduler::new(store.clone(), Duration::from_millis(1));
+
+        let healthy = CountingTask(Arc::new(AtomicUsize::new(0)));
+        scheduler
+            .run_if_due(&healthy, &CancellationToken::new())
+            .await;
+        assert_eq!(store.recorded.lock().unwrap().as_slice(), [HEALTHY]);
+
+        // Same task type, same store — only the token differs, and an already-cancelled token
+        // is what a task sees when the signal lands just as its turn comes up.
+        let cooperative = CooperativeTask {
+            started: Arc::new(AtomicUsize::new(0)),
+            processed: Arc::new(AtomicUsize::new(0)),
+        };
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        scheduler.run_if_due(&cooperative, &cancelled).await;
+        assert_eq!(
+            store.recorded.lock().unwrap().as_slice(),
+            [HEALTHY],
+            "the interrupted run must add nothing"
+        );
+        assert_eq!(
+            cooperative.processed.load(Ordering::SeqCst),
+            0,
+            "a token already cancelled stops the sweep before the first item"
         );
     }
 

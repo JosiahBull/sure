@@ -25,10 +25,16 @@ use crate::config::Config;
 /// Build the `AppState` every handler shares: one `SqliteStore` + `SystemClock`, wired
 /// into the four logic-heavy services and handed out directly (as a repo port trait
 /// object) for every thin-CRUD aggregate.
+///
+/// `shutdown` is passed in rather than made here: a handler that starts work outliving its
+/// response must spawn it on *this* process's tracker, so that the drain below waits for it
+/// and the shutdown report can name it if it overruns. A second, private handle would track
+/// nothing anybody waits for.
 fn build_state(
     db: Db,
     registry: Arc<dyn ProviderRegistry>,
     stock_price_provider: Arc<dyn StockPriceProvider>,
+    shutdown: Shutdown,
 ) -> sure_api::State {
     let store = Arc::new(SqliteStore::new(db));
     let clock = Arc::new(SystemClock);
@@ -84,6 +90,7 @@ fn build_state(
         providers: store,
         provider_registry: registry,
         stock_price_provider,
+        shutdown,
     }
 }
 
@@ -180,7 +187,12 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         });
     }
 
-    let state = build_state(pool.clone(), registry, stock_price_provider);
+    let state = build_state(
+        pool.clone(),
+        registry,
+        stock_price_provider,
+        shutdown.clone(),
+    );
     let app = sure_api::build_app(state, config.web_dir.as_deref(), &config.api);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;

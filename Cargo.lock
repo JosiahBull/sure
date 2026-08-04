@@ -2865,6 +2865,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sure-app",
+ "sure-appbase",
  "sure-core",
  "sure-providers",
  "thiserror 2.0.18",
@@ -2892,6 +2893,7 @@ dependencies = [
  "sure-core",
  "sure-scheduler",
  "tokio",
+ "tokio-util",
  "tracing",
  "zen-expression",
 ]

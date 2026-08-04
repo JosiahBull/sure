@@ -2468,19 +2468,32 @@ mod tests {
             async fn account_currencies(&self) -> AppResult<Vec<AccountCurrency>> {
                 Ok(self.account_currencies.clone())
             }
-            async fn transactions(&self) -> AppResult<Vec<LedgerTx>> {
+            // The window parameters are ignored: returning every row is a legal answer to a
+            // windowed read (`ReportRepo::transactions` only requires a superset of what the
+            // aggregation needs), and the forecast asks for the unwindowed ledger anyway.
+            async fn transactions(&self, _from: Option<NaiveDate>) -> AppResult<Vec<LedgerTx>> {
                 Ok(self.transactions.clone())
             }
-            async fn valuations(&self) -> AppResult<Vec<LedgerValuation>> {
+            async fn valuations(
+                &self,
+                _from: Option<NaiveDate>,
+            ) -> AppResult<Vec<LedgerValuation>> {
                 Ok(self.valuations.clone())
             }
             async fn categories(&self) -> AppResult<Vec<ReportCategory>> {
                 Ok(self.categories.clone())
             }
-            async fn spend_transactions(&self) -> AppResult<Vec<SpendTransaction>> {
+            async fn spend_transactions(
+                &self,
+                _from: NaiveDate,
+                _to: NaiveDate,
+            ) -> AppResult<Vec<SpendTransaction>> {
                 Ok(self.spend_transactions.clone())
             }
             async fn earliest_transaction_date(&self) -> AppResult<Option<String>> {
+                unreachable!()
+            }
+            async fn earliest_valuation_date(&self) -> AppResult<Option<String>> {
                 unreachable!()
             }
             async fn active_accounts(&self) -> AppResult<Vec<ActiveAccount>> {

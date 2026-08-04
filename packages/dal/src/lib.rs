@@ -54,6 +54,35 @@ pub use sqlx::SqliteConnection;
 /// binary and the test harness run the exact same schema with no external files.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+/// Connections the pool will open. SQLite serialises writers regardless, so this is sized
+/// for concurrent *readers* plus the one writer.
+const MAX_CONNECTIONS: u32 = 8;
+
+/// How long a request may wait for a pooled connection before giving up.
+///
+/// Well under `sure_api::ApiConfig::request_timeout` (30s) on purpose, and the gap is the
+/// whole point. `max_in_flight` (64) is deliberately larger than [`MAX_CONNECTIONS`], so a
+/// burst *will* queue on acquire — and sqlx's own default acquire timeout is 30s, exactly
+/// equal to the request deadline. Two deadlines expiring at the same instant is a race, and
+/// whichever won decided what the client saw: `PoolTimedOut` (a scrubbed 500, which reads
+/// as a bug and gives a client no reason to retry) or the deadline (a 408). Neither is the
+/// 503 `overloaded` + `Retry-After` that `sure_api::limits` exists to emit. At 5s pool
+/// exhaustion is instead a distinguishable, *fast* failure that always wins the race, and
+/// [`AppError::is_overloaded`](sure_core::AppError::is_overloaded) turns it into that 503.
+const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long SQLite itself waits for another writer to release the write lock before
+/// returning `SQLITE_BUSY`. Its own internal retry, and the first of two: past it,
+/// [`with_busy_retry`] retries the whole transaction.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Attempts (not retries) a busy write gets from [`with_busy_retry`].
+const BUSY_RETRY_ATTEMPTS: u32 = 4;
+/// First backoff after a `SQLITE_BUSY`, doubled each attempt: 25ms, 50ms, 100ms. With
+/// [`BUSY_TIMEOUT`] already spent inside SQLite before the error is even raised, the point
+/// of these is only to break the tie between two writers, not to wait out a long one.
+const BUSY_RETRY_BASE_BACKOFF: Duration = Duration::from_millis(25);
+
 /// Open (creating if necessary) a SQLite pool tuned for a low-concurrency,
 /// single-family workload: WAL for concurrent reads, foreign keys enforced.
 pub async fn connect(database_url: &str) -> anyhow::Result<Db> {
@@ -62,7 +91,7 @@ pub async fn connect(database_url: &str) -> anyhow::Result<Db> {
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
         .foreign_keys(true)
-        .busy_timeout(Duration::from_secs(5))
+        .busy_timeout(BUSY_TIMEOUT)
         // Log every executed statement at TRACE (sqlx defaults to INFO, which would
         // drown out the one-line-per-request summary); promote statements slower than a
         // second to WARN so genuinely slow queries surface without any RUST_LOG tuning.
@@ -72,11 +101,73 @@ pub async fn connect(database_url: &str) -> anyhow::Result<Db> {
     ensure_database_dir(database_url)?;
 
     let pool = SqlitePoolOptions::new()
-        .max_connections(8)
+        .max_connections(MAX_CONNECTIONS)
+        // Not sqlx's default (30s), which is the request deadline to the second — see
+        // POOL_ACQUIRE_TIMEOUT for why an equal deadline is a coin toss between a 500 and
+        // a 408 when what the caller needs is a 503 it can retry.
+        .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
         .connect_with(options)
         .await?;
 
     Ok(pool)
+}
+
+/// Run a database write, retrying it while SQLite reports that another writer holds the
+/// lock.
+///
+/// SQLite serialises writers, so two concurrent imports (a scheduled sync and an upload,
+/// say) *will* collide. [`BUSY_TIMEOUT`] is SQLite's own internal wait and used to be the
+/// only retry anywhere in the process: past it the `SQLITE_BUSY` travelled all the way up
+/// as `AppError::Database` and became a scrubbed 500 — an internal-error alert for the most
+/// ordinary, transient condition the database has.
+///
+/// `op` must be a whole transaction, not a fragment of one: the retry replays it from the
+/// start, which is only correct because a busy transaction committed nothing before it was
+/// refused. Backoff is jittered so two writers that collided once do not line up on every
+/// subsequent attempt. If the attempts run out the error is returned unchanged — and
+/// [`AppError::is_overloaded`](sure_core::AppError::is_overloaded) renders it as a 503
+/// `overloaded` with `Retry-After`, so the client retries rather than reading a defect.
+pub async fn with_busy_retry<T, F, Fut>(what: &'static str, mut op: F) -> sure_core::AppResult<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = sure_core::AppResult<T>>,
+{
+    let mut backoff = BUSY_RETRY_BASE_BACKOFF;
+    let mut attempt = 1u32;
+    loop {
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if attempt >= BUSY_RETRY_ATTEMPTS || !err.is_overloaded() {
+                    return Err(err);
+                }
+                let wait = jittered(backoff);
+                tracing::warn!(
+                    operation = what,
+                    attempt,
+                    backoff_ms = wait.as_millis(),
+                    error = %err,
+                    "database busy; retrying the transaction"
+                );
+                tokio::time::sleep(wait).await;
+                backoff *= 2;
+                attempt += 1;
+            }
+        }
+    }
+}
+
+/// Spread a backoff over `[d, 1.5d)`.
+///
+/// Deliberately not `rand`: this needs no statistical quality, only that two processes that
+/// collided do not wake together, and the DAL should not grow an RNG dependency to say so.
+/// The clock's sub-millisecond digits differ between two callers that are, by definition,
+/// not synchronised.
+fn jittered(base: Duration) -> Duration {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos() as u64);
+    base + Duration::from_nanos((base.as_nanos() as u64 / 2).saturating_mul(nanos % 1000) / 1000)
 }
 
 /// Create the directory that will hold a file-backed database, and return it.
@@ -150,6 +241,8 @@ pub async fn migrate(pool: &Db) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn every_in_memory_spelling_has_no_file_on_disk() {
@@ -189,5 +282,231 @@ mod tests {
             ensure_database_dir("sqlite:sure-does-not-exist.db").unwrap(),
             Some(PathBuf::from("."))
         );
+    }
+
+    /// W-18: the pool's acquire deadline must be *distinguishably* shorter than the request
+    /// deadline. sqlx's default is 30s, which is `ApiConfig::request_timeout` to the second:
+    /// two deadlines expiring together made the client's answer a coin toss between a
+    /// scrubbed 500 and a 408, when the useful answer is a 503 it can retry.
+    #[tokio::test]
+    async fn the_pool_gives_up_on_acquire_well_before_the_request_deadline() {
+        // The API's request deadline. Named here as a literal because the DAL sits below
+        // `sure-api` and cannot read its config; `sure_api::config` is the source of truth.
+        const API_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+        let pool = connect("sqlite::memory:").await.unwrap();
+        assert_eq!(pool.options().get_acquire_timeout(), POOL_ACQUIRE_TIMEOUT);
+        assert!(
+            POOL_ACQUIRE_TIMEOUT * 4 <= API_REQUEST_TIMEOUT,
+            "pool acquire ({POOL_ACQUIRE_TIMEOUT:?}) must lose the race to the request \
+             deadline ({API_REQUEST_TIMEOUT:?}) by a wide margin, not by a hair"
+        );
+        pool.close().await;
+    }
+
+    /// The other half of W-18: once the pool does give up, the error must be recognisable as
+    /// load. `AppError::is_overloaded` is what turns it into a 503 `overloaded` +
+    /// `Retry-After` instead of the 500 it used to be.
+    #[tokio::test]
+    async fn pool_exhaustion_is_an_overload_not_an_internal_error() {
+        // A hand-built pool, not `connect`, so the wait is 50ms instead of 5s.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_millis(50))
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let held = pool.acquire().await.unwrap();
+
+        let err: sure_core::AppError = pool
+            .acquire()
+            .await
+            .expect_err("the only connection is checked out")
+            .into();
+        assert!(err.is_overloaded(), "{err}");
+        assert_eq!(err.code(), sure_core::error::OVERLOADED_CODE);
+
+        drop(held);
+        pool.close().await;
+    }
+
+    /// A throwaway file-backed database, deleted on drop.
+    ///
+    /// A *file*, because `SQLITE_BUSY` needs two connections contending for one database's
+    /// write lock and `sqlite::memory:` gives every connection a private database of its own.
+    /// In the OS temp directory, never `DATABASE_URL`: `data/sure.db` is real financial
+    /// history, not a fixture.
+    struct TempDb(PathBuf);
+
+    impl TempDb {
+        fn new(name: &str) -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            let dir = std::env::temp_dir().join(format!("sure-dal-{name}-{unique}"));
+            std::fs::create_dir_all(&dir).expect("temp dir should be creatable");
+            Self(dir)
+        }
+
+        fn url(&self) -> String {
+            format!("sqlite:{}/probe.db", self.0.display())
+        }
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            // Best effort: a leftover temp directory is not worth failing a test over.
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A pool that reports `SQLITE_BUSY` immediately instead of waiting out
+    /// [`BUSY_TIMEOUT`] — the same error the real pool raises, just without the five-second
+    /// pause that would make this test unbearable.
+    async fn impatient_pool(url: &str) -> Db {
+        let options = SqliteConnectOptions::from_str(url)
+            .unwrap()
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::ZERO);
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap()
+    }
+
+    async fn insert_probe(pool: &Db) -> sure_core::AppResult<()> {
+        sqlx::query("INSERT INTO busy_probe (id) VALUES (NULL)")
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// W-30: a write refused because another writer held the lock is transient by
+    /// definition. Before this it was nobody's job to retry — `busy_timeout` was the only
+    /// retry in the system, and past it the error became a 500 for a condition that clears
+    /// on its own.
+    #[tokio::test]
+    async fn a_busy_write_is_retried_and_then_succeeds() {
+        let temp = TempDb::new("busy-retry");
+        let writer = impatient_pool(&temp.url()).await;
+        sqlx::query("CREATE TABLE busy_probe (id INTEGER PRIMARY KEY)")
+            .execute(&writer)
+            .await
+            .unwrap();
+        let contender = impatient_pool(&temp.url()).await;
+
+        // Hold the write lock.
+        let mut blocking = writer.begin().await.unwrap();
+        sqlx::query("INSERT INTO busy_probe (id) VALUES (NULL)")
+            .execute(&mut *blocking)
+            .await
+            .unwrap();
+
+        // Release it once the retry has actually been refused once, so the test proves a
+        // retry happened rather than racing a timer.
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let watched = Arc::clone(&attempts);
+        let releaser = tokio::spawn(async move {
+            while watched.load(Ordering::SeqCst) < 2 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            blocking.commit().await.unwrap();
+        });
+
+        let counter = &attempts;
+        let pool = &contender;
+        with_busy_retry("test", || async move {
+            counter.fetch_add(1, Ordering::SeqCst);
+            insert_probe(pool).await
+        })
+        .await
+        .expect("the write should land once the other writer commits");
+
+        releaser.await.unwrap();
+        assert!(
+            attempts.load(Ordering::SeqCst) >= 2,
+            "the first attempt must have been refused, or this proves nothing"
+        );
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM busy_probe")
+            .fetch_one(&contender)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows, 2,
+            "both the blocking write and the retried one landed"
+        );
+    }
+
+    /// When the lock is never released the attempts run out — and the error that comes back
+    /// still classifies as overload, so the API answers 503 `overloaded` (retryable by the
+    /// client) rather than 500 (a bug to investigate).
+    #[tokio::test]
+    async fn a_write_that_stays_busy_gives_up_as_an_overload() {
+        let temp = TempDb::new("busy-exhausted");
+        let writer = impatient_pool(&temp.url()).await;
+        sqlx::query("CREATE TABLE busy_probe (id INTEGER PRIMARY KEY)")
+            .execute(&writer)
+            .await
+            .unwrap();
+        let contender = impatient_pool(&temp.url()).await;
+
+        let mut blocking = writer.begin().await.unwrap();
+        sqlx::query("INSERT INTO busy_probe (id) VALUES (NULL)")
+            .execute(&mut *blocking)
+            .await
+            .unwrap();
+
+        let attempts = AtomicUsize::new(0);
+        let counter = &attempts;
+        let pool = &contender;
+        let err = with_busy_retry("test", || async move {
+            counter.fetch_add(1, Ordering::SeqCst);
+            insert_probe(pool).await
+        })
+        .await
+        .expect_err("the lock is never released");
+
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            BUSY_RETRY_ATTEMPTS as usize
+        );
+        assert!(err.is_overloaded(), "{err}");
+        assert_eq!(err.code(), sure_core::error::OVERLOADED_CODE);
+        blocking.rollback().await.unwrap();
+    }
+
+    /// The retry must be narrow: anything that is not "another writer has it" is returned on
+    /// the first attempt, because replaying a real failure only wastes the caller's deadline.
+    #[tokio::test]
+    async fn a_failure_that_is_not_busy_is_not_retried() {
+        let attempts = AtomicUsize::new(0);
+        let counter = &attempts;
+        let err = with_busy_retry("test", || async move {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>(sure_core::AppError::validation("nope"))
+        })
+        .await
+        .expect_err("the closure always fails");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(err.code(), "validation");
+    }
+
+    #[test]
+    fn jitter_stays_inside_its_window() {
+        for base in [
+            BUSY_RETRY_BASE_BACKOFF,
+            BUSY_RETRY_BASE_BACKOFF * 4,
+            Duration::ZERO,
+        ] {
+            let wait = jittered(base);
+            assert!(wait >= base, "{wait:?} < {base:?}");
+            assert!(
+                wait <= base + base / 2,
+                "{wait:?} is more than 1.5x {base:?}"
+            );
+        }
     }
 }

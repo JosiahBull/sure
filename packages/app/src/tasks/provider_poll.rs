@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sure_scheduler::ScheduledTask;
+use sure_scheduler::{ScheduledTask, TaskRun};
+use tokio_util::sync::CancellationToken;
 
 use crate::ports::{ProviderRegistry, ProviderRepo};
 use crate::sync::SyncService;
@@ -48,10 +49,20 @@ impl ScheduledTask for ProviderPollTask {
         POLL_INTERVAL
     }
 
-    async fn run(&self) -> anyhow::Result<()> {
+    async fn run(&self, cancel: &CancellationToken) -> anyhow::Result<TaskRun> {
         let providers = self.providers.list().await?;
 
         for provider in providers {
+            // Checked before each provider rather than inside one: a sync in flight is
+            // committing rows, and the token cannot reach into it (`SyncContext` carries no
+            // cancellation — one paginated fetch is bounded by its own wall-clock budget
+            // instead, see `sure_providers::akahu`). Stopping between providers is what keeps
+            // a household with several connections from spending the whole drain grace on the
+            // ones it hadn't got to yet.
+            if cancel.is_cancelled() {
+                tracing::debug!("provider poll stopped early for shutdown");
+                return Ok(TaskRun::Interrupted);
+            }
             if !provider.enabled {
                 continue;
             }
@@ -74,6 +85,6 @@ impl ScheduledTask for ProviderPollTask {
                 tracing::warn!(provider = %name, error = %e, "scheduled provider sync failed");
             }
         }
-        Ok(())
+        Ok(TaskRun::Completed)
     }
 }

@@ -4,6 +4,8 @@
 //! `sure_providers::sharesies` and `sure_app::brokerage`'s `BrokerageService` (behind the
 //! `BrokerageRepo`/`AccountRepo` ports); these handlers are thin glue.
 
+use std::future::Future;
+
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
@@ -11,7 +13,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
+use sure_appbase::Shutdown;
 use sure_core::AccountKind;
+use tokio::task::JoinHandle;
 use utoipa::IntoParams;
 
 use crate::config::Limits;
@@ -161,6 +165,36 @@ pub async fn list_dividends(
     Ok(Json(st.brokerage.list_dividends(id).await?))
 }
 
+/// Start the post-import valuation backfill as a **tracked** background task, logging a
+/// failure rather than propagating it (nobody is waiting for the result — the response for
+/// the import that started it went out long before).
+///
+/// Tracked, i.e. [`Shutdown::spawn`] and never a bare `tokio::spawn`. The backfill makes one
+/// upstream price call per ticker and then walks every calendar day since inception writing
+/// a valuation, so it is routinely still running minutes after its response. Spawned bare it
+/// is invisible to the drain: on `SIGTERM` the drain finds nothing, `pool.close()` runs
+/// underneath the task, and the shutdown report prints `abandoned=0 clean=true` over a
+/// valuation write that was cut in half — a report that is confidently wrong is worse than
+/// no report. Tracked, the same task is either waited out or named as abandoned.
+///
+/// The future is a parameter rather than built here so the tracking can be tested without a
+/// live `BrokerageService`; `#[track_caller]` (as [`Shutdown::spawn`]'s own docs require of a
+/// wrapper) keeps the reported spawn site at the handler below instead of at this line.
+///
+/// [`Shutdown::spawn`]: sure_appbase::Shutdown::spawn
+#[track_caller]
+fn spawn_backfill(
+    shutdown: &Shutdown,
+    account_id: i64,
+    backfill: impl Future<Output = AppResult<usize>> + Send + 'static,
+) -> JoinHandle<()> {
+    shutdown.spawn(async move {
+        if let Err(e) = backfill.await {
+            tracing::warn!(account_id, error = %e, "brokerage history backfill failed");
+        }
+    })
+}
+
 /// Bulk-import a Sharesies export zip: wallet transactions, holding lots, and dividends.
 /// Auto-links unambiguous wallet ↔ bank transfers synchronously, then kicks off a
 /// background historical valuation backfill so net worth is accurate retroactively.
@@ -274,10 +308,8 @@ pub async fn import(
     // upload response on. Idempotent, so the panel's "Backfill" button is the retry path.
     let brokerage = st.brokerage.clone();
     let provider = st.stock_price_provider.clone();
-    tokio::spawn(async move {
-        if let Err(e) = brokerage.backfill_history(provider.as_ref(), id).await {
-            tracing::warn!(account_id = id, error = %e, "brokerage history backfill failed");
-        }
+    spawn_backfill(&st.shutdown, id, async move {
+        brokerage.backfill_history(provider.as_ref(), id).await
     });
 
     Ok(Json(BrokerageImportResult {
@@ -371,4 +403,149 @@ pub fn router(limits: &Limits) -> Router<AppState> {
         )
         .route("/accounts/{id}/brokerage/revalue", post(revalue))
         .route("/accounts/{id}/brokerage/backfill", post(backfill))
+}
+
+/// The post-import backfill's *lifecycle*, not its arithmetic (that is
+/// `sure_app::brokerage`'s): it must be visible to the shutdown drain, because it is the one
+/// piece of work in `sure-api` that outlives the response that started it.
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use sure_appbase::{DrainOutcome, Shutdown};
+
+    use super::spawn_backfill;
+    use crate::error::AppError;
+
+    /// The fix for W-27. A tracked backfill is counted by the drain *and* waited for, so a
+    /// `SIGTERM` mid-backfill cannot close the pool underneath a valuation write.
+    #[tokio::test]
+    async fn the_backfill_is_tracked_so_the_drain_waits_for_it() {
+        let shutdown = Shutdown::new();
+        let finished = Arc::new(AtomicBool::new(false));
+
+        let flag = finished.clone();
+        let handle = spawn_backfill(&shutdown, 7, async move {
+            // Stands in for the day-by-day valuation walk: still running when the signal
+            // lands, which is the whole situation under test.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            flag.store(true, Ordering::SeqCst);
+            Ok(365)
+        });
+        assert_eq!(
+            shutdown.tracked(),
+            1,
+            "the backfill must be in the tracker the moment it is spawned"
+        );
+
+        let outcome = shutdown.drain(Duration::from_secs(5)).await;
+        assert_eq!(outcome, DrainOutcome::Drained { tasks: 1 });
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "the drain returned before the backfill had finished writing"
+        );
+        handle.await.expect("the backfill task must not panic");
+    }
+
+    /// What the bug looked like from the outside, and why no exit code or WAL check could
+    /// catch it: the report is *clean* while the work is demonstrably unfinished.
+    #[tokio::test]
+    async fn a_bare_spawn_is_reported_as_nothing_running() {
+        let shutdown = Shutdown::new();
+        let finished = Arc::new(AtomicBool::new(false));
+
+        // Deliberately bare, and only here: this is the pattern being ruled out, reproduced
+        // so the assertion below is about observed behaviour rather than a claim.
+        let flag = finished.clone();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            flag.store(true, Ordering::SeqCst);
+        });
+
+        let outcome = shutdown.drain(Duration::from_millis(50)).await;
+        assert_eq!(
+            outcome,
+            DrainOutcome::Drained { tasks: 0 },
+            "an untracked task is invisible: the drain reports a clean, empty shutdown"
+        );
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "…while the task it could not see is still mid-flight"
+        );
+        handle.abort();
+    }
+
+    /// `#[track_caller]` on the wrapper, per `Shutdown::spawn`'s docs: without it every
+    /// abandoned backfill would be reported at `spawn_backfill`'s own line, which names the
+    /// helper instead of the handler that started the work.
+    #[tokio::test]
+    async fn an_overrunning_backfill_is_named_at_its_call_site() {
+        let shutdown = Shutdown::new();
+        // Built first, so the `spawn_backfill` call is a single line and `line!()` below can
+        // predict exactly what `Location::caller` will record.
+        let never_finishes = async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok(0)
+        };
+        let call_line = line!() + 1;
+        let handle = spawn_backfill(&shutdown, 7, never_finishes);
+
+        let outcome = shutdown.drain(Duration::from_millis(50)).await;
+        assert_eq!(
+            outcome.abandoned(),
+            1,
+            "a task left running must be counted"
+        );
+        // Call-site bookkeeping is debug-only by design; a release build reports the count
+        // and an empty list.
+        if cfg!(debug_assertions) {
+            let expected = format!("{}:{call_line}:", file!());
+            assert!(
+                outcome.sites().iter().any(|s| s.starts_with(&expected)),
+                "expected the abandoned site to be this test's call at {expected}, got {:?}",
+                outcome.sites()
+            );
+        }
+        handle.abort();
+    }
+
+    /// A backfill that fails (an unreachable price feed is the common case) is logged and
+    /// ends, so it neither poisons the tracker nor delays the drain.
+    #[tokio::test]
+    async fn a_failing_backfill_still_drains_cleanly() {
+        let shutdown = Shutdown::new();
+        let handle = spawn_backfill(&shutdown, 7, async {
+            Err(AppError::validation(
+                "could not parse earliest activity date",
+            ))
+        });
+
+        let outcome = shutdown.drain(Duration::from_secs(5)).await;
+        assert_eq!(outcome, DrainOutcome::Drained { tasks: 1 });
+        handle
+            .await
+            .expect("a failed backfill is logged, not propagated as a panic");
+    }
+
+    /// The regression guard. The fix is one call, and reaching for `tokio::spawn` here again
+    /// would compile, pass every e2e test, and silently restore a shutdown report that lies.
+    #[test]
+    fn nothing_in_this_module_reaches_for_a_bare_tokio_spawn() {
+        let source = include_str!("brokerage.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields the part before the test module");
+
+        assert!(
+            !production.contains("tokio::spawn("),
+            "background work in this module must go through Shutdown::spawn, not tokio::spawn"
+        );
+        assert!(
+            production.contains("shutdown.spawn("),
+            "the post-import backfill must still be spawned on the tracker"
+        );
+    }
 }

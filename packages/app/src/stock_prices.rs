@@ -12,8 +12,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 pub use sure_core::AppResult;
-use sure_core::StockPrice;
-use sure_scheduler::ScheduledTask;
+use sure_core::{AppError, StockPrice};
+use sure_scheduler::{ScheduledTask, TaskRun};
+use tokio_util::sync::CancellationToken;
 
 use crate::ports::{AccountRepo, Clock, StockPriceCacheRepo, StockPriceProvider};
 
@@ -25,6 +26,27 @@ const BACKFILL_LOOKBACK_DAYS: i64 = 10;
 /// Free upstream sources are daily-resolution at best, so there's no value in polling
 /// more often than this (same reasoning as the exchange-rate poll).
 const POLL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Whether a failed cache write is the *quote's* fault rather than the database's.
+///
+/// A quote's `currency_code` is whatever the upstream feed said, and the price cache refuses
+/// one that is not a `currencies` row — a pence pseudo-currency like `GBX`, a crypto ticker,
+/// an unseeded code — as [`AppError::Validation`]; `currency_code` is the price table's only
+/// foreign key, so that is the only thing it can mean (`sure_dal::stock_prices::upsert`).
+/// Retrying cannot turn such a quote into a writable one, so the caller drops it and carries
+/// on; anything else may be transient (a locked or unavailable database) and must still
+/// surface, so the scheduler leaves the run unrecorded and tries again.
+///
+/// The failure this prevents: one unseeded currency used to propagate out of the sweep, so
+/// every ticker after it went unpriced *and* — a failed run never being recorded — the poll
+/// re-ran on every check tick instead of once a day, re-failing on the same quote each time.
+///
+/// A `matches!` rather than an exhaustive `match`: `AppError::Database` exists only when
+/// `sure-core`'s `sqlx` feature is on, which for this crate depends on what else is in the
+/// build, so naming every variant here would compile in the workspace and not on its own.
+fn is_unusable_quote(err: &AppError) -> bool {
+    matches!(err, AppError::Validation(_))
+}
 
 /// Resolve `ticker`'s closing price as of `as_of`, backfilling the cache from
 /// `provider` on a miss. `exchange` is `SharesMeta.exchange`'s free-text value (may be
@@ -47,7 +69,10 @@ pub async fn price_at(
         .fetch_daily_prices(ticker, exchange_hint, from, as_of)
         .await?;
     for quote in &quotes {
-        prices
+        // A quote in an unknown currency is dropped, not fatal: the caller is a panel asking
+        // for one price, and failing the whole backfill over one unusable day turned a
+        // missing price (which every caller already handles as `None`) into a 500.
+        if let Err(err) = prices
             .upsert(
                 ticker,
                 exchange,
@@ -55,7 +80,20 @@ pub async fn price_at(
                 &quote.close.to_string(),
                 &quote.currency_code,
             )
-            .await?;
+            .await
+        {
+            if !is_unusable_quote(&err) {
+                return Err(err);
+            }
+            tracing::warn!(
+                ticker = %ticker,
+                exchange = %exchange,
+                currency = %quote.currency_code,
+                as_of = %quote.as_of,
+                error = %err,
+                "skipped a stock quote in an unknown currency"
+            );
+        }
     }
 
     prices.get_at(ticker, exchange, &as_of.to_string()).await
@@ -94,7 +132,7 @@ impl ScheduledTask for StockPriceTask {
         POLL_INTERVAL
     }
 
-    async fn run(&self) -> anyhow::Result<()> {
+    async fn run(&self, cancel: &CancellationToken) -> anyhow::Result<TaskRun> {
         // Single-ticker Shares accounts plus every ticker held across any Brokerage
         // account — deduped, so a symbol held both ways is only fetched once.
         let mut seen = std::collections::HashSet::new();
@@ -110,7 +148,18 @@ impl ScheduledTask for StockPriceTask {
         let from = today - chrono::Duration::days(BACKFILL_LOOKBACK_DAYS);
 
         let mut refreshed = 0;
+        let mut skipped = 0;
         for t in &tickers {
+            // Between whole tickers, never mid-ticker: a symbol's quotes are all written or
+            // none are, and an interrupted run isn't recorded, so the next start sweeps again.
+            if cancel.is_cancelled() {
+                tracing::debug!(
+                    refreshed,
+                    skipped,
+                    "stock price refresh stopped early for shutdown"
+                );
+                return Ok(TaskRun::Interrupted);
+            }
             let exchange_hint = Some(t.exchange.as_str()).filter(|e| !e.is_empty());
             let quotes = match self
                 .provider
@@ -127,7 +176,8 @@ impl ScheduledTask for StockPriceTask {
                 }
             };
             for quote in &quotes {
-                self.prices
+                if let Err(err) = self
+                    .prices
                     .upsert(
                         &t.ticker,
                         &t.exchange,
@@ -135,12 +185,40 @@ impl ScheduledTask for StockPriceTask {
                         &quote.close.to_string(),
                         &quote.currency_code,
                     )
-                    .await?;
+                    .await
+                {
+                    // One quote the cache cannot store must not end the sweep. It is skipped
+                    // with the ticker and the offending code in the log — the two things an
+                    // operator needs to decide whether to add the currency — and `run`
+                    // still returns `Ok`, so the scheduler records the run and the poll waits
+                    // out its interval instead of retrying the same bad quote every tick.
+                    // Deliberately *not* auto-creating the currency: `currencies` carries
+                    // `decimal_places`, `symbol` and a name, and a guessed row would silently
+                    // mis-render every amount in that currency (a `GBX` price rendered as
+                    // pounds at 2dp) while looking exactly like a curated one.
+                    if !is_unusable_quote(&err) {
+                        return Err(err.into());
+                    }
+                    tracing::warn!(
+                        ticker = %t.ticker,
+                        exchange = %t.exchange,
+                        currency = %quote.currency_code,
+                        as_of = %quote.as_of,
+                        error = %err,
+                        "skipped a stock quote in an unknown currency"
+                    );
+                    skipped += 1;
+                }
             }
             refreshed += 1;
         }
-        tracing::info!(tickers = tickers.len(), refreshed, "refreshed stock prices");
-        Ok(())
+        tracing::info!(
+            tickers = tickers.len(),
+            refreshed,
+            skipped,
+            "refreshed stock prices"
+        );
+        Ok(TaskRun::Completed)
     }
 }
 
@@ -156,10 +234,28 @@ mod tests {
     use crate::ports::SharesTicker;
     use crate::test_clock::FixedClock;
 
-    /// An in-memory stand-in for the stock-price cache table — no database needed.
-    #[derive(Default)]
+    /// An in-memory stand-in for the stock-price cache table — no database needed. It models
+    /// the one constraint that matters here: `currency_code` is a foreign key into
+    /// `currencies`, and the real writer refuses an unknown code as `AppError::Validation`
+    /// (`sure_dal::stock_prices::upsert`) rather than letting SQLite raise an opaque FK error.
     struct FakePriceCache {
         rows: Mutex<HashMap<(String, String, String), StockPrice>>,
+        /// The seeded `currencies` rows. Matches migration `0001_core.sql`'s seed set, pared
+        /// down — anything outside it is an unknown currency.
+        known_currencies: Vec<&'static str>,
+        /// When set, every write fails with a non-validation error: a stand-in for a database
+        /// that is unhappy for reasons a retry might fix.
+        db_broken: bool,
+    }
+
+    impl Default for FakePriceCache {
+        fn default() -> Self {
+            Self {
+                rows: Mutex::new(HashMap::new()),
+                known_currencies: vec!["NZD", "USD"],
+                db_broken: false,
+            }
+        }
     }
 
     #[async_trait]
@@ -192,6 +288,12 @@ mod tests {
             close: &str,
             ccy: &str,
         ) -> AppResult<()> {
+            if self.db_broken {
+                return Err(AppError::Internal(anyhow::anyhow!("database is locked")));
+            }
+            if !self.known_currencies.contains(&ccy) {
+                return Err(AppError::validation(format!("unknown currency '{ccy}'")));
+            }
             self.rows.lock().unwrap().insert(
                 (ticker.to_string(), exchange.to_string(), as_of.to_string()),
                 StockPrice {
@@ -209,9 +311,12 @@ mod tests {
 
     /// A network-free stand-in for a real provider: returns a fixed set of quotes for
     /// any ticker except `fail_ticker`, which always errors (simulating a bad/delisted
-    /// symbol).
+    /// symbol). `per_ticker` overrides `quotes` for named symbols, which is how a single
+    /// sweep can mix a normal quote with one in an unusable currency.
+    #[derive(Default)]
     struct FakeProvider {
         quotes: Vec<StockPriceQuote>,
+        per_ticker: HashMap<&'static str, Vec<StockPriceQuote>>,
         fail_ticker: Option<&'static str>,
     }
 
@@ -233,7 +338,11 @@ mod tests {
             if self.fail_ticker == Some(ticker) {
                 return Err(anyhow::anyhow!("simulated upstream failure"));
             }
-            Ok(self.quotes.clone())
+            Ok(self
+                .per_ticker
+                .get(ticker)
+                .cloned()
+                .unwrap_or_else(|| self.quotes.clone()))
         }
     }
 
@@ -247,7 +356,7 @@ mod tests {
                 close: "5.60".parse().unwrap(),
                 currency_code: "NZD".to_string(),
             }],
-            fail_ticker: None,
+            ..Default::default()
         };
 
         let price = price_at(&cache, &provider, "MEL", "NZX", as_of)
@@ -263,16 +372,83 @@ mod tests {
     #[tokio::test]
     async fn price_at_is_none_when_the_provider_has_nothing_for_the_range() {
         let cache = FakePriceCache::default();
-        let provider = FakeProvider {
-            quotes: vec![],
-            fail_ticker: None,
-        };
+        let provider = FakeProvider::default();
         let as_of = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
 
         assert!(price_at(&cache, &provider, "ZZZZ", "", as_of)
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn price_at_skips_an_unknown_currency_quote_instead_of_failing_the_backfill() {
+        let cache = FakePriceCache::default();
+        let friday = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
+        let thursday = NaiveDate::from_ymd_opt(2026, 7, 9).unwrap();
+        // Thursday is quoted normally; Friday comes back in pence, which is not a
+        // `currencies` row. The unusable day is dropped and Thursday's close still answers.
+        let provider = FakeProvider {
+            quotes: vec![
+                StockPriceQuote {
+                    as_of: thursday,
+                    close: "5.50".parse().unwrap(),
+                    currency_code: "NZD".to_string(),
+                },
+                StockPriceQuote {
+                    as_of: friday,
+                    close: "72.30".parse().unwrap(),
+                    currency_code: "GBX".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let price = price_at(&cache, &provider, "MEL", "NZX", friday)
+            .await
+            .expect("an unusable quote must not fail the whole backfill");
+        assert_eq!(price.unwrap().close, "5.50");
+    }
+
+    #[tokio::test]
+    async fn price_at_is_none_rather_than_an_error_when_every_quote_is_unusable() {
+        let cache = FakePriceCache::default();
+        let as_of = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
+        let provider = FakeProvider {
+            quotes: vec![StockPriceQuote {
+                as_of,
+                close: "72.30".parse().unwrap(),
+                currency_code: "GBX".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        // A missing price is what every caller already handles; a 500 from a panel is not.
+        assert!(price_at(&cache, &provider, "VOD", "LSE", as_of)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn price_at_still_surfaces_a_database_error() {
+        let cache = FakePriceCache {
+            db_broken: true,
+            ..Default::default()
+        };
+        let as_of = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
+        let provider = FakeProvider {
+            quotes: vec![StockPriceQuote {
+                as_of,
+                close: "5.60".parse().unwrap(),
+                currency_code: "NZD".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        assert!(price_at(&cache, &provider, "MEL", "NZX", as_of)
+            .await
+            .is_err());
     }
 
     /// An in-memory stand-in for the accounts table's ticker listings — the task never
@@ -362,12 +538,13 @@ mod tests {
                 currency_code: "NZD".to_string(),
             }],
             fail_ticker: Some("BAD"),
+            ..Default::default()
         });
         let task = StockPriceTask::new(accounts, prices.clone(), clock, provider);
 
         // The failing ticker doesn't surface as an error out of run() — it's logged and
         // skipped so the rest of the batch still completes.
-        task.run().await.unwrap();
+        task.run(&CancellationToken::new()).await.unwrap();
 
         assert!(prices
             .get_at("MEL", "NZX", &today.to_string())
@@ -379,5 +556,152 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    /// Collects rendered events so a test can assert on what an operator would actually see.
+    /// Hand-rolled rather than `tracing-subscriber` so `sure-app` gains no dependency for it.
+    #[derive(Default)]
+    struct CapturedLogs {
+        events: Mutex<Vec<String>>,
+    }
+
+    impl CapturedLogs {
+        fn contains_all(&self, needles: &[&str]) -> bool {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| needles.iter().all(|n| e.contains(n)))
+        }
+    }
+
+    struct CapturingSubscriber(Arc<CapturedLogs>);
+
+    impl tracing::Subscriber for CapturingSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Render<'a>(&'a mut String);
+            impl tracing::field::Visit for Render<'_> {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    use std::fmt::Write as _;
+                    let _ = write!(self.0, " {}={value:?}", field.name());
+                }
+            }
+            let mut rendered = event.metadata().level().to_string();
+            event.record(&mut Render(&mut rendered));
+            self.0.events.lock().unwrap().push(rendered);
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    #[tokio::test]
+    async fn task_run_skips_an_unknown_currency_quote_and_still_prices_the_other_tickers() {
+        let today = NaiveDate::from_ymd_opt(2026, 7, 20).unwrap();
+        // `VOD` sorts before `MEL` in the listing order, so the bad quote is hit *first* —
+        // the regression this guards is precisely that everything after it went unpriced.
+        let accounts = Arc::new(FakeAccounts {
+            shares: vec![
+                SharesTicker {
+                    ticker: "VOD".to_string(),
+                    exchange: "LSE".to_string(),
+                },
+                SharesTicker {
+                    ticker: "MEL".to_string(),
+                    exchange: "NZX".to_string(),
+                },
+            ],
+            brokerage: vec![],
+        });
+        let prices = Arc::new(FakePriceCache::default());
+        let clock = Arc::new(FixedClock(today));
+        let provider = Arc::new(FakeProvider {
+            quotes: vec![StockPriceQuote {
+                as_of: today,
+                close: "5.60".parse().unwrap(),
+                currency_code: "NZD".to_string(),
+            }],
+            per_ticker: HashMap::from([(
+                "VOD",
+                vec![StockPriceQuote {
+                    as_of: today,
+                    close: "72.30".parse().unwrap(),
+                    currency_code: "GBX".to_string(),
+                }],
+            )]),
+            fail_ticker: None,
+        });
+        let task = StockPriceTask::new(accounts, prices.clone(), clock, provider);
+
+        let logs = Arc::new(CapturedLogs::default());
+        let guard = tracing::subscriber::set_default(CapturingSubscriber(logs.clone()));
+        // `Ok` is the load-bearing part: `sure_scheduler`'s `run_if_due` records a run only
+        // when `run` returns `Ok`, and an unrecorded run is retried on *every* check tick —
+        // so returning `Err` over one unusable quote turned a daily poll into a tight loop
+        // that failed on the same quote every time.
+        let outcome = task
+            .run(&CancellationToken::new())
+            .await
+            .expect("one unusable quote must not fail the sweep");
+        assert_eq!(outcome, TaskRun::Completed);
+        drop(guard);
+
+        assert!(prices
+            .get_at("MEL", "NZX", &today.to_string())
+            .await
+            .unwrap()
+            .is_some());
+        assert!(prices
+            .get_at("VOD", "LSE", &today.to_string())
+            .await
+            .unwrap()
+            .is_none());
+        // The WARN has to name both the symbol and the offending code, or nobody can tell
+        // which currency to add.
+        assert!(
+            logs.contains_all(&["WARN", "VOD", "GBX"]),
+            "expected a WARN naming the ticker and the currency, got {:?}",
+            logs.events.lock().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn task_run_still_fails_on_a_database_error_so_the_run_is_retried() {
+        let today = NaiveDate::from_ymd_opt(2026, 7, 20).unwrap();
+        let accounts = Arc::new(FakeAccounts {
+            shares: vec![SharesTicker {
+                ticker: "MEL".to_string(),
+                exchange: "NZX".to_string(),
+            }],
+            brokerage: vec![],
+        });
+        let prices = Arc::new(FakePriceCache {
+            db_broken: true,
+            ..Default::default()
+        });
+        let provider = Arc::new(FakeProvider {
+            quotes: vec![StockPriceQuote {
+                as_of: today,
+                close: "5.60".parse().unwrap(),
+                currency_code: "NZD".to_string(),
+            }],
+            ..Default::default()
+        });
+        let task = StockPriceTask::new(accounts, prices, Arc::new(FixedClock(today)), provider);
+
+        // Unlike an unusable quote, this may well be transient — so it must still surface and
+        // leave the run unrecorded, which is what makes the scheduler try again.
+        assert!(task.run(&CancellationToken::new()).await.is_err());
     }
 }

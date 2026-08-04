@@ -29,6 +29,8 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 log = { workspace = true }
-
-[dev-dependencies]
+# `tokio::time::sleep` for `with_busy_retry`'s backoff — a retry has to yield the worker
+# thread rather than block it (the blocking detector would rightly complain otherwise).
+# Also carries `#[tokio::test]` for this crate's tests, which is why there is no separate
+# dev-dependency on it.
 tokio = { workspace = true }

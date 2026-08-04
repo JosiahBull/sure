@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sure_scheduler::ScheduledTask;
+use sure_scheduler::{ScheduledTask, TaskRun};
+use tokio_util::sync::CancellationToken;
 
 use crate::ports::{ExchangeRateProvider, ExchangeRateRepo};
 
@@ -47,13 +48,20 @@ impl ScheduledTask for ExchangeRateTask {
         POLL_INTERVAL
     }
 
-    async fn run(&self) -> anyhow::Result<()> {
+    async fn run(&self, cancel: &CancellationToken) -> anyhow::Result<TaskRun> {
         let base_code = self.rates.base_currency().await?;
         let known_codes = self.rates.known_currency_codes().await?;
 
         let quotes = self.provider.fetch_rates(&base_code).await?;
         let mut stored = 0;
         for quote in quotes {
+            // Between whole rates, never between the two halves of one upsert: stopping here
+            // leaves the rates already written intact and the rest untouched, and the run
+            // isn't recorded, so the next start refetches the lot.
+            if cancel.is_cancelled() {
+                tracing::debug!(base = %base_code, stored, "exchange-rate refresh stopped early for shutdown");
+                return Ok(TaskRun::Interrupted);
+            }
             // The upstream knows far more currencies than we track; only store the
             // ones we actually have a `currencies` row for (the table's FK requires
             // it).
@@ -71,6 +79,6 @@ impl ScheduledTask for ExchangeRateTask {
             stored += 1;
         }
         tracing::info!(base = %base_code, stored, "refreshed exchange rates");
-        Ok(())
+        Ok(TaskRun::Completed)
     }
 }

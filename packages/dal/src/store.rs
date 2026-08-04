@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 
 use async_trait::async_trait;
+use chrono::NaiveDate;
 use sure_app::ports::{
     AccountCurrency, AccountRepo, ActiveAccount, Activity30dRow, AssetAccount, BrokerageRepo,
     CategoryRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo, DividendImport, EquityRepo,
@@ -502,8 +503,8 @@ impl ReportRepo for SqliteStore {
             .collect())
     }
 
-    async fn transactions(&self) -> AppResult<Vec<LedgerTx>> {
-        Ok(crate::reports::transactions(&self.db)
+    async fn transactions(&self, from: Option<NaiveDate>) -> AppResult<Vec<LedgerTx>> {
+        Ok(crate::reports::transactions(&self.db, from)
             .await?
             .into_iter()
             .map(|t| LedgerTx {
@@ -514,8 +515,8 @@ impl ReportRepo for SqliteStore {
             .collect())
     }
 
-    async fn valuations(&self) -> AppResult<Vec<LedgerValuation>> {
-        Ok(crate::reports::valuations(&self.db)
+    async fn valuations(&self, from: Option<NaiveDate>) -> AppResult<Vec<LedgerValuation>> {
+        Ok(crate::reports::valuations(&self.db, from)
             .await?
             .into_iter()
             .map(|v| LedgerValuation {
@@ -541,8 +542,12 @@ impl ReportRepo for SqliteStore {
             .collect())
     }
 
-    async fn spend_transactions(&self) -> AppResult<Vec<sure_app::ports::SpendTransaction>> {
-        Ok(crate::reports::spend_transactions(&self.db)
+    async fn spend_transactions(
+        &self,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> AppResult<Vec<sure_app::ports::SpendTransaction>> {
+        Ok(crate::reports::spend_transactions(&self.db, from, to)
             .await?
             .into_iter()
             .map(|t| sure_app::ports::SpendTransaction {
@@ -560,6 +565,10 @@ impl ReportRepo for SqliteStore {
 
     async fn earliest_transaction_date(&self) -> AppResult<Option<String>> {
         crate::reports::earliest_transaction_date(&self.db).await
+    }
+
+    async fn earliest_valuation_date(&self) -> AppResult<Option<String>> {
+        crate::reports::earliest_valuation_date(&self.db).await
     }
 
     async fn active_accounts(&self) -> AppResult<Vec<ActiveAccount>> {
@@ -982,9 +991,10 @@ impl ForecastRepo for SqliteStore {
 
 #[async_trait]
 impl SnapshotRepo for SqliteStore {
-    async fn export(&self) -> AppResult<serde_json::Value> {
-        let snap = crate::snapshot::export(&self.db).await?;
-        serde_json::to_value(snap).map_err(|e| AppError::Internal(e.into()))
+    async fn export(&self) -> AppResult<Vec<u8>> {
+        // Serialised straight from the rows: no intermediate `serde_json::Value` copy of the
+        // whole database (see `crate::snapshot::export_bytes`).
+        crate::snapshot::export_bytes(&self.db).await
     }
 
     async fn import(&self, snapshot: serde_json::Value) -> AppResult<serde_json::Value> {

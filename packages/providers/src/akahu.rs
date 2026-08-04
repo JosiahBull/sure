@@ -7,6 +7,8 @@
 //! don't use here). Also implements account discovery, since one set of credentials can
 //! surface many bank accounts — see [`TransactionProvider::list_accounts`].
 
+use std::time::{Duration, Instant};
+
 use akahu_client::{AccountId, AkahuClient, Attribute, BankAccountKind, UserToken};
 use async_trait::async_trait;
 use rust_decimal::prelude::ToPrimitive;
@@ -15,15 +17,39 @@ use serde_json::Value;
 use sure_app::ports::{
     ProviderBalance, ProviderCategory, ProviderTransaction, SyncContext, TransactionProvider,
 };
-use sure_core::{AccountKind, ProviderAccount};
+use sure_core::{AccountKind, IsoDate, ProviderAccount};
 
 const BASE_URL: &str = "https://api.akahu.io/v1";
 /// Re-fetch a small window before the last successful sync, since a transaction's
 /// settlement date can shift slightly as NZ bank data trickles in.
 const OVERLAP: chrono::Duration = chrono::Duration::days(3);
-/// Defensive cap on pagination so a cursor bug (or a very long-lived account) can't spin
-/// forever; 100 txns/page per the API, so this covers 100k transactions in one sync.
-const MAX_PAGES: usize = 1_000;
+/// Defensive cap on pagination so a cursor bug can't spin forever; 100 txns/page per the API,
+/// so this bounds one sweep at 10,000 transactions — several years of a busy household
+/// account, and about two orders of magnitude more than an incremental poll fetches.
+///
+/// It used to be 1_000 (100k transactions), which was a page cap standing in for the *time*
+/// and *memory* caps it cannot express: 100k `ProviderTransaction`s is tens of MB held in one
+/// `Vec` before a single row is written, and at the 6s-per-page ceiling those pages are 100
+/// minutes of one scheduler task. [`SWEEP_BUDGET`] is the time cap; this is now only the
+/// "the cursor is looping" backstop it was always described as.
+const MAX_PAGES: usize = 100;
+/// Wall-clock ceiling on the *whole* paginated sweep.
+///
+/// `crate::http`'s `REQUEST_TIMEOUT` (6s) bounds **one page**; nothing bounded the operation.
+/// The failure that closes: an upstream that is slow but up — the common real one — answering
+/// each page in 5s is inside every per-request limit and still spends up to
+/// `MAX_PAGES` × 5s inside a single [`TransactionProvider::fetch`]. `sure-scheduler` awaits its
+/// tasks sequentially, so for that whole time the exchange-rate, stock-price, balance-delta and
+/// transfer-link tasks do not run at all; and on `SIGTERM` the drain gets
+/// `SHUTDOWN_DRAIN_GRACE_SECS` (10s, `docs/HTTP.md`) before the task is abandoned mid-write.
+///
+/// Sized deliberately against that grace: it cannot be *under* it (one page alone may take
+/// 6s, and a first sync legitimately needs several) so it is a small multiple instead — long
+/// enough that only a genuinely sick upstream hits it, short enough that a poll which does
+/// hit it costs one drain-grace overrun rather than an hour of dead background work. The
+/// residual gap — a sweep already in flight when the signal lands — needs the cancellation
+/// token to reach in here, which `SyncContext` does not yet carry.
+const SWEEP_BUDGET: Duration = Duration::from_secs(60);
 
 pub struct AkahuProvider;
 
@@ -49,19 +75,51 @@ impl TransactionProvider for AkahuProvider {
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc) - OVERLAP);
 
+        let started = Instant::now();
         let mut out = Vec::new();
         let mut cursor = None;
-        for page_no in 0..MAX_PAGES {
+        let mut pages = 0usize;
+        loop {
+            match next_step(started.elapsed(), pages) {
+                SweepStep::Fetch => {}
+                // Deliberately an error, not the partial result. `sure_app::sync` only reaches
+                // `update_last_synced` when `fetch` returns `Ok`, so failing here leaves the
+                // watermark where it was and the next poll asks for exactly the same window —
+                // the truncation is self-healing, and the WARN/error sync row says why.
+                // Returning `Ok(out)` instead would advance the watermark past history this
+                // sweep never reached, leaving a permanent hole nothing would ever re-request.
+                SweepStep::OutOfTime => {
+                    anyhow::bail!(
+                        "Akahu transaction sync for account {account_id} exceeded its \
+                         {SWEEP_BUDGET:?} budget after {pages} page(s); no transactions were \
+                         imported, so the next poll retries the same window"
+                    );
+                }
+                // The page cap is the opposite case and gets the opposite answer: it is
+                // *deterministic*, so failing would mean this account never imports anything
+                // again, where the time budget only fails while the upstream is unwell. Keep
+                // the 10,000 transactions we have (and say so loudly) — the gap it can leave
+                // is only reachable on a first/backfill sync, since an incremental one asks
+                // for three days.
+                SweepStep::OutOfPages => {
+                    tracing::warn!(
+                        account = %account_id,
+                        pages,
+                        "Akahu transaction sync hit the page cap; some history may be missing from this sync"
+                    );
+                    break;
+                }
+            }
+
             let page = client
                 .get_account_transactions(&user_token, &account_id, start, None, cursor)
                 .await?;
+            pages += 1;
             out.extend(page.items.into_iter().filter_map(map_transaction));
             match page.cursor.next {
                 Some(next) => cursor = Some(next),
+                // The one complete exit: the upstream says there is nothing after this page.
                 None => break,
-            }
-            if page_no == MAX_PAGES - 1 {
-                tracing::warn!(account = %account_id, "Akahu transaction sync hit the page cap; some history may be missing");
             }
         }
         Ok(out)
@@ -81,6 +139,37 @@ impl TransactionProvider for AkahuProvider {
         let (client, user_token) = self.client()?;
         let resp = client.get_account(&user_token, &account_id).await?;
         Ok(Some(map_balance(&resp.item)?))
+    }
+}
+
+/// What the paginated sweep does next.
+///
+/// A closed three-value decision rather than two `if`s inside the loop, so both ceilings are
+/// unit-testable without an upstream (the alternative — a fake Akahu answering 100 slow pages —
+/// is minutes of test wall-clock to check two comparisons) and so [`TransactionProvider::fetch`]
+/// has to answer every case exhaustively (CLAUDE.md rule 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SweepStep {
+    /// Within both ceilings: ask for the next page.
+    Fetch,
+    /// [`SWEEP_BUDGET`] is spent. Fatal, so the sync watermark does not advance.
+    OutOfTime,
+    /// [`MAX_PAGES`] pages already fetched and the cursor still has more.
+    OutOfPages,
+}
+
+/// Decide from the clock and the page count alone.
+///
+/// Time is checked *before* pages: both being exhausted at once means the upstream was slow
+/// enough to matter, and "ran out of time" is the diagnosis an operator can act on — retry —
+/// where "hit the page cap" would send them looking for 10,000 missing transactions.
+fn next_step(elapsed: Duration, pages_fetched: usize) -> SweepStep {
+    if elapsed >= SWEEP_BUDGET {
+        SweepStep::OutOfTime
+    } else if pages_fetched >= MAX_PAGES {
+        SweepStep::OutOfPages
+    } else {
+        SweepStep::Fetch
     }
 }
 
@@ -290,10 +379,20 @@ fn map_account(a: akahu_client::Account) -> anyhow::Result<ProviderAccount> {
     })
 }
 
-/// `None` for a transaction whose amount can't be represented in minor units: one bad row
-/// out of a 100k-transaction history is dropped with a WARN naming it, rather than sinking
-/// the whole sync (and, because a failed sync isn't recorded, re-fetching the same bad row
-/// on every check from then on).
+/// `None` for a transaction this side of the boundary cannot represent: one bad row out of a
+/// 10,000-transaction sweep is dropped with a WARN naming it, rather than sinking the whole
+/// sync (and, because a failed sync isn't recorded, re-fetching the same bad row on every
+/// check from then on).
+///
+/// Two such checks, and both are *upstream* values arriving unvalidated:
+///
+/// 1. the amount, which has to fit in minor units (see [`decimal_to_minor`]);
+/// 2. the date, which has to be a plausible calendar date. Provider import does not go
+///    through the API's DTOs, so [`sure_core::IsoDate`]'s range check — the one that keeps a
+///    year-9999 row out at the HTTP wire edge — never saw an Akahu row. The same window is
+///    applied here, at this boundary, so the two entrances agree: a single absurd `date`
+///    stretches every chart's x-axis over a millennium and smears the useful part of the
+///    series into a line at the left edge, which is silent data loss wearing a graph.
 fn map_transaction(t: akahu_client::Transaction) -> Option<ProviderTransaction> {
     let Some(amount_minor) = decimal_to_minor(t.amount) else {
         tracing::warn!(
@@ -303,6 +402,18 @@ fn map_transaction(t: akahu_client::Transaction) -> Option<ProviderTransaction> 
         );
         return None;
     };
+
+    // `date_naive()` because the window is a calendar one: the row keeps its full RFC-3339
+    // `posted_at` below (the ledger shows the time of day), and only the day is range-checked.
+    if let Err(err) = IsoDate::from_date(t.date.date_naive()) {
+        tracing::warn!(
+            transaction = %t.id,
+            date = %t.date.to_rfc3339(),
+            error = %err,
+            "skipping Akahu transaction whose date is outside the supported range"
+        );
+        return None;
+    }
 
     // `category` and `merchant` always arrive together from Akahu's enrichment engine
     // (both fields of the same flattened `enriched_data`), so pull both from one match.
@@ -791,6 +902,186 @@ mod tests {
         let bal = map_balance(&a).expect("the balance itself is representable");
         assert_eq!(bal.minor, 123_456);
         assert_eq!(bal.limit_minor, None);
+    }
+
+    /// W-17, the sweep-budget half. Both ceilings, decided from the two numbers the loop has,
+    /// so the test costs microseconds instead of the 100 slow pages the real thing would need.
+    #[test]
+    fn bounds_the_sweep_in_time_as_well_as_in_pages() {
+        // Ordinary progress: plenty of budget left, plenty of pages left.
+        assert_eq!(next_step(Duration::ZERO, 0), SweepStep::Fetch);
+        assert_eq!(
+            next_step(SWEEP_BUDGET - Duration::from_millis(1), 5),
+            SweepStep::Fetch
+        );
+        // The budget is inclusive: reaching it stops the sweep rather than allowing one more
+        // page (which could itself take another `REQUEST_TIMEOUT`).
+        assert_eq!(next_step(SWEEP_BUDGET, 5), SweepStep::OutOfTime);
+        assert_eq!(next_step(SWEEP_BUDGET * 2, 5), SweepStep::OutOfTime);
+        // The page cap, likewise inclusive: `MAX_PAGES` fetched means no more.
+        assert_eq!(next_step(Duration::ZERO, MAX_PAGES - 1), SweepStep::Fetch);
+        assert_eq!(next_step(Duration::ZERO, MAX_PAGES), SweepStep::OutOfPages);
+        // Both exhausted: time wins, because "retry" is the actionable diagnosis.
+        assert_eq!(next_step(SWEEP_BUDGET, MAX_PAGES), SweepStep::OutOfTime);
+    }
+
+    /// The number the budget exists to make impossible. A slow-but-up upstream at 5s/page —
+    /// inside every per-request limit — used to be able to hold one scheduler task, and so
+    /// every other scheduled task, for well over an hour.
+    #[test]
+    fn the_worst_case_sweep_is_minutes_not_hours() {
+        let slow_page = Duration::from_secs(5);
+        let unbounded_worst_case = slow_page * u32::try_from(MAX_PAGES).unwrap();
+        assert!(
+            unbounded_worst_case > Duration::from_secs(8 * 60),
+            "the page cap alone still allows a multi-minute sweep, which is the point"
+        );
+        assert!(
+            SWEEP_BUDGET <= Duration::from_secs(60),
+            "the sweep must be bounded in minutes, not tens of minutes"
+        );
+        // And it has to leave room for several whole pages at the 6s per-request ceiling,
+        // or an ordinary first sync could never complete.
+        assert!(SWEEP_BUDGET >= Duration::from_secs(6) * 5);
+    }
+
+    /// W-24: an upstream date nothing had range-checked. Provider import bypasses the API's
+    /// DTOs, so `IsoDate`'s window never saw these rows — one year-9999 transaction stretches
+    /// every chart's x-axis over eight millennia.
+    #[test]
+    fn skips_a_transaction_dated_outside_the_supported_window() {
+        let txn = |id: &str, date: &str| {
+            format!(
+                r#"{{
+                    "_id": "{id}",
+                    "_account": "acc_123",
+                    "_connection": "conn_1",
+                    "created_at": "2026-01-06T10:00:00.000Z",
+                    "date": "{date}",
+                    "description": "Groceries",
+                    "amount": -42.50,
+                    "type": "DEBIT"
+                }}"#
+            )
+        };
+        let mapped = |id: &str, date: &str| {
+            let t: akahu_client::Transaction = serde_json::from_str(&txn(id, date)).unwrap();
+            map_transaction(t)
+        };
+
+        // The absurd future date the check exists for, and the mirror-image past one — a
+        // mis-parsed or garbled field, not history.
+        assert!(mapped("trans_797", "9999-12-31T00:00:00.000Z").is_none());
+        assert!(mapped("trans_798", "1899-12-31T00:00:00.000Z").is_none());
+        // The window's own edges are fine, and so is an ordinary date — the check must not
+        // quietly narrow what a real feed can deliver.
+        assert!(mapped("trans_799", "1900-01-01T00:00:00.000Z").is_some());
+        assert!(mapped("trans_800", "2199-12-31T23:59:59.000Z").is_some());
+        let ok = mapped("trans_801", "2026-01-06T09:30:00.000Z").expect("an ordinary date maps");
+        // The full timestamp still reaches the ledger: only the *day* is range-checked.
+        assert_eq!(ok.posted_at, "2026-01-06T09:30:00+00:00");
+    }
+
+    /// …and it is a skip, not a failure: a single bad record must not wedge the feed. (A
+    /// returned `Err` here would mean the sync isn't recorded, the watermark doesn't move, and
+    /// every poll from then on re-fetches the same window and dies on the same row.)
+    #[test]
+    fn one_absurdly_dated_row_does_not_sink_the_page() {
+        let txn = |id: &str, date: &str, amount: &str| {
+            format!(
+                r#"{{
+                    "_id": "{id}",
+                    "_account": "acc_123",
+                    "_connection": "conn_1",
+                    "created_at": "2026-01-06T10:00:00.000Z",
+                    "date": "{date}",
+                    "description": "Groceries",
+                    "amount": {amount},
+                    "type": "DEBIT"
+                }}"#
+            )
+        };
+        let json = format!(
+            r#"{{ "success": true, "items": [{}, {}, {}], "cursor": {{ "next": null }} }}"#,
+            txn("trans_802", "2026-01-04T09:30:00.000Z", "-4.50"),
+            txn("trans_803", "9999-01-01T00:00:00.000Z", "-12.34"),
+            txn("trans_804", "2026-01-06T09:30:00.000Z", "-8.00"),
+        );
+        let page: akahu_client::PaginatedResponse<akahu_client::Transaction> =
+            serde_json::from_str(&json).unwrap();
+
+        // Exactly what `fetch` does with a page.
+        let mapped: Vec<_> = page.items.into_iter().filter_map(map_transaction).collect();
+        assert_eq!(mapped.len(), 2, "only the absurd row is dropped");
+        assert_eq!(mapped[0].external_id, "trans_802");
+        assert_eq!(mapped[1].external_id, "trans_804");
+    }
+
+    /// W-21, as a regression pin rather than a fix: `enriched_data` is `#[serde(flatten)]` on an
+    /// `Option`, which is the pattern that historically swallowed the inner fields. It does not
+    /// here — serde 1.0.228's flat-map deserializer yields `Some` when the flattened fields are
+    /// present and `None` when they are not — and this test is what makes a regression (in serde,
+    /// or in `akahu-client`'s model) fail loudly instead of silently dropping the merchant and
+    /// category off **every** transaction of **every** sync, permanently.
+    ///
+    /// Asserted through a whole page containing one enriched row and one plain one, because
+    /// that is how the two cases actually arrive: a mixed page, deserialised as one value.
+    #[test]
+    fn a_mixed_page_keeps_enrichment_on_the_rows_that_have_it() {
+        let json = r#"{
+            "success": true,
+            "items": [
+                {
+                    "_id": "trans_805",
+                    "_account": "acc_123",
+                    "_connection": "conn_1",
+                    "created_at": "2026-01-05T10:00:00.000Z",
+                    "date": "2026-01-05T09:30:00.000Z",
+                    "description": "FLAT WHITE THE ROASTERY",
+                    "amount": -5.50,
+                    "type": "DEBIT",
+                    "merchant": { "_id": "_merchant_1", "name": "The Roastery" },
+                    "category": {
+                        "_id": "nzfcc_test1",
+                        "name": "Cafes and restaurants",
+                        "groups": {
+                            "personal_finance": { "_id": "group_test1", "name": "Lifestyle" }
+                        }
+                    }
+                },
+                {
+                    "_id": "trans_806",
+                    "_account": "acc_123",
+                    "_connection": "conn_1",
+                    "created_at": "2026-01-06T10:00:00.000Z",
+                    "date": "2026-01-06T09:30:00.000Z",
+                    "description": "Salary",
+                    "amount": 2500.00,
+                    "type": "CREDIT"
+                }
+            ],
+            "cursor": { "next": null }
+        }"#;
+        let page: akahu_client::PaginatedResponse<akahu_client::Transaction> =
+            serde_json::from_str(json).expect("a mixed page deserialises");
+        // The client-side half of the invariant: the flattened option is `Some` for the row
+        // that carries enrichment and `None` for the one that doesn't.
+        assert!(page.items[0].enriched_data.is_some());
+        assert!(page.items[1].enriched_data.is_none());
+
+        let mapped: Vec<_> = page.items.into_iter().filter_map(map_transaction).collect();
+        assert_eq!(mapped.len(), 2);
+        assert_eq!(mapped[0].merchant, Some("The Roastery".to_string()));
+        let category = mapped[0]
+            .category
+            .as_ref()
+            .expect("the enriched row carries a category");
+        assert_eq!(category.name, "Cafes and restaurants");
+        assert_eq!(category.group.as_deref(), Some("Lifestyle"));
+        // Flatten swallowing the fields would show up here too: an unenriched row must stay
+        // unenriched rather than pick up an empty merchant/category.
+        assert_eq!(mapped[1].merchant, None);
+        assert!(mapped[1].category.is_none());
     }
 
     #[test]

@@ -44,4 +44,14 @@ pub struct AppState {
     /// The stock-price feed (Yahoo Finance), injected for the on-demand price lookups the
     /// brokerage/stock-price routes drive.
     pub stock_price_provider: Arc<dyn StockPriceProvider>,
+    /// The process lifecycle handle, for the handful of handlers that start work outliving
+    /// the response they return (today: the post-import valuation backfill in
+    /// `routes::brokerage`).
+    ///
+    /// It is here so such a handler can reach `Shutdown::spawn` instead of `tokio::spawn`.
+    /// A bare spawn is invisible to the drain: `SIGTERM` closes the pool underneath the
+    /// task, the shutdown report counts `abandoned=0`, and `clean=true` is printed over a
+    /// valuation write that was cut in half. Tracked, the same task is either waited for or
+    /// named in the report — which is the report's entire purpose.
+    pub shutdown: sure_appbase::Shutdown,
 }

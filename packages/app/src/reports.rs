@@ -612,9 +612,39 @@ pub(crate) type Ledger = (
     HashMap<i64, Vec<(NaiveDate, i64, String)>>,
 );
 
+/// The whole ledger, from the first row on record. Only the forecast wants this: it fits
+/// growth trends and dividend yields over all of an account's history, so there is no window
+/// to push down. Every *report* goes through [`load_ledger_from`] instead.
 pub(crate) async fn load_ledger(reports: &dyn ReportRepo) -> AppResult<Ledger> {
-    let txns = reports.transactions().await?;
-    let vals = reports.valuations().await?;
+    load_ledger_window(reports, None).await
+}
+
+/// The ledger a report needs to value accounts on any date from `from` onwards.
+///
+/// The window is pushed into SQL rather than applied here, because applying it here is what
+/// the whole `transactions`/`valuations` read used to be: every report — including the balance
+/// sheet, which asks about exactly one day — materialised every row of both tables, ~30 MB per
+/// copy on a 500k-row ledger and up to 64 copies at the in-flight ceiling.
+///
+/// What makes that safe is on the other side of the port: the repo returns the rows in the
+/// window *plus* a per-account seed standing in for everything before it (one collapsed
+/// transaction total, and the latest earlier valuation), so [`account_value_at`] still sees a
+/// complete running balance and a complete "opened yet?" answer for every date it is asked
+/// about. See `ReportRepo::transactions` for the contract and `sure_dal::reports` for how it
+/// is met.
+pub(crate) async fn load_ledger_from(
+    reports: &dyn ReportRepo,
+    from: NaiveDate,
+) -> AppResult<Ledger> {
+    load_ledger_window(reports, Some(from)).await
+}
+
+async fn load_ledger_window(
+    reports: &dyn ReportRepo,
+    from: Option<NaiveDate>,
+) -> AppResult<Ledger> {
+    let txns = reports.transactions(from).await?;
+    let vals = reports.valuations(from).await?;
     let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
     for t in &txns {
         if let Some(d) =
@@ -649,7 +679,12 @@ pub(crate) async fn load_spend(
     include_one_off: bool,
     attributed_to: Option<Ownership>,
 ) -> AppResult<Vec<SpendTransaction>> {
-    let rows = reports.spend_transactions().await?;
+    // The window goes to SQL as well as staying in the filter below: the repo is only asked
+    // for a superset (its bounds are inclusive of whole days and blind to a date it can't
+    // compare), and the per-row check here is what decides. So the surviving set is exactly
+    // what it was when this loaded the whole table — including a row whose stored date won't
+    // parse, which is dropped here as it always was.
+    let rows = reports.spend_transactions(from, to).await?;
     Ok(rows
         .into_iter()
         .filter(|t| {
@@ -974,47 +1009,34 @@ impl ReportService {
         if let Some(owner) = q.attributed_to {
             accounts.retain(|a| a.ownership == owner);
         }
-        let txns = self.reports.transactions().await?;
-        let vals = self.reports.valuations().await?;
 
-        // Index transactions/valuations per account, with parsed dates.
-        let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
-        for t in &txns {
-            if let Some(d) =
-                parse_stored_date("transactions.posted_at", Some(t.account_id), &t.posted_at)
-            {
-                tx_by_acct
-                    .entry(t.account_id)
-                    .or_default()
-                    .push((d, t.amount_minor));
-            }
-        }
-        let mut val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>> = HashMap::new();
-        for v in &vals {
-            if let Some(d) = parse_stored_date("valuations.as_of", Some(v.account_id), &v.as_of) {
-                val_by_acct.entry(v.account_id).or_default().push((
-                    d,
-                    v.value_minor,
-                    v.currency_code.clone(),
-                ));
-            }
-        }
-
-        // Resolve the reporting window.
+        // Resolve the reporting window *before* reading any ledger row, because the window is
+        // now what bounds that read. The default start used to be the minimum date over the
+        // whole loaded ledger — the same date these two aggregates give, without materialising
+        // every transaction and valuation in the database to find it. Both are restricted to
+        // dates a report can actually read, matching what the old minimum-over-parsed-dates
+        // skipped, and the fallback when the ledger is empty is unchanged.
         let today = self.clock.today();
         let to = q.to.as_deref().and_then(parse_date).unwrap_or(today);
-        let earliest = tx_by_acct
-            .values()
-            .flatten()
-            .map(|(d, _)| *d)
-            .chain(val_by_acct.values().flatten().map(|(d, _, _)| *d))
-            .min();
-        let from = q
-            .from
-            .as_deref()
-            .and_then(parse_date)
-            .or(earliest)
-            .unwrap_or_else(|| to - chrono::Duration::days(365));
+        let from = match q.from.as_deref().and_then(parse_date) {
+            Some(d) => d,
+            None => {
+                let earliest_tx = self.reports.earliest_transaction_date().await?;
+                let earliest_val = self.reports.earliest_valuation_date().await?;
+                [earliest_tx, earliest_val]
+                    .iter()
+                    .flatten()
+                    .filter_map(|s| parse_date(s))
+                    .min()
+                    .unwrap_or_else(|| to - chrono::Duration::days(365))
+            }
+        };
+
+        // `from.min(to)`, not `from`: an inverted window (`?from=2026-01-01&to=2020-01-01`)
+        // samples a single point at `to`, *before* the window start, and a ledger seeded at
+        // `from` cannot answer for a date below its own seed. Costs nothing in the normal case.
+        let (tx_by_acct, val_by_acct) =
+            load_ledger_from(self.reports.as_ref(), from.min(to)).await?;
 
         let sample_dates = sample_dates(from, to, q.interval.unwrap_or(Interval::Month));
 
@@ -1234,7 +1256,10 @@ impl ReportService {
                 .unwrap_or_else(|| self.clock.today());
 
         let accounts = self.reports.active_accounts().await?;
-        let (tx_by_acct, val_by_acct) = load_ledger(self.reports.as_ref()).await?;
+        // One day is the whole window here: the balance sheet asks every account what it is
+        // worth on `as_of` and nothing else, so the ledger it needs is that day's rows plus the
+        // per-account seed standing in for all of history before it.
+        let (tx_by_acct, val_by_acct) = load_ledger_from(self.reports.as_ref(), as_of).await?;
 
         let mut out = Vec::new();
         let mut total = 0.0;
@@ -1279,7 +1304,8 @@ impl ReportService {
         let asset = self.reports.account(id).await?;
         let liabs = self.reports.secured_liabilities(id).await?;
 
-        let (tx_by_acct, val_by_acct) = load_ledger(self.reports.as_ref()).await?;
+        // As in `balances`: a single day, so the window is that day plus its seed.
+        let (tx_by_acct, val_by_acct) = load_ledger_from(self.reports.as_ref(), as_of).await?;
 
         let (v_minor, v_ccy) = account_value_at(
             asset.id,
@@ -1695,19 +1721,29 @@ mod tests {
             async fn account_currencies(&self) -> AppResult<Vec<AccountCurrency>> {
                 Ok(Vec::new())
             }
-            async fn transactions(&self) -> AppResult<Vec<LedgerTx>> {
+            async fn transactions(&self, _from: Option<NaiveDate>) -> AppResult<Vec<LedgerTx>> {
                 Ok(Vec::new())
             }
-            async fn valuations(&self) -> AppResult<Vec<LedgerValuation>> {
+            async fn valuations(
+                &self,
+                _from: Option<NaiveDate>,
+            ) -> AppResult<Vec<LedgerValuation>> {
                 Ok(Vec::new())
             }
             async fn categories(&self) -> AppResult<Vec<ReportCategory>> {
                 Ok(Vec::new())
             }
-            async fn spend_transactions(&self) -> AppResult<Vec<SpendTransaction>> {
+            async fn spend_transactions(
+                &self,
+                _from: NaiveDate,
+                _to: NaiveDate,
+            ) -> AppResult<Vec<SpendTransaction>> {
                 Ok(Vec::new())
             }
             async fn earliest_transaction_date(&self) -> AppResult<Option<String>> {
+                Ok(None)
+            }
+            async fn earliest_valuation_date(&self) -> AppResult<Option<String>> {
                 Ok(None)
             }
             async fn active_accounts(&self) -> AppResult<Vec<ActiveAccount>> {
@@ -1818,6 +1854,466 @@ mod tests {
                     .currency,
                 "NZD"
             );
+        }
+    }
+
+    // ---- W-14: a windowed ledger read must not change a single figure ----------------
+
+    /// The proof obligation behind pushing the report window into SQL: for the same query, a
+    /// repo that returns *everything* (literally what these reads did before) and one that
+    /// returns only the window plus a per-account seed must produce byte-identical reports.
+    ///
+    /// The fixture is the shape of a real household, not its identifiers: a bank account whose
+    /// entire history predates the window, a provider-synced mortgage whose only valuation is
+    /// months *after* the window's end (the case-2 backward reconstruction — the reason there is
+    /// no upper bound on the ledger read), and a house valued once, years before the window
+    /// (case 1 reaching back past `from`). Each of the three is a different way a naive window
+    /// would silently produce a wrong balance.
+    mod windowing {
+        use super::*;
+        use crate::ports::{
+            AccountCurrency, ActiveAccount, AssetAccount, CurrencyDecimals, ExchangeRateRow,
+            LedgerTx, LedgerValuation, ReportCategory, SecuredLiabilityAccount,
+        };
+        use async_trait::async_trait;
+
+        const BANK: i64 = 1;
+        const MORTGAGE: i64 = 2;
+        const HOUSE: i64 = 3;
+
+        /// How the fake answers a windowed read.
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        enum Mode {
+            /// Ignore the window and hand back every row — exactly what `SqliteStore` did before
+            /// W-14, so a report computed over this repo *is* the "before" figure.
+            Everything,
+            /// Apply the window and collapse the pre-history into one seed row per account, the
+            /// way `sure_dal::reports` now does. Modelling the contract here rather than calling
+            /// the SQL keeps this a test of the *aggregation* (that a seeded ledger is enough);
+            /// `sure_dal::reports`' own tests are what pin the SQL to the same contract.
+            Windowed,
+        }
+
+        struct FakeReports {
+            mode: Mode,
+            txns: Vec<LedgerTx>,
+            vals: Vec<LedgerValuation>,
+            spend: Vec<SpendTransaction>,
+        }
+
+        /// The whole fixture ledger, in both tables.
+        fn ledger() -> (Vec<LedgerTx>, Vec<LedgerValuation>) {
+            let tx = |account_id, posted_at: &str, amount_minor| LedgerTx {
+                account_id,
+                posted_at: posted_at.to_string(),
+                amount_minor,
+            };
+            let val = |account_id, as_of: &str, value_minor| LedgerValuation {
+                account_id,
+                as_of: as_of.to_string(),
+                value_minor,
+                currency_code: "NZD".to_string(),
+            };
+            (
+                vec![
+                    // Six years of bank history, all of it before the window.
+                    tx(BANK, "2020-01-01", 1_000_00),
+                    tx(BANK, "2021-06-15", -300_00),
+                    tx(BANK, "2026-03-10", 50_00),
+                    // The mortgage: a drawdown Akahu signs positive, then repayments.
+                    tx(MORTGAGE, "2025-12-11", 485_000_00),
+                    tx(MORTGAGE, "2026-01-12", 313_81),
+                    tx(MORTGAGE, "2026-02-09", 434_70),
+                ],
+                vec![
+                    // The house, valued once at purchase and never since.
+                    val(HOUSE, "2020-01-01", 770_000_00),
+                    // The mortgage's only valuation: what the feed reports *today*, which is
+                    // five months past the end of the window asked about below.
+                    val(MORTGAGE, "2026-07-19", -484_251_49),
+                ],
+            )
+        }
+
+        fn spend_rows() -> Vec<SpendTransaction> {
+            let row = |posted_at: &str, amount_minor, category_id| SpendTransaction {
+                posted_at: posted_at.to_string(),
+                amount_minor,
+                currency_code: "NZD".to_string(),
+                category_id: Some(category_id),
+                is_one_off: false,
+                linked_transaction_id: None,
+                account_kind: AccountKind::Bank,
+                attribution: Ownership::Joint,
+            };
+            vec![
+                row("2019-12-31", 9_999_00, 10),  // long before the window
+                row("2026-01-05", 5_000_00, 10),  // income, inside
+                row("2026-01-20", -1_200_00, 20), // expense, inside
+                row("2026-02-28", -300_00, 20),   // expense, inside (last day counts)
+                row("2026-06-01", -777_00, 20),   // after the window
+            ]
+        }
+
+        impl FakeReports {
+            fn new(mode: Mode) -> Self {
+                let (txns, vals) = ledger();
+                Self {
+                    mode,
+                    txns,
+                    vals,
+                    spend: spend_rows(),
+                }
+            }
+        }
+
+        /// The seeding contract, in Rust: every row on/after `from`, plus one synthetic row per
+        /// account holding the sum of everything before it, dated at the latest of them.
+        fn seeded_transactions(rows: &[LedgerTx], from: NaiveDate) -> Vec<LedgerTx> {
+            let mut seeds: HashMap<i64, (String, i64)> = HashMap::new();
+            let mut out = Vec::new();
+            for t in rows {
+                let d = parse_date(&t.posted_at).expect("fixture dates parse");
+                if d >= from {
+                    out.push(t.clone());
+                    continue;
+                }
+                let seed = seeds
+                    .entry(t.account_id)
+                    .or_insert_with(|| (t.posted_at.clone(), 0));
+                if t.posted_at > seed.0 {
+                    seed.0 = t.posted_at.clone();
+                }
+                seed.1 += t.amount_minor;
+            }
+            let mut seeds: Vec<_> = seeds.into_iter().collect();
+            seeds.sort_by_key(|(id, _)| *id);
+            let mut all: Vec<LedgerTx> = seeds
+                .into_iter()
+                .map(|(account_id, (posted_at, amount_minor))| LedgerTx {
+                    account_id,
+                    posted_at,
+                    amount_minor,
+                })
+                .collect();
+            all.append(&mut out);
+            all
+        }
+
+        /// Same, for valuations: every row as of `from` or later, plus the latest earlier one
+        /// per account (a level, not a movement, so it is a real row rather than a total).
+        fn seeded_valuations(rows: &[LedgerValuation], from: NaiveDate) -> Vec<LedgerValuation> {
+            let mut seeds: HashMap<i64, LedgerValuation> = HashMap::new();
+            let mut out = Vec::new();
+            for v in rows {
+                let d = parse_date(&v.as_of).expect("fixture dates parse");
+                if d >= from {
+                    out.push(v.clone());
+                    continue;
+                }
+                match seeds.get(&v.account_id) {
+                    Some(prev) if prev.as_of >= v.as_of => {}
+                    Some(_) | None => {
+                        seeds.insert(v.account_id, v.clone());
+                    }
+                }
+            }
+            let mut seeds: Vec<_> = seeds.into_iter().collect();
+            seeds.sort_by_key(|(id, _)| *id);
+            let mut all: Vec<LedgerValuation> = seeds.into_iter().map(|(_, v)| v).collect();
+            all.append(&mut out);
+            all
+        }
+
+        #[async_trait]
+        impl ReportRepo for FakeReports {
+            async fn base_currency(&self) -> AppResult<String> {
+                Ok("NZD".to_string())
+            }
+            async fn account_currencies(&self) -> AppResult<Vec<AccountCurrency>> {
+                Ok([BANK, MORTGAGE, HOUSE]
+                    .into_iter()
+                    .map(|id| AccountCurrency {
+                        id,
+                        currency_code: "NZD".to_string(),
+                        ownership: Ownership::Joint,
+                    })
+                    .collect())
+            }
+            async fn transactions(&self, from: Option<NaiveDate>) -> AppResult<Vec<LedgerTx>> {
+                Ok(match (self.mode, from) {
+                    (Mode::Everything, _) | (Mode::Windowed, None) => self.txns.clone(),
+                    (Mode::Windowed, Some(from)) => seeded_transactions(&self.txns, from),
+                })
+            }
+            async fn valuations(&self, from: Option<NaiveDate>) -> AppResult<Vec<LedgerValuation>> {
+                Ok(match (self.mode, from) {
+                    (Mode::Everything, _) | (Mode::Windowed, None) => self.vals.clone(),
+                    (Mode::Windowed, Some(from)) => seeded_valuations(&self.vals, from),
+                })
+            }
+            async fn categories(&self) -> AppResult<Vec<ReportCategory>> {
+                Ok(vec![
+                    ReportCategory {
+                        id: 10,
+                        parent_id: None,
+                        name: "Salary".to_string(),
+                        color: None,
+                        kind: CategoryKind::Income,
+                    },
+                    ReportCategory {
+                        id: 20,
+                        parent_id: None,
+                        name: "Groceries".to_string(),
+                        color: None,
+                        kind: CategoryKind::Expense,
+                    },
+                ])
+            }
+            async fn spend_transactions(
+                &self,
+                from: NaiveDate,
+                to: NaiveDate,
+            ) -> AppResult<Vec<SpendTransaction>> {
+                Ok(match self.mode {
+                    Mode::Everything => self.spend.clone(),
+                    Mode::Windowed => self
+                        .spend
+                        .iter()
+                        .filter(|t| parse_date(&t.posted_at).is_some_and(|d| d >= from && d <= to))
+                        .cloned()
+                        .collect(),
+                })
+            }
+            async fn earliest_transaction_date(&self) -> AppResult<Option<String>> {
+                Ok(self.txns.iter().map(|t| t.posted_at.clone()).min())
+            }
+            async fn earliest_valuation_date(&self) -> AppResult<Option<String>> {
+                Ok(self.vals.iter().map(|v| v.as_of.clone()).min())
+            }
+            async fn active_accounts(&self) -> AppResult<Vec<ActiveAccount>> {
+                Ok(vec![
+                    ActiveAccount {
+                        id: BANK,
+                        name: "Everyday".to_string(),
+                        kind: AccountKind::Bank,
+                        currency_code: "NZD".to_string(),
+                        ownership: Ownership::Joint,
+                    },
+                    ActiveAccount {
+                        id: MORTGAGE,
+                        name: "Home loan".to_string(),
+                        kind: AccountKind::Mortgage,
+                        currency_code: "NZD".to_string(),
+                        ownership: Ownership::Joint,
+                    },
+                    ActiveAccount {
+                        id: HOUSE,
+                        name: "The house".to_string(),
+                        kind: AccountKind::RealEstate,
+                        currency_code: "NZD".to_string(),
+                        ownership: Ownership::Joint,
+                    },
+                ])
+            }
+            async fn account(&self, id: i64) -> AppResult<AssetAccount> {
+                assert_eq!(id, HOUSE, "only the house is asked for an equity position");
+                Ok(AssetAccount {
+                    id: HOUSE,
+                    name: "The house".to_string(),
+                    currency_code: "NZD".to_string(),
+                })
+            }
+            async fn secured_liabilities(
+                &self,
+                asset_id: i64,
+            ) -> AppResult<Vec<SecuredLiabilityAccount>> {
+                assert_eq!(asset_id, HOUSE);
+                Ok(vec![SecuredLiabilityAccount {
+                    id: MORTGAGE,
+                    name: "Home loan".to_string(),
+                    kind: AccountKind::Mortgage,
+                    currency_code: "NZD".to_string(),
+                }])
+            }
+        }
+
+        /// NZD only, no rates needed: the report currency is the base, so nothing converts and
+        /// the figures below are the raw minor units.
+        struct FakeFx;
+        #[async_trait]
+        impl FxRatesRepo for FakeFx {
+            async fn currency_decimals(&self) -> AppResult<Vec<CurrencyDecimals>> {
+                Ok(vec![CurrencyDecimals {
+                    code: "NZD".to_string(),
+                    decimal_places: 2,
+                }])
+            }
+            async fn exchange_rates(&self) -> AppResult<Vec<ExchangeRateRow>> {
+                Ok(Vec::new())
+            }
+        }
+
+        fn service(mode: Mode) -> ReportService {
+            ReportService::new(
+                Arc::new(FakeReports::new(mode)),
+                Arc::new(FakeFx),
+                Arc::new(crate::test_clock::FixedClock(d("2026-08-04"))),
+            )
+        }
+
+        fn window(from: &str, to: &str) -> ReportQuery {
+            ReportQuery {
+                from: Some(from.to_string()),
+                to: Some(to.to_string()),
+                ..Default::default()
+            }
+        }
+
+        /// A balance sheet mid-window: the seeded read must give the same three balances, and
+        /// they must be these ones. Each is a different reach past the window's edges — the
+        /// bank's whole history is behind it, the house's only valuation is six years behind it,
+        /// and the mortgage's anchor valuation is five months ahead of it.
+        #[test]
+        fn a_balance_sheet_is_identical_windowed_and_unwindowed() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let q = window("2026-01-01", "2026-02-01");
+
+            let before = rt.block_on(service(Mode::Everything).balances(&q)).unwrap();
+            let after = rt.block_on(service(Mode::Windowed).balances(&q)).unwrap();
+
+            let value = |r: &BalancesReport, id: i64| {
+                r.accounts
+                    .iter()
+                    .find(|a| a.account_id == id)
+                    .unwrap_or_else(|| panic!("account {id} missing"))
+                    .value_minor
+            };
+            // Pinned figures, so this test fails if either side moves rather than only if they
+            // move apart. $1,000 in less $300 out; the house at its purchase valuation; the
+            // mortgage reconstructed backwards from July's -$484,251.49 less the $434.70 repaid
+            // after 1 February.
+            assert_eq!(value(&after, BANK), 700_00);
+            assert_eq!(value(&after, HOUSE), 770_000_00);
+            assert_eq!(value(&after, MORTGAGE), -484_686_19);
+            assert_eq!(after.total_minor, 286_013_81);
+
+            assert_eq!(value(&before, BANK), value(&after, BANK));
+            assert_eq!(value(&before, HOUSE), value(&after, HOUSE));
+            assert_eq!(value(&before, MORTGAGE), value(&after, MORTGAGE));
+            assert_eq!(before.total_minor, after.total_minor);
+            assert_eq!(before.as_of, after.as_of);
+        }
+
+        /// The net-worth series, point for point — including the default (`from` omitted)
+        /// window, which is now resolved from two `MIN` aggregates instead of from the loaded
+        /// ledger and must land on the same first sample.
+        #[test]
+        fn a_net_worth_series_is_identical_windowed_and_unwindowed() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            for q in [
+                NetWorthQuery {
+                    from: Some("2026-01-01".to_string()),
+                    to: Some("2026-03-31".to_string()),
+                    ..Default::default()
+                },
+                // Defaulted window: earliest of the two tables (2020-01-01) through today.
+                NetWorthQuery::default(),
+                // Weekly sampling, so several points land between the ledger's rows.
+                NetWorthQuery {
+                    from: Some("2026-01-01".to_string()),
+                    to: Some("2026-02-15".to_string()),
+                    interval: Some(Interval::Week),
+                    ..Default::default()
+                },
+            ] {
+                let before = rt
+                    .block_on(service(Mode::Everything).net_worth(&q))
+                    .unwrap();
+                let after = rt.block_on(service(Mode::Windowed).net_worth(&q)).unwrap();
+                let points = |s: &NetWorthSeries| {
+                    s.points
+                        .iter()
+                        .map(|p| {
+                            (
+                                p.as_of.clone(),
+                                p.net_worth_minor,
+                                p.assets_minor,
+                                p.liabilities_minor,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(points(&before), points(&after), "query: {q:?}");
+                assert!(!after.points.is_empty());
+            }
+        }
+
+        /// The equity position is a *subtraction*, so a dropped term reads as a house owned
+        /// outright — the one report where a wrong seed would be least visible.
+        #[test]
+        fn an_equity_position_is_identical_windowed_and_unwindowed() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let q = window("2026-01-01", "2026-02-01");
+
+            let before = rt
+                .block_on(service(Mode::Everything).equity_position(HOUSE, &q))
+                .unwrap();
+            let after = rt
+                .block_on(service(Mode::Windowed).equity_position(HOUSE, &q))
+                .unwrap();
+
+            assert_eq!(after.value_minor, 770_000_00);
+            assert_eq!(after.total_debt_minor, 484_686_19);
+            assert_eq!(after.equity_minor, 285_313_81);
+            assert_eq!(before.value_minor, after.value_minor);
+            assert_eq!(before.total_debt_minor, after.total_debt_minor);
+            assert_eq!(before.equity_minor, after.equity_minor);
+            assert_eq!(before.paid_off_pct, after.paid_off_pct);
+        }
+
+        /// The spend reports: the SQL window is a superset of the filter that always ran here,
+        /// so the totals are unchanged — and the rows either side of the window (2019, June)
+        /// stay out of them.
+        #[test]
+        fn the_spend_reports_are_identical_windowed_and_unwindowed() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let q = window("2026-01-01", "2026-02-28");
+
+            let before = rt
+                .block_on(service(Mode::Everything).category_breakdown(&q))
+                .unwrap();
+            let after = rt
+                .block_on(service(Mode::Windowed).category_breakdown(&q))
+                .unwrap();
+            let totals = |b: &CategoryBreakdown| {
+                (
+                    b.income
+                        .iter()
+                        .map(|t| (t.category_id, t.total_minor))
+                        .collect::<Vec<_>>(),
+                    b.expense
+                        .iter()
+                        .map(|t| (t.category_id, t.total_minor))
+                        .collect::<Vec<_>>(),
+                )
+            };
+            assert_eq!(totals(&before), totals(&after));
+            assert_eq!(
+                totals(&after),
+                (vec![(Some(10), 5_000_00)], vec![(Some(20), 1_500_00)]),
+                "only the three in-window rows count: $5,000 in, $1,200 + $300 out"
+            );
+
+            let before = rt.block_on(service(Mode::Everything).sankey(&q)).unwrap();
+            let after = rt.block_on(service(Mode::Windowed).sankey(&q)).unwrap();
+            let links = |g: &SankeyGraph| {
+                g.links
+                    .iter()
+                    .map(|l| (l.source.clone(), l.target.clone(), l.value_minor))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(links(&before), links(&after));
         }
     }
 }

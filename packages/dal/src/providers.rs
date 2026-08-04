@@ -311,10 +311,35 @@ pub async fn account_currency(db: &Db, account_id: i64) -> AppResult<String> {
     )
 }
 
+/// Transactions written per SQL statement, and per transaction.
+///
+/// SQLite's ceiling is 32766 bound variables in one statement
+/// (`SQLITE_MAX_VARIABLE_NUMBER`); the insert below binds 11 per row, so 1000 rows uses
+/// 11 000 of them and leaves room for a dozen more columns before the limit is anywhere
+/// near. The other half of the choice is failure cost: a chunk is one transaction, so a
+/// rollback (or a [`crate::with_busy_retry`] replay) loses at most a thousand rows of work,
+/// while a 100 000-row import still takes 100 write-lock acquisitions instead of 100 000.
+const IMPORT_CHUNK_ROWS: usize = 1000;
+
+/// Per-row values that had to be looked up (or created) before the row could be written:
+/// the currency it settles in and the ids its merchant/category resolved to.
+struct ResolvedRow {
+    currency_code: String,
+    merchant_id: Option<i64>,
+    category_id: Option<i64>,
+}
+
 /// Insert fetched transactions, deduping on (provider, external_id). Reuses (or creates)
 /// a matching merchant/category per row from any source-supplied classification, so
 /// providers that carry their own enrichment (e.g. Akahu's NZFCC categories) don't leave
 /// every imported transaction uncategorized. Returns (imported, skipped).
+///
+/// Writes in chunked transactions of [`IMPORT_CHUNK_ROWS`]. Row-at-a-time autocommit — what
+/// this did before — took the database's write lock once per row, so a 100 000-row backfill
+/// was 100 000 lock acquisitions and 100 000 fsync-able commits, each one a chance for a
+/// concurrent writer to collide and (past `busy_timeout`) fail the whole import with a 500.
+/// Every writer of a transaction row goes through here, including the ASB CSV importer and
+/// the brokerage wallet import, so they all get the batching and the retry.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn import_transactions(
     db: &Db,
@@ -331,59 +356,91 @@ pub async fn import_transactions(
     let mut category_cache: HashMap<(String, Option<String>), i64> = HashMap::new();
     let mut group_cache: HashMap<String, i64> = HashMap::new();
 
-    for t in rows {
-        let ccy = t
-            .currency_code
-            .clone()
-            .unwrap_or_else(|| account_currency.to_string());
-
-        let category_id = match &t.category_name {
-            Some(name) if !name.trim().is_empty() => Some(
-                resolve_category(
-                    db,
-                    &mut category_cache,
-                    &mut group_cache,
-                    name,
-                    t.category_group.as_deref(),
-                    t.category_kind.unwrap_or_default(),
-                )
-                .await?,
-            ),
-            _ => None,
-        };
-        let merchant_id = match &t.merchant {
-            Some(name) if !name.trim().is_empty() => {
-                Some(resolve_merchant(db, &mut merchant_cache, name, category_id).await?)
-            }
-            _ => None,
-        };
-
-        let res = sqlx::query(
-            "INSERT OR IGNORE INTO transactions
-                (account_id, posted_at, amount_minor, currency_code, description, merchant,
-                 merchant_id, category_id, provider, external_id, is_one_off)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-        )
-        .bind(account_id)
-        .bind(&t.posted_at)
-        .bind(t.amount_minor)
-        .bind(&ccy)
-        .bind(&t.description)
-        .bind(&t.merchant)
-        .bind(merchant_id)
-        .bind(category_id)
-        .bind(provider_tag)
-        .bind(&t.external_id)
-        .bind(t.is_one_off)
-        .execute(db)
-        .await?;
-        if res.rows_affected() > 0 {
-            imported += 1;
-        } else {
-            skipped += 1;
+    for chunk in rows.chunks(IMPORT_CHUNK_ROWS) {
+        // Resolve merchants/categories *before* opening the write transaction. Find-or-create
+        // is itself a query and sometimes an insert; doing it with the chunk's transaction
+        // open would hold the single write lock across every one of those round trips.
+        let mut resolved = Vec::with_capacity(chunk.len());
+        for t in chunk {
+            let category_id = match &t.category_name {
+                Some(name) if !name.trim().is_empty() => Some(
+                    resolve_category(
+                        db,
+                        &mut category_cache,
+                        &mut group_cache,
+                        name,
+                        t.category_group.as_deref(),
+                        t.category_kind.unwrap_or_default(),
+                    )
+                    .await?,
+                ),
+                _ => None,
+            };
+            let merchant_id = match &t.merchant {
+                Some(name) if !name.trim().is_empty() => {
+                    Some(resolve_merchant(db, &mut merchant_cache, name, category_id).await?)
+                }
+                _ => None,
+            };
+            resolved.push(ResolvedRow {
+                currency_code: t
+                    .currency_code
+                    .clone()
+                    .unwrap_or_else(|| account_currency.to_string()),
+                merchant_id,
+                category_id,
+            });
         }
+
+        // One transaction for the chunk, replayed if another writer held the lock. Safe to
+        // replay: a refused transaction committed nothing, and the insert is
+        // `OR IGNORE` on (provider, external_id) anyway.
+        let inserted = crate::with_busy_retry("providers::import_transactions", || {
+            insert_chunk(db, account_id, provider_tag, chunk, &resolved)
+        })
+        .await?;
+        imported += inserted;
+        skipped += chunk.len() as i64 - inserted;
     }
     Ok((imported, skipped))
+}
+
+/// Write one chunk of already-resolved rows in a single transaction, returning how many were
+/// new.
+///
+/// `INSERT OR IGNORE` makes the dedupe on `(provider, external_id)` the database's job, and
+/// `rows_affected` on the multi-row statement counts exactly the rows that were not already
+/// there — which is what the caller reports as `imported`, the rest being `skipped`.
+async fn insert_chunk(
+    db: &Db,
+    account_id: i64,
+    provider_tag: &str,
+    chunk: &[ImportRow],
+    resolved: &[ResolvedRow],
+) -> AppResult<i64> {
+    debug_assert_eq!(chunk.len(), resolved.len());
+    let mut tx = db.begin().await?;
+    let mut builder = sqlx::QueryBuilder::new(
+        "INSERT OR IGNORE INTO transactions
+            (account_id, posted_at, amount_minor, currency_code, description, merchant,
+             merchant_id, category_id, provider, external_id, is_one_off) ",
+    );
+    builder.push_values(chunk.iter().zip(resolved), |mut row, (t, r)| {
+        row.push_bind(account_id)
+            .push_bind(t.posted_at.as_str())
+            .push_bind(t.amount_minor)
+            .push_bind(r.currency_code.as_str())
+            .push_bind(t.description.as_str())
+            .push_bind(t.merchant.as_deref())
+            .push_bind(r.merchant_id)
+            .push_bind(r.category_id)
+            .push_bind(provider_tag)
+            .push_bind(t.external_id.as_str())
+            .push_bind(t.is_one_off);
+    });
+    let inserted = builder.build().execute(&mut *tx).await?.rows_affected();
+    tx.commit().await?;
+    Ok(inserted as i64)
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -487,6 +544,7 @@ fn map_fk(e: sqlx::Error) -> AppError {
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
+    use std::str::FromStr;
     use sure_core::AccountKind;
 
     async fn test_db() -> Db {
@@ -907,6 +965,113 @@ mod tests {
             .filter(|c| c.name.eq_ignore_ascii_case("cafes and restaurants"))
             .count();
         assert_eq!(matches, 1);
+    }
+
+    /// A plain row with no enrichment: what a chunking test needs many of.
+    fn plain_row(external_id: &str, currency_code: Option<&str>) -> ImportRow {
+        ImportRow {
+            external_id: external_id.to_string(),
+            posted_at: "2026-01-05T09:30:00+00:00".to_string(),
+            amount_minor: -125,
+            currency_code: currency_code.map(str::to_string),
+            description: "Bus fare".to_string(),
+            merchant: None,
+            category_name: None,
+            category_group: None,
+            category_kind: None,
+            is_one_off: false,
+        }
+    }
+
+    /// W-30: an import spanning several chunks writes every row, still dedupes, and reports
+    /// the same (imported, skipped) counts row-at-a-time inserts did — the batching must be
+    /// invisible in the result and visible only in the number of transactions.
+    #[tokio::test]
+    async fn a_multi_chunk_import_writes_every_row_and_still_dedupes() {
+        let db = test_db().await;
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
+        // Two full chunks and a partial one, so the last (short) `push_values` batch is
+        // exercised alongside the full ones.
+        let count = IMPORT_CHUNK_ROWS * 2 + 7;
+        let rows: Vec<ImportRow> = (0..count)
+            .map(|i| plain_row(&format!("chunked_{i}"), None))
+            .collect();
+
+        let (imported, skipped) = import_transactions(&db, account.id, "NZD", "akahu#1", &rows)
+            .await
+            .unwrap();
+        assert_eq!((imported, skipped), (count as i64, 0));
+        let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE provider=?1")
+            .bind("akahu#1")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(stored, count as i64);
+
+        // Re-importing the same export is still idempotent: `INSERT OR IGNORE` dedupes
+        // inside a multi-row statement exactly as it did one row at a time.
+        let (imported, skipped) = import_transactions(&db, account.id, "NZD", "akahu#1", &rows)
+            .await
+            .unwrap();
+        assert_eq!((imported, skipped), (0, count as i64));
+    }
+
+    /// The chunk is the failure boundary: one transaction per chunk means a chunk that
+    /// cannot be written rolls back whole, and the chunks already committed stay committed.
+    /// (Which is safe precisely because a re-run dedupes — see the test above.)
+    #[tokio::test]
+    async fn a_failing_chunk_rolls_back_without_taking_the_earlier_ones_with_it() {
+        // Foreign keys must actually be enforced for this, as they are in `connect`; the
+        // shared `test_db` helper leaves SQLite's default (off).
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .foreign_keys(true);
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        crate::migrate(&db).await.unwrap();
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
+
+        // A full first chunk, then a second chunk whose fifth row names a currency that does
+        // not exist — an FK violation, which `OR IGNORE` does not suppress.
+        let mut rows: Vec<ImportRow> = (0..IMPORT_CHUNK_ROWS)
+            .map(|i| plain_row(&format!("good_{i}"), None))
+            .collect();
+        rows.extend((0..10).map(|i| plain_row(&format!("second_{i}"), None)));
+        rows[IMPORT_CHUNK_ROWS + 5] = plain_row("second_5", Some("ZZZ"));
+
+        let err = import_transactions(&db, account.id, "NZD", "akahu#1", &rows)
+            .await
+            .expect_err("a currency that does not exist cannot be written");
+        // Not overload — a genuine constraint failure, and it must not be laundered into a
+        // retryable 503.
+        assert!(!err.is_overloaded(), "{err}");
+
+        let committed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE external_id LIKE 'good_%'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            committed, IMPORT_CHUNK_ROWS as i64,
+            "the chunk that succeeded should have committed"
+        );
+        let from_failed_chunk: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM transactions WHERE external_id LIKE 'second_%'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            from_failed_chunk, 0,
+            "the failing chunk must roll back whole, not leave its first four rows behind"
+        );
     }
 
     #[tokio::test]

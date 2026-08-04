@@ -2,10 +2,11 @@
 //! (ids preserved); import wipes the database and restores in one transaction with
 //! `PRAGMA defer_foreign_keys=ON`. Pure audit/run tables are cleared but not restored.
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 use sqlx::FromRow;
-use sure_core::AppResult;
+use sure_core::{AppError, AppResult};
 
 use crate::Db;
 
@@ -329,6 +330,140 @@ pub struct ForecastEventRow {
     pub created_at: String,
 }
 
+/// Serialising the snapshot cannot fail on the data (every field is a plain scalar), so an
+/// error here is a bug or a full disk on the way out to a `Vec`, not bad user input.
+fn ser_failed(e: serde_json::Error) -> AppError {
+    AppError::Internal(e.into())
+}
+
+/// The snapshot as JSON bytes, written one table at a time.
+///
+/// Byte-identical to `serde_json::to_vec(&export(db)?)` — the format is a user-facing backup
+/// contract (an old snapshot must still import), so this changes *when* memory is held, never
+/// what is in the blob. `export_bytes_matches_the_snapshot_struct` pins that equality, which is
+/// what keeps this writer from drifting away from [`Snapshot`]'s field names.
+///
+/// What it avoids: `GET /api/config/export` used to hold three full copies of the database at
+/// once — every table's rows as `Vec`s inside a [`Snapshot`], then `serde_json::to_value` of the
+/// lot (the fattest of the three: a `Value` tree with a `String` key per field per row), then
+/// the serialised response body — and it takes no parameters, so any caller can ask for that,
+/// times the in-flight ceiling. Here each table's `Vec` is dropped as soon as its entry has
+/// been written, so the peak is the finished bytes plus the single largest table.
+///
+/// Residual, stated plainly: the finished blob is still assembled in memory before the response
+/// starts. Removing that means streaming the body while rows are still being read — a
+/// `Body::from_stream` over a `sqlx` cursor — which the current `Snapshot`-shaped format can
+/// carry (it is one object of arrays) but which would have to hold the transaction that reads
+/// the tables open across the whole write, and give up the "either the whole snapshot or an
+/// error" guarantee a backup wants. Not worth it for a self-hosted single-household app; the
+/// per-request peak is now ~1.2 copies instead of ~3, and the handler admits one at a time.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
+    let base_currency_code =
+        sqlx::query_scalar::<_, String>("SELECT base_currency_code FROM settings WHERE id=1")
+            .fetch_one(db)
+            .await?;
+
+    let mut out: Vec<u8> = Vec::new();
+    let mut ser = serde_json::Serializer::new(&mut out);
+    let mut map = ser.serialize_map(None).map_err(ser_failed)?;
+    map.serialize_entry("version", &SNAPSHOT_VERSION)
+        .map_err(ser_failed)?;
+    map.serialize_entry("base_currency_code", &base_currency_code)
+        .map_err(ser_failed)?;
+
+    /// Read one table, write it straight into the buffer as `"<field>": [...]`, and drop the
+    /// rows before the next table is read — the entire point of this function. The field name
+    /// must match [`Snapshot`]'s, and the test named above is what proves it does.
+    macro_rules! table {
+        ($field:literal, $ty:ty, $sql:literal) => {{
+            let rows: Vec<$ty> = sqlx::query_as($sql).fetch_all(db).await?;
+            map.serialize_entry($field, &rows).map_err(ser_failed)?;
+        }};
+    }
+
+    table!(
+        "currencies",
+        CurrencyRow,
+        "SELECT * FROM currencies ORDER BY code"
+    );
+    table!(
+        "exchange_rates",
+        ExchangeRateRow,
+        "SELECT * FROM exchange_rates"
+    );
+    table!(
+        "categories",
+        CategoryRow,
+        "SELECT * FROM categories ORDER BY id"
+    );
+    table!(
+        "merchants",
+        MerchantRow,
+        "SELECT * FROM merchants ORDER BY id"
+    );
+    table!("people", PersonRow, "SELECT * FROM people ORDER BY id");
+    table!("accounts", AccountRow, "SELECT * FROM accounts ORDER BY id");
+    table!(
+        "transactions",
+        TransactionRow,
+        "SELECT * FROM transactions ORDER BY id"
+    );
+    table!(
+        "valuations",
+        ValuationRow,
+        "SELECT * FROM valuations ORDER BY id"
+    );
+    table!("rules", RuleRow, "SELECT * FROM rules ORDER BY id");
+    table!("crons", CronRow, "SELECT * FROM crons ORDER BY id");
+    table!(
+        "providers",
+        ProviderRow,
+        "SELECT * FROM providers ORDER BY id"
+    );
+    table!(
+        "equity_grants",
+        GrantRow,
+        "SELECT * FROM equity_grants ORDER BY id"
+    );
+    table!(
+        "equity_exercises",
+        ExerciseRow,
+        "SELECT * FROM equity_exercises ORDER BY id"
+    );
+    table!("holdings", HoldingRow, "SELECT * FROM holdings ORDER BY id");
+    table!(
+        "dividends",
+        DividendRow,
+        "SELECT * FROM dividends ORDER BY id"
+    );
+    table!(
+        "dividend_withholdings",
+        DividendWithholdingRow,
+        "SELECT * FROM dividend_withholdings ORDER BY id"
+    );
+    table!(
+        "forecast_assumptions",
+        ForecastAssumptionRow,
+        "SELECT * FROM forecast_assumptions ORDER BY id"
+    );
+    table!(
+        "forecast_events",
+        ForecastEventRow,
+        "SELECT * FROM forecast_events ORDER BY id"
+    );
+
+    map.end().map_err(ser_failed)?;
+    Ok(out)
+}
+
+/// The snapshot as a [`Snapshot`], holding every table at once.
+///
+/// This is the *reference definition* of the export format — [`export_bytes`] is what the
+/// endpoint actually serves, and the round-trip test asserts the two agree field for field. Kept
+/// because `Snapshot` is the type [`import`] deserialises into, so having one place that says
+/// "these are the tables, in this order, under these names" is what makes a format change
+/// impossible to make in only half the code.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn export(db: &Db) -> AppResult<Snapshot> {
     let base_currency_code =
@@ -587,4 +722,127 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             "forecast_events": snap.forecast_events.len(),
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
+
+    async fn empty_db() -> Db {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::migrate(&db).await.unwrap();
+        db
+    }
+
+    /// A database with one of most things — the *shape* a real backup has (a person owning an
+    /// account, transactions, a valuation, a category, a rate), never anybody's real data.
+    async fn populated_db() -> Db {
+        let db = empty_db().await;
+        let person: i64 = sqlx::query_scalar(
+            "INSERT INTO people (name, sort_order) VALUES ('A', 0) RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO categories (id, name, kind, sort_order) VALUES (1, 'Groceries', 'expense', 0)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (id, name, kind, currency_code, metadata, ownership, person_id)
+             VALUES (1, 'Everyday', 'bank', 'NZD', '{}', 'person', ?1)",
+        )
+        .bind(person)
+        .execute(&db)
+        .await
+        .unwrap();
+        for (posted_at, amount) in [("2026-01-05", 5_000_00i64), ("2026-01-20", -1_200_00)] {
+            sqlx::query(
+                "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code,
+                                           description, category_id)
+                 VALUES (1, ?1, ?2, 'NZD', 'x', 1)",
+            )
+            .bind(posted_at)
+            .bind(amount)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO valuations (account_id, as_of, value_minor, currency_code)
+             VALUES (1, '2026-02-01', 3_800_00, 'NZD')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO exchange_rates (base_code, quote_code, as_of, rate)
+             VALUES ('NZD', 'USD', '2026-02-01', '0.6')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        db
+    }
+
+    /// The format is a user-facing backup contract, so [`export_bytes`] — which writes each
+    /// table straight out and drops it, instead of building a `serde_json::Value` copy of the
+    /// whole database — must produce exactly what serialising the [`Snapshot`] struct produced.
+    /// This is the test that keeps the two from drifting apart.
+    #[tokio::test]
+    async fn export_bytes_matches_the_snapshot_struct() {
+        let db = populated_db().await;
+
+        let streamed: Value = serde_json::from_slice(&export_bytes(&db).await.unwrap()).unwrap();
+        let structured = serde_json::to_value(export(&db).await.unwrap()).unwrap();
+
+        assert_eq!(streamed, structured);
+        // And it really did carry the data, rather than agreeing on an empty object.
+        assert_eq!(streamed["transactions"].as_array().unwrap().len(), 2);
+        assert_eq!(streamed["accounts"].as_array().unwrap().len(), 1);
+        assert_eq!(streamed["version"], SNAPSHOT_VERSION);
+    }
+
+    /// The round trip an actual backup is: export the bytes, import them into a fresh database,
+    /// export that one, and get the same blob. Nothing here depends on how the bytes were built
+    /// — which is the point, since that is what changed.
+    #[tokio::test]
+    async fn a_streamed_export_still_imports() {
+        let source = populated_db().await;
+        let bytes = export_bytes(&source).await.unwrap();
+
+        let restored = empty_db().await;
+        let snap: Snapshot = serde_json::from_slice(&bytes).unwrap();
+        let summary = import(&restored, snap).await.unwrap();
+        assert_eq!(summary["counts"]["transactions"], 2);
+        assert_eq!(summary["counts"]["accounts"], 1);
+
+        let round_tripped = export_bytes(&restored).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&round_tripped).unwrap(),
+            serde_json::from_slice::<Value>(&bytes).unwrap(),
+            "a snapshot must restore to a database that exports the same snapshot"
+        );
+    }
+
+    /// An empty database still exports every key, so a client (and the importer) can rely on the
+    /// shape rather than on which tables happened to have rows.
+    #[tokio::test]
+    async fn an_empty_database_exports_the_whole_shape() {
+        let db = empty_db().await;
+        let streamed: Value = serde_json::from_slice(&export_bytes(&db).await.unwrap()).unwrap();
+        let structured = serde_json::to_value(export(&db).await.unwrap()).unwrap();
+        assert_eq!(streamed, structured);
+        assert!(streamed["holdings"].as_array().unwrap().is_empty());
+        // Deserialising it back is what `POST /api/config/import` does first.
+        serde_json::from_value::<Snapshot>(streamed).expect("an empty export is importable");
+    }
 }

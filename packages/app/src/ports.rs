@@ -614,12 +614,43 @@ pub trait RuleRepo: Send + Sync {
 pub trait ReportRepo: Send + Sync {
     async fn base_currency(&self) -> AppResult<String>;
     async fn account_currencies(&self) -> AppResult<Vec<AccountCurrency>>;
-    async fn transactions(&self) -> AppResult<Vec<LedgerTx>>;
-    async fn valuations(&self) -> AppResult<Vec<LedgerValuation>>;
+    /// The transactions needed to value every account on any date from `from` onwards.
+    ///
+    /// `Some(from)` is a *window*, not a filter on what the caller may see: an implementation
+    /// must return enough for `sure_app::reports::account_value_at` to answer, for every date
+    /// `d >= from`, both "what is the running total of everything posted on or before `d`" and
+    /// "had this account been posted to before `d`". Returning every row (as an in-memory fake
+    /// does) satisfies that; so does returning the rows on/after `from` plus **one seed row per
+    /// account** whose amount is the sum of everything before it and whose date is the latest of
+    /// them — which is what `SqliteStore` does, and is the difference between a report touching
+    /// its window and a report materialising a 500k-row ledger 64 times over.
+    ///
+    /// There is no upper bound by design: the valuation-anchor reconstruction reads *forward*
+    /// from the date being reported on to the account's earliest valuation, which is routinely
+    /// later than the window's end. See `sure_dal::reports::transactions`.
+    ///
+    /// `None` means the whole table, for the forecast — it fits trends over all of history.
+    async fn transactions(&self, from: Option<NaiveDate>) -> AppResult<Vec<LedgerTx>>;
+    /// The valuations needed from `from` onwards: every row as of it or later, plus the latest
+    /// one before it per account (a valuation is a level that carries forward, so the newest
+    /// earlier row is the account's opening value — see `sure_dal::reports::valuations`).
+    /// `None` means the whole table.
+    async fn valuations(&self, from: Option<NaiveDate>) -> AppResult<Vec<LedgerValuation>>;
     async fn categories(&self) -> AppResult<Vec<ReportCategory>>;
-    async fn spend_transactions(&self) -> AppResult<Vec<SpendTransaction>>;
+    /// Transactions posted within `from ..= to`. A plain window: the spend reports total the
+    /// movements inside the period and never look outside it. Implementations may return a
+    /// superset — `sure_app::reports::load_spend` re-checks every parsed date.
+    async fn spend_transactions(
+        &self,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> AppResult<Vec<SpendTransaction>>;
     /// The earliest transaction date on record, for defaulting an unbounded report window.
     async fn earliest_transaction_date(&self) -> AppResult<Option<String>>;
+    /// The earliest valuation date on record. Net worth's default window start is the earlier
+    /// of this and [`Self::earliest_transaction_date`] — an account can be valued before it is
+    /// ever transacted on, and that day belongs in the series.
+    async fn earliest_valuation_date(&self) -> AppResult<Option<String>>;
     async fn active_accounts(&self) -> AppResult<Vec<ActiveAccount>>;
     async fn account(&self, id: i64) -> AppResult<AssetAccount>;
     async fn secured_liabilities(&self, asset_id: i64) -> AppResult<Vec<SecuredLiabilityAccount>>;
@@ -814,6 +845,14 @@ pub trait ForecastRepo: Send + Sync {
 /// vocabulary, so there's no plain port type to maintain here.
 #[async_trait]
 pub trait SnapshotRepo: Send + Sync {
-    async fn export(&self) -> AppResult<serde_json::Value>;
+    /// The whole snapshot as **already-serialised JSON bytes**, to be sent as the response body
+    /// verbatim.
+    ///
+    /// Not a `serde_json::Value`, deliberately: the blob is a full copy of the database, and
+    /// building the intermediate tree meant holding roughly three copies of it at once (the
+    /// rows, the `Value`, the response body) for every concurrent request. The bytes let the
+    /// implementation write each table out and drop it — see `sure_dal::snapshot::export_bytes`,
+    /// which also states the residual peak.
+    async fn export(&self) -> AppResult<Vec<u8>>;
     async fn import(&self, snapshot: serde_json::Value) -> AppResult<serde_json::Value>;
 }

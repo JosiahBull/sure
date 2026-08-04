@@ -103,23 +103,101 @@ pub struct RoutePolicy {
     pub deadline: Deadline,
 }
 
-/// Route templates whose handlers can legitimately run for minutes.
-const LONG_ROUTES: &[&str] = &[
-    "/api/providers/{id}/sync",
-    "/api/provider-kinds/{kind}/accounts",
-    "/api/accounts/{id}/brokerage/import",
-    "/api/accounts/{id}/brokerage/backfill",
-    "/api/accounts/{id}/brokerage/revalue",
-    // Seven years of an everyday account is a few thousand rows, each its own insert.
-    "/api/accounts/{id}/asb/import",
-    "/api/asb/import",
-    "/api/config/import",
-    "/api/rules/run",
-    "/api/rules/{id}/run",
-    "/api/rules/runs/{run_id}/undo",
-    "/api/crons/run",
-    "/api/crons/{id}/run",
+/// One route template *and verb* whose handler can legitimately run for minutes.
+///
+/// The verb is not decoration. Several of these templates carry a cheap method alongside the
+/// expensive one, because axum mounts them on a single `MethodRouter`: the clearest case is
+/// `/api/accounts/{id}/asb/import`, where `POST` unzips a bank export and inserts a few
+/// thousand rows but `DELETE` (undo) is a single `DELETE ... WHERE provider = ?` plus an
+/// existence check. Keying the deadline on the path alone handed the undo the 300s long
+/// deadline too, so a wedged one-statement request held an in-flight slot for five minutes
+/// instead of being cut loose at the ordinary timeout — exactly the mismatch the raised body
+/// limit already avoids by being layered onto `post(import)` and not onto the route.
+///
+/// Each entry's method is the one in `crate::routes`' `.route(..)` call for that template; a
+/// method not listed here gets [`Deadline::Normal`], which is the safe direction to fail.
+struct LongRoute {
+    method: Method,
+    template: &'static str,
+}
+
+/// Route templates whose handlers can legitimately run for minutes, per verb.
+const LONG_ROUTES: &[LongRoute] = &[
+    // A live round trip to the bank per linked account, then a write per transaction.
+    LongRoute {
+        method: Method::POST,
+        template: "/api/providers/{id}/sync",
+    },
+    // The one long *read*: `discover_accounts` calls the upstream provider inline to
+    // enumerate what is linkable, so it waits on someone else's API, not on SQLite.
+    LongRoute {
+        method: Method::GET,
+        template: "/api/provider-kinds/{kind}/accounts",
+    },
+    LongRoute {
+        method: Method::POST,
+        template: "/api/accounts/{id}/brokerage/import",
+    },
+    LongRoute {
+        method: Method::POST,
+        template: "/api/accounts/{id}/brokerage/backfill",
+    },
+    LongRoute {
+        method: Method::POST,
+        template: "/api/accounts/{id}/brokerage/revalue",
+    },
+    // Seven years of an everyday account is a few thousand rows, each its own insert. The
+    // `DELETE` on this same template is deliberately *not* listed: see `LongRoute`.
+    LongRoute {
+        method: Method::POST,
+        template: "/api/accounts/{id}/asb/import",
+    },
+    LongRoute {
+        method: Method::POST,
+        template: "/api/asb/import",
+    },
+    LongRoute {
+        method: Method::POST,
+        template: "/api/config/import",
+    },
+    LongRoute {
+        method: Method::POST,
+        template: "/api/rules/run",
+    },
+    LongRoute {
+        method: Method::POST,
+        template: "/api/rules/{id}/run",
+    },
+    LongRoute {
+        method: Method::POST,
+        template: "/api/rules/runs/{run_id}/undo",
+    },
+    LongRoute {
+        method: Method::POST,
+        template: "/api/crons/run",
+    },
+    LongRoute {
+        method: Method::POST,
+        template: "/api/crons/{id}/run",
+    },
 ];
+
+/// Which deadline `(method, template)` earns.
+///
+/// `HEAD` is folded onto `GET` because axum's `get(handler)` also answers `HEAD` with that
+/// same handler and merely drops the body — the expensive work still happens, so a `HEAD` on
+/// a long read must get the long deadline or it is guaranteed to time out.
+fn deadline_for(method: &Method, template: &str) -> Deadline {
+    let head = *method == Method::HEAD;
+    let long = LONG_ROUTES.iter().any(|r| {
+        r.template == template && (r.method == *method || (head && r.method == Method::GET))
+    });
+    if long {
+        Deadline::Long
+    } else {
+        Deadline::Normal
+    }
+}
 
 /// API reads that must never be stored: liveness, a live upstream call, and the full
 /// database dump.
@@ -135,10 +213,10 @@ const API_NO_STORE: &[&str] = &[
 /// `/api/accounts/{id}`), available to `Router::layer` middleware via request extensions.
 /// It is absent for the static-file fallback, where `uri_path` is used instead.
 pub fn policy_for(method: &Method, matched_path: Option<&str>, uri_path: &str) -> RoutePolicy {
-    let deadline = match matched_path {
-        Some(p) if LONG_ROUTES.contains(&p) => Deadline::Long,
-        _ => Deadline::Normal,
-    };
+    // Keyed on the verb as well as the template: a cheap method sharing a path with an
+    // expensive one keeps the ordinary deadline. No matched path means the static-file
+    // fallback, which is never long.
+    let deadline = matched_path.map_or(Deadline::Normal, |p| deadline_for(method, p));
 
     // Anything that changes state is never cacheable, whatever it returns.
     if !matches!(*method, Method::GET | Method::HEAD) {
@@ -427,6 +505,101 @@ mod tests {
         );
         assert_eq!(
             policy_for(&Method::GET, Some("/api/accounts"), "/api/accounts").deadline,
+            Deadline::Normal
+        );
+    }
+
+    /// Every entry must still resolve for the verb it was written for — a typo in a template
+    /// (or a route renamed without updating this table) silently downgrades a minutes-long
+    /// handler to the ordinary deadline, which is a timeout nobody can explain.
+    #[test]
+    fn every_long_route_resolves_for_its_own_method() {
+        for entry in LONG_ROUTES {
+            assert_eq!(
+                policy_for(&entry.method, Some(entry.template), entry.template).deadline,
+                Deadline::Long,
+                "{} {}",
+                entry.method,
+                entry.template
+            );
+        }
+    }
+
+    /// The W-36 remainder: the undo shares `/api/accounts/{id}/asb/import` with the upload,
+    /// and is one statement. It must not inherit the upload's five-minute allowance.
+    #[test]
+    fn asb_undo_keeps_the_normal_deadline_while_its_upload_stays_long() {
+        let template = "/api/accounts/{id}/asb/import";
+        assert_eq!(
+            policy_for(&Method::POST, Some(template), "/api/accounts/4/asb/import").deadline,
+            Deadline::Long
+        );
+        assert_eq!(
+            policy_for(
+                &Method::DELETE,
+                Some(template),
+                "/api/accounts/4/asb/import"
+            )
+            .deadline,
+            Deadline::Normal
+        );
+    }
+
+    /// A verb the table doesn't name gets the ordinary deadline even on a long path — the
+    /// safe direction. `GET` on a POST-only import template is what a stray browser fetch or
+    /// a probe looks like, and it has no business holding a slot for minutes.
+    #[test]
+    fn other_methods_on_a_long_path_are_normal() {
+        for method in [Method::GET, Method::PUT, Method::PATCH, Method::DELETE] {
+            assert_eq!(
+                policy_for(&method, Some("/api/config/import"), "/api/config/import").deadline,
+                Deadline::Normal,
+                "{method}"
+            );
+        }
+        // ...and, mirrored: the one long read is long for GET but not for a mutation.
+        let discover = "/api/provider-kinds/{kind}/accounts";
+        assert_eq!(
+            policy_for(
+                &Method::GET,
+                Some(discover),
+                "/api/provider-kinds/akahu/accounts"
+            )
+            .deadline,
+            Deadline::Long
+        );
+        assert_eq!(
+            policy_for(
+                &Method::POST,
+                Some(discover),
+                "/api/provider-kinds/akahu/accounts"
+            )
+            .deadline,
+            Deadline::Normal
+        );
+    }
+
+    /// axum answers `HEAD` with the `GET` handler, so the work — and therefore the deadline —
+    /// has to be the same.
+    #[test]
+    fn head_inherits_the_get_deadline() {
+        let discover = "/api/provider-kinds/{kind}/accounts";
+        assert_eq!(
+            policy_for(
+                &Method::HEAD,
+                Some(discover),
+                "/api/provider-kinds/akahu/accounts"
+            )
+            .deadline,
+            Deadline::Long
+        );
+    }
+
+    /// The static-file fallback has no matched path and is never long.
+    #[test]
+    fn the_static_fallback_is_never_long() {
+        assert_eq!(
+            policy_for(&Method::GET, None, "/api/config/import").deadline,
             Deadline::Normal
         );
     }

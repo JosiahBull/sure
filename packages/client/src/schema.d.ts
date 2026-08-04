@@ -1557,6 +1557,15 @@ export interface paths {
                         "application/json": unknown;
                     };
                 };
+                /** @description An export is already in progress */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
             };
         };
         put?: never;
@@ -3300,6 +3309,9 @@ export interface paths {
         /**
          * Sync a provider: fetch upstream transactions, import new ones (dedupe on
          *     external id), and record the result.
+         * @description Single-flight per provider: while one sync of this provider is running — whether started
+         *     here, by the initial sync after linking, or by the 6-hourly poll — a second request gets a
+         *     409 instead of a duplicate run.
          */
         post: {
             parameters: {
@@ -3325,6 +3337,14 @@ export interface paths {
                     };
                 };
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
                     headers: {
                         [name: string]: unknown;
                     };

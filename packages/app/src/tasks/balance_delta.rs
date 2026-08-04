@@ -45,7 +45,8 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use serde_json::Value;
 use sure_core::{AccountClass, AppResult, Provider, Valuation, ValuationSource};
-use sure_scheduler::ScheduledTask;
+use sure_scheduler::{ScheduledTask, TaskRun};
+use tokio_util::sync::CancellationToken;
 
 use crate::ports::{AccountRepo, Clock, ImportRow, ProviderRepo, ValuationRepo};
 use crate::reports::parse_date;
@@ -125,9 +126,16 @@ impl ScheduledTask for BalanceDeltaTask {
         POLL_INTERVAL
     }
 
-    async fn run(&self) -> anyhow::Result<()> {
+    async fn run(&self, cancel: &CancellationToken) -> anyhow::Result<TaskRun> {
         let today = self.clock.today();
         for provider in self.providers.list().await? {
+            // Between providers, never inside `derive_for`'s import: the derived rows carry
+            // deterministic ids, so a provider skipped on the way out is derived in full on the
+            // next run and one already derived is absorbed by the unique index.
+            if cancel.is_cancelled() {
+                tracing::debug!("balance-delta derivation stopped early for shutdown");
+                return Ok(TaskRun::Interrupted);
+            }
             if !provider.enabled || !is_opted_in(&provider.config) {
                 continue;
             }
@@ -141,7 +149,7 @@ impl ScheduledTask for BalanceDeltaTask {
                 );
             }
         }
-        Ok(())
+        Ok(TaskRun::Completed)
     }
 }
 

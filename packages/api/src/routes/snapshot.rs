@@ -3,29 +3,72 @@
 //! these handlers only marshal the blob through it.
 
 use axum::extract::{DefaultBodyLimit, State};
+use axum::http::header;
+use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use serde_json::Value;
+use tokio::sync::Semaphore;
 
 use crate::config::Limits;
 use crate::error::AppResult;
+use crate::limits::overloaded_response;
 use crate::state::AppState;
 
 // OTEL span names for this module's handlers.
 const SNAPSHOT_EXPORT: &str = "snapshot.export";
 const SNAPSHOT_IMPORT: &str = "snapshot.import";
 
+/// One export at a time, process-wide.
+///
+/// The export is the single largest allocation the API can be asked to make — the whole
+/// database, serialised — and it takes no parameters, so the global in-flight ceiling
+/// (`crate::limits::InFlight`, dozens of slots) is not a bound on it at all: a handful of
+/// concurrent `GET /api/config/export`s multiply that blob by the number of them. One slot makes
+/// the peak the size of *one* snapshot no matter who asks.
+///
+/// It sheds rather than queues, exactly like [`crate::limits::shed_when_saturated`]: a fast 503
+/// with `Retry-After` lets the client come back, whereas queueing turns a burst into a pile of
+/// requests that each still cost a full copy when their turn comes.
+static EXPORT_SLOT: Semaphore = Semaphore::const_new(1);
+
 /// Export the entire configuration and data as a JSON snapshot.
+// Kept out of the doc comment on purpose: utoipa publishes that as this endpoint's public
+// OpenAPI description, and an internal module path tells an API consumer nothing.
+//
+// The body is written by `sure_dal::snapshot::export_bytes` and handed to the response as those
+// exact bytes rather than going through `Json<Value>`: parsing them back into a `Value` here
+// only to re-serialise them would restore the extra full copy of the database that was the
+// point of the change. The wire shape is unchanged — one JSON object, `application/json`. It is
+// still one buffered body, not a streamed one; `export_bytes` says what a true streaming export
+// would cost.
 #[utoipa::path(get, path = "/api/config/export", tag = "config",
-    responses((status = 200, description = "A full snapshot blob", body = serde_json::Value)))]
+    responses((status = 200, description = "A full snapshot blob", body = serde_json::Value),
+              // Body declared, because `overloaded_response` answers in the standard
+              // `{ error: { code, message } }` envelope like every other error here — a client
+              // that expects nothing on a 503 would fail to read the `overloaded` code.
+              (status = 503, description = "An export is already in progress",
+               body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = SNAPSHOT_EXPORT,
     level = "debug",
     skip_all,
-    ret(level = tracing::Level::DEBUG),
+    // No `ret`: this handler's return value *is* the database. Logging it at DEBUG would both
+    // copy it again and write the household's finances into the log.
     err(level = tracing::Level::WARN),
 )]
-pub async fn export(State(st): State<AppState>) -> AppResult<Json<Value>> {
-    Ok(Json(st.snapshot.export().await?))
+pub async fn export(State(st): State<AppState>) -> AppResult<Response> {
+    let Ok(_slot) = EXPORT_SLOT.try_acquire() else {
+        tracing::warn!("shedding snapshot export: one is already in progress");
+        return Ok(overloaded_response());
+    };
+    let body = st.snapshot.export().await?;
+    Ok((
+        [(header::CONTENT_TYPE, "application/json")],
+        // `Bytes::from` takes ownership of the `Vec`, so handing the body over is a move and
+        // not the fourth copy of the database.
+        axum::body::Bytes::from(body),
+    )
+        .into_response())
 }
 
 /// Replace the entire database with the given snapshot. Destructive.

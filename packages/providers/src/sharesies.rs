@@ -598,14 +598,24 @@ fn millis_to_rfc3339(millis: i64) -> anyhow::Result<String> {
         .to_rfc3339())
 }
 
+/// Parse a decimal dollar amount out of an export cell into minor units (cents).
+///
+/// Both halves have to be checked, and for different reasons. `Decimal`'s `Mul` **panics** on
+/// overflow (`panic!("Multiplication overflowed")`; `checked_mul` is the non-panicking form),
+/// and `Decimal::MAX` — `79228162514264337593543950335` — parses out of a cell perfectly
+/// happily before panicking on the scale-up, so the plain `d * Decimal::from(100)` turned one
+/// hostile or corrupt cell in a user-supplied file into an unwind. That is caught by
+/// `CatchPanicLayer` rather than killing the process, but it surfaces as an opaque 500 where
+/// the caller deserves a 422 naming the cell. `to_i64` then catches the amounts that scale
+/// without overflowing `Decimal` but still don't fit an `i64` of cents. Both land on the same
+/// "out of range" error the caller already reports per row.
 fn decimal_to_minor(s: &str) -> anyhow::Result<i64> {
     let d: Decimal = s
         .trim()
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid amount '{s}'"))?;
-    (d * Decimal::from(100))
-        .round()
-        .to_i64()
+    d.checked_mul(Decimal::from(100))
+        .and_then(|scaled| scaled.round().to_i64())
         .ok_or_else(|| anyhow::anyhow!("amount '{s}' out of range"))
 }
 
@@ -836,5 +846,39 @@ mod tests {
         assert_eq!(export.wallet_transactions.len(), 1);
         assert!(export.holdings.is_empty());
         assert!(export.warnings.is_empty());
+    }
+
+    #[test]
+    fn decimal_to_minor_converts_ordinary_amounts() {
+        assert_eq!(decimal_to_minor("10.00").unwrap(), 1_000);
+        assert_eq!(decimal_to_minor(" 1234.56 ").unwrap(), 123_456);
+        assert_eq!(decimal_to_minor("-7.5").unwrap(), -750);
+        assert_eq!(decimal_to_minor("0").unwrap(), 0);
+        // Sub-cent precision rounds rather than truncating or erroring.
+        assert_eq!(decimal_to_minor("0.006").unwrap(), 1);
+        assert_eq!(decimal_to_minor("0.004").unwrap(), 0);
+    }
+
+    /// `Decimal::MAX` parses out of a cell fine and used to **panic** on `d * Decimal::from(100)`
+    /// (`Multiplication overflowed`), turning a hostile export into a 500. It must be the same
+    /// per-row error every other bad cell produces.
+    #[test]
+    fn a_decimal_max_cell_is_an_error_not_a_panic() {
+        for cell in [
+            "79228162514264337593543950335",
+            "-79228162514264337593543950335",
+            // Scales without overflowing `Decimal`, but no longer fits an i64 of cents.
+            "92233720368547758.08",
+        ] {
+            let err = decimal_to_minor(cell).expect_err(cell).to_string();
+            assert!(err.contains("out of range"), "{cell}: {err}");
+            assert!(err.contains(cell), "{cell}: {err}");
+        }
+    }
+
+    #[test]
+    fn decimal_to_minor_rejects_a_non_numeric_cell() {
+        let err = decimal_to_minor("not money").unwrap_err().to_string();
+        assert!(err.contains("invalid amount"), "{err}");
     }
 }
