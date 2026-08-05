@@ -1,19 +1,46 @@
 <script lang="ts">
+  // The forecast page is a shell: the chart on top, always mounted, and tabs under it for the
+  // things you edit.
+  //
+  // The chart deliberately does NOT live in a tab. The tabs are what you change; the chart is
+  // what you are changing it toward — turn an assumption up and watch the band above it widen,
+  // with no tab switch, no SVG remount and no refetch of the net-worth history.
+  //
+  // All loading lives here and the tabs get props, so the chart and the editors cannot disagree
+  // about what they are showing.
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, type Schemas } from "../lib/api";
   import ForecastChart from "../lib/charts/ForecastChart.svelte";
   import FxNotice from "../lib/FxNotice.svelte";
-  import {
-    HORIZONS,
-    checkpointsFor,
-    historyMonthsFor,
-    horizonLabel,
-  } from "../lib/charts/forecastScale";
+  import ProjectionTab from "./forecast/ProjectionTab.svelte";
+  import AssumptionsTab from "./forecast/AssumptionsTab.svelte";
+  import { queryParams, setQueryParam } from "../lib/router.svelte";
+  import { HORIZONS, checkpointsFor, historyMonthsFor } from "../lib/charts/forecastScale";
 
-  type ResolvedAssumption = Schemas["ResolvedAssumption"];
   type ForecastEvent = Schemas["ForecastEvent"];
 
-  let horizon = $state(12);
+  const TABS = [
+    { key: "projection", label: "Projection" },
+    { key: "assumptions", label: "Assumptions" },
+  ] as const;
+  type TabKey = (typeof TABS)[number]["key"];
+
+  // Tab and horizon live in the hash *query*, not the path. `App.svelte` keys the active page on
+  // `router.path.split("?")[0]` and remounts with `{#key activePath}`, so a query param changes
+  // state without tearing the page down and refetching — where `#/forecast/assumptions` would
+  // have remounted on every click. It also makes a bookmark, a shared link and a Playwright
+  // baseline all reproducible.
+  const tab = $derived.by<TabKey>(() => {
+    const t = queryParams().get("tab");
+    // An unrecognised value is the default view rather than an error: a stale bookmark or a
+    // renamed tab should land somewhere useful.
+    return (TABS.find((x) => x.key === t)?.key ?? "projection") as TabKey;
+  });
+  const horizon = $derived.by(() => {
+    const h = Number(queryParams().get("h"));
+    return HORIZONS.some((x) => x.months === h) ? h : 12;
+  });
+
   let history = $state<{ x: string; y: number }[]>([]);
   let result = $state<Schemas["ForecastResult"] | null>(null);
   let events = $state<ForecastEvent[]>([]);
@@ -52,7 +79,7 @@
   }
   onMount(load);
   $effect(() => {
-    horizon; // re-run whenever the horizon selector changes
+    horizon; // re-run whenever the horizon changes — but not when the tab does
     load();
   });
 
@@ -60,148 +87,18 @@
   // Derived from the horizon and passed to the chart as well, so the tiles and the marks on the
   // chart cannot disagree about which months they describe.
   const checkpoints = $derived(checkpointsFor(horizon));
-  const checkpointMonths = $derived(
-    checkpoints
-      .filter((m) => m <= (result?.months.length ?? 0))
-      .map((m) => ({ months: m, month: result!.months[m - 1] }))
-  );
-
-  // Only targets the simulation actually resolved an assumption for — excludes cash
-  // (pooled) and everyday transaction accounts, so the "add event" form can't be pointed
-  // at a target that would silently have no effect.
-  const targets = $derived(
-    (result?.assumptions ?? []).map((a) => ({
-      key: `${a.target_type}:${a.target_id}`,
-      target_type: a.target_type,
-      target_id: a.target_id,
-      label: a.label,
-    }))
-  );
-  const targetLabels = $derived(new Map(targets.map((t) => [t.key, t.label])));
-  function targetLabel(e: ForecastEvent): string {
-    return targetLabels.get(`${e.target_type}:${e.target_id}`) ?? `#${e.target_id}`;
-  }
-
-  function pct(bps: number): string {
-    return `${bps >= 0 ? "+" : ""}${(bps / 100).toFixed(1)}%`;
-  }
-  function sourceLabel(s: Schemas["AssumptionSource"]): string {
-    switch (s) {
-      case "override":
-        return "override";
-      case "cron":
-        return "from scheduled adjustment";
-      case "derived":
-        return "from history";
-      case "deterministic":
-        return "amortisation schedule";
-      case "insufficient_history":
-        return "not enough history";
-    }
-  }
-
-  /**
-   * "amortisation schedule" alone says nothing about *which* schedule. Spell out the
-   * roll-off, because the refix rate — and how unsure of it we are — is what the band
-   * around a mortgage is actually made of.
-   */
-  function scheduleLabel(a: ResolvedAssumption): string {
-    const s = a.schedule;
-    if (!s) return sourceLabel(a.source);
-    if (s.refix_in_months == null || s.refix_rate_bps == null) {
-      return "amortisation schedule · rate held to term";
-    }
-    const when = s.refix_in_months === 1 ? "next month" : `in ${s.refix_in_months} months`;
-    const rate = (s.refix_rate_bps / 100).toFixed(2);
-    const sd = s.refix_rate_uncertainty_bps ?? 0;
-    const spread = sd > 0 ? ` ± ${(sd / 100).toFixed(2)}%` : "";
-    return `amortisation schedule · refixes ${when} at ${rate}%${spread}`;
-  }
-
-  // ---- assumption override editing ------------------------------------------------
-  let editingKey = $state<string | null>(null);
-  let editForm = $state({ growth: "0", volatility: "0", dividendYield: "0" });
-
-  function startEdit(a: ResolvedAssumption) {
-    editingKey = `${a.target_type}:${a.target_id}`;
-    editForm = {
-      growth: (a.annual_growth_bps / 100).toString(),
-      volatility: (a.annual_volatility_bps / 100).toString(),
-      dividendYield: ((a.dividend_yield_bps ?? 0) / 100).toString(),
-    };
-  }
-  function cancelEdit() {
-    editingKey = null;
-  }
-  async function saveEdit(a: ResolvedAssumption) {
-    const body: Schemas["SaveForecastAssumption"] = {
-      target_type: a.target_type,
-      target_id: a.target_id,
-      annual_growth_bps: Math.round(parseFloat(editForm.growth || "0") * 100),
-      annual_volatility_bps: Math.round(parseFloat(editForm.volatility || "0") * 100),
-      dividend_yield_bps:
-        a.dividend_yield_bps != null
-          ? Math.round(parseFloat(editForm.dividendYield || "0") * 100)
-          : null,
-    };
-    const { error: e } = await api.PUT("/api/forecast/assumptions", { body });
-    if (e) {
-      error = "Failed to save the override.";
-      return;
-    }
-    editingKey = null;
-    load();
-  }
-  async function clearOverride(a: ResolvedAssumption) {
-    await api.DELETE("/api/forecast/assumptions/{target_type}/{target_id}", {
-      params: { path: { target_type: a.target_type, target_id: a.target_id } },
-    });
-    load();
-  }
-
-  // ---- known future events ----------------------------------------------------------
-  let ef = $state({
-    targetKey: "",
-    kind: "step_change" as Schemas["ForecastEventKind"],
-    effective_date: new Date().toISOString().slice(0, 10),
-    amount: "",
-    label: "",
-  });
-
-  async function addEvent() {
-    if (!ef.targetKey || !ef.label.trim() || !ef.amount) return;
-    const [target_type, target_id] = ef.targetKey.split(":") as [
-      Schemas["ForecastTargetType"],
-      string,
-    ];
-    const body: Schemas["SaveForecastEvent"] = {
-      target_type,
-      target_id: Number(target_id),
-      kind: ef.kind,
-      effective_date: ef.effective_date,
-      amount_minor: Math.round(parseFloat(ef.amount) * 100),
-      label: ef.label.trim(),
-    };
-    const { error: e } = await api.POST("/api/forecast/events", { body });
-    if (e) {
-      error = "Failed to add the event.";
-      return;
-    }
-    ef.label = "";
-    ef.amount = "";
-    load();
-  }
-  async function deleteEvent(id: number) {
-    await api.DELETE("/api/forecast/events/{id}", { params: { path: { id } } });
-    load();
-  }
 </script>
 
 <div class="row spread" style="margin-bottom:14px">
   <h1 style="font-size:20px;margin:0">Forecast</h1>
   <div class="row" style="gap:10px">
-    <select class="select" style="width:auto" bind:value={horizon}>
-      {#each HORIZONS as h}<option value={h.months}>{h.label}</option>{/each}
+    <select
+      class="select"
+      style="width:auto"
+      value={horizon}
+      onchange={(e) => setQueryParam("h", (e.currentTarget as HTMLSelectElement).value)}
+    >
+      {#each HORIZONS as h (h.months)}<option value={h.months}>{h.label}</option>{/each}
     </select>
     <button class="btn btn-sm" onclick={load} title="Re-run the simulation">↻ Re-run</button>
   </div>
@@ -209,262 +106,103 @@
 
 {#if error}<div class="error-banner" style="margin-bottom:16px">{error}</div>{/if}
 
-<div class="grid cards">
-  <section class="card">
-    <div class="card-title">
-      <h2>Net worth: history &amp; projection</h2>
-      <span class="muted small">
-        shaded band = P10–P90 across {result ? "simulated paths" : "…"}
-      </span>
+<section class="card" style="margin-bottom:16px">
+  <div class="card-title">
+    <h2>Net worth: history &amp; projection</h2>
+    <span class="muted small">
+      shaded band = P10–P90 across {result ? `${result.simulations.toLocaleString()} paths` : "…"}
+    </span>
+  </div>
+  {#if hoverPoint}
+    <div class="stat" style="margin-bottom:10px">
+      <div class="value tabular">{formatMoney(hoverPoint.median, currency)}</div>
+      <div class="label">
+        {formatDate(hoverPoint.as_of)}
+        {#if hoverPoint.p10 != null && hoverPoint.p90 != null}
+          · range {formatMoney(hoverPoint.p10, currency)} – {formatMoney(
+            hoverPoint.p90,
+            currency
+          )}
+        {/if}
+      </div>
     </div>
-    {#if hoverPoint}
-      <div class="stat" style="margin-bottom:10px">
-        <div class="value tabular">{formatMoney(hoverPoint.median, currency)}</div>
-        <div class="label">
-          {formatDate(hoverPoint.as_of)}
-          {#if hoverPoint.p10 != null && hoverPoint.p90 != null}
-            · range {formatMoney(hoverPoint.p10, currency)} – {formatMoney(hoverPoint.p90, currency)}
-          {/if}
-        </div>
-      </div>
-    {/if}
-    <ForecastChart
-      {history}
-      months={result?.months ?? []}
-      {currency}
-      {checkpoints}
-      onhover={(p) => (hoverPoint = p)}
-    />
-    <!-- An account whose currency has no rate is left out of the simulation entirely rather
-         than projected from a parity starting balance, which would be wrong in every month of
-         every path. Both the history line and the bands are then partial. -->
-    <FxNotice
-      unconverted={result?.unconverted ?? []}
-      ratesAsOf={result?.rates_as_of}
-      {currency}
-    />
-  </section>
-
-  {#if checkpointMonths.length > 0}
-    <section class="card">
-      <h2>Checkpoints</h2>
-      <div class="checkpoints">
-        {#each checkpointMonths as c (c.months)}
-          <div class="checkpoint">
-            <div class="cp-label">+{horizonLabel(c.months)}</div>
-            <div class="cp-value tabular">{formatMoney(c.month.net_worth.median_minor, currency)}</div>
-            <div class="cp-range tabular small faint">
-              {formatMoney(c.month.net_worth.p10_minor, currency)} – {formatMoney(
-                c.month.net_worth.p90_minor,
-                currency
-              )}
-            </div>
-          </div>
-        {/each}
-      </div>
-    </section>
   {/if}
+  <ForecastChart
+    {history}
+    months={result?.months ?? []}
+    {currency}
+    {checkpoints}
+    onhover={(p) => (hoverPoint = p)}
+  />
+  <!-- An account whose currency has no rate is left out of the simulation entirely rather
+       than projected from a parity starting balance, which would be wrong in every month of
+       every path. Both the history line and the bands are then partial. -->
+  <FxNotice unconverted={result?.unconverted ?? []} ratesAsOf={result?.rates_as_of} {currency} />
+</section>
 
-  <section class="card">
-    <div class="card-title">
-      <h2>Assumptions</h2>
-      <span class="muted small">tune any of these — clear an override to go back to the derived default</span>
-    </div>
-    {#if !result?.assumptions.length}
-      <div class="empty">Nothing to forecast yet — add accounts, transactions and categorise your spending.</div>
-    {:else}
-      <div class="assumption-list">
-        {#each result.assumptions as a (a.target_type + ":" + a.target_id)}
-          {@const key = a.target_type + ":" + a.target_id}
-          <div class="assumption-row">
-            <div class="a-main row spread">
-              <span class="row" style="gap:8px;min-width:0">
-                <span class="badge target-badge">{a.target_type}</span>
-                <span class="ell" style="font-weight:560">{a.label}</span>
-              </span>
-              {#if a.schedule}
-                {@const s = a.schedule}
-                <div class="row" style="gap:14px">
-                  <span class="tabular small">
-                    {formatMoney(s.monthly_payment_minor, a.currency_code ?? currency)}/mo
-                  </span>
-                  <span class="tabular small faint">{(s.current_rate_bps / 100).toFixed(2)}%</span>
-                  <span class="tabular small faint">{s.remaining_term_months} mo left</span>
-                </div>
-              {:else if a.source !== "deterministic"}
-                <div class="row" style="gap:14px">
-                  <span class="tabular small">growth {pct(a.annual_growth_bps)}/yr</span>
-                  <span class="tabular small faint">± {(a.annual_volatility_bps / 100).toFixed(1)}%/yr</span>
-                  {#if a.dividend_yield_bps != null}
-                    <span class="tabular small faint">yield {(a.dividend_yield_bps / 100).toFixed(1)}%</span>
-                  {/if}
-                </div>
-              {/if}
-            </div>
-            <div class="a-meta row spread">
-              <span class="small faint">{scheduleLabel(a)}</span>
-              {#if a.source !== "deterministic"}
-                <div class="row" style="gap:6px">
-                  {#if a.source === "override"}
-                    <button class="btn btn-sm" onclick={() => clearOverride(a)}>Clear override</button>
-                  {/if}
-                  <button class="btn btn-sm" onclick={() => (editingKey === key ? cancelEdit() : startEdit(a))}>
-                    {editingKey === key ? "Cancel" : "Override"}
-                  </button>
-                </div>
-              {/if}
-            </div>
-            {#if editingKey === key}
-              <div class="edit-form">
-                <label class="field">
-                  <span class="small faint">Growth %/yr</span>
-                  <input class="input tabular" bind:value={editForm.growth} />
-                </label>
-                <label class="field">
-                  <span class="small faint">Volatility %/yr</span>
-                  <input class="input tabular" bind:value={editForm.volatility} />
-                </label>
-                {#if a.dividend_yield_bps != null}
-                  <label class="field">
-                    <span class="small faint">Dividend yield %</span>
-                    <input class="input tabular" bind:value={editForm.dividendYield} />
-                  </label>
-                {/if}
-                <button class="btn btn-primary btn-sm" onclick={() => saveEdit(a)}>Save</button>
-              </div>
-            {/if}
-          </div>
-        {/each}
-      </div>
-    {/if}
-  </section>
-
-  <section class="card">
-    <div class="card-title">
-      <h2>Known future changes</h2>
-      <span class="muted small">a promotion, a planned bonus, a fixed appreciation — applied exactly, not estimated</span>
-    </div>
-    <div class="event-form">
-      <select class="select" bind:value={ef.targetKey}>
-        <option value="" disabled>Target…</option>
-        {#each targets as t (t.key)}<option value={t.key}>{t.label}</option>{/each}
-      </select>
-      <select class="select" bind:value={ef.kind}>
-        <option value="step_change">New recurring baseline from date</option>
-        <option value="one_off_amount">One-off amount on date</option>
-      </select>
-      <input class="input" type="date" bind:value={ef.effective_date} />
-      <input class="input tabular" placeholder="Amount" bind:value={ef.amount} />
-      <input class="input" placeholder="Label" bind:value={ef.label} />
-      <button class="btn btn-primary" onclick={addEvent}>Add</button>
-    </div>
-    {#if result?.assumptions.length === 0}
-      <div class="small faint" style="margin-top:8px">Add an account or category first.</div>
-    {/if}
-    <div class="event-list">
-      {#each events as e (e.id)}
-        <div class="line row spread">
-          <span>
-            <span class="badge target-badge">{e.kind === "step_change" ? "step change" : "one-off"}</span>
-            {e.label} on {targetLabel(e)}
-            <span class="faint small">from {formatDate(e.effective_date)}</span>
-          </span>
-          <div class="row" style="gap:8px">
-            <span class="tabular small">{formatMoney(e.amount_minor, currency)}</span>
-            <button class="btn btn-sm btn-danger" onclick={() => deleteEvent(e.id)}>✕</button>
-          </div>
-        </div>
-      {/each}
-      {#if events.length === 0}<div class="small faint">None yet.</div>{/if}
-    </div>
-  </section>
+<div class="tabs-nav" role="tablist">
+  {#each TABS as t (t.key)}
+    <button
+      class="tab-btn"
+      class:active={tab === t.key}
+      role="tab"
+      aria-selected={tab === t.key}
+      onclick={() => setQueryParam("tab", t.key)}>{t.label}</button
+    >
+  {/each}
 </div>
+
+{#if tab === "projection"}
+  <ProjectionTab {result} {checkpoints} {currency} />
+{:else if tab === "assumptions"}
+  <AssumptionsTab
+    {result}
+    {events}
+    {currency}
+    onchanged={load}
+    onerror={(m) => (error = m)}
+  />
+{/if}
 
 {#if loading && !result}
   <div class="row" style="justify-content:center;padding:40px"><span class="spinner"></span></div>
 {/if}
 
 <style>
-  .cards {
-    gap: 16px;
-  }
-  .checkpoints {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 14px;
-  }
-  .checkpoint {
-    padding: 10px 12px;
+  /* Lifted from Transactions.svelte rather than promoted to app.css: two copies is not yet a
+     pattern, and the repo's precedent (.chip-row, .swatches, .confirm) is that page-local styles
+     stay page-local until a third caller turns up. */
+  .tabs-nav {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    background: var(--surface-2);
     border: 1px solid var(--border);
-    border-radius: var(--r-sm);
-    background: var(--surface-2);
+    border-radius: var(--r);
+    margin-bottom: 16px;
   }
-  .cp-label {
-    font-size: 11px;
-    font-weight: 650;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-faint);
-    margin-bottom: 4px;
+  .tab-btn {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 560;
+    padding: 5px 12px;
+    border-radius: calc(var(--r) - 4px);
+    cursor: pointer;
   }
-  .cp-value {
-    font-size: 16px;
-    font-weight: 640;
+  .tab-btn:hover {
+    color: var(--text);
   }
-  .cp-range {
-    margin-top: 2px;
+  .tab-btn.active {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow);
   }
-  .assumption-list {
-    display: flex;
-    flex-direction: column;
-  }
-  .assumption-row {
-    padding: 10px 0;
-    border-top: 1px solid var(--border);
-  }
-  .assumption-row:first-child {
-    border-top: none;
-  }
-  .a-meta {
-    margin-top: 2px;
-  }
-  .target-badge {
-    text-transform: capitalize;
-  }
-  .ell {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .edit-form {
-    display: flex;
-    gap: 10px;
-    align-items: flex-end;
-    flex-wrap: wrap;
-    margin-top: 8px;
-    padding: 10px;
-    background: var(--surface-2);
-    border-radius: var(--r-sm);
-  }
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-  .field .input {
-    width: 100px;
-  }
-  .event-form {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 10px;
-    margin-bottom: 12px;
-  }
-  .line {
-    padding: 10px 0;
-    border-top: 1px solid var(--border);
-  }
-  .line:first-of-type {
-    border-top: none;
+  .tab-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 </style>
