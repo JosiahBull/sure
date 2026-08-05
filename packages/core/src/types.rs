@@ -352,7 +352,9 @@ pub struct MortgageMeta {
     pub notes: Option<String>,
 }
 
-/// A generic loan (personal loan, student loan, vehicle financing, ...).
+/// A table loan that amortises on a schedule (personal loan, vehicle financing, a private
+/// or overseas student loan with real terms, ...). An income-contingent student loan is
+/// [`StudentLoanMeta`] instead — see that type for why the two cannot share this one.
 #[derive(Serialize, Deserialize, ToSchema, Clone, Debug, Default, PartialEq, Eq)]
 pub struct LoanMeta {
     /// Finer-grained classification (e.g. `mortgage`, `student`, `auto`); the curated
@@ -397,6 +399,42 @@ pub struct LoanMeta {
     /// How often `repayment_minor` is paid. Absent means monthly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repayment_frequency: Option<RepaymentFrequency>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// An income-contingent student loan: the IR/StudyLink shape, and its own profile rather
+/// than a [`LoanMeta`] with most of the fields left blank.
+///
+/// The distinction is not tidiness. Such a loan has **no original principal** — it is drawn
+/// down over years of study in as many tranches as there were semesters (course fees,
+/// course-related costs, living costs; see `sure_providers::myir`), so the balance climbs
+/// for years before it ever starts falling, and no single figure is "the amount borrowed".
+/// It has no term and no repayment schedule either: it is repaid as a percentage of income
+/// through PAYE until it is gone, which is a function of a salary this app does not model,
+/// not of a table. Asking for those numbers gets placeholders, and every figure derived
+/// from a placeholder looks exactly as trustworthy as one derived from an answer — a
+/// paid-down percentage against an invented principal, or worse, `sure_app::forecast`
+/// projecting a fabricated amortisation line over the real balance. So the fields do not
+/// exist here, and the forecast falls back to fitting the balance's own trend the way it
+/// does for any other liability it has no schedule for.
+///
+/// A student loan that genuinely *does* amortise — a private or overseas one with a
+/// principal, a rate and a term — is a `loan` account with `subtype = "student"`, which is
+/// what that subtype is for.
+#[derive(Serialize, Deserialize, ToSchema, Clone, Debug, Default, PartialEq, Eq)]
+pub struct StudentLoanMeta {
+    /// Who the loan is with (e.g. `Inland Revenue`, `StudyLink`). Loan-shaped accounts have
+    /// no account-level institution, so this stands in for one in the UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lender: Option<String>,
+    /// Annual interest rate in basis points. `0` is the ordinary answer, and a real one: an
+    /// NZ-based borrower's loan is interest-free. An overseas-based borrower's accrues
+    /// interest, which is why this is asked rather than assumed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interest_rate_bps: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -512,6 +550,7 @@ pub enum AccountMetadata {
     Property(PropertyMeta),
     Mortgage(MortgageMeta),
     Loan(LoanMeta),
+    StudentLoan(StudentLoanMeta),
     Vehicle(VehicleMeta),
     Shares(SharesMeta),
     Brokerage(BrokerageMeta),
@@ -530,6 +569,7 @@ enum Profile {
     Property,
     Mortgage,
     Loan,
+    StudentLoan,
     Vehicle,
     Shares,
     Brokerage,
@@ -545,6 +585,7 @@ impl Profile {
             Profile::Property => "property",
             Profile::Mortgage => "mortgage",
             Profile::Loan => "loan",
+            Profile::StudentLoan => "student_loan",
             Profile::Vehicle => "vehicle",
             Profile::Shares => "shares",
             Profile::Brokerage => "brokerage",
@@ -560,7 +601,8 @@ impl Profile {
             Cash | Bank | Savings | CreditCard | RevolvingCredit => Profile::Depository,
             RealEstate => Profile::Property,
             Mortgage => Profile::Mortgage,
-            Loan | StudentLoan => Profile::Loan,
+            Loan => Profile::Loan,
+            StudentLoan => Profile::StudentLoan,
             Vehicle => Profile::Vehicle,
             SharesNz | SharesUs | SharesPrivate => Profile::Shares,
             Brokerage => Profile::Brokerage,
@@ -576,6 +618,7 @@ impl Profile {
             Profile::Property => AccountMetadata::Property(PropertyMeta::default()),
             Profile::Mortgage => AccountMetadata::Mortgage(MortgageMeta::default()),
             Profile::Loan => AccountMetadata::Loan(LoanMeta::default()),
+            Profile::StudentLoan => AccountMetadata::StudentLoan(StudentLoanMeta::default()),
             Profile::Vehicle => AccountMetadata::Vehicle(VehicleMeta::default()),
             Profile::Shares => AccountMetadata::Shares(SharesMeta::default()),
             Profile::Brokerage => AccountMetadata::Brokerage(BrokerageMeta::default()),
@@ -598,6 +641,7 @@ impl AccountMetadata {
             AccountMetadata::Property(_) => Profile::Property,
             AccountMetadata::Mortgage(_) => Profile::Mortgage,
             AccountMetadata::Loan(_) => Profile::Loan,
+            AccountMetadata::StudentLoan(_) => Profile::StudentLoan,
             AccountMetadata::Vehicle(_) => Profile::Vehicle,
             AccountMetadata::Shares(_) => Profile::Shares,
             AccountMetadata::Brokerage(_) => Profile::Brokerage,
@@ -749,6 +793,10 @@ const PROFILE_REQUIRED: &[(&str, &[Required])] = &[
             Required::Text("start_date"),
         ],
     ),
+    // A table loan needs the same schedule a mortgage does, and for the same reason. These
+    // used to sit in `KIND_REQUIRED` because `student_loan` shared this profile and is
+    // exempt from all of it; now that it has its own profile, `loan` is the only kind here
+    // and the requirement belongs with the rest of them.
     (
         "loan",
         &[
@@ -756,7 +804,18 @@ const PROFILE_REQUIRED: &[(&str, &[Required])] = &[
             Required::Text("lender"),
             Required::Amount("original_amount_minor"),
             Required::Bps("interest_rate_bps"),
+            Required::Choice("rate_type"),
+            Required::Count("term_months"),
+            Required::Text("start_date"),
         ],
+    ),
+    // An income-contingent student loan has no principal, term or schedule to ask for — see
+    // [`StudentLoanMeta`], where those fields deliberately do not exist. What is left is
+    // answerable: the lender, and a rate that is `0` for an NZ-based borrower and real for
+    // an overseas-based one.
+    (
+        "student_loan",
+        &[Required::Text("lender"), Required::Bps("interest_rate_bps")],
     ),
     ("brokerage", &[Required::Text("broker")]),
     ("shares", &[Required::Text("broker")]),
@@ -777,18 +836,6 @@ const KIND_REQUIRED: &[(AccountKind, &[Required])] = &[
     (
         AccountKind::RevolvingCredit,
         &[Required::Amount("credit_limit_minor")],
-    ),
-    // A table loan amortises on a schedule, so it needs the same terms a mortgage does.
-    // These sit here rather than on the `loan` profile because `student_loan` shares that
-    // profile and is deliberately exempt: an NZ student loan carries no interest and is
-    // repaid as a percentage of income, so it has no rate, term or schedule to ask for.
-    (
-        AccountKind::Loan,
-        &[
-            Required::Choice("rate_type"),
-            Required::Count("term_months"),
-            Required::Text("start_date"),
-        ],
     ),
     // A listed holding is priced by (ticker, exchange) — see `list_shares_tickers` and the
     // stock-price poller. `shares_private` is excluded: an unlisted holding has neither.
@@ -1127,29 +1174,67 @@ mod tests {
             .any(|p| p.contains("term_months") && p.contains("greater than zero")));
     }
 
-    /// `Loan` and `StudentLoan` share the `loan` profile, and only one of them amortises:
-    /// an NZ student loan is interest-free and repaid as a percentage of income, so it has
-    /// no rate, term or schedule to ask for. This is the whole reason the requirement is
-    /// keyed on kind rather than profile.
+    /// An income-contingent student loan is asked for the two things it can answer, and
+    /// nothing else. The principal, term and schedule a table loan must supply are not
+    /// merely optional here — [`StudentLoanMeta`] has no such fields, so there is nowhere to
+    /// put the placeholder that requiring them would produce.
     #[test]
-    fn a_student_loan_is_exempt_from_the_terms_a_loan_must_have() {
-        let bare = AccountMetadata::Loan(LoanMeta {
-            subtype: Some("student".into()),
+    fn a_student_loan_asks_only_for_what_it_can_answer() {
+        let complete = AccountMetadata::StudentLoan(StudentLoanMeta {
             lender: Some("Inland Revenue".into()),
-            original_amount_minor: Some(5_000_000),
+            // Interest-free while the borrower is NZ-based: a real answer, not a placeholder,
+            // which is why `Required::Bps` accepts it.
             interest_rate_bps: Some(0),
             ..Default::default()
         });
         assert_eq!(
-            problems(&bare, AccountKind::StudentLoan),
+            problems(&complete, AccountKind::StudentLoan),
             Vec::<String>::new()
         );
 
-        let as_a_loan = problems(&bare, AccountKind::Loan);
+        let bare = AccountMetadata::StudentLoan(StudentLoanMeta::default());
+        let problems = problems(&bare, AccountKind::StudentLoan);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        for key in ["lender", "interest_rate_bps"] {
+            assert!(
+                problems.iter().any(|p| p.starts_with(key)),
+                "expected {key} in {problems:?}"
+            );
+        }
+    }
+
+    /// The kind→profile pairing that makes the above true, pinned: a student loan gets its
+    /// own profile, and the `loan` profile is a table loan's alone. A regression here would
+    /// silently put the amortisation fields back within reach of a student loan.
+    #[test]
+    fn a_student_loan_and_a_table_loan_use_different_profiles() {
+        assert_eq!(
+            AccountMetadata::profile_for(AccountKind::StudentLoan),
+            "student_loan"
+        );
+        assert_eq!(AccountMetadata::profile_for(AccountKind::Loan), "loan");
+        assert_eq!(
+            AccountMetadata::default_for(AccountKind::StudentLoan),
+            AccountMetadata::StudentLoan(StudentLoanMeta::default())
+        );
+    }
+
+    /// A table loan still needs its whole schedule, which is what moving those requirements
+    /// off `KIND_REQUIRED` and onto the `loan` profile has to preserve.
+    #[test]
+    fn a_table_loan_still_demands_its_schedule() {
+        let bare = AccountMetadata::Loan(LoanMeta {
+            subtype: Some("auto".into()),
+            lender: Some("MTF Finance".into()),
+            original_amount_minor: Some(1_500_000),
+            interest_rate_bps: Some(890),
+            ..Default::default()
+        });
+        let problems = problems(&bare, AccountKind::Loan);
         for key in ["rate_type", "term_months", "start_date"] {
             assert!(
-                as_a_loan.iter().any(|p| p.starts_with(key)),
-                "expected {key} in {as_a_loan:?}"
+                problems.iter().any(|p| p.starts_with(key)),
+                "expected {key} in {problems:?}"
             );
         }
     }
@@ -1197,10 +1282,11 @@ mod tests {
             .is_ok());
     }
 
-    /// And a student loan links (and saves) with none of it, on either path.
+    /// And a student loan links with none of it, on either path — it has no schedule for
+    /// `AMORTISING_REQUIRED` to insist on, so the linked path stays lenient for it.
     #[test]
     fn linking_a_student_loan_demands_nothing() {
-        let meta = AccountMetadata::Loan(LoanMeta::default());
+        let meta = AccountMetadata::StudentLoan(StudentLoanMeta::default());
         assert!(meta
             .validate_for(AccountKind::StudentLoan, ValidationMode::Linked)
             .is_ok());

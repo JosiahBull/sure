@@ -4772,6 +4772,9 @@ export interface components {
         }) | (components["schemas"]["LoanMeta"] & {
             /** @enum {string} */
             profile: "loan";
+        }) | (components["schemas"]["StudentLoanMeta"] & {
+            /** @enum {string} */
+            profile: "student_loan";
         }) | (components["schemas"]["VehicleMeta"] & {
             /** @enum {string} */
             profile: "vehicle";
@@ -5499,7 +5502,11 @@ export interface components {
             /** Format: int64 */
             linked_transaction_id: number;
         };
-        /** @description A generic loan (personal loan, student loan, vehicle financing, ...). */
+        /**
+         * @description A table loan that amortises on a schedule (personal loan, vehicle financing, a private
+         *     or overseas student loan with real terms, ...). An income-contingent student loan is
+         *     [`StudentLoanMeta`] instead — see that type for why the two cannot share this one.
+         */
         LoanMeta: {
             /**
              * @description Finer-grained classification (e.g. `mortgage`, `student`, `auto`); the curated
@@ -6377,6 +6384,43 @@ export interface components {
              *     balance-delta cutover.
              */
             warnings: string[];
+        };
+        /**
+         * @description An income-contingent student loan: the IR/StudyLink shape, and its own profile rather
+         *     than a [`LoanMeta`] with most of the fields left blank.
+         *
+         *     The distinction is not tidiness. Such a loan has **no original principal** — it is drawn
+         *     down over years of study in as many tranches as there were semesters (course fees,
+         *     course-related costs, living costs; see `sure_providers::myir`), so the balance climbs
+         *     for years before it ever starts falling, and no single figure is "the amount borrowed".
+         *     It has no term and no repayment schedule either: it is repaid as a percentage of income
+         *     through PAYE until it is gone, which is a function of a salary this app does not model,
+         *     not of a table. Asking for those numbers gets placeholders, and every figure derived
+         *     from a placeholder looks exactly as trustworthy as one derived from an answer — a
+         *     paid-down percentage against an invented principal, or worse, `sure_app::forecast`
+         *     projecting a fabricated amortisation line over the real balance. So the fields do not
+         *     exist here, and the forecast falls back to fitting the balance's own trend the way it
+         *     does for any other liability it has no schedule for.
+         *
+         *     A student loan that genuinely *does* amortise — a private or overseas one with a
+         *     principal, a rate and a term — is a `loan` account with `subtype = "student"`, which is
+         *     what that subtype is for.
+         */
+        StudentLoanMeta: {
+            /**
+             * @description Who the loan is with (e.g. `Inland Revenue`, `StudyLink`). Loan-shaped accounts have
+             *     no account-level institution, so this stands in for one in the UI.
+             */
+            lender?: string | null;
+            /**
+             * Format: int64
+             * @description Annual interest rate in basis points. `0` is the ordinary answer, and a real one: an
+             *     NZ-based borrower's loan is interest-free. An overseas-based borrower's accrues
+             *     interest, which is why this is asked rather than assumed.
+             */
+            interest_rate_bps?: number | null;
+            url?: string | null;
+            notes?: string | null;
         };
         /**
          * @description Whether a sync attempt succeeded. Stored as `provider_syncs.status` (plain `TEXT`).

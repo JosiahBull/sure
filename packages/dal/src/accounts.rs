@@ -714,9 +714,13 @@ pub async fn set_original_amount(
             meta.original_amount_minor = Some(original_amount_minor);
             AccountMetadata::Loan(meta)
         }
-        // No other profile has an "original amount borrowed" concept at all.
+        // No other profile has an "original amount borrowed" concept at all — `student_loan`
+        // emphatically included: an income-contingent loan is drawn down over years of study,
+        // so there is no single amount borrowed for a feed to report or for us to store. If
+        // an upstream ever does send a figure for one, dropping it here is the right answer.
         AccountMetadata::Depository(_)
         | AccountMetadata::Property(_)
+        | AccountMetadata::StudentLoan(_)
         | AccountMetadata::Vehicle(_)
         | AccountMetadata::Shares(_)
         | AccountMetadata::Brokerage(_)
@@ -766,7 +770,7 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
     use sure_core::{
         BrokerageMeta, CryptoMeta, DepositoryMeta, GenericMeta, LoanMeta, MortgageMeta,
-        PropertyMeta, RateType, SharesMeta, TaxTreatment, VehicleMeta,
+        PropertyMeta, RateType, SharesMeta, StudentLoanMeta, TaxTreatment, VehicleMeta,
     };
 
     async fn test_db() -> Db {
@@ -824,16 +828,25 @@ mod tests {
 
     fn loan_meta() -> LoanMeta {
         LoanMeta {
-            subtype: Some("student".to_string()),
-            lender: Some("StudyLink".to_string()),
+            subtype: Some("auto".to_string()),
+            lender: Some("MTF Finance".to_string()),
             original_amount_minor: Some(3_000_000),
-            interest_rate_bps: Some(0),
-            // A plain `loan` needs a schedule to be forecastable. Floating, so no
-            // roll-off terms are demanded on top — `student_loan` ignores all of this
-            // anyway (see `AccountMetadata::validate_for`).
+            interest_rate_bps: Some(890),
+            // A `loan` needs a schedule to be forecastable. Floating, so no roll-off terms
+            // are demanded on top (see `AccountMetadata::validate_for`).
             rate_type: Some(RateType::Floating),
             term_months: Some(120),
             start_date: Some("2024-01-01".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// An income-contingent student loan asks for the two things it can answer and has
+    /// nowhere to put the rest — see [`sure_core::StudentLoanMeta`].
+    fn student_loan_meta() -> StudentLoanMeta {
+        StudentLoanMeta {
+            lender: Some("Inland Revenue".to_string()),
+            interest_rate_bps: Some(0),
             ..Default::default()
         }
     }
@@ -866,7 +879,8 @@ mod tests {
             }),
             RealEstate => AccountMetadata::Property(property_meta()),
             Mortgage => AccountMetadata::Mortgage(mortgage_meta()),
-            Loan | StudentLoan => AccountMetadata::Loan(loan_meta()),
+            Loan => AccountMetadata::Loan(loan_meta()),
+            StudentLoan => AccountMetadata::StudentLoan(student_loan_meta()),
             Vehicle => AccountMetadata::Vehicle(vehicle_meta()),
             SharesNz | SharesUs | SharesPrivate => AccountMetadata::Shares(shares_meta()),
             Brokerage => AccountMetadata::Brokerage(BrokerageMeta {
@@ -1005,7 +1019,7 @@ mod tests {
     #[tokio::test]
     async fn sets_a_loans_original_amount_too() {
         let db = test_db().await;
-        let account = create(&db, valid("Student Loan", AccountKind::StudentLoan))
+        let account = create(&db, valid("Car Loan", AccountKind::Loan))
             .await
             .unwrap();
 
@@ -1018,6 +1032,118 @@ mod tests {
             panic!("expected loan metadata");
         };
         assert_eq!(meta.original_amount_minor, Some(3_500_000));
+    }
+
+    /// A student loan has no original principal — it is drawn down over years of study — so
+    /// its profile has no field for one and a feed that reports a figure anyway must not get
+    /// it stored. The whole account is asserted unchanged, since the write path here is
+    /// "read, modify, write the whole blob": a bug that reached for the wrong variant would
+    /// show up as lost metadata rather than as a new key.
+    #[tokio::test]
+    async fn original_amount_is_a_no_op_for_a_student_loan() {
+        let db = test_db().await;
+        let account = create(&db, valid("Student Loan", AccountKind::StudentLoan))
+            .await
+            .unwrap();
+
+        set_original_amount(&db, account.id, 3_500_000)
+            .await
+            .unwrap();
+
+        let updated = get(&db, account.id).await.unwrap();
+        assert_eq!(
+            updated.metadata,
+            AccountMetadata::StudentLoan(student_loan_meta())
+        );
+    }
+
+    /// The legacy row above, put through the migration that normalises it. Runs the real
+    /// migration file rather than a copy, because the thing worth checking is that *its* path
+    /// list and WHERE are right: it is the one statement in this change that touches a live
+    /// database, and a mistake in either leaves a row half-rewritten with an invented
+    /// principal still in it. Migrations only ever run on connect, hence the manual replay
+    /// here against a database that already has one of these rows in it.
+    #[tokio::test]
+    async fn migration_0019_rewrites_a_legacy_student_loan_row_once() {
+        let db = test_db().await;
+        let account = create(&db, valid("Student Loan", AccountKind::StudentLoan))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE accounts SET metadata = ? WHERE id = ?")
+            .bind(LEGACY_STUDENT_LOAN_METADATA)
+            .bind(account.id)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let migration = include_str!("../migrations/0019_student_loan_profile.sql");
+        let stored = |db: Db| async move {
+            sqlx::query_scalar::<_, String>("SELECT metadata FROM accounts WHERE id = ?")
+                .bind(account.id)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        };
+
+        sqlx::raw_sql(migration).execute(&db).await.unwrap();
+        let after: serde_json::Value =
+            serde_json::from_str(&stored(db.clone()).await).expect("still valid JSON");
+        assert_eq!(after["profile"], "student_loan");
+        // The two fields a student loan really has, kept verbatim.
+        assert_eq!(after["lender"], "StudyLink");
+        assert_eq!(after["interest_rate_bps"], 0);
+        // Everything the profile no longer has, gone — the principal above all.
+        for dead in [
+            "subtype",
+            "original_amount_minor",
+            "term_months",
+            "start_date",
+        ] {
+            assert!(after.get(dead).is_none(), "{dead} survived: {after}");
+        }
+
+        // Replaying a migration is not something sqlx does, but a hand-run or a restored
+        // database can, and the WHERE is written to stop matching — so a second pass must be
+        // a byte-for-byte no-op rather than a rewrite that happens to look the same.
+        let once = stored(db.clone()).await;
+        sqlx::raw_sql(migration).execute(&db).await.unwrap();
+        assert_eq!(stored(db.clone()).await, once);
+    }
+
+    /// A student loan as it was stored before it had its own profile: the `loan` discriminant,
+    /// the subtype 0014 backfilled, an `original_amount_minor` that was *required* of it, and
+    /// the term/start pair that would have made the forecast amortise it.
+    const LEGACY_STUDENT_LOAN_METADATA: &str = r#"{"profile":"loan","subtype":"student",
+        "lender":"StudyLink","original_amount_minor":3000000,"interest_rate_bps":0,
+        "term_months":120,"start_date":"2024-01-01"}"#;
+
+    /// Rows written before the student-loan profile existed carry `"profile": "loan"` and the
+    /// fields that came with it. `metadata_from_stored` coerces the discriminant to the one
+    /// the kind requires and serde drops the keys the target struct doesn't have, so such a
+    /// row reads back as a student loan with its two real fields intact — which is what makes
+    /// migration 0019 a normalisation rather than a prerequisite.
+    #[tokio::test]
+    async fn a_legacy_loan_profile_row_reads_back_as_a_student_loan() {
+        let db = test_db().await;
+        let account = create(&db, valid("Student Loan", AccountKind::StudentLoan))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE accounts SET metadata = ? WHERE id = ?")
+            .bind(LEGACY_STUDENT_LOAN_METADATA)
+            .bind(account.id)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let updated = get(&db, account.id).await.unwrap();
+        assert_eq!(
+            updated.metadata,
+            AccountMetadata::StudentLoan(StudentLoanMeta {
+                lender: Some("StudyLink".to_string()),
+                interest_rate_bps: Some(0),
+                ..Default::default()
+            })
+        );
     }
 
     #[tokio::test]
@@ -1148,7 +1274,7 @@ mod tests {
         let msg = validation_message(result);
         // A `loan` is a table loan like a mortgage, so it needs the same terms: the
         // forecast projects its payoff from them rather than fitting a trend to a debt.
-        // `student_loan` shares this profile and is exempt — see the test below.
+        // A `student_loan` has none of this to give and now has its own profile instead.
         for field in [
             "subtype",
             "lender",
@@ -1165,7 +1291,8 @@ mod tests {
     #[tokio::test]
     async fn an_interest_free_loan_is_allowed_but_a_negative_rate_is_not() {
         let db = test_db().await;
-        // 0 bps is a real rate — an interest-free family loan — so it must pass.
+        // 0 bps is a real rate, not a missing one — an NZ-based borrower's student loan is
+        // interest-free — so it must pass.
         create(&db, valid("Student Loan", AccountKind::StudentLoan))
             .await
             .unwrap();
@@ -1407,23 +1534,24 @@ mod tests {
     }
 
     /// A metadata rule that also holds on the provider-link path: a feed cannot know a
-    /// property's city, but a value it *does* send has to mean something. Checked on a
-    /// student loan, the one loan-profile kind with no terms of its own to get in the way.
+    /// property's city, but a value it *does* send has to mean something. Checked on a bank
+    /// account — the commonest thing a feed links, and a kind with no amortisation terms of
+    /// its own to add problems alongside the one under test.
     #[test]
     fn an_illegal_subtype_is_rejected_even_when_linking() {
-        let metadata = AccountMetadata::Loan(LoanMeta {
-            subtype: Some("payday".to_string()),
+        let metadata = AccountMetadata::Depository(DepositoryMeta {
+            subtype: Some("vault".to_string()),
             ..Default::default()
         });
         let problems = metadata
-            .validate_for(AccountKind::StudentLoan, ValidationMode::Linked)
+            .validate_for(AccountKind::Bank, ValidationMode::Linked)
             .expect_err("an unknown subtype is structural, not a gap a sync could fill");
         assert_eq!(problems.len(), 1);
-        assert!(problems[0].contains("payday"));
+        assert!(problems[0].contains("vault"));
 
         // ...while everything a sync could fill in later is left alone.
-        AccountMetadata::Loan(LoanMeta::default())
-            .validate_for(AccountKind::StudentLoan, ValidationMode::Linked)
+        AccountMetadata::Depository(DepositoryMeta::default())
+            .validate_for(AccountKind::Bank, ValidationMode::Linked)
             .unwrap();
     }
 

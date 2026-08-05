@@ -52,10 +52,12 @@
    * The metadata a newly-created account can't be stored without, for the kind this row is
    * being linked as.
    *
-   * Only amortising debt has any: a mortgage or loan is projected from its terms, and a
+   * Amortising debt is why this exists: a mortgage or loan is projected from its terms, and a
    * bank feed doesn't report them — Akahu can say a mortgage exists without saying what
    * rate it's on or when that rate expires. Asking here is the difference between a linked
    * mortgage that forecasts and one that silently falls back to fitting a trend to a debt.
+   * A `student_loan` has no terms to project from, but its two fields (lender and rate) are
+   * asked for the ordinary reason: there is a person in this dialog and no feed reports them.
    * Everything else keeps the old behaviour: link now, fill in details later.
    */
   function requiredMetaFields(f: LinkFormState): MetaField[] {
@@ -614,9 +616,17 @@
                   </div>
                   {#if f.target === "new" && requiredMetaFields(f).length > 0}
                     <p class="small faint" style="margin:6px 0 0">
-                      A {f.kind === "mortgage" ? "mortgage" : "loan"} is projected from its terms, and
-                      the bank feed doesn't report them. Prefer to do this later? Create the account
-                      on the Accounts page first, then attach this one to it.
+                      <!-- A student loan is the one kind here that isn't projected from terms — it
+                           has none — so it gets the honest reason rather than the mortgage's. -->
+                      {#if f.kind === "student_loan"}
+                        A student loan records who it's with and what rate it's on; the bank feed
+                        reports neither.
+                      {:else}
+                        A {f.kind === "mortgage" ? "mortgage" : "loan"} is projected from its terms,
+                        and the bank feed doesn't report them.
+                      {/if}
+                      Prefer to do this later? Create the account on the Accounts page first, then
+                      attach this one to it.
                     </p>
                   {/if}
                   <div class="actions">

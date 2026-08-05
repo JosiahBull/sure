@@ -486,8 +486,8 @@ fn stored_number(account: &Account) -> Option<&str> {
     use AccountMetadata::*;
     match &account.metadata {
         Depository(meta) => meta.account_number.as_deref(),
-        Property(_) | Mortgage(_) | Loan(_) | Vehicle(_) | Shares(_) | Brokerage(_) | Crypto(_)
-        | Generic(_) => None,
+        Property(_) | Mortgage(_) | Loan(_) | StudentLoan(_) | Vehicle(_) | Shares(_)
+        | Brokerage(_) | Crypto(_) | Generic(_) => None,
     }
 }
 

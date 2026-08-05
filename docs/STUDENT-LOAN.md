@@ -16,6 +16,29 @@ Neither determines the balance. `account_value_at` (`packages/app/src/reports.rs
 them. That is what makes the forward half safe to run unattended — a missed or duplicated
 derived row is cosmetic, never a wrong net worth.
 
+## The account itself
+
+`student_loan` has its own metadata profile — `StudentLoanMeta` (`packages/core/src/types.rs`)
+— and it holds a **lender and an interest rate, and nothing else**. That is the whole design:
+
+- **No original principal.** The loan is drawn down over years of study, one tranche per
+  semester (course fees, course-related costs, living costs), so the balance climbs for years
+  before it starts falling and no single figure is "the amount borrowed". It shared the `loan`
+  profile until 2026-08-05, which *required* one — so every student loan created through the
+  account form has an invented number in it, and the repaid-percentage badge computed from it
+  sat at 0% for as long as the loan was still growing. Migration `0019` strips the figure, and
+  the badge is simply absent for the kind now.
+- **No term, no schedule.** Repayment is a percentage of income over the threshold, deducted
+  through PAYE — a function of a salary this app doesn't model. See the first trap below for
+  what that used to cost.
+- **A rate of `0` is a real answer**, not a missing one: the loan is interest-free while the
+  borrower is NZ-based. An overseas-based borrower's accrues interest, which is why the field
+  is asked for rather than assumed.
+
+A student loan that genuinely *does* amortise — a private or overseas one with a principal, a
+rate and a term — is a `loan` account with `subtype = "student"`, and gets the full schedule
+treatment (and forecast) that implies.
+
 ## Backfilling from myIR
 
 myIR caps a single export at about two years, so reaching a loan's origination takes several
@@ -121,11 +144,16 @@ Unlink a wrong pair with `DELETE /api/transactions/{id}/link`.
   `source='provider'`, so a manual row on a day the provider also synced creates a *second*
   valuation for that day — and the report loader has no `ORDER BY`, so which one wins net
   worth is unspecified.
-- **Don't set `term_months` in the account's loan metadata.** `subtype`, `lender`,
-  `original_amount_minor` and `interest_rate_bps` are already required, so two of the four
-  fields `amortization_terms` looks for are present. Add `term_months` and `start_date` too
-  and the forecast switches the account to a deterministic amortisation schedule, discarding
-  the real balance for a fabricated straight line. A student loan has no term.
+- ~~**Don't set `term_months` in the account's loan metadata.**~~ Fixed by construction, and
+  worth knowing about because the shape of the bug recurs. A student loan used to share the
+  `loan` metadata profile, which meant it was *required* to state an
+  `original_amount_minor` — a figure that does not exist for a loan drawn down over years of
+  study — and was two optional fields (`term_months`, `start_date`) away from the forecast
+  switching it to a deterministic amortisation schedule, discarding the real balance for a
+  fabricated straight line. It now has its own profile (`StudentLoanMeta`: a lender and a
+  rate, nothing else), so there is nowhere to put either field and `loan_terms` returns
+  `None` for the profile outright. Pinned by
+  `a_student_loan_is_never_projected_as_a_schedule` in `packages/app/src/forecast.rs`.
 - **Don't model this with the `crons` feature.** It is monthly-only, never runs in the
   background, and writes transactions with `provider`/`external_id` left NULL — so they
   can't be deduped, can't be told apart from manual rows, and are orphaned untraceably if

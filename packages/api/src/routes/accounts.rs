@@ -14,7 +14,7 @@ pub use sure_core::{
     Account, AccountClass, AccountKind, AccountMetadata, AreaUnit, BrokerageMeta, BulkResult,
     CryptoMeta, DepositoryMeta, GenericMeta, LoanMeta, MileageUnit, MortgageMeta, Ownership,
     PropertyMeta, RateType, RepaymentFrequency, SaveAccount, SetOwnership, SetOwnershipBulk,
-    SetSecuredBy, SharesMeta, TaxTreatment, VehicleMeta,
+    SetSecuredBy, SharesMeta, StudentLoanMeta, TaxTreatment, VehicleMeta,
 };
 
 // OTEL span names for this module's handlers.

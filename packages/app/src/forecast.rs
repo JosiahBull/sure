@@ -677,7 +677,11 @@ impl ForecastService {
                 // Exactly the kinds whose own ledger rows are kept out of the income/
                 // expense report: that exclusion is what guarantees the repayment isn't
                 // already inside a category baseline. `StudentLoan` is excluded from
-                // spend too but must not debit — see the field's doc comment.
+                // spend too but must not debit — see the field's doc comment. Since it
+                // acquired its own schedule-less profile that exclusion is belt-and-braces
+                // (this flag is only read on the deterministic branch, which a student loan
+                // can no longer reach), and it is kept because it costs nothing and states
+                // the intent where the reader is looking.
                 repayment_debits_cash: reports::is_excluded_from_spend(a.kind)
                     && a.kind != AccountKind::StudentLoan,
                 step_changes,
@@ -1044,6 +1048,11 @@ struct AccountSim {
     /// opposite case: repaid via PAYE, it is already inside the *net* salary the income
     /// baseline is fitted to, and there is no ledger leg that could reveal the overlap.
     /// For those, the paydown is projected but the cash side is left to the categories.
+    ///
+    /// Read only on the [`AccountProjection::Deterministic`] branch, which is why a student
+    /// loan no longer depends on this flag for that correctness: having its own profile, it
+    /// has no schedule to be deterministic *with* (see [`loan_terms`]), and a trend-projected
+    /// account never debits the pool at all.
     repayment_debits_cash: bool,
     /// `(month_index, new_value)`, native currency — a known future revaluation.
     step_changes: Vec<(i64, f64)>,
@@ -1322,8 +1331,19 @@ fn loan_terms(metadata: &AccountMetadata, today: NaiveDate) -> Option<LoanTerms>
         ),
         // Every other profile has no amortisation schedule at all: the caller falls back
         // to a trend/rate like a generic asset for these.
+        //
+        // `StudentLoan` is the deliberate one. An income-contingent loan is a debt with no
+        // principal, no term and no table — it is repaid as a percentage of income — so
+        // `StudentLoanMeta` carries none of the fields this function reads, and the profile
+        // split is what guarantees it. While a student loan shared `LoanMeta`, four of those
+        // fields were required of it and the other two were an edit away, so filling them in
+        // silently swapped the real balance for a fabricated straight line to zero;
+        // docs/STUDENT-LOAN.md had to carry a "don't set term_months" trap for exactly that.
+        // Now the trend fit below is the only projection a student loan can get, which is
+        // also the honest one: what the balance has actually been doing.
         AccountMetadata::Depository(_)
         | AccountMetadata::Property(_)
+        | AccountMetadata::StudentLoan(_)
         | AccountMetadata::Vehicle(_)
         | AccountMetadata::Shares(_)
         | AccountMetadata::Brokerage(_)
@@ -2500,7 +2520,7 @@ mod tests {
         use sure_core::{
             Account, AccountKind as AK, AccountMetadata as AM, Cron, CronRun, CronRunResult,
             GenericMeta, LoanMeta, MortgageMeta, Ownership, SaveAccount, SaveCron,
-            SaveForecastAssumption, SaveForecastEvent,
+            SaveForecastAssumption, SaveForecastEvent, StudentLoanMeta,
         };
 
         use crate::ports::{
@@ -3193,30 +3213,41 @@ mod tests {
             );
         }
 
-        /// A student loan amortises like anything else, but its repayment comes out of
-        /// pay before the salary ever lands, so it is already inside the income baseline.
-        /// Debiting it again would double-count with nothing in the ledger to reveal it.
+        /// A student loan's repayment comes out of pay before the salary ever lands, so it
+        /// is already inside the income baseline; debiting it again would double-count with
+        /// nothing in the ledger to reveal it. That used to rest on `repayment_debits_cash`,
+        /// because a student loan could be handed a schedule. It now rests on the profile:
+        /// `StudentLoanMeta` has no terms, so the account is projected from its trend and
+        /// the branch that debits the pool is unreachable for it.
         #[test]
         fn simulate_does_not_debit_cash_for_a_student_loan() {
             let today = d("2026-08-01");
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let terms = LoanMeta {
-                lender: Some("Inland Revenue".into()),
-                original_amount_minor: Some(50_000_00),
-                interest_rate_bps: Some(0),
-                term_months: Some(120),
-                start_date: Some("2024-01-01".into()),
-                ..Default::default()
-            };
             let student = Account {
                 kind: AK::StudentLoan,
                 class: AK::StudentLoan.class(),
-                metadata: AM::Loan(terms),
+                metadata: AM::StudentLoan(StudentLoanMeta {
+                    lender: Some("Inland Revenue".into()),
+                    interest_rate_bps: Some(0),
+                    ..Default::default()
+                }),
                 ..account(1, AK::StudentLoan, "NZD")
             };
+            // Two years of PAYE deductions at ~$250/mo, which is the only thing the
+            // projection now has to go on — and, for this loan, the only thing that was ever
+            // true. It is what the myIR import and the balance-delta task build (see
+            // docs/STUDENT-LOAN.md), so it is also what a real account arrives with.
+            let mut valuations = Vec::new();
+            for i in 0..24 {
+                valuations.push(valued(
+                    1,
+                    add_months(d("2024-08-01"), i),
+                    -36_000_00 + (i * 250_00),
+                ));
+            }
             let svc = make_service(
                 vec![student],
-                vec![valued(1, today - chrono::Duration::days(1), -29_967_15)],
+                valuations,
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -3232,12 +3263,40 @@ mod tests {
                 }))
                 .unwrap();
 
-            // The debt shrinks and nothing offsets it, so net worth rises.
+            // The debt keeps shrinking on the trend it has been shrinking on, and nothing
+            // offsets it, so net worth rises.
             assert!(
                 result.months[5].net_worth.median_minor > result.months[0].net_worth.median_minor
             );
             // No cash pool exists here, so any debit would show as a negative asset side.
             assert_eq!(result.months[5].assets.median_minor, 0);
+        }
+
+        /// The structural half of the above, stated on its own so a regression names itself:
+        /// a student loan cannot be projected as an amortisation schedule, however complete
+        /// its metadata is, because its profile has nowhere to put a principal or a term.
+        /// This is the check that replaces docs/STUDENT-LOAN.md's "don't set `term_months`"
+        /// trap — the field it warned about no longer exists on the profile.
+        #[test]
+        fn a_student_loan_is_never_projected_as_a_schedule() {
+            let today = d("2026-08-01");
+            let complete = AM::StudentLoan(StudentLoanMeta {
+                lender: Some("Inland Revenue".into()),
+                interest_rate_bps: Some(0),
+                url: Some("https://myir.ird.govt.nz".into()),
+                notes: None,
+            });
+            assert!(loan_terms(&complete, today).is_none());
+            // …while a table loan carrying the same terms a student loan used to be asked for
+            // still is one, so this is the profile split doing the work, not a lost feature.
+            let as_a_table_loan = AM::Loan(LoanMeta {
+                original_amount_minor: Some(50_000_00),
+                interest_rate_bps: Some(0),
+                term_months: Some(120),
+                start_date: Some("2024-01-01".into()),
+                ..Default::default()
+            });
+            assert!(loan_terms(&as_a_table_loan, today).is_some());
         }
 
         /// A student loan drawn down over years of study and repaid ever since: a single

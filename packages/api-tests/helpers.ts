@@ -48,13 +48,10 @@ const REQUIRED_METADATA: Partial<Record<AccountKind, Record<string, unknown>>> =
     term_months: 60,
     start_date: "2024-01-01",
   },
-  student_loan: {
-    profile: "loan",
-    subtype: "student",
-    lender: "StudyLink",
-    original_amount_minor: 3_000_000,
-    interest_rate_bps: 0,
-  },
+  // Its own profile, and the whole of it: an income-contingent loan has no principal, term or
+  // schedule to state. Interest-free because the borrower is NZ-based, which is a real answer
+  // rather than a stand-in for one.
+  student_loan: { profile: "student_loan", lender: "Inland Revenue", interest_rate_bps: 0 },
   // Only the revolving kinds carry a limit.
   credit_card: { profile: "depository", credit_limit_minor: 1_000_000 },
   revolving_credit: { profile: "depository", credit_limit_minor: 5_000_000 },

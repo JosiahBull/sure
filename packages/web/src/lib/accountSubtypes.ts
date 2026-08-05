@@ -48,7 +48,14 @@ export const PROPERTY_SUBTYPES: SubtypeOption[] = [
   { value: "second_home", label: "Second Home" },
 ];
 
-/** Borrowing (their `Loan`). */
+/**
+ * Borrowing (their `Loan`). These belong to the `loan` profile, which is a **table loan** —
+ * one with a principal, a rate and a term the forecast can amortise.
+ *
+ * `student` therefore means a student loan that really does work that way: a private or
+ * overseas one. An income-contingent IR/StudyLink loan is the `student_loan` *kind*, which has
+ * its own profile and no subtype at all (see `StudentLoanMeta` in packages/core/src/types.rs).
+ */
 export const LOAN_SUBTYPES: SubtypeOption[] = [
   { value: "mortgage", label: "Mortgage" },
   { value: "student", label: "Student Loan" },

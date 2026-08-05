@@ -182,7 +182,9 @@ test("a mortgage/loan's original borrowed amount round-trips", async ({ api }) =
   const mortgage = await createAccount(api, "Home Loan", "mortgage", "NZD", {
     metadata: { profile: "mortgage", lender: "ASB", original_amount_minor: 48_500_000 },
   });
-  const loan = await createAccount(api, "Student Loan", "student_loan", "NZD", {
+  // A table loan, not a student loan: the `student_loan` profile has no such field, which is
+  // the point of it having its own.
+  const loan = await createAccount(api, "Car Loan", "loan", "NZD", {
     metadata: { profile: "loan", original_amount_minor: 3_000_000 },
   });
 
@@ -421,19 +423,36 @@ test("a loan must carry its subtype, lender and full amortisation terms", async 
   }
 });
 
-test("a student loan is exempt from the terms a loan must have", async ({ api }) => {
-  // `loan` and `student_loan` share a profile and only one of them amortises: an NZ student
-  // loan is interest-free and repaid as a percentage of income, so it has no schedule.
+test("a student loan saves with only a lender and a rate", async ({ api }) => {
+  // Its own profile, because an income-contingent loan has no principal, term or schedule to
+  // give: it is drawn down over years of study and repaid as a percentage of income. These two
+  // fields are the whole of `StudentLoanMeta`.
   const created = await api.POST("/api/accounts", {
     body: saveBody("student_loan", {
+      profile: "student_loan",
+      lender: "Inland Revenue",
+      interest_rate_bps: 0,
+    }),
+  });
+  expect(created.response.status).toBe(201);
+});
+
+test("a student loan is refused the loan profile, and its principal with it", async ({ api }) => {
+  // The wire-level half of the split: the server names the mismatch rather than quietly
+  // accepting a body whose extra fields it would then drop. This is what stops an old client
+  // (or a hand-rolled call) from putting an invented principal back on a student loan.
+  const msg = await rejected(
+    api,
+    saveBody("student_loan", {
       profile: "loan",
       subtype: "student",
       lender: "Inland Revenue",
       original_amount_minor: 3_000_000,
       interest_rate_bps: 0,
-    }),
-  });
-  expect(created.response.status).toBe(201);
+    })
+  );
+  expect(msg).toContain("does not match account kind");
+  expect(msg).toContain("student_loan");
 });
 
 test("a fixed rate must say what happens when it expires", async ({ api }) => {

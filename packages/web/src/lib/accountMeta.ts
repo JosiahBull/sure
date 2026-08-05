@@ -30,6 +30,7 @@ export type MetaProfile =
   | "property"
   | "mortgage"
   | "loan"
+  | "student_loan"
   | "vehicle"
   | "shares"
   | "brokerage"
@@ -331,6 +332,12 @@ export function remainingBorrowing(
  * — `null` if this isn't a loan-shaped kind, or the original amount isn't known yet
  * (nothing synced/entered). `valueMinor` is the account's current balance (negative when
  * money is owed); the amount paid down is `original − |valueMinor|`.
+ *
+ * A `student_loan` is deliberately not loan-shaped for this purpose: its profile has no
+ * original amount, because an income-contingent loan is drawn down over years of study and
+ * never had one. It therefore shows no repaid badge at all rather than a percentage of an
+ * invented principal — which is what it used to do, pinned at 0% for as long as the balance
+ * was still climbing.
  */
 export function loanPaidOffPct(
   kind: string,
@@ -352,8 +359,12 @@ export function kindToProfile(kind: string): MetaProfile {
     case "mortgage":
       return "mortgage";
     case "loan":
-    case "student_loan":
       return "loan";
+    // Its own profile, not the `loan` one: an income-contingent student loan has no
+    // principal, term or schedule, so those fields do not exist on it. See
+    // `StudentLoanMeta` in packages/core/src/types.rs.
+    case "student_loan":
+      return "student_loan";
     case "vehicle":
       return "vehicle";
     case "shares_nz":
@@ -630,7 +641,10 @@ export const FIELDS: Record<MetaProfile, MetaField[]> = {
     { key: "lender", label: "Lender", type: "text", required: true },
     {
       key: "original_amount_minor",
-      label: "Original loan balance",
+      // Named as the mortgage's is: it is the amount borrowed at the start, not the balance
+      // now. The old "Original loan balance" wording invited today's figure, which then read
+      // as 0% repaid forever.
+      label: "Original amount borrowed",
       type: "money",
       required: true,
       valueRule: "amount",
@@ -643,10 +657,10 @@ export const FIELDS: Record<MetaProfile, MetaField[]> = {
       required: true,
       valueRule: "bps",
     },
-    // Required for a `loan` but not a `student_loan`: the two share this profile, and only
-    // one of them amortises. An NZ student loan is interest-free and repaid as a percentage
-    // of income, so it has no rate type, term or schedule to give.
-    { ...REQUIRED_RATE_TYPE_FIELD, required: ["loan"] },
+    // All required, as a mortgage's are: this profile is a table loan's alone now, and the
+    // schedule is what the forecast projects a payoff from. An income-contingent student loan
+    // has none of it and uses the `student_loan` profile below.
+    REQUIRED_RATE_TYPE_FIELD,
     ...refixFields("loan"),
     { key: "fixed_term_months", label: "Fixed term (months)", type: "int" },
     {
@@ -654,11 +668,31 @@ export const FIELDS: Record<MetaProfile, MetaField[]> = {
       label: "Term (months)",
       type: "int",
       placeholder: "360",
-      required: ["loan"],
+      required: true,
       valueRule: "count",
     },
-    { key: "start_date", label: "Start date", type: "date", required: ["loan"] },
+    { key: "start_date", label: "Start date", type: "date", required: true },
     ...repaymentFields(),
+    URL_FIELD,
+    NOTES_FIELD,
+  ],
+  // An IR/StudyLink-style loan, and the shortest form in the app on purpose. There is no
+  // principal to ask for (it was drawn down over years of study, in one tranche per
+  // semester), no term, and no repayment schedule — it comes out of pay as a percentage of
+  // income until it is gone. Asking anyway got placeholders that looked like answers; see
+  // `StudentLoanMeta` in packages/core/src/types.rs. The balance and its history do the rest,
+  // via the myIR import and the balance feed (docs/STUDENT-LOAN.md).
+  student_loan: [
+    { key: "lender", label: "Lender", type: "text", placeholder: "Inland Revenue", required: true },
+    {
+      key: "interest_rate_bps",
+      label: "Interest rate (%)",
+      type: "percent",
+      placeholder: "0",
+      hint: "Interest-free while you're based in New Zealand — enter 0. Overseas-based borrowers accrue interest.",
+      required: true,
+      valueRule: "bps",
+    },
     URL_FIELD,
     NOTES_FIELD,
   ],
@@ -980,6 +1014,9 @@ export function metaSummary(kind: string, metadata: Schemas["AccountMetadata"] |
     }
     case "mortgage":
     case "loan":
+    // A student loan has no subtype (its kind says "student" already), so `subtypeLabel`
+    // returns nothing and this falls through to the lender and rate it does have.
+    case "student_loan":
       if (subtype) bits.push(subtype);
       // Loans have no top-level institution; the lender stands in for it here.
       if (s("lender")) bits.push(s("lender")!);

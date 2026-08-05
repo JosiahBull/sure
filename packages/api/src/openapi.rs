@@ -151,6 +151,7 @@ use utoipa::OpenApi;
         crate::routes::accounts::PropertyMeta,
         crate::routes::accounts::MortgageMeta,
         crate::routes::accounts::LoanMeta,
+        crate::routes::accounts::StudentLoanMeta,
         crate::routes::accounts::VehicleMeta,
         crate::routes::accounts::SharesMeta,
         crate::routes::accounts::BrokerageMeta,
