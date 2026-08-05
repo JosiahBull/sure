@@ -1,0 +1,35 @@
+-- Long-horizon forecasting: what a fitted trend is allowed to mean thirty years out.
+--
+-- `sure_app::forecast` capped the horizon at 60 months, and inside that window compounding a
+-- fitted rate forever is defensible. A category's rate is fitted over 24 months of history
+-- (`CATEGORY_TREND_MONTHS`) and an account's over 36 (`ACCOUNT_TREND_MONTHS`), so five years of
+-- extrapolation is roughly two windows, and the ±25%/yr derived clamp
+-- (`MAX_DERIVED_CATEGORY_GROWTH_BPS`) bounds the damage to about 3x.
+--
+-- Life events -- a child, a career break, a promotion chain, a mortgage running to term -- need
+-- decades. The same arithmetic at 360 months turns that same +25%/yr into 807x. That is not a
+-- forecast; it is the clamp doing the model's job for it, which is the exact failure the clamp's
+-- own comment warns about ("a fit that says so is over-fitting a short series"). A bound that is
+-- still compounding at month 360 has quietly become the model.
+--
+-- So past month 60 a fitted rate decays toward a long-run anchor, and this column is where that
+-- anchor is recorded. It is per target, because the honest long-run rate for a grocery bill, a
+-- house and an index fund are three different numbers.
+--
+-- It is NULL by default, and NULL reads as 0 bps -- flat in nominal terms. The app does not know
+-- this household's long-run inflation or expected market return, and inventing one would be
+-- indistinguishable from a real answer once every band in the projection derives from it. That
+-- is the same refusal 0014, 0016 and 0019 make, and flat is also what
+-- `AssumptionSource::InsufficientHistory` already yields, so it is the conservative claim rather
+-- than a new one.
+--
+-- Decay begins strictly AFTER month 60 (`TREND_FULL_STRENGTH_MONTHS`), which is deliberate and
+-- load-bearing: every projection that was legal before this migration produces byte-identical
+-- numbers afterwards. That is what makes raising the ceiling a shippable change rather than a
+-- silent restatement of every forecast the user has already looked at.
+--
+-- The decay applies to *derived* rates only. An explicit override is the user asserting
+-- something and is left alone -- the same line `MAX_DERIVED_CATEGORY_GROWTH_BPS` already draws
+-- -- and a deterministic amortisation schedule has no rate to decay in the first place.
+-- Volatility is not decayed either: uncertainty grows with the horizon, it does not shrink.
+ALTER TABLE forecast_assumptions ADD COLUMN long_run_growth_bps INTEGER;

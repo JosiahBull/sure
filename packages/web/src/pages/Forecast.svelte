@@ -3,17 +3,15 @@
   import { api, formatMoney, formatDate, type Schemas } from "../lib/api";
   import ForecastChart from "../lib/charts/ForecastChart.svelte";
   import FxNotice from "../lib/FxNotice.svelte";
+  import {
+    HORIZONS,
+    checkpointsFor,
+    historyMonthsFor,
+    horizonLabel,
+  } from "../lib/charts/forecastScale";
 
   type ResolvedAssumption = Schemas["ResolvedAssumption"];
   type ForecastEvent = Schemas["ForecastEvent"];
-
-  const HORIZONS = [
-    { months: 6, label: "6 months" },
-    { months: 12, label: "12 months" },
-    { months: 24, label: "24 months" },
-    { months: 36, label: "36 months" },
-  ];
-  const CHECKPOINTS = [3, 6, 9, 12];
 
   let horizon = $state(12);
   let history = $state<{ x: string; y: number }[]>([]);
@@ -29,9 +27,10 @@
     loading = true;
     error = null;
     try {
-      const today = new Date();
-      const from = new Date(today);
-      from.setFullYear(from.getFullYear() - 1);
+      // History shares the projection's axis, so the window scales with the horizon — a fixed
+      // year against thirty projected ones is a 3% sliver. See `historyMonthsFor`.
+      const from = new Date();
+      from.setMonth(from.getMonth() - historyMonthsFor(horizon));
       const [nw, fc, ev] = await Promise.all([
         api.GET("/api/reports/net-worth", {
           params: {
@@ -58,11 +57,13 @@
   });
 
   const currency = $derived(result?.currency ?? "NZD");
+  // Derived from the horizon and passed to the chart as well, so the tiles and the marks on the
+  // chart cannot disagree about which months they describe.
+  const checkpoints = $derived(checkpointsFor(horizon));
   const checkpointMonths = $derived(
-    CHECKPOINTS.filter((m) => m <= (result?.months.length ?? 0)).map((m) => ({
-      months: m,
-      month: result!.months[m - 1],
-    }))
+    checkpoints
+      .filter((m) => m <= (result?.months.length ?? 0))
+      .map((m) => ({ months: m, month: result!.months[m - 1] }))
   );
 
   // Only targets the simulation actually resolved an assumption for — excludes cash
@@ -227,7 +228,13 @@
         </div>
       </div>
     {/if}
-    <ForecastChart {history} months={result?.months ?? []} {currency} onhover={(p) => (hoverPoint = p)} />
+    <ForecastChart
+      {history}
+      months={result?.months ?? []}
+      {currency}
+      {checkpoints}
+      onhover={(p) => (hoverPoint = p)}
+    />
     <!-- An account whose currency has no rate is left out of the simulation entirely rather
          than projected from a parity starting balance, which would be wrong in every month of
          every path. Both the history line and the bands are then partial. -->
@@ -244,7 +251,7 @@
       <div class="checkpoints">
         {#each checkpointMonths as c (c.months)}
           <div class="checkpoint">
-            <div class="cp-label">+{c.months} {c.months === 1 ? "month" : "months"}</div>
+            <div class="cp-label">+{horizonLabel(c.months)}</div>
             <div class="cp-value tabular">{formatMoney(c.month.net_worth.median_minor, currency)}</div>
             <div class="cp-range tabular small faint">
               {formatMoney(c.month.net_worth.p10_minor, currency)} – {formatMoney(

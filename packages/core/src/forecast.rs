@@ -49,6 +49,13 @@ pub struct ForecastAssumption {
     pub annual_growth_bps: Option<i64>,
     pub annual_volatility_bps: Option<i64>,
     pub dividend_yield_bps: Option<i64>,
+    /// The annual rate a *derived* growth trend decays toward beyond the window it was
+    /// fitted over, in basis points. `None` reads as 0 — flat in nominal terms, which is
+    /// what `AssumptionSource::InsufficientHistory` already yields, so it is the
+    /// conservative claim rather than an invented one. Ignored when
+    /// `annual_growth_bps` is set: that is the user asserting a rate, and an assertion is
+    /// not decayed.
+    pub long_run_growth_bps: Option<i64>,
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -67,6 +74,8 @@ pub struct SaveForecastAssumption {
     pub annual_volatility_bps: Option<i64>,
     #[serde(default)]
     pub dividend_yield_bps: Option<i64>,
+    #[serde(default)]
+    pub long_run_growth_bps: Option<i64>,
     #[serde(default)]
     pub notes: Option<String>,
 }

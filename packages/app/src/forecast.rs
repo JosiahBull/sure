@@ -95,11 +95,49 @@ const MAX_DERIVED_CATEGORY_VOL_BPS: i64 = 30_000;
 /// down.
 const MAX_VOLATILITY_BPS: i64 = MAX_DERIVED_CATEGORY_VOL_BPS;
 const MIN_HORIZON_MONTHS: i64 = 1;
-const MAX_HORIZON_MONTHS: i64 = 60;
+/// Thirty years. Life events — a child, a career break, a promotion chain, a mortgage running
+/// to term — are decade-scale, and at the old five-year ceiling most of them fell outside the
+/// window entirely.
+///
+/// Raising it is only honest alongside [`TREND_FULL_STRENGTH_MONTHS`]: a rate fitted over two
+/// or three years of history is not evidence about year twenty-nine, and compounding it as if
+/// it were turns the ±25%/yr derived clamp into a 807x multiplier at the tail (see
+/// [`decayed_monthly_log_return`]).
+const MAX_HORIZON_MONTHS: i64 = 360;
 const MIN_SIMULATIONS: i64 = 100;
 const MAX_SIMULATIONS: i64 = 5000;
 const DEFAULT_HORIZON_MONTHS: i64 = 12;
 const DEFAULT_SIMULATIONS: i64 = 2000;
+/// The most `paths × months` one simulation may run.
+///
+/// The old worst case was `MAX_SIMULATIONS × 60` = 300k path-months. Six times that keeps a
+/// 360-month horizon at 2 000 paths — comfortably enough for a stable P10/P90 — while stopping a
+/// 5 000 × 360 request from costing thirty times the old ceiling inside a compute slot the rest
+/// of the process is waiting on (see [`ForecastService::simulate_from`] on why that matters).
+///
+/// A 60-month horizon allows 12 000 paths under this budget, which is well above
+/// [`MAX_SIMULATIONS`] — so no request that was legal before the ceiling was raised is affected
+/// by it. The reduction is reported rather than silent: [`ForecastResult`] echoes the
+/// `simulations` and `horizon_months` actually run, so a caller that asked for more can tell.
+const MAX_PATH_MONTHS: i64 = 720_000;
+/// Months over which a *derived* trend is used at full strength — exactly the old
+/// [`MAX_HORIZON_MONTHS`], which is what makes raising that ceiling leave every previously-legal
+/// projection byte-identical.
+const TREND_FULL_STRENGTH_MONTHS: i64 = 60;
+/// Half-life, in months, of a derived rate's *excess* over its long-run anchor beyond the window
+/// above.
+///
+/// 24 = [`CATEGORY_TREND_MONTHS`], and the symmetry is the argument: a fit is evidence about the
+/// window it was taken over, so it is worth about half its weight one window past the point where
+/// it stops being evidence at all.
+///
+/// The category window rather than [`ACCOUNT_TREND_MONTHS`] (36), deliberately, because one
+/// constant serves both and the shorter window is the conservative choice — the entire purpose of
+/// this decay is conservatism about extrapolation, so where the two disagree it should side with
+/// the fit that saw less. The difference is not academic: at the derived growth ceiling a
+/// 36-month half-life leaves a ×8.37 multiplier over 30 years against ×5.97 for 24, and the
+/// tests below pin both figures so this comment cannot quietly stop being true.
+const TREND_HALF_LIFE_MONTHS: f64 = 24.0;
 /// A relative annual rate is clamped to this range before it's turned into a monthly
 /// log-return, so a noisy/pathological historical fit can't make `ln(1 + rate)`
 /// undefined (`rate <= -100%`) or blow the simulation up over a multi-year horizon.
@@ -131,6 +169,11 @@ pub struct ResolvedAssumption {
     pub label: String,
     pub annual_growth_bps: i64,
     pub annual_volatility_bps: i64,
+    /// The annual rate `annual_growth_bps` decays toward past
+    /// [`TREND_FULL_STRENGTH_MONTHS`], in basis points. Only consulted when `source` is
+    /// [`AssumptionSource::Derived`] — see [`long_run_anchor`] for why every other source is
+    /// left alone. 0 (the default) means the trend flattens in nominal terms.
+    pub long_run_growth_bps: i64,
     /// Only set for Investment-class accounts (brokerage/shares).
     pub dividend_yield_bps: Option<i64>,
     /// Only set for categories: the current fitted monthly run-rate (base currency,
@@ -248,6 +291,21 @@ pub struct ForecastResult {
     pub unconverted: Vec<String>,
     /// Newest date across the rates used (ISO-8601), or `None` if none are on record.
     pub rates_as_of: Option<String>,
+    /// The horizon actually projected, after clamping to
+    /// [`MIN_HORIZON_MONTHS`]/[`MAX_HORIZON_MONTHS`]. Equal to `months.len()`, and reported
+    /// alongside `simulations` so a caller can tell what it got rather than what it asked for.
+    pub horizon_months: i64,
+    /// The number of paths actually run, after [`MAX_PATH_MONTHS`]. A caller asking for 5 000
+    /// paths over 360 months gets 2 000, and without this had no way to know.
+    pub simulations: i64,
+    /// Per month, the fraction of paths whose pooled cash balance was negative, in basis points.
+    ///
+    /// The projection has always filed a negative cash pool under liabilities by sign, and still
+    /// does — changing that would move every existing figure. But a band around net worth cannot
+    /// answer "could we actually afford this", because a path that ends rich having gone $40k
+    /// overdrawn in year three looks identical to one that never did. This is that question,
+    /// counted directly. Same length as `months`.
+    pub negative_cash_rate_bps: Vec<i64>,
 }
 
 pub struct ForecastService {
@@ -370,6 +428,7 @@ impl ForecastService {
                     label: a.name.clone(),
                     annual_growth_bps: 0,
                     annual_volatility_bps: 0,
+                    long_run_growth_bps: 0,
                     dividend_yield_bps: None,
                     baseline_minor: None,
                     schedule: Some(LoanScheduleSummary {
@@ -431,6 +490,7 @@ impl ForecastService {
                 label: a.name.clone(),
                 annual_growth_bps: growth,
                 annual_volatility_bps: vol,
+                long_run_growth_bps: ov.and_then(|o| o.long_run_growth_bps).unwrap_or(0),
                 dividend_yield_bps,
                 baseline_minor: None,
                 schedule: None,
@@ -490,6 +550,7 @@ impl ForecastService {
                 label: cats.name_of(id),
                 annual_growth_bps: growth,
                 annual_volatility_bps: vol,
+                long_run_growth_bps: ov.and_then(|o| o.long_run_growth_bps).unwrap_or(0),
                 dividend_yield_bps: None,
                 baseline_minor,
                 schedule: None,
@@ -592,7 +653,13 @@ impl ForecastService {
         let horizon = params
             .horizon_months
             .clamp(MIN_HORIZON_MONTHS, MAX_HORIZON_MONTHS);
-        let n_paths = params.simulations.clamp(MIN_SIMULATIONS, MAX_SIMULATIONS) as usize;
+        // Two independent limits. The first is what a caller may ask for; the second is what the
+        // horizon can afford (see `MAX_PATH_MONTHS`). At any horizon up to the old 60-month
+        // ceiling the budget allows 12 000 paths, so it cannot bind and nothing that was legal
+        // before is affected.
+        let requested = params.simulations.clamp(MIN_SIMULATIONS, MAX_SIMULATIONS);
+        let budgeted = (MAX_PATH_MONTHS / horizon).max(MIN_SIMULATIONS);
+        let n_paths = requested.min(budgeted) as usize;
 
         let (base, fx) = self.currency_and_fx(params.currency.as_deref()).await?;
 
@@ -632,13 +699,17 @@ impl ForecastService {
                 continue;
             };
 
-            let projection = if let Some(terms) = loan_terms(&a.metadata, today) {
-                AccountProjection::Deterministic(terms)
+            let (projection, monthly_drift) = if let Some(terms) = loan_terms(&a.metadata, today) {
+                (AccountProjection::Deterministic(terms), Vec::new())
             } else {
                 let resolved = by_target.get(&(ForecastTargetType::Account, a.id));
                 let annual_growth = resolved.map(|r| r.annual_growth_bps).unwrap_or(0);
                 let annual_vol = resolved.map(|r| r.annual_volatility_bps).unwrap_or(0);
-                let monthly_log_return = annual_rate_to_monthly_log_return(annual_growth);
+                let drift = drift_series(
+                    annual_growth,
+                    resolved.and_then(|r| long_run_anchor(r)),
+                    horizon,
+                );
                 let monthly_vol = annual_vol_to_monthly_sd(annual_vol);
                 if class == AccountClass::Liability {
                     // Project a debt the same way its rate was measured. `derive_account_rate`
@@ -649,15 +720,22 @@ impl ForecastService {
                     // three years from being cleared still showing a balance a decade out.
                     // Converting the rate back into the dollars-per-month it was fitted from
                     // keeps the two consistent, and lets the debt actually finish.
-                    AccountProjection::LinearPaydown {
-                        monthly_delta: current * (monthly_log_return.exp() - 1.0),
-                        monthly_vol_abs: current.abs() * monthly_vol,
-                    }
+                    //
+                    // The conversion is per month because the rate now is: `current` is the
+                    // balance the fit was taken against and stays fixed, so a decaying rate
+                    // becomes a decaying dollars-per-month, which is the same fit expressed in
+                    // the same unit it was measured in.
+                    (
+                        AccountProjection::LinearPaydown {
+                            monthly_vol_abs: current.abs() * monthly_vol,
+                        },
+                        drift
+                            .iter()
+                            .map(|r| current * (r.exp() - 1.0))
+                            .collect::<Vec<f64>>(),
+                    )
                 } else {
-                    AccountProjection::Stochastic {
-                        monthly_log_return,
-                        monthly_vol,
-                    }
+                    (AccountProjection::Stochastic { monthly_vol }, drift)
                 }
             };
 
@@ -674,6 +752,7 @@ impl ForecastService {
                 base_scale,
                 current,
                 projection,
+                monthly_drift,
                 // Exactly the kinds whose own ledger rows are kept out of the income/
                 // expense report: that exclusion is what guarantees the repayment isn't
                 // already inside a category baseline. `StudentLoan` is excluded from
@@ -708,7 +787,7 @@ impl ForecastService {
             category_sims.push(CategorySim {
                 is_income: source_kind_is_income(self, a.target_id).await?,
                 baseline,
-                monthly_log_return: annual_rate_to_monthly_log_return(a.annual_growth_bps),
+                monthly_log_return: drift_series(a.annual_growth_bps, long_run_anchor(a), horizon),
                 monthly_vol_fraction: annual_vol_to_monthly_sd(a.annual_volatility_bps),
                 step_changes,
                 one_offs,
@@ -807,6 +886,9 @@ impl ForecastService {
                 net_worth: Vec::with_capacity(n_paths),
             })
             .collect();
+        // Paths whose cash pool was negative, per month. A count rather than samples: the answer
+        // is a single fraction, so there is nothing to take percentiles of.
+        let mut negative_cash: Vec<u32> = vec![0; horizon as usize];
 
         for _ in 0..n_paths {
             let mut acc_values: Vec<f64> = account_sims.iter().map(|s| s.current).collect();
@@ -850,10 +932,7 @@ impl ForecastService {
                                 repayments += paid.cash_out() * sim.base_scale;
                             }
                         }
-                        AccountProjection::Stochastic {
-                            monthly_log_return,
-                            monthly_vol,
-                        } => {
+                        AccountProjection::Stochastic { monthly_vol } => {
                             if let Some(&(_, val)) =
                                 sim.step_changes.iter().find(|&&(idx, _)| idx == m)
                             {
@@ -864,7 +943,7 @@ impl ForecastService {
                                 } else {
                                     0.0
                                 };
-                                acc_values[i] *= (monthly_log_return + noise).exp();
+                                acc_values[i] *= (sim.monthly_drift[m as usize] + noise).exp();
                             }
                             let one_off: f64 = sim
                                 .one_offs
@@ -874,10 +953,7 @@ impl ForecastService {
                                 .sum();
                             acc_values[i] += one_off;
                         }
-                        AccountProjection::LinearPaydown {
-                            monthly_delta,
-                            monthly_vol_abs,
-                        } => {
+                        AccountProjection::LinearPaydown { monthly_vol_abs } => {
                             if let Some(&(_, val)) =
                                 sim.step_changes.iter().find(|&&(idx, _)| idx == m)
                             {
@@ -888,7 +964,7 @@ impl ForecastService {
                                 } else {
                                     0.0
                                 };
-                                acc_values[i] += monthly_delta + noise;
+                                acc_values[i] += sim.monthly_drift[m as usize] + noise;
                             }
                             let one_off: f64 = sim
                                 .one_offs
@@ -922,7 +998,7 @@ impl ForecastService {
                         // spending is lumpy but mean-reverting — you spend about the same on
                         // food each year whichever months it lands in — so the lumpiness
                         // belongs on the month, not on the estimate.
-                        cat_baselines[i] *= sim.monthly_log_return.exp();
+                        cat_baselines[i] *= sim.monthly_log_return[m as usize].exp();
                     }
                     let one_off: f64 = sim
                         .one_offs
@@ -971,6 +1047,12 @@ impl ForecastService {
                 }
 
                 let idx = (m - 1) as usize;
+                // Counted, not acted on: the sign split above is unchanged, so no existing
+                // figure moves. See `ForecastResult::negative_cash_rate_bps` for why a band
+                // around net worth cannot answer this on its own.
+                if cash < 0.0 {
+                    negative_cash[idx] += 1;
+                }
                 month_samples[idx].assets.push(assets);
                 month_samples[idx].liabilities.push(liabilities);
                 month_samples[idx].net_worth.push(assets + liabilities);
@@ -994,6 +1076,12 @@ impl ForecastService {
             assumptions,
             unconverted: fx.unconverted(),
             rates_as_of: fx.rates_as_of().map(str::to_string),
+            horizon_months: horizon,
+            simulations: n_paths as i64,
+            negative_cash_rate_bps: negative_cash
+                .iter()
+                .map(|&c| (c as i64) * 10_000 / n_paths.max(1) as i64)
+                .collect(),
         })
     }
 }
@@ -1015,19 +1103,16 @@ enum AccountProjection {
     /// refix rate — is per-path, and lives in `simulate`'s `schedules` beside
     /// `acc_values`.
     Deterministic(LoanTerms),
-    /// `value *= exp(monthly_log_return + noise)` each month. Assets and investments, whose
-    /// rate is fitted as a compounding return in the first place.
-    Stochastic {
-        monthly_log_return: f64,
-        monthly_vol: f64,
-    },
-    /// `value += monthly_delta + noise` each month, stopping at zero. A liability without a
-    /// repayment schedule of its own: its rate is fitted as a straight line, so it is
-    /// projected as one, and a debt being paid down reaches zero and stays there rather
-    /// than shrinking by a fixed percentage forever.
+    /// `value *= exp(drift + noise)` each month, where `drift` is that month's entry in
+    /// [`AccountSim::monthly_drift`]. Assets and investments, whose rate is fitted as a
+    /// compounding return in the first place.
+    Stochastic { monthly_vol: f64 },
+    /// `value += drift + noise` each month, stopping at zero, where `drift` is that month's
+    /// entry in [`AccountSim::monthly_drift`] — there an absolute delta rather than a rate. A
+    /// liability without a repayment schedule of its own: its rate is fitted as a straight
+    /// line, so it is projected as one, and a debt being paid down reaches zero and stays
+    /// there rather than shrinking by a fixed percentage forever.
     LinearPaydown {
-        /// Signed, native minor units. Positive moves a (negative) debt toward zero.
-        monthly_delta: f64,
         /// Absolute standard deviation of the monthly move, native minor units.
         monthly_vol_abs: f64,
     },
@@ -1040,6 +1125,17 @@ struct AccountSim {
     base_scale: f64,
     current: f64,
     projection: AccountProjection,
+    /// This account's drift at each month, indexed `0..=horizon` (see [`drift_series`]).
+    ///
+    /// The unit depends on the projection, because the two models were fitted in different
+    /// ones: a monthly log-return for [`AccountProjection::Stochastic`], and an absolute
+    /// native-minor-unit delta for [`AccountProjection::LinearPaydown`]. Empty for
+    /// [`AccountProjection::Deterministic`], which projects from its own terms and has no rate.
+    ///
+    /// A table rather than a scalar so a *derived* rate can decay past the window it was fitted
+    /// over; for every other source every entry is the same value, and for any month within
+    /// [`TREND_FULL_STRENGTH_MONTHS`] it is the value the scalar had.
+    monthly_drift: Vec<f64>,
     /// Whether this loan's repayment should be debited from the projected cash pool.
     ///
     /// A mortgage's legs are already outside the category cash-flow model — the account
@@ -1064,7 +1160,9 @@ struct CategorySim {
     is_income: bool,
     /// Base-currency major units (dollars) — the current fitted monthly run-rate.
     baseline: f64,
-    monthly_log_return: f64,
+    /// Monthly log-return at each month, indexed `0..=horizon` (see [`drift_series`]). A table
+    /// rather than a scalar so a derived trend can decay past the 24 months it was fitted over.
+    monthly_log_return: Vec<f64>,
     /// Fraction of the (then-current) baseline, not yet scaled to an absolute $ stdev —
     /// scaled per-month so noise grows with the baseline over the horizon.
     monthly_vol_fraction: f64,
@@ -1171,6 +1269,77 @@ fn annual_rate_to_monthly_log_return(annual_bps: i64) -> f64 {
 /// scales with the square root of time.
 fn annual_vol_to_monthly_sd(annual_bps: i64) -> f64 {
     (annual_bps.clamp(0, MAX_VOLATILITY_BPS) as f64 / 10_000.0) / 12f64.sqrt()
+}
+
+/// `annual_bps` decayed exponentially toward `long_run_bps` at month `m`, as a monthly
+/// log-return.
+///
+/// Inside [`TREND_FULL_STRENGTH_MONTHS`] this is the *identity* — it returns bit-for-bit what
+/// [`annual_rate_to_monthly_log_return`] alone returned before decay existed. That early return
+/// is load-bearing, not an optimisation: it is what guarantees every projection legal at the old
+/// 60-month ceiling produces the same numbers now the ceiling is 360.
+///
+/// Beyond it, the fitted rate is walked toward the anchor with a [`TREND_HALF_LIFE_MONTHS`]
+/// half-life. The reason is arithmetic rather than taste. A category pinned at the derived
+/// ceiling ([`MAX_DERIVED_CATEGORY_GROWTH_BPS`], +25%/yr) compounds to ×3.05 over 60 months,
+/// which is the bound that clamp was chosen to give. Left alone over 360 it is ×807 — at which
+/// point the clamp is no longer bounding the damage from an over-fitted series, it *is* the
+/// model, and the whole projection is a statement about a number nobody chose. Decayed toward a
+/// 0 bps anchor the same rate gives ×5.97, or about 6.1%/yr averaged over the thirty years —
+/// still the pathological end of the range, but a claim the fit can support rather than one it
+/// cannot.
+///
+/// The ordinary case moves far less, which is the point: a derived +3%/yr goes from ×2.43
+/// undecayed to ×1.26. The decay is aimed at the tail, not at every trend.
+///
+/// Rounding back to whole bps before converting keeps this on exactly the same code path as an
+/// un-decayed rate, including [`MIN_ANNUAL_RATE`]/[`MAX_ANNUAL_RATE`].
+fn decayed_monthly_log_return(annual_bps: i64, long_run_bps: i64, m: i64) -> f64 {
+    let excess = m - TREND_FULL_STRENGTH_MONTHS;
+    if excess <= 0 {
+        return annual_rate_to_monthly_log_return(annual_bps);
+    }
+    let w = (-std::f64::consts::LN_2 * excess as f64 / TREND_HALF_LIFE_MONTHS).exp();
+    let annual = annual_bps as f64 * w + long_run_bps as f64 * (1.0 - w);
+    annual_rate_to_monthly_log_return(annual.round() as i64)
+}
+
+/// The monthly log-return a projection uses at each month, indexed `0..=horizon`.
+///
+/// Precomputed once per target rather than evaluated per (path × month): the table is
+/// `horizon + 1` floats against `paths × months` lookups, so it turns tens of millions of
+/// `exp()` calls into an index.
+///
+/// `long_run_bps` is `None` for every rate that must **not** decay, and each exclusion is a
+/// different argument:
+///
+/// * an explicit override — the user asserting a rate, which is the same line
+///   [`MAX_DERIVED_CATEGORY_GROWTH_BPS`] already declines to cross;
+/// * a cron-configured rate — likewise configured rather than fitted;
+/// * [`AssumptionSource::InsufficientHistory`] — already flat, so there is nothing to decay;
+/// * [`AssumptionSource::Deterministic`] — an amortisation schedule has no rate to decay at all.
+///
+/// Only a rate *derived* from a finite window of history is being extrapolated past that window,
+/// and only that rate is walked back toward the anchor.
+fn drift_series(annual_bps: i64, long_run_bps: Option<i64>, horizon: i64) -> Vec<f64> {
+    match long_run_bps {
+        None => vec![annual_rate_to_monthly_log_return(annual_bps); (horizon + 1) as usize],
+        Some(lr) => (0..=horizon)
+            .map(|m| decayed_monthly_log_return(annual_bps, lr, m))
+            .collect(),
+    }
+}
+
+/// The long-run anchor a resolved assumption's growth decays toward, or `None` if it must not
+/// decay. See [`drift_series`] for why each source is treated the way it is.
+fn long_run_anchor(a: &ResolvedAssumption) -> Option<i64> {
+    match a.source {
+        AssumptionSource::Derived => Some(a.long_run_growth_bps),
+        AssumptionSource::Override
+        | AssumptionSource::Cron
+        | AssumptionSource::Deterministic
+        | AssumptionSource::InsufficientHistory => None,
+    }
 }
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
@@ -2458,6 +2627,105 @@ mod tests {
         assert_eq!(add_months(d("2026-01-31"), 1), d("2026-02-28"));
     }
 
+    /// The guarantee that makes raising the horizon ceiling from 60 to 360 a shippable change
+    /// rather than a silent restatement of every projection the user has already looked at.
+    ///
+    /// Bit-for-bit equality, not approximate: the whole claim is that nothing moves, and a
+    /// tolerance here would let a rewrite of the decay arithmetic drift the last few digits of
+    /// every band inside five years while this test still passed.
+    #[test]
+    fn decay_is_the_identity_inside_the_window_a_fit_is_trusted_over() {
+        for annual_bps in [-4_000, 0, 137, 2_500, 90_000] {
+            let flat = annual_rate_to_monthly_log_return(annual_bps);
+            for m in 0..=TREND_FULL_STRENGTH_MONTHS {
+                // A deliberately absurd anchor: if decay were reachable inside the window at
+                // all, an anchor this far from the fitted rate could not fail to show it.
+                assert_eq!(
+                    decayed_monthly_log_return(annual_bps, 9_999, m),
+                    flat,
+                    "month {m} at {annual_bps} bps moved inside the full-strength window"
+                );
+            }
+            assert_ne!(
+                decayed_monthly_log_return(annual_bps, 9_999, TREND_FULL_STRENGTH_MONTHS + 1),
+                flat,
+                "decay never started for {annual_bps} bps"
+            );
+        }
+    }
+
+    /// A derived rate is *not* the only thing in the projection, so the decay must apply to it
+    /// and nothing else. `drift_series` takes `None` for every source the user configured.
+    #[test]
+    fn only_a_derived_rate_decays() {
+        let horizon = 120;
+        let asserted = drift_series(2_500, None, horizon);
+        assert!(
+            asserted.windows(2).all(|w| w[0] == w[1]),
+            "an override/cron rate must be flat across the whole horizon"
+        );
+
+        let derived = drift_series(2_500, Some(0), horizon);
+        assert_eq!(
+            derived[..=TREND_FULL_STRENGTH_MONTHS as usize],
+            asserted[..=TREND_FULL_STRENGTH_MONTHS as usize],
+            "a derived rate must match an asserted one inside the fitted window"
+        );
+        assert!(
+            derived[horizon as usize] < derived[TREND_FULL_STRENGTH_MONTHS as usize],
+            "a derived rate must have decayed by the end of a 10-year horizon"
+        );
+    }
+
+    /// The figures quoted in [`decayed_monthly_log_return`]'s doc comment, pinned so the
+    /// justification cannot quietly stop being true if a constant is retuned.
+    ///
+    /// `MAX_DERIVED_CATEGORY_GROWTH_BPS` (+25%/yr) is the interesting input because it is the
+    /// clamp's own ceiling: whatever this does to that rate is the worst the projection can do.
+    #[test]
+    fn decay_bounds_the_pathological_tail_without_flattening_an_ordinary_trend() {
+        // Compound the per-month series the simulation actually indexes, rather than a closed
+        // form — so this measures the code path, not a restatement of the formula.
+        let compound = |annual_bps: i64, long_run: Option<i64>, months: i64| -> f64 {
+            drift_series(annual_bps, long_run, months)[1..=months as usize]
+                .iter()
+                .sum::<f64>()
+                .exp()
+        };
+        let close = |got: f64, want: f64| (got - want).abs() / want < 0.005;
+
+        let ceiling = MAX_DERIVED_CATEGORY_GROWTH_BPS;
+        let at_60 = compound(ceiling, Some(0), 60);
+        assert!(close(at_60, 3.0518), "60mo at the ceiling: got {at_60}");
+
+        // Undecayed over thirty years the clamp stops bounding anything and becomes the model.
+        let undecayed = compound(ceiling, None, 360);
+        assert!(close(undecayed, 807.79), "360mo undecayed: got {undecayed}");
+
+        let decayed = compound(ceiling, Some(0), 360);
+        assert!(close(decayed, 5.97), "360mo decayed: got {decayed}");
+
+        // …and the ordinary case is barely touched, which is what stops this being a blunt
+        // instrument applied to every trend in the household.
+        let ordinary = compound(300, Some(0), 360);
+        assert!(close(ordinary, 1.262), "360mo at +3%/yr: got {ordinary}");
+    }
+
+    /// The path-month budget must not bind at any horizon that was legal before the ceiling
+    /// moved, or raising it would silently coarsen every existing projection's bands.
+    #[test]
+    fn the_path_budget_spares_every_horizon_that_was_already_legal() {
+        let budgeted = |horizon: i64| (MAX_PATH_MONTHS / horizon).max(MIN_SIMULATIONS);
+        for horizon in [1, 12, 24, 36, TREND_FULL_STRENGTH_MONTHS] {
+            assert!(
+                budgeted(horizon) >= MAX_SIMULATIONS,
+                "horizon {horizon} lost paths to the budget"
+            );
+        }
+        // At the new ceiling it does bind, to a count that still supports a stable P10/P90.
+        assert_eq!(budgeted(MAX_HORIZON_MONTHS), 2_000);
+    }
+
     /// The W-08 clamp. Volatility used to be bounded below (so `Normal::new` never saw a
     /// negative variance) and not above, so an override of a few million bps put ±1e14 into
     /// `exp()` — which saturates past ±745 — and made `0.0 * inf` = `NaN` routine within one
@@ -2470,18 +2738,32 @@ mod tests {
         // Negative variance is not a thing; zero means "no noise", not "panic".
         assert_eq!(annual_vol_to_monthly_sd(-5_000), 0.0);
         assert_eq!(annual_vol_to_monthly_sd(0), 0.0);
-        // The ceiling holds however absurd the input, and the exponent it implies stays
-        // nowhere near the ~745 at which `exp()` saturates, even compounded over the longest
-        // horizon at several standard deviations.
+        // The ceiling holds however absurd the input.
         let ceiling = annual_vol_to_monthly_sd(MAX_VOLATILITY_BPS);
         for bps in [MAX_VOLATILITY_BPS + 1, 1_000_000_000_000_00, i64::MAX] {
             assert_eq!(annual_vol_to_monthly_sd(bps), ceiling);
         }
+
+        // …and the exponent it implies stays clear of the ~745 at which `exp()` saturates.
+        //
+        // This bound is stated over the *cumulative* draw, and that framing is load-bearing.
+        // While the horizon was 60 months it was possible to assert something far stronger —
+        // ten sigma sustained in the same direction every single month — and have it hold
+        // (0.866 × 10 × 60 = 520, finite). At 360 months the same claim is 3118 and overflows,
+        // and no volatility ceiling worth having would rescue it: holding it would mean
+        // clamping to ~72%/yr, and `MAX_VOLATILITY_BPS`'s own comment explains why 300%/yr is
+        // a true description of a real category rather than a number to clamp away. So the
+        // guarantee is restated as what the loop actually compounds — a random walk whose
+        // standard deviation grows with √months, not linearly with them.
+        //
+        // Ten sigma of that walk is the assertion; saturation needs 45, or 41 alongside the
+        // largest drift `MAX_ANNUAL_RATE` permits, neither of which occurs in `MAX_SIMULATIONS`
+        // samples. Beyond that, `band_from_samples` drops non-finite samples with a WARN, which
+        // is the second line of defence this ceiling was always paired with.
+        let cumulative_sd = ceiling * (MAX_HORIZON_MONTHS as f64).sqrt();
         assert!(
-            (ceiling * 10.0 * MAX_HORIZON_MONTHS as f64)
-                .exp()
-                .is_finite(),
-            "ten sigma every month for the whole horizon must still be finite"
+            (cumulative_sd * 10.0).exp().is_finite(),
+            "ten sigma of the whole-horizon walk must still be finite"
         );
     }
 
@@ -2710,6 +2992,7 @@ mod tests {
                             target_id,
                             annual_growth_bps,
                             annual_volatility_bps,
+                            long_run_growth_bps: None,
                             dividend_yield_bps: None,
                             notes: None,
                             created_at: "2026-08-01T00:00:00Z".to_string(),

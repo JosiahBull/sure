@@ -2333,11 +2333,16 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    /** @description How many months forward to project (1-60). Defaults to 12. */
+                    /**
+                     * @description How many months forward to project (1-360). Defaults to 12. A value past the ceiling is
+                     *     clamped rather than refused; `ForecastResult::horizon_months` reports what was run.
+                     */
                     horizon_months?: number;
                     /**
                      * @description Monte Carlo path count (100-5000, more = smoother percentiles, slower).
-                     *     Defaults to 2000.
+                     *     Defaults to 2000. Long horizons are additionally capped by a path-month budget, so a
+                     *     30-year projection runs 2000 paths however many were asked for —
+                     *     `ForecastResult::simulations` reports what was run.
                      */
                     simulations?: number;
                     /**
@@ -5375,6 +5380,16 @@ export interface components {
             annual_volatility_bps?: number | null;
             /** Format: int64 */
             dividend_yield_bps?: number | null;
+            /**
+             * Format: int64
+             * @description The annual rate a *derived* growth trend decays toward beyond the window it was
+             *     fitted over, in basis points. `None` reads as 0 — flat in nominal terms, which is
+             *     what `AssumptionSource::InsufficientHistory` already yields, so it is the
+             *     conservative claim rather than an invented one. Ignored when
+             *     `annual_growth_bps` is set: that is the user asserting a rate, and an assertion is
+             *     not decayed.
+             */
+            long_run_growth_bps?: number | null;
             notes?: string | null;
             created_at: string;
             updated_at: string;
@@ -5417,6 +5432,26 @@ export interface components {
             unconverted: string[];
             /** @description Newest date across the exchange rates used (ISO-8601), `null` if none are on record. */
             rates_as_of?: string | null;
+            /**
+             * Format: int64
+             * @description The horizon actually projected, after clamping. Equal to `months.length`.
+             */
+            horizon_months: number;
+            /**
+             * Format: int64
+             * @description The Monte Carlo path count actually run, after the path-month budget. Asking for 5000
+             *     paths over 360 months yields 2000, and this is how a caller can tell.
+             */
+            simulations: number;
+            /**
+             * @description Per month, the fraction of simulated paths whose pooled cash balance was negative, in
+             *     basis points. Same length as `months`.
+             *
+             *     A band around net worth cannot answer "could we actually afford this": a path that ends
+             *     rich having gone thousands overdrawn in year three looks identical to one that never
+             *     did. This counts that directly.
+             */
+            negative_cash_rate_bps: number[];
         };
         /**
          * @description What kind of thing a `forecast_assumptions` row tunes.
@@ -5968,6 +6003,13 @@ export interface components {
             annual_volatility_bps: number;
             /**
              * Format: int64
+             * @description The annual rate `annual_growth_bps` decays toward beyond the five years it was fitted
+             *     over, in basis points. Only applied when `source` is `derived` — an override or a
+             *     cron-configured rate is something the user asserted, and an assertion is not decayed.
+             */
+            long_run_growth_bps: number;
+            /**
+             * Format: int64
              * @description Only set for Investment-class accounts (brokerage/shares).
              */
             dividend_yield_bps?: number | null;
@@ -6201,6 +6243,8 @@ export interface components {
             annual_volatility_bps?: number | null;
             /** Format: int64 */
             dividend_yield_bps?: number | null;
+            /** Format: int64 */
+            long_run_growth_bps?: number | null;
             notes?: string | null;
         };
         SaveForecastEvent: {

@@ -18,6 +18,7 @@ struct ForecastAssumptionRow {
     annual_growth_bps: Option<i64>,
     annual_volatility_bps: Option<i64>,
     dividend_yield_bps: Option<i64>,
+    long_run_growth_bps: Option<i64>,
     notes: Option<String>,
     created_at: String,
     updated_at: String,
@@ -41,6 +42,7 @@ impl TryFrom<ForecastAssumptionRow> for ForecastAssumption {
             annual_growth_bps: r.annual_growth_bps,
             annual_volatility_bps: r.annual_volatility_bps,
             dividend_yield_bps: r.dividend_yield_bps,
+            long_run_growth_bps: r.long_run_growth_bps,
             notes: r.notes,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -102,12 +104,14 @@ pub async fn upsert_assumption(
     }
     sqlx::query_as::<_, ForecastAssumptionRow>(
         "INSERT INTO forecast_assumptions
-            (target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps, notes)
-         VALUES (?1,?2,?3,?4,?5,?6)
+            (target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps,
+             long_run_growth_bps, notes)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)
          ON CONFLICT(target_type, target_id) DO UPDATE SET
             annual_growth_bps=excluded.annual_growth_bps,
             annual_volatility_bps=excluded.annual_volatility_bps,
             dividend_yield_bps=excluded.dividend_yield_bps,
+            long_run_growth_bps=excluded.long_run_growth_bps,
             notes=excluded.notes,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          RETURNING *",
@@ -117,6 +121,7 @@ pub async fn upsert_assumption(
     .bind(input.annual_growth_bps)
     .bind(input.annual_volatility_bps)
     .bind(input.dividend_yield_bps)
+    .bind(input.long_run_growth_bps)
     .bind(input.notes)
     .fetch_one(db)
     .await?
@@ -261,6 +266,7 @@ mod tests {
             annual_growth_bps: Some(700),
             annual_volatility_bps,
             dividend_yield_bps: None,
+            long_run_growth_bps: None,
             notes: None,
         }
     }

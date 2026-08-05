@@ -1,6 +1,7 @@
 <script lang="ts">
   import { formatDate, formatMoney } from "../api";
   import type { Schemas } from "../api";
+  import { CHART_W, CHART_PAD_X, sxFor, seriesIndex, yearTicks } from "./forecastScale";
 
   // History flows into a Monte Carlo projection: a solid actuals line, then a dashed
   // median line with a shaded P10-P90 band. Both series share one index-based x-axis
@@ -12,6 +13,7 @@
     currency = "NZD",
     height = 240,
     onhover,
+    checkpoints = [3, 6, 9, 12],
   }: {
     history: { x: string; y: number }[];
     months: Schemas["ForecastMonth"][];
@@ -19,10 +21,21 @@
     height?: number;
     /** Fires with the hovered point's date + values, or null on leave. */
     onhover?: (point: { as_of: string; median: number; p10?: number; p90?: number } | null) => void;
+    /**
+     * Month offsets to mark with a rule and a dot. A prop rather than a local const because the
+     * page shows the matching callout tiles and the two must agree — they were separate copies
+     * of `[3, 6, 9, 12]` before, which stopped being right the moment the horizon could be 30
+     * years and four marks landed inside the first 3% of the axis.
+     */
+    checkpoints?: number[];
   } = $props();
 
-  const W = 640;
-  const pad = { l: 6, r: 10, t: 14, b: 22 };
+  const W = CHART_W;
+  // Split by axis. `sx` and pointer-mapping read `padX`; only `sy` reads `padY`. The two are
+  // separate so the vertical padding can later grow with the number of event-label lanes —
+  // which are packed by x — without the lane packing depending on its own output.
+  const padX = CHART_PAD_X;
+  const padY = { t: 14, b: 22 };
 
   const seam = $derived(history.at(-1));
   const histLen = $derived(history.length);
@@ -65,12 +78,11 @@
   const maxY = $derived(allY.length ? Math.max(1, ...allY) : 1);
 
   function sx(i: number): number {
-    const n = totalPoints;
-    return pad.l + (W - pad.l - pad.r) * (n <= 1 ? 0 : i / (n - 1));
+    return sxFor(i, totalPoints);
   }
   function sy(v: number): number {
     const t = (v - minY) / (maxY - minY || 1);
-    return pad.t + (height - pad.t - pad.b) * (1 - t);
+    return padY.t + (height - padY.t - padY.b) * (1 - t);
   }
 
   const historyPath = $derived(
@@ -95,15 +107,21 @@
     return `${upper} ${lower} Z`;
   });
 
-  // Vertical markers + callouts at +3/+6/+9/+12 months (only the ones within horizon).
-  const CHECKPOINTS = [3, 6, 9, 12];
-  const checkpoints = $derived(
-    CHECKPOINTS.filter((m) => m <= months.length).map((m) => ({
-      months: m,
-      index: histLen - 1 + m,
-      month: months[m - 1],
-    }))
+  // Vertical markers at the page's checkpoint months (only the ones within horizon).
+  const marks = $derived(
+    checkpoints
+      .filter((m) => m <= months.length)
+      .map((m) => ({
+        months: m,
+        index: seriesIndex(histLen, m),
+        month: months[m - 1],
+      }))
   );
+
+  // Year gridlines + labels. A 30-year chart with no year ticks is a shape, not a chart; the
+  // three-span first/Today/last footer this replaces said nothing about the twenty-eight years
+  // in between.
+  const ticks = $derived(yearTicks(histLen, months));
 
   const zeroY = $derived(minY < 0 ? sy(0) : null);
 
@@ -114,10 +132,10 @@
   function idxFromClientX(clientX: number): number {
     const rect = svgEl!.getBoundingClientRect();
     const vbX = ((clientX - rect.left) / rect.width) * W;
-    const plotW = W - pad.l - pad.r;
+    const plotW = W - padX.l - padX.r;
     const n = totalPoints;
     if (n <= 1) return 0;
-    const i = Math.round(((vbX - pad.l) / plotW) * (n - 1));
+    const i = Math.round(((vbX - padX.l) / plotW) * (n - 1));
     return Math.max(0, Math.min(n - 1, i));
   }
   function setHover(i: number | null) {
@@ -174,12 +192,18 @@
       onpointermove={onPointerMove}
       onpointerleave={onPointerLeave}
     >
+      {#each ticks as t (t.index)}
+        {#if !t.today}
+          <line x1={sx(t.index)} x2={sx(t.index)} y1={padY.t} y2={height - padY.b}
+                stroke="var(--border)" stroke-dasharray="1 4" vector-effect="non-scaling-stroke" />
+        {/if}
+      {/each}
       {#if zeroY !== null}
-        <line x1={pad.l} x2={W - pad.r} y1={zeroY} y2={zeroY} stroke="var(--border-strong)"
+        <line x1={padX.l} x2={W - padX.r} y1={zeroY} y2={zeroY} stroke="var(--border-strong)"
               stroke-dasharray="3 3" />
       {/if}
       {#if histLen > 0}
-        <line x1={sx(histLen - 1)} x2={sx(histLen - 1)} y1={pad.t} y2={height - pad.b}
+        <line x1={sx(histLen - 1)} x2={sx(histLen - 1)} y1={padY.t} y2={height - padY.b}
               stroke="var(--border-strong)" stroke-dasharray="2 3" vector-effect="non-scaling-stroke" />
       {/if}
 
@@ -189,14 +213,14 @@
       <path d={projectionPath} fill="none" stroke="var(--accent)" stroke-width="1.5"
             stroke-dasharray="5 4" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
 
-      {#each checkpoints as c (c.months)}
-        <line x1={sx(c.index)} x2={sx(c.index)} y1={pad.t} y2={height - pad.b}
+      {#each marks as c (c.months)}
+        <line x1={sx(c.index)} x2={sx(c.index)} y1={padY.t} y2={height - padY.b}
               stroke="var(--border)" stroke-dasharray="1 3" vector-effect="non-scaling-stroke" />
         <circle cx={sx(c.index)} cy={sy(c.month.net_worth.median_minor)} r="3" fill="var(--accent)" />
       {/each}
 
       {#if hover !== null}
-        <line x1={sx(hover)} x2={sx(hover)} y1={pad.t} y2={height - pad.b}
+        <line x1={sx(hover)} x2={sx(hover)} y1={padY.t} y2={height - padY.b}
               stroke="var(--border-strong)" vector-effect="non-scaling-stroke" />
         <circle cx={sx(hover)} cy={sy(medianY[hover])} r="4.5" fill="var(--accent)"
                 stroke="var(--bg-elev)" stroke-width="1.5" />
@@ -217,16 +241,33 @@
       </div>
     {/if}
   </div>
-  <div class="row spread small faint" style="margin-top:4px">
-    <span>{history[0] ? formatDate(history[0].x) : ""}</span>
-    <span>Today</span>
-    <span>{months.at(-1) ? formatDate(months.at(-1)!.as_of) : ""}</span>
+  <!-- Ticks are HTML, not SVG <text>: `preserveAspectRatio="none"` stretches the viewBox
+       horizontally to fill the container, and it would stretch glyphs by the same factor. The
+       percentages come from the same scale the SVG uses, so they line up exactly. -->
+  <div class="ticks small faint" style="height:14px">
+    {#each ticks as t (t.index)}
+      <span class="tick" class:today={t.today} style="left:{(sx(t.index) / W) * 100}%">{t.label}</span>
+    {/each}
   </div>
 {/if}
 
 <style>
   .chart-wrap {
     position: relative;
+  }
+  .ticks {
+    position: relative;
+    margin-top: 2px;
+  }
+  .tick {
+    position: absolute;
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+  /* The seam is the one tick whose position carries meaning on its own, so it is the one that
+     stays legible when a neighbouring year label crowds it. */
+  .tick.today {
+    color: var(--text-muted);
   }
   .chart {
     cursor: crosshair;

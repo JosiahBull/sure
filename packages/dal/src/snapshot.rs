@@ -313,6 +313,10 @@ pub struct ForecastAssumptionRow {
     pub annual_growth_bps: Option<i64>,
     pub annual_volatility_bps: Option<i64>,
     pub dividend_yield_bps: Option<i64>,
+    /// `#[serde(default)]` so a snapshot taken before 0020 added the column still imports,
+    /// as `NULL` — which is exactly the value that migration gives every existing row.
+    #[serde(default)]
+    pub long_run_growth_bps: Option<i64>,
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -677,8 +681,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             .execute(&mut *txn).await?;
     }
     for f in &snap.forecast_assumptions {
-        sqlx::query("INSERT INTO forecast_assumptions (id, target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps, notes, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)")
-            .bind(f.id).bind(&f.target_type).bind(f.target_id).bind(f.annual_growth_bps).bind(f.annual_volatility_bps).bind(f.dividend_yield_bps).bind(&f.notes).bind(&f.created_at).bind(&f.updated_at)
+        sqlx::query("INSERT INTO forecast_assumptions (id, target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps, long_run_growth_bps, notes, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")
+            .bind(f.id).bind(&f.target_type).bind(f.target_id).bind(f.annual_growth_bps).bind(f.annual_volatility_bps).bind(f.dividend_yield_bps).bind(f.long_run_growth_bps).bind(&f.notes).bind(&f.created_at).bind(&f.updated_at)
             .execute(&mut *txn).await?;
     }
     for e in &snap.forecast_events {

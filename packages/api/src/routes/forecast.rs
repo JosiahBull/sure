@@ -92,6 +92,10 @@ pub struct ResolvedAssumption {
     pub label: String,
     pub annual_growth_bps: i64,
     pub annual_volatility_bps: i64,
+    /// The annual rate `annual_growth_bps` decays toward beyond the five years it was fitted
+    /// over, in basis points. Only applied when `source` is `derived` — an override or a
+    /// cron-configured rate is something the user asserted, and an assertion is not decayed.
+    pub long_run_growth_bps: i64,
     /// Only set for Investment-class accounts (brokerage/shares).
     pub dividend_yield_bps: Option<i64>,
     /// Only set for categories: the current fitted monthly run-rate the simulation
@@ -112,6 +116,7 @@ impl From<sure_app::forecast::ResolvedAssumption> for ResolvedAssumption {
             label: r.label,
             annual_growth_bps: r.annual_growth_bps,
             annual_volatility_bps: r.annual_volatility_bps,
+            long_run_growth_bps: r.long_run_growth_bps,
             dividend_yield_bps: r.dividend_yield_bps,
             baseline_minor: r.baseline_minor,
             schedule: r.schedule.map(Into::into),
@@ -126,10 +131,13 @@ impl From<sure_app::forecast::ResolvedAssumption> for ResolvedAssumption {
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ForecastQuery {
-    /// How many months forward to project (1-60). Defaults to 12.
+    /// How many months forward to project (1-360). Defaults to 12. A value past the ceiling is
+    /// clamped rather than refused; `ForecastResult::horizon_months` reports what was run.
     pub horizon_months: Option<i64>,
     /// Monte Carlo path count (100-5000, more = smoother percentiles, slower).
-    /// Defaults to 2000.
+    /// Defaults to 2000. Long horizons are additionally capped by a path-month budget, so a
+    /// 30-year projection runs 2000 paths however many were asked for —
+    /// `ForecastResult::simulations` reports what was run.
     pub simulations: Option<i64>,
     /// Report currency; defaults to the configured base currency. An unknown code is a 400
     /// rather than a projection at parity — see `sure_app::forecast`'s `currency_and_fx`.
@@ -204,6 +212,18 @@ pub struct ForecastResult {
     pub unconverted: Vec<String>,
     /// Newest date across the exchange rates used (ISO-8601), `null` if none are on record.
     pub rates_as_of: Option<String>,
+    /// The horizon actually projected, after clamping. Equal to `months.length`.
+    pub horizon_months: i64,
+    /// The Monte Carlo path count actually run, after the path-month budget. Asking for 5000
+    /// paths over 360 months yields 2000, and this is how a caller can tell.
+    pub simulations: i64,
+    /// Per month, the fraction of simulated paths whose pooled cash balance was negative, in
+    /// basis points. Same length as `months`.
+    ///
+    /// A band around net worth cannot answer "could we actually afford this": a path that ends
+    /// rich having gone thousands overdrawn in year three looks identical to one that never
+    /// did. This counts that directly.
+    pub negative_cash_rate_bps: Vec<i64>,
 }
 
 impl From<sure_app::forecast::ForecastResult> for ForecastResult {
@@ -214,6 +234,9 @@ impl From<sure_app::forecast::ForecastResult> for ForecastResult {
             assumptions: r.assumptions.into_iter().map(Into::into).collect(),
             unconverted: r.unconverted,
             rates_as_of: r.rates_as_of,
+            horizon_months: r.horizon_months,
+            simulations: r.simulations,
+            negative_cash_rate_bps: r.negative_cash_rate_bps,
         }
     }
 }
