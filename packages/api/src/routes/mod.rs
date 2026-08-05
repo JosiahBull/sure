@@ -12,6 +12,7 @@ pub mod currencies;
 pub mod equity;
 pub mod forecast;
 pub mod health;
+pub mod income;
 pub mod merchants;
 pub mod people;
 pub mod providers;
@@ -49,6 +50,7 @@ pub fn router(limits: &Limits) -> Router<AppState> {
         .merge(stock_prices::router())
         .merge(student_loan::router(limits))
         .merge(asb::router(limits))
-        .merge(forecast::router());
+        .merge(forecast::router())
+        .merge(income::router());
     Router::new().nest("/api", api)
 }

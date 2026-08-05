@@ -2663,6 +2663,173 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/income-streams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every income stream in the household, with its dated pay-scale steps attached.
+         * @description Flat and unfiltered: the income screen wants every person's streams at once, and one request
+         *     per person would be N round trips for a few rows.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomeStream"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/income-streams/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One income stream. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomeStream"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        /**
+         * Replace an income stream, its pay-scale schedule included.
+         * @description The steps sent here *are* the schedule afterwards, so removing one is omitting it — the
+         *     full-replace contract `PUT /api/forecast/assumptions` already has.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveIncomeStream"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomeStream"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        /**
+         * Remove an income stream. Refused with 409 while a forecast change still points at it — repoint
+         *     or remove those first, so a promotion cannot quietly become a no-op.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/merchants": {
         parameters: {
             query?: never;
@@ -3018,6 +3185,68 @@ export interface paths {
                 };
             };
         };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/people/{person_id}/income-streams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record income for someone in the household.
+         * @description Nested under the person, and flat for every mutation below — the `valuations` arrangement. It
+         *     puts `person_id` in the path, where it cannot be omitted or contradicted by the body, and keeps
+         *     the mutation URLs stable.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    person_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveIncomeStream"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomeStream"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -5490,6 +5719,63 @@ export interface components {
             provider?: string | null;
             created_at: string;
         };
+        /**
+         * @description Which direction a stream's recorded figure points, and — when it is before deductions — whose
+         *     rules apply.
+         *
+         *     One enum rather than a `taxable` flag beside a separate `tax_scale`, because those would be two
+         *     independent encodings of the same fact and free to drift apart (CLAUDE.md rule 1). Adding
+         *     another jurisdiction is one variant here, and the exhaustive-match lint then finds every site
+         *     that has to decide what it means.
+         * @enum {string}
+         */
+        IncomeBasis: "net" | "gross_nz_paye";
+        IncomeStream: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            person_id: number;
+            label: string;
+            employer?: string | null;
+            currency_code: string;
+            /** Format: int64 */
+            annual_amount_minor: number;
+            basis: components["schemas"]["IncomeBasis"];
+            pay_frequency: components["schemas"]["PayFrequency"];
+            first_payment_on: string;
+            starts_on: string;
+            ends_on?: string | null;
+            /** Format: int64 */
+            annual_increase_bps: number;
+            /** Format: int64 */
+            kiwisaver_bps: number;
+            student_loan: boolean;
+            /** Format: int64 */
+            take_home_bps?: number | null;
+            /** Format: int64 */
+            linked_category_id?: number | null;
+            enabled: boolean;
+            /** Format: int64 */
+            sort_order: number;
+            notes?: string | null;
+            /**
+             * @description The dated pay scale, ascending. Loaded with the stream — a schedule is not useful without
+             *     the thing it schedules, and the UI edits them together.
+             */
+            steps: components["schemas"]["IncomeStreamStep"][];
+            created_at: string;
+            updated_at: string;
+        };
+        IncomeStreamStep: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            income_stream_id: number;
+            effective_on: string;
+            /** Format: int64 */
+            annual_amount_minor: number;
+            label?: string | null;
+        };
         LinkGroupMember: {
             /** @description The upstream's stable identifier (`ProviderAccount::external_id`). */
             external_id: string;
@@ -5777,6 +6063,15 @@ export interface components {
             /** @enum {string} */
             kind: "joint";
         };
+        /**
+         * @description How often a stream pays.
+         *
+         *     The simulation steps in months, so this plus an anchor date is what puts a quarterly payment in
+         *     the month it actually lands in and gives a fortnightly payer three paydays in the months that
+         *     really have three.
+         * @enum {string}
+         */
+        PayFrequency: "weekly" | "fortnightly" | "four_weekly" | "monthly" | "quarterly" | "annual";
         /** @description One member of the household. */
         Person: {
             /** Format: int64 */
@@ -6291,6 +6586,43 @@ export interface components {
             fee_minor?: number;
             kind?: components["schemas"]["LotKind"];
         };
+        /**
+         * @description Write body. `steps` is a **full replace**, like `SaveForecastAssumption` is a full-replace
+         *     upsert: the steps sent here *are* the schedule after the write, so deleting one is omitting it.
+         *     One body and one transaction, so a schedule can never be half-saved.
+         */
+        SaveIncomeStream: {
+            label: string;
+            employer?: string | null;
+            currency_code: string;
+            /** Format: int64 */
+            annual_amount_minor: number;
+            basis: components["schemas"]["IncomeBasis"];
+            pay_frequency: components["schemas"]["PayFrequency"];
+            first_payment_on: string;
+            starts_on: string;
+            ends_on?: string | null;
+            /** Format: int64 */
+            annual_increase_bps?: number;
+            /** Format: int64 */
+            kiwisaver_bps?: number;
+            student_loan?: boolean;
+            /** Format: int64 */
+            take_home_bps?: number | null;
+            /** Format: int64 */
+            linked_category_id?: number | null;
+            enabled?: boolean;
+            /** Format: int64 */
+            sort_order?: number;
+            notes?: string | null;
+            steps?: components["schemas"]["SaveIncomeStreamStep"][];
+        };
+        SaveIncomeStreamStep: {
+            effective_on: string;
+            /** Format: int64 */
+            annual_amount_minor: number;
+            label?: string | null;
+        };
         SaveMerchant: {
             name: string;
             /** Format: int64 */
@@ -6477,6 +6809,14 @@ export interface components {
             /** @description Inline data for payload-based providers (e.g. CSV text). */
             payload?: string | null;
         };
+        /**
+         * @description Where a stream's gross→net map came from.
+         *
+         *     The same shape, and the same philosophy, as `sure_app::forecast::AssumptionSource`: an override
+         *     wins, else it is computed or derived, else it is *flagged* rather than guessed.
+         * @enum {string}
+         */
+        TakeHomeSource: "override" | "already_net" | "statutory" | "reconciled" | "inherited" | "unresolved";
         /**
          * @description How gains on a holding are taxed. Not stored for share/brokerage accounts, where it
          *     is derived from the account's `subtype` instead.

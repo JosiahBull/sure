@@ -14,6 +14,7 @@ pub mod currencies;
 pub mod equity;
 pub mod error;
 pub mod forecast;
+pub mod income;
 pub mod iso_date;
 pub mod merchants;
 pub mod money;
@@ -41,6 +42,10 @@ pub use error::{AppError, AppResult, ErrorBody, ErrorDetail};
 pub use forecast::{
     ForecastAssumption, ForecastEvent, ForecastEventKind, ForecastTargetType,
     SaveForecastAssumption, SaveForecastEvent,
+};
+pub use income::{
+    IncomeBasis, IncomeStream, IncomeStreamStep, PayFrequency, PayStep, SaveIncomeStream,
+    SaveIncomeStreamStep, TakeHome, TakeHomeSource,
 };
 pub use iso_date::IsoDate;
 pub use merchants::{Merchant, SaveMerchant};

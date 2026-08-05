@@ -627,6 +627,34 @@ impl ForecastService {
         self.forecast.delete_event(id).await
     }
 
+    pub async fn list_income_streams(&self) -> AppResult<Vec<sure_core::IncomeStream>> {
+        self.forecast.list_income_streams().await
+    }
+
+    pub async fn get_income_stream(&self, id: i64) -> AppResult<sure_core::IncomeStream> {
+        self.forecast.get_income_stream(id).await
+    }
+
+    pub async fn create_income_stream(
+        &self,
+        person_id: i64,
+        input: sure_core::SaveIncomeStream,
+    ) -> AppResult<sure_core::IncomeStream> {
+        self.forecast.create_income_stream(person_id, input).await
+    }
+
+    pub async fn update_income_stream(
+        &self,
+        id: i64,
+        input: sure_core::SaveIncomeStream,
+    ) -> AppResult<sure_core::IncomeStream> {
+        self.forecast.update_income_stream(id, input).await
+    }
+
+    pub async fn delete_income_stream(&self, id: i64) -> AppResult<()> {
+        self.forecast.delete_income_stream(id).await
+    }
+
     /// Monte Carlo projection: `params.simulations` independent monthly paths out to
     /// `params.horizon_months`, aggregated into percentile bands per month.
     ///
@@ -3028,6 +3056,34 @@ mod tests {
                 unreachable!()
             }
             async fn delete_event(&self, _id: i64) -> AppResult<()> {
+                unreachable!()
+            }
+
+            // These sim tests are about assumption resolution and the Monte Carlo loop, so the
+            // fake household earns nothing modelled — income streams have their own DAL tests
+            // and their own e2e coverage. An empty list is also what makes these tests keep
+            // asserting the pre-income behaviour they were written for.
+            async fn list_income_streams(&self) -> AppResult<Vec<sure_core::IncomeStream>> {
+                Ok(Vec::new())
+            }
+            async fn get_income_stream(&self, _id: i64) -> AppResult<sure_core::IncomeStream> {
+                unreachable!()
+            }
+            async fn create_income_stream(
+                &self,
+                _person_id: i64,
+                _input: sure_core::SaveIncomeStream,
+            ) -> AppResult<sure_core::IncomeStream> {
+                unreachable!()
+            }
+            async fn update_income_stream(
+                &self,
+                _id: i64,
+                _input: sure_core::SaveIncomeStream,
+            ) -> AppResult<sure_core::IncomeStream> {
+                unreachable!()
+            }
+            async fn delete_income_stream(&self, _id: i64) -> AppResult<()> {
                 unreachable!()
             }
         }

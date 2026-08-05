@@ -167,6 +167,21 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
             summarise(&owned)
         )));
     }
+    // Income is attributed too, and `income_streams.person_id` is RESTRICT for the same reason
+    // accounts are: deleting an earner would silently delete their income from every projection.
+    // Named here rather than left to the constraint, so the message says which stream to move.
+    let earning = sqlx::query_scalar::<_, String>(
+        "SELECT label FROM income_streams WHERE person_id = ?1 ORDER BY sort_order, label",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await?;
+    if !earning.is_empty() {
+        return Err(AppError::conflict(format!(
+            "Reassign or delete the income recorded for this person first: {}",
+            summarise(&earning)
+        )));
+    }
     // Every account must name an owner, so emptying the household would leave a database in
     // which no account can be created at all. Refused rather than allowed and then hit as a
     // baffling 422 on the next "add account".
@@ -191,7 +206,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 
 /// Name the first few and count the rest — a household with forty accounts shouldn't get
 /// all forty names in an error toast.
-fn summarise(names: &[String]) -> String {
+pub(crate) fn summarise(names: &[String]) -> String {
     const SHOWN: usize = 5;
     if names.len() <= SHOWN {
         return names.join(", ");

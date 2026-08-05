@@ -21,12 +21,13 @@ use sure_app::ports::{
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
     CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, ForecastAssumption,
-    ForecastEvent, ForecastTargetType, HoldingLot, LinkProviderAccount, LinkProviderGroup,
-    LinkRequest, Merchant, NewCurrency, NewValuation, Ownership, Person, Provider, ProviderSync,
-    Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory,
-    SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
-    SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice,
-    SyncOutcome, Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
+    ForecastEvent, ForecastTargetType, HoldingLot, IncomeStream, LinkProviderAccount,
+    LinkProviderGroup, LinkRequest, Merchant, NewCurrency, NewValuation, Ownership, Person,
+    Provider, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult,
+    SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent,
+    SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
+    SaveTransaction, Settings, StockPrice, SyncOutcome, Transaction, TransferRequest, TxQuery,
+    UpdateSettings, Valuation, VestingStatus,
 };
 
 use crate::Db;
@@ -1002,6 +1003,34 @@ impl ForecastRepo for SqliteStore {
 
     async fn delete_event(&self, id: i64) -> AppResult<()> {
         crate::forecast::delete_event(&self.db, id).await
+    }
+
+    async fn list_income_streams(&self) -> AppResult<Vec<IncomeStream>> {
+        crate::income::list(&self.db).await
+    }
+
+    async fn get_income_stream(&self, id: i64) -> AppResult<IncomeStream> {
+        crate::income::get(&self.db, id).await
+    }
+
+    async fn create_income_stream(
+        &self,
+        person_id: i64,
+        input: SaveIncomeStream,
+    ) -> AppResult<IncomeStream> {
+        crate::income::create(&self.db, person_id, input).await
+    }
+
+    async fn update_income_stream(
+        &self,
+        id: i64,
+        input: SaveIncomeStream,
+    ) -> AppResult<IncomeStream> {
+        crate::income::update(&self.db, id, input).await
+    }
+
+    async fn delete_income_stream(&self, id: i64) -> AppResult<()> {
+        crate::income::delete(&self.db, id).await
     }
 }
 

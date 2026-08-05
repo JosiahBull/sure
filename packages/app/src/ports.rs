@@ -19,13 +19,14 @@ use serde_json::Value;
 use sure_core::{
     Account, AccountEquity, AccountKind, AppResult, BulkUpdate, Category, CategoryKind,
     CategoryNode, Cron, CronRun, CronRunResult, Currency, DividendDetail, EquityExercise,
-    EquityGrant, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot,
+    EquityGrant, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot, IncomeStream,
     LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind, Merchant, NewCurrency,
     NewValuation, Ownership, Person, Provider, ProviderAccount, ProviderKind, ProviderSync, Rule,
     RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
     SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
-    SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice,
-    SyncOutcome, Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
+    SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTransaction, Settings,
+    StockPrice, SyncOutcome, Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation,
+    VestingStatus,
 };
 
 // ---- Clock ------------------------------------------------------------------
@@ -856,6 +857,30 @@ pub trait ForecastRepo: Send + Sync {
     async fn list_events(&self) -> AppResult<Vec<ForecastEvent>>;
     async fn create_event(&self, input: SaveForecastEvent) -> AppResult<ForecastEvent>;
     async fn delete_event(&self, id: i64) -> AppResult<()>;
+
+    // ---- per-person income streams -------------------------------------------------
+    //
+    // On `ForecastRepo` rather than a port of their own: nothing outside the forecast reads a
+    // stream, and one port per aggregate is the rule this file already follows. If a household
+    // *income report* ever wants them, that is when to extract an `IncomeRepo`.
+
+    /// Every stream with its dated pay-scale steps attached, by person then sort order.
+    async fn list_income_streams(&self) -> AppResult<Vec<IncomeStream>>;
+    async fn get_income_stream(&self, id: i64) -> AppResult<IncomeStream>;
+    /// Create the stream and its whole step schedule in one transaction.
+    async fn create_income_stream(
+        &self,
+        person_id: i64,
+        input: SaveIncomeStream,
+    ) -> AppResult<IncomeStream>;
+    /// Full replace, steps included — a step omitted from `input` is deleted.
+    async fn update_income_stream(
+        &self,
+        id: i64,
+        input: SaveIncomeStream,
+    ) -> AppResult<IncomeStream>;
+    /// Refused with a conflict naming the forecast changes whose effects target it.
+    async fn delete_income_stream(&self, id: i64) -> AppResult<()>;
 }
 
 /// The config export/import blob is treated as opaque JSON at this boundary — its shape

@@ -23,6 +23,7 @@ pub mod currencies;
 pub mod equity;
 pub mod exchange_rates;
 pub mod forecast;
+pub mod income;
 pub mod merchants;
 pub mod people;
 pub mod providers;
