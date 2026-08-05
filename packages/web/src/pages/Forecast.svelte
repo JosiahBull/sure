@@ -14,6 +14,7 @@
   import FxNotice from "../lib/FxNotice.svelte";
   import ProjectionTab from "./forecast/ProjectionTab.svelte";
   import AssumptionsTab from "./forecast/AssumptionsTab.svelte";
+  import IncomeTab from "./forecast/IncomeTab.svelte";
   import { queryParams, setQueryParam } from "../lib/router.svelte";
   import { HORIZONS, checkpointsFor, historyMonthsFor } from "../lib/charts/forecastScale";
 
@@ -21,6 +22,7 @@
 
   const TABS = [
     { key: "projection", label: "Projection" },
+    { key: "income", label: "Income" },
     { key: "assumptions", label: "Assumptions" },
   ] as const;
   type TabKey = (typeof TABS)[number]["key"];
@@ -154,6 +156,8 @@
 
 {#if tab === "projection"}
   <ProjectionTab {result} {checkpoints} {currency} />
+{:else if tab === "income"}
+  <IncomeTab {result} {currency} onchanged={load} />
 {:else if tab === "assumptions"}
   <AssumptionsTab
     {result}

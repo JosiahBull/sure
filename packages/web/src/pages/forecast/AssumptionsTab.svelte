@@ -56,6 +56,8 @@
         return "amortisation schedule";
       case "insufficient_history":
         return "not enough history";
+      case "modelled_from_income":
+        return "modelled from income streams";
     }
   }
 
