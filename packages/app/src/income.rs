@@ -13,8 +13,49 @@
 
 use chrono::{Datelike, NaiveDate};
 use sure_core::{
-    income::PayStep, tax, IncomeBasis, IncomeStream, PayFrequency, TakeHome, TakeHomeSource,
+    income::PayStep, tax, IncomeBasis, IncomeStream, PayFrequency, ResolvedScale, StoredTaxScale,
+    TakeHome, TakeHomeSource,
 };
+
+/// The stored scales, resolved once per simulation into something the arithmetic can borrow.
+///
+/// Falls back to the built-in constants when the table is empty — which should not happen, since
+/// `migrate` seeds it, but "every gross salary is suddenly untaxed" is too quiet a failure to leave
+/// to that assumption.
+pub(crate) struct TaxScales {
+    resolved: Vec<(String, ResolvedScale)>,
+}
+
+impl TaxScales {
+    pub(crate) fn new(stored: &[StoredTaxScale]) -> Self {
+        let mut resolved: Vec<(String, ResolvedScale)> = stored
+            .iter()
+            .map(|s| (s.scale.effective_from.clone(), ResolvedScale::new(&s.scale)))
+            .collect();
+        if resolved.is_empty() {
+            resolved = tax::builtin_scales(tax::TaxScaleId::NzPaye)
+                .iter()
+                .map(|s| (s.effective_from.clone(), ResolvedScale::new(s)))
+                .collect();
+        }
+        resolved.sort_by(|a, b| a.0.cmp(&b.0));
+        TaxScales { resolved }
+    }
+
+    /// The scale in force on `on` — the latest one not after it.
+    ///
+    /// `None` when every scale starts later than the date asked about: a question this table cannot
+    /// answer, and answering it with rules that had not been written yet would be a guess dressed as
+    /// a fact.
+    pub(crate) fn at(&self, on: NaiveDate) -> Option<&ResolvedScale> {
+        let iso = on.to_string();
+        self.resolved
+            .iter()
+            .rev()
+            .find(|(from, _)| from.as_str() <= iso.as_str())
+            .map(|(_, s)| s)
+    }
+}
 
 /// How many paydays land in each month index `0..=horizon`, counting from `today`.
 ///
@@ -42,6 +83,16 @@ pub(crate) fn payment_counts(
     let window_start = first.with_day(1).unwrap_or(first);
     let last = crate::forecast::add_months_pub(today, horizon);
     let window_end = crate::reports::last_day_of_month_pub(last.year(), last.month());
+
+    // Twice every calendar month, by definition — so the calendar is the window itself and there is
+    // nothing to enumerate. Handled before `step()` because `PayStep` can say "step by one month"
+    // but not "twice", and treating it as monthly would pay 12 times a year instead of 24.
+    if freq == PayFrequency::SemiMonthly {
+        for m in 1..=horizon {
+            counts[m as usize] = 2;
+        }
+        return counts;
+    }
 
     match freq.step() {
         PayStep::Days(n) => {
@@ -151,6 +202,7 @@ pub(crate) fn take_home(
     stream: &IncomeStream,
     person_annual_gross: i64,
     on: NaiveDate,
+    scales: &TaxScales,
 ) -> TakeHome {
     if let Some(bps) = stream.take_home_bps {
         return TakeHome {
@@ -162,17 +214,15 @@ pub(crate) fn take_home(
     match stream.basis {
         IncomeBasis::Net => TakeHome::all_of_it(),
         IncomeBasis::GrossNzPaye => {
-            let Some(id) = stream.basis.tax_scale() else {
-                return TakeHome::all_of_it();
-            };
-            // No scale on record for this date — the earliest table starts well before any date a
+            // No scale on record for this date — the earliest starts well before any date a
             // projection runs from, so this is the corrupt-input branch rather than a real case.
             // Treating the figure as net would silently inflate income; treating it as fully taxed
             // would silently destroy it. `all_of_it` is the one that cannot hide, because the
             // reconciliation then reports a drift the size of the whole tax bill.
-            let Some(scale) = tax::scale_for(id, on).or_else(|| tax::latest_scale(id)) else {
+            let Some(resolved) = scales.at(on) else {
                 return TakeHome::all_of_it();
             };
+            let scale = resolved.as_scale();
             let input = tax::PayeInput {
                 annual_gross_minor: person_annual_gross,
                 kiwisaver_bps: stream.kiwisaver_bps,
@@ -183,8 +233,8 @@ pub(crate) fn take_home(
                 student_loan: stream.student_loan,
             };
             TakeHome {
-                average_bps: tax::average_take_home_bps(scale, input),
-                marginal_bps: tax::marginal_take_home_bps(scale, input),
+                average_bps: tax::average_take_home_bps(&scale, input),
+                marginal_bps: tax::marginal_take_home_bps(&scale, input),
                 source: TakeHomeSource::Statutory,
             }
         }
@@ -206,19 +256,17 @@ pub(crate) fn contribution_rates(
     stream: &IncomeStream,
     person_annual_gross: i64,
     on: NaiveDate,
+    scales: &TaxScales,
 ) -> (f64, f64) {
     if !stream.basis.is_gross() || person_annual_gross <= 0 {
         return (0.0, 0.0);
     }
-    let Some(scale) = stream
-        .basis
-        .tax_scale()
-        .and_then(|id| tax::scale_for(id, on).or_else(|| tax::latest_scale(id)))
-    else {
+    let Some(resolved) = scales.at(on) else {
         return (0.0, 0.0);
     };
+    let scale = resolved.as_scale();
     let b = tax::paye(
-        scale,
+        &scale,
         tax::PayeInput {
             annual_gross_minor: person_annual_gross,
             kiwisaver_bps: stream.kiwisaver_bps,
@@ -268,6 +316,11 @@ mod tests {
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    /// An empty store, so `TaxScales` falls back to the built-in figures these tests assert against.
+    fn scales() -> TaxScales {
+        TaxScales::new(&[])
     }
 
     fn stream(freq: PayFrequency) -> IncomeStream {
@@ -382,6 +435,28 @@ mod tests {
         assert_eq!(months, vec![2, 5, 8, 11]);
     }
 
+    /// Twice a month is 24 a year, not 26 — and every month gets exactly two, which is the whole
+    /// difference from fortnightly (where two months in a year get three).
+    #[test]
+    fn a_semi_monthly_stream_pays_twice_in_every_month() {
+        let counts = payment_counts(
+            PayFrequency::SemiMonthly,
+            d("2026-01-14"),
+            d("2025-12-31"),
+            12,
+        );
+        assert_eq!(counts.iter().map(|&c| c as i64).sum::<i64>(), 24);
+        assert!(counts[1..=12].iter().all(|&c| c == 2), "got {counts:?}");
+        // …where fortnightly over the same window puts three in a couple of months.
+        let fortnightly = payment_counts(
+            PayFrequency::Fortnightly,
+            d("2026-01-14"),
+            d("2025-12-31"),
+            12,
+        );
+        assert!(fortnightly[1..=12].contains(&3));
+    }
+
     #[test]
     fn an_annual_stream_pays_once_a_year() {
         let counts = payment_counts(PayFrequency::Annual, d("2026-07-01"), d("2025-12-31"), 24);
@@ -469,8 +544,8 @@ mod tests {
     #[test]
     fn a_second_salary_is_taxed_at_the_rate_the_pair_reaches() {
         let s = stream(PayFrequency::Fortnightly);
-        let alone = take_home(&s, 88_000_00, d("2026-08-05"));
-        let together = take_home(&s, 88_000_00 + 60_000_00, d("2026-08-05"));
+        let alone = take_home(&s, 88_000_00, d("2026-08-05"), &scales());
+        let together = take_home(&s, 88_000_00 + 60_000_00, d("2026-08-05"), &scales());
         assert!(
             together.average_bps < alone.average_bps,
             "the pair should keep proportionally less: {} vs {}",
@@ -484,14 +559,14 @@ mod tests {
     fn an_override_beats_the_statutory_scale_and_a_net_stream_keeps_everything() {
         let mut s = stream(PayFrequency::Fortnightly);
         s.take_home_bps = Some(6_600);
-        let th = take_home(&s, 88_000_00, d("2026-08-05"));
+        let th = take_home(&s, 88_000_00, d("2026-08-05"), &scales());
         assert_eq!(th.average_bps, 6_600);
         assert_eq!(th.marginal_bps, 6_600);
         assert_eq!(th.source, TakeHomeSource::Override);
 
         let mut n = stream(PayFrequency::Fortnightly);
         n.basis = IncomeBasis::Net;
-        let th = take_home(&n, 88_000_00, d("2026-08-05"));
+        let th = take_home(&n, 88_000_00, d("2026-08-05"), &scales());
         assert_eq!(th.average_bps, 10_000);
         assert_eq!(th.source, TakeHomeSource::AlreadyNet);
     }
@@ -500,15 +575,16 @@ mod tests {
     /// of ESCT. A projection that credited only the employee's half would understate the balance by
     /// roughly half over a career.
     #[test]
-    fn contribution_rates_include_the_employer_share_net_of_esct() {
+    fn contribution_rates_include_the_employer_and_government_shares() {
         let mut s = stream(PayFrequency::Fortnightly);
         s.annual_amount_minor = 100_000_00;
         s.kiwisaver_bps = 350;
         s.employer_kiwisaver_bps = 350;
         s.student_loan = true;
-        let (ks, sl) = contribution_rates(&s, 100_000_00, d("2026-08-05"));
-        // 3.5% + 3.5% less 33% ESCT on the employer half = 5.845% of gross.
-        assert!((ks - 0.058_45).abs() < 1e-6, "kiwisaver share was {ks}");
+        let (ks, sl) = contribution_rates(&s, 100_000_00, d("2026-08-05"), &scales());
+        // 3.5% member + 3.5% employer less 33% ESCT on the employer half = 5.845% of gross, plus
+        // the government's $260.72 (capped, and matched against the member's half alone) = 0.26%.
+        assert!((ks - 0.061_057_2).abs() < 1e-6, "kiwisaver share was {ks}");
         // 12% of the excess over the threshold, as a share of the whole salary.
         let expected_sl = 0.12 * (100_000.0 - 24_128.0) / 100_000.0;
         assert!(
@@ -526,7 +602,7 @@ mod tests {
         s.kiwisaver_bps = 350;
         s.student_loan = true;
         assert_eq!(
-            contribution_rates(&s, 80_000_00, d("2026-08-05")),
+            contribution_rates(&s, 80_000_00, d("2026-08-05"), &scales()),
             (0.0, 0.0)
         );
     }

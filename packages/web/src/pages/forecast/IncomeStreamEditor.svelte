@@ -1,7 +1,7 @@
 <script lang="ts">
   // One income stream, edited in place. Also the add form — same fields, so one component.
   import { untrack } from "svelte";
-  import { api, type Schemas } from "../../lib/api";
+  import { api, formatMoney, type Schemas } from "../../lib/api";
 
   type IncomeStream = Schemas["IncomeStream"];
 
@@ -69,6 +69,58 @@
         .map((c) => ({ id: c.id, name: c.name }));
     });
   });
+
+  let detected = $state<Schemas["DetectedStream"][]>([]);
+  let detecting = $state(false);
+  let dismissed = $state(false);
+
+  /**
+   * Salaries already visible in the ledger.
+   *
+   * Offered only when adding, because the details people get wrong are exactly the ones the ledger
+   * already knows — whether "fortnightly" means every fourteen days or twice a month, which day it
+   * lands, and what the net figure actually is after payroll.
+   */
+  $effect(() => {
+    if (initial) return;
+    detecting = true;
+    api.GET("/api/income-streams/detect", { params: { query: {} } }).then(({ data }) => {
+      detected = data ?? [];
+      detecting = false;
+    });
+  });
+
+  /** Fill the form from a detected salary. The figures are net, because they are what landed. */
+  function useDetected(d: Schemas["DetectedStream"]) {
+    f.label = d.label;
+    f.amount = (d.annual_net_minor / 100).toString();
+    f.basis = "net";
+    f.pay_frequency = d.pay_frequency;
+    f.first_payment_on = d.next_payment_on;
+    f.starts_on = d.next_payment_on;
+    f.currency_code = d.currency_code;
+    if (d.category_id != null) f.linked_category_id = d.category_id;
+    dismissed = true;
+  }
+
+  function freqWords(freq: Schemas["PayFrequency"]): string {
+    switch (freq) {
+      case "weekly":
+        return "weekly";
+      case "fortnightly":
+        return "every 2 weeks";
+      case "four_weekly":
+        return "every 4 weeks";
+      case "semi_monthly":
+        return "twice a month";
+      case "monthly":
+        return "monthly";
+      case "quarterly":
+        return "quarterly";
+      case "annual":
+        return "once a year";
+    }
+  }
 
   let accounts = $state<Schemas["Account"][]>([]);
   $effect(() => {
@@ -160,6 +212,39 @@
 <div class="editor">
   {#if error}<div class="error-banner small">{error}</div>{/if}
 
+  {#if !initial && !dismissed && detected.length > 0}
+    <div class="found">
+      <div class="row spread" style="margin-bottom:6px">
+        <strong class="small">Found in your transactions</strong>
+        <button class="btn btn-sm" onclick={() => (dismissed = true)}>Enter it myself</button>
+      </div>
+      {#each detected.slice(0, 4) as d (d.label + d.last_paid_on)}
+        <button type="button" class="found-row" onclick={() => useDetected(d)}>
+          <span class="fr-main">
+            <strong>{d.label}</strong>
+            <span class="faint">·</span>
+            <span class="tabular">{formatMoney(d.per_payment_minor, d.currency_code)}</span>
+            <span class="faint">{freqWords(d.pay_frequency)}</span>
+            {#if d.pay_frequency === "semi_monthly"}
+              <!-- The distinction the detector exists for: two fixed days a month is 24 payments a
+                   year, not the 26 that "fortnightly" implies. Show the evidence. -->
+              <span class="badge">on the {d.days_of_month.join(" & ")}</span>
+            {/if}
+          </span>
+          <span class="fr-sub small faint">
+            {d.payments_seen} payments · about {formatMoney(d.annual_net_minor, d.currency_code)}/yr
+            take-home
+            {#if d.variability_bps > 2_000}
+              · <span class="warn-text">the amount varies a lot, so check the figure</span>
+            {/if}
+          </span>
+        </button>
+      {/each}
+    </div>
+  {:else if !initial && detecting}
+    <div class="small faint" style="margin-bottom:10px">Looking for salaries in your transactions…</div>
+  {/if}
+
   <div class="grid-fields">
     <label class="field">
       <span class="lbl req">What is it</span>
@@ -214,6 +299,9 @@
         <option value="weekly">Weekly</option>
         <option value="fortnightly">Fortnightly</option>
         <option value="four_weekly">Every 4 weeks</option>
+        <!-- Not the same as fortnightly, and constantly confused with it: twice a month is 24
+             payments a year where every fourteen days is 26. -->
+        <option value="semi_monthly">Twice a month</option>
         <option value="monthly">Monthly</option>
         <option value="quarterly">Quarterly</option>
         <option value="annual">Once a year</option>
@@ -425,5 +513,40 @@
   .bar {
     height: 100%;
     background: var(--who, var(--accent));
+  }
+  .found {
+    margin-bottom: 12px;
+    padding: 10px;
+    border-radius: var(--r-sm);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+  .found-row {
+    all: unset;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    box-sizing: border-box;
+    cursor: pointer;
+    padding: 6px 8px;
+    border-radius: var(--r-sm);
+  }
+  .found-row:hover {
+    background: var(--hover);
+  }
+  .found-row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .fr-main {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 13px;
+  }
+  .warn-text {
+    color: var(--warn);
   }
 </style>

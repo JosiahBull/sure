@@ -24,6 +24,14 @@ pub enum PayFrequency {
     Weekly,
     Fortnightly,
     FourWeekly,
+    /// Twice a month on two fixed days — the 14th and the 28th, say.
+    ///
+    /// **Not the same as fortnightly**, and the difference is not cosmetic: twice a month is 24
+    /// payments a year where every fourteen days is 26. On a $135,000 salary that is $5,625 a
+    /// payslip against $5,192, an 8% gap, and the two are constantly conflated in conversation
+    /// because they sound alike and land near each other. If someone says "fortnightly, on the 14th
+    /// and 28th", they mean this one.
+    SemiMonthly,
     Monthly,
     Quarterly,
     Annual,
@@ -46,6 +54,7 @@ impl PayFrequency {
             PayFrequency::Weekly => "weekly",
             PayFrequency::Fortnightly => "fortnightly",
             PayFrequency::FourWeekly => "four_weekly",
+            PayFrequency::SemiMonthly => "semi_monthly",
             PayFrequency::Monthly => "monthly",
             PayFrequency::Quarterly => "quarterly",
             PayFrequency::Annual => "annual",
@@ -63,6 +72,7 @@ impl PayFrequency {
             PayFrequency::Weekly => 52.0,
             PayFrequency::Fortnightly => 26.0,
             PayFrequency::FourWeekly => 13.0,
+            PayFrequency::SemiMonthly => 24.0,
             PayFrequency::Monthly => 12.0,
             PayFrequency::Quarterly => 4.0,
             PayFrequency::Annual => 1.0,
@@ -74,6 +84,9 @@ impl PayFrequency {
             PayFrequency::Weekly => PayStep::Days(7),
             PayFrequency::Fortnightly => PayStep::Days(14),
             PayFrequency::FourWeekly => PayStep::Days(28),
+            // Two per calendar month, always — so it steps by month and the *count* is what differs.
+            // `PayStep` cannot express "twice", which is why `payment_counts` special-cases it.
+            PayFrequency::SemiMonthly => PayStep::Months(1),
             PayFrequency::Monthly => PayStep::Months(1),
             PayFrequency::Quarterly => PayStep::Months(3),
             PayFrequency::Annual => PayStep::Months(12),
@@ -89,6 +102,7 @@ impl FromStr for PayFrequency {
             "weekly" => Ok(PayFrequency::Weekly),
             "fortnightly" => Ok(PayFrequency::Fortnightly),
             "four_weekly" => Ok(PayFrequency::FourWeekly),
+            "semi_monthly" => Ok(PayFrequency::SemiMonthly),
             "monthly" => Ok(PayFrequency::Monthly),
             "quarterly" => Ok(PayFrequency::Quarterly),
             "annual" => Ok(PayFrequency::Annual),
@@ -334,6 +348,7 @@ mod tests {
             PayFrequency::Weekly,
             PayFrequency::Fortnightly,
             PayFrequency::FourWeekly,
+            PayFrequency::SemiMonthly,
             PayFrequency::Monthly,
             PayFrequency::Quarterly,
             PayFrequency::Annual,
@@ -353,6 +368,12 @@ mod tests {
     #[test]
     fn periods_per_year_are_payrolls_divisors_not_calendar_arithmetic() {
         assert_eq!(PayFrequency::Fortnightly.periods_per_year(), 26.0);
+        // The distinction that gets lost in conversation: twice a month is not every fourteen days.
+        assert_eq!(PayFrequency::SemiMonthly.periods_per_year(), 24.0);
+        assert_ne!(
+            PayFrequency::SemiMonthly.periods_per_year(),
+            PayFrequency::Fortnightly.periods_per_year()
+        );
         assert_eq!(PayFrequency::FourWeekly.periods_per_year(), 13.0);
         // 13 x 28 = 364, which is where four-weekly's calendar drift comes from.
         assert_eq!(PayFrequency::FourWeekly.step(), PayStep::Days(28));

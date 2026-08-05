@@ -108,6 +108,8 @@
         return "fortnightly";
       case "four_weekly":
         return "every 4 weeks";
+      case "semi_monthly":
+        return "twice a month";
       case "monthly":
         return "monthly";
       case "quarterly":

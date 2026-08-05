@@ -26,8 +26,8 @@ use sure_core::{
     Provider, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult,
     SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent,
     SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
-    SaveTransaction, Settings, StockPrice, SyncOutcome, Transaction, TransferRequest, TxQuery,
-    UpdateSettings, Valuation, VestingStatus,
+    SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
+    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
 };
 
 use crate::Db;
@@ -1039,6 +1039,46 @@ impl ForecastRepo for SqliteStore {
 
     async fn delete_income_stream(&self, id: i64) -> AppResult<()> {
         crate::income::delete(&self.db, id).await
+    }
+
+    async fn list_tax_scales(&self) -> AppResult<Vec<StoredTaxScale>> {
+        crate::tax_scales::list(&self.db).await
+    }
+
+    async fn create_tax_scale(
+        &self,
+        scale_id: TaxScaleId,
+        input: SaveTaxScale,
+    ) -> AppResult<StoredTaxScale> {
+        crate::tax_scales::create(&self.db, scale_id, input).await
+    }
+
+    async fn update_tax_scale(&self, id: i64, input: SaveTaxScale) -> AppResult<StoredTaxScale> {
+        crate::tax_scales::update(&self.db, id, input).await
+    }
+
+    async fn delete_tax_scale(&self, id: i64) -> AppResult<()> {
+        crate::tax_scales::delete(&self.db, id).await
+    }
+
+    async fn restore_tax_scales(&self) -> AppResult<Vec<StoredTaxScale>> {
+        crate::tax_scales::restore_defaults(&self.db).await
+    }
+
+    async fn income_transactions(
+        &self,
+        from: &str,
+        account_id: Option<i64>,
+    ) -> AppResult<Vec<Transaction>> {
+        crate::transactions::list(
+            &self.db,
+            TxQuery {
+                from: Some(from.to_string()),
+                account_id,
+                ..Default::default()
+            },
+        )
+        .await
     }
 }
 

@@ -113,6 +113,12 @@ pub struct ResolvedAssumption {
     /// over, in basis points. Only applied when `source` is `derived` — an override or a
     /// cron-configured rate is something the user asserted, and an assertion is not decayed.
     pub long_run_growth_bps: i64,
+    /// The fund's annual fee in basis points, deducted from this account's growth every month.
+    /// Absent means "not modelled" rather than zero — a fund charging nothing is a claim worth
+    /// making on purpose, and assuming it is flattering.
+    pub annual_fee_bps: Option<i64>,
+    /// A flat annual membership fee, in the account's own minor units.
+    pub annual_fixed_fee_minor: Option<i64>,
     /// Only set for Investment-class accounts (brokerage/shares).
     pub dividend_yield_bps: Option<i64>,
     /// Only set for categories: the current fitted monthly run-rate the simulation
@@ -134,6 +140,8 @@ impl From<sure_app::forecast::ResolvedAssumption> for ResolvedAssumption {
             annual_growth_bps: r.annual_growth_bps,
             annual_volatility_bps: r.annual_volatility_bps,
             long_run_growth_bps: r.long_run_growth_bps,
+            annual_fee_bps: r.annual_fee_bps,
+            annual_fixed_fee_minor: r.annual_fixed_fee_minor,
             dividend_yield_bps: r.dividend_yield_bps,
             baseline_minor: r.baseline_minor,
             schedule: r.schedule.map(Into::into),
