@@ -87,7 +87,14 @@
 
   // ---- assumption override editing ------------------------------------------------
   let editingKey = $state<string | null>(null);
-  let editForm = $state({ growth: "0", volatility: "0", dividendYield: "0", longRun: "0" });
+  let editForm = $state({
+    growth: "0",
+    volatility: "0",
+    dividendYield: "0",
+    longRun: "0",
+    fee: "",
+    fixedFee: "",
+  });
 
   function startEdit(a: ResolvedAssumption) {
     editingKey = `${a.target_type}:${a.target_id}`;
@@ -96,6 +103,8 @@
       volatility: (a.annual_volatility_bps / 100).toString(),
       dividendYield: ((a.dividend_yield_bps ?? 0) / 100).toString(),
       longRun: (a.long_run_growth_bps / 100).toString(),
+      fee: a.annual_fee_bps != null ? (a.annual_fee_bps / 100).toString() : "",
+      fixedFee: a.annual_fixed_fee_minor != null ? (a.annual_fixed_fee_minor / 100).toString() : "",
     };
   }
   function cancelEdit() {
@@ -112,6 +121,11 @@
           ? Math.round(parseFloat(editForm.dividendYield || "0") * 100)
           : null,
       long_run_growth_bps: Math.round(parseFloat(editForm.longRun || "0") * 100),
+      // Empty means "not modelled" rather than zero — a fund that charges nothing is a claim worth
+      // making on purpose, and assuming it is flattering.
+      annual_fee_bps: editForm.fee.trim() === "" ? null : Math.round(parseFloat(editForm.fee) * 100),
+      annual_fixed_fee_minor:
+        editForm.fixedFee.trim() === "" ? null : Math.round(parseFloat(editForm.fixedFee) * 100),
     };
     const { error: e } = await api.PUT("/api/forecast/assumptions", { body });
     if (e) {
@@ -172,6 +186,9 @@
                       >yield {(a.dividend_yield_bps / 100).toFixed(1)}%</span
                     >
                   {/if}
+                  {#if a.annual_fee_bps}
+                    <span class="tabular small fee">− {(a.annual_fee_bps / 100).toFixed(2)}% fee</span>
+                  {/if}
                 </div>
               {/if}
             </div>
@@ -218,6 +235,24 @@
                   <span class="small faint">Long-run %/yr</span>
                   <input class="input tabular" bind:value={editForm.longRun} />
                 </label>
+                {#if a.target_type === "account"}
+                  <label class="field">
+                    <span class="small faint">Fund fee %/yr</span>
+                    <input
+                      class="input tabular"
+                      placeholder="not modelled"
+                      bind:value={editForm.fee}
+                    />
+                  </label>
+                  <label class="field">
+                    <span class="small faint">Flat fee /yr</span>
+                    <input
+                      class="input tabular"
+                      placeholder="not modelled"
+                      bind:value={editForm.fixedFee}
+                    />
+                  </label>
+                {/if}
                 <button class="btn btn-primary btn-sm" onclick={() => saveEdit(a)}>Save</button>
               </div>
             {/if}
@@ -252,6 +287,9 @@
   }
   .needs-return {
     color: var(--warn);
+  }
+  .fee {
+    color: var(--negative);
   }
   .ell {
     overflow: hidden;

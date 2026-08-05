@@ -6976,6 +6976,18 @@ export interface components {
             long_run_growth_bps: number;
             /**
              * Format: int64
+             * @description The fund's annual fee in basis points, deducted from this account's growth every month.
+             *     Absent means "not modelled" rather than zero — a fund charging nothing is a claim worth
+             *     making on purpose, and assuming it is flattering.
+             */
+            annual_fee_bps?: number | null;
+            /**
+             * Format: int64
+             * @description A flat annual membership fee, in the account's own minor units.
+             */
+            annual_fixed_fee_minor?: number | null;
+            /**
+             * Format: int64
              * @description Only set for Investment-class accounts (brokerage/shares).
              */
             dividend_yield_bps?: number | null;

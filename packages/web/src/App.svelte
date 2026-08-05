@@ -15,6 +15,7 @@
   import Merchants from "./pages/Merchants.svelte";
   import Providers from "./pages/Providers.svelte";
   import Preferences from "./pages/Preferences.svelte";
+  import TaxRates from "./pages/TaxRates.svelte";
   import Appearance from "./pages/Appearance.svelte";
   import ScheduledAdjustments from "./pages/ScheduledAdjustments.svelte";
 
@@ -38,6 +39,7 @@
     "/settings/accounts": "Accounts",
     "/settings/household": "Household",
     "/settings/providers": "Bank sync",
+    "/settings/tax": "Tax rates",
     "/settings/preferences": "Preferences",
     "/settings/appearance": "Appearance",
     "/settings/scheduled": "Scheduled adjustments",
@@ -68,6 +70,8 @@
         return Merchants;
       case "/settings/providers":
         return Providers;
+      case "/settings/tax":
+        return TaxRates;
       case "/settings/preferences":
         return Preferences;
       case "/settings/appearance":

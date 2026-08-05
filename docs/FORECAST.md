@@ -15,7 +15,9 @@ the ledger — unlike `crons`, which persists real rows.
 | A mortgage/loan's balance | its own amortisation schedule, exactly — no rate to resolve |
 | A category's monthly baseline | mean of up to 24 trailing complete months of its own spend |
 | A category with linked income streams | the **residual**: fitted baseline minus what the streams model |
-| A salary's take-home | an override, else "already net", else `sure_core::tax`'s dated statutory scale |
+| A salary's take-home | an override, else "already net", else the **stored** tax scale in force on the date (`sure_core::tax`'s constants seed it and are the fallback) |
+| A KiwiSaver balance's growth | its own rate is discarded when linked; less any fund fee on the assumption |
+| The government's KiwiSaver contribution | matched against the member's own contributions only, capped, and income-tested |
 | When an event happens | sampled per path from a uniform hard window around `expected_on` |
 | A KiwiSaver balance | its own growth rate is *discarded* when linked (see below); contributions credited monthly |
 | A student loan's paydown | the deductions themselves, plus `StudentLoanMeta::interest_rate_bps` (0 for an NZ-based borrower) |
@@ -69,6 +71,22 @@ volatility is kept — the scatter is real either way. A consequence worth expec
 makes the projection **smaller**, because the honest flat rate plus real contributions is less than
 the flattering rate was.
 
+**Twice a month is not fortnightly.** Twice a month is 24 payments a year; every fourteen days is
+26. People describe both as "fortnightly", and on a $135,000 salary the difference is $5,625 a
+payslip against $5,192. They are told apart by *shape*, not by average: twice-monthly alternates long
+and short gaps and lands on the same two days every month, where fortnightly walks through the
+calendar. `GET /api/income-streams/detect` reads which one someone is actually on out of the ledger,
+along with the day it lands and the net figure — the three details people most often get wrong when
+typing a salary in by hand.
+
+**Tax rules are data, not constants.** IRD moves a threshold and a projection is quietly wrong until
+someone ships a binary, so scales are stored, dated and editable. The constants remain the *seed and
+fallback*: `migrate` copies them into an empty table in Rust rather than via INSERTs in the
+migration, so there is exactly one place the figures are written down and no SQL copy free to drift.
+Seeding never overwrites, which is what lets an edited rate survive an upgrade; `restore` is the
+explicit way back. Deleting the last scale is refused — an empty table taxes every gross salary at
+nothing, which reads as a windfall.
+
 **ESCT comes off the employer's contribution, not on top of it.** business.govt.nz: "the tax you take
 off the cash contributions you make". The account receives contribution × (1 − ESCT). Getting this
 backwards overstates a KiwiSaver balance by up to 39% of every employer dollar. ESCT is a *flat* rate
@@ -90,9 +108,14 @@ its expected date. Drawing `expected_on` would misrepresent the one thing the ch
   `negative_cash_rate_bps`, but costs nothing to hold.
 - **A jurisdiction other than New Zealand.** `IncomeBasis::Net` / `TaxScaleId::None` is the escape
   hatch: record take-home and no scale is applied.
+- **Prorating the government contribution.** Not adjusted for a partial membership year or for
+  someone under 18 or over 65 — a projection is about whole years, and those rules need a birthday
+  the model does not carry.
 - **A KiwiSaver account's expected return.** It has to be set by hand once linked, because the only
   rate the data could offer is the contaminated one.
 - **Employer contributions above the compulsory minimum varying over time.** One rate per stream.
+- **Fees that change with the balance.** One percentage and one flat amount per account; tiered fee
+  schedules are not modelled.
 - **Scenarios.** There is one plan, not a set to compare. `enabled` on a stream and
   `probability_bps: 0` on an event are the closest thing.
 
