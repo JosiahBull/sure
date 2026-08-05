@@ -46,6 +46,12 @@ pub struct Snapshot {
     pub forecast_assumptions: Vec<ForecastAssumptionRow>,
     #[serde(default)]
     pub forecast_events: Vec<ForecastEventRow>,
+    // Per-person income streams and their dated pay-scale steps — `#[serde(default)]` so a
+    // snapshot taken before 0021 still imports, as a household with no modelled income.
+    #[serde(default)]
+    pub income_streams: Vec<IncomeStreamRow>,
+    #[serde(default)]
+    pub income_stream_steps: Vec<IncomeStreamStepRow>,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
@@ -313,9 +319,56 @@ pub struct ForecastAssumptionRow {
     pub annual_growth_bps: Option<i64>,
     pub annual_volatility_bps: Option<i64>,
     pub dividend_yield_bps: Option<i64>,
+    /// `#[serde(default)]` so a snapshot taken before 0020 added the column still imports,
+    /// as `NULL` — which is exactly the value that migration gives every existing row.
+    #[serde(default)]
+    pub long_run_growth_bps: Option<i64>,
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct IncomeStreamRow {
+    pub id: i64,
+    pub person_id: i64,
+    pub label: String,
+    pub employer: Option<String>,
+    pub currency_code: String,
+    pub annual_amount_minor: i64,
+    pub basis: String,
+    pub pay_frequency: String,
+    pub first_payment_on: String,
+    pub starts_on: String,
+    pub ends_on: Option<String>,
+    pub annual_increase_bps: i64,
+    pub kiwisaver_bps: i64,
+    pub student_loan: bool,
+    pub take_home_bps: Option<i64>,
+    pub linked_category_id: Option<i64>,
+    pub enabled: bool,
+    pub sort_order: i64,
+    pub notes: Option<String>,
+    /// Added by 0023 — `#[serde(default)]` so a snapshot taken before contributions could be routed
+    /// still imports, with the money going nowhere exactly as it did then.
+    #[serde(default)]
+    pub employer_kiwisaver_bps: i64,
+    #[serde(default)]
+    pub kiwisaver_account_id: Option<i64>,
+    #[serde(default)]
+    pub student_loan_account_id: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct IncomeStreamStepRow {
+    pub id: i64,
+    pub income_stream_id: i64,
+    pub effective_on: String,
+    pub annual_amount_minor: i64,
+    pub label: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
@@ -448,6 +501,16 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
         "SELECT * FROM forecast_assumptions ORDER BY id"
     );
     table!(
+        "income_streams",
+        IncomeStreamRow,
+        "SELECT * FROM income_streams ORDER BY id"
+    );
+    table!(
+        "income_stream_steps",
+        IncomeStreamStepRow,
+        "SELECT * FROM income_stream_steps ORDER BY id"
+    );
+    table!(
         "forecast_events",
         ForecastEventRow,
         "SELECT * FROM forecast_events ORDER BY id"
@@ -522,6 +585,12 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         dividend_withholdings: sqlx::query_as("SELECT * FROM dividend_withholdings ORDER BY id")
             .fetch_all(db)
             .await?,
+        income_streams: sqlx::query_as("SELECT * FROM income_streams ORDER BY id")
+            .fetch_all(db)
+            .await?,
+        income_stream_steps: sqlx::query_as("SELECT * FROM income_stream_steps ORDER BY id")
+            .fetch_all(db)
+            .await?,
         forecast_assumptions: sqlx::query_as("SELECT * FROM forecast_assumptions ORDER BY id")
             .fetch_all(db)
             .await?,
@@ -546,6 +615,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         "provider_syncs",
         "forecast_events",
         "forecast_assumptions",
+        "income_stream_steps",
+        "income_streams",
         "dividend_withholdings",
         "dividends",
         "holdings",
@@ -676,9 +747,26 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             .bind(w.id).bind(w.dividend_id).bind(&w.owed_to).bind(w.tax_amount_minor).bind(w.tax_credit_minor).bind(&w.currency_code)
             .execute(&mut *txn).await?;
     }
+    for s in &snap.income_streams {
+        sqlx::query("INSERT INTO income_streams (id, person_id, label, employer, currency_code, annual_amount_minor, basis, pay_frequency, first_payment_on, starts_on, ends_on, annual_increase_bps, kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled, sort_order, notes, created_at, updated_at, employer_kiwisaver_bps, kiwisaver_account_id, student_loan_account_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)")
+            .bind(s.id).bind(s.person_id).bind(&s.label).bind(&s.employer).bind(&s.currency_code)
+            .bind(s.annual_amount_minor).bind(&s.basis).bind(&s.pay_frequency)
+            .bind(&s.first_payment_on).bind(&s.starts_on).bind(&s.ends_on)
+            .bind(s.annual_increase_bps).bind(s.kiwisaver_bps).bind(s.student_loan)
+            .bind(s.take_home_bps).bind(s.linked_category_id).bind(s.enabled).bind(s.sort_order)
+            .bind(&s.notes).bind(&s.created_at).bind(&s.updated_at)
+            .bind(s.employer_kiwisaver_bps).bind(s.kiwisaver_account_id).bind(s.student_loan_account_id)
+            .execute(&mut *txn).await?;
+    }
+    for s in &snap.income_stream_steps {
+        sqlx::query("INSERT INTO income_stream_steps (id, income_stream_id, effective_on, annual_amount_minor, label, created_at) VALUES (?1,?2,?3,?4,?5,?6)")
+            .bind(s.id).bind(s.income_stream_id).bind(&s.effective_on).bind(s.annual_amount_minor)
+            .bind(&s.label).bind(&s.created_at)
+            .execute(&mut *txn).await?;
+    }
     for f in &snap.forecast_assumptions {
-        sqlx::query("INSERT INTO forecast_assumptions (id, target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps, notes, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)")
-            .bind(f.id).bind(&f.target_type).bind(f.target_id).bind(f.annual_growth_bps).bind(f.annual_volatility_bps).bind(f.dividend_yield_bps).bind(&f.notes).bind(&f.created_at).bind(&f.updated_at)
+        sqlx::query("INSERT INTO forecast_assumptions (id, target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps, long_run_growth_bps, notes, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")
+            .bind(f.id).bind(&f.target_type).bind(f.target_id).bind(f.annual_growth_bps).bind(f.annual_volatility_bps).bind(f.dividend_yield_bps).bind(f.long_run_growth_bps).bind(&f.notes).bind(&f.created_at).bind(&f.updated_at)
             .execute(&mut *txn).await?;
     }
     for e in &snap.forecast_events {
@@ -719,6 +807,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             "dividends": snap.dividends.len(),
             "dividend_withholdings": snap.dividend_withholdings.len(),
             "forecast_assumptions": snap.forecast_assumptions.len(),
+            "income_streams": snap.income_streams.len(),
+            "income_stream_steps": snap.income_stream_steps.len(),
             "forecast_events": snap.forecast_events.len(),
         }
     }))

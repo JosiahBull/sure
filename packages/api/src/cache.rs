@@ -128,11 +128,21 @@ const LONG_ROUTES: &[LongRoute] = &[
         method: Method::POST,
         template: "/api/providers/{id}/sync",
     },
-    // The one long *read*: `discover_accounts` calls the upstream provider inline to
-    // enumerate what is linkable, so it waits on someone else's API, not on SQLite.
+    // The one long *read* that waits on someone else: `discover_accounts` calls the upstream
+    // provider inline to enumerate what is linkable, so it waits on their API, not on SQLite.
     LongRoute {
         method: Method::GET,
         template: "/api/provider-kinds/{kind}/accounts",
+    },
+    // …and the one long read that waits on us. A 30-year projection is 2000 paths × 360 months
+    // across every account and category — bounded by `MAX_PATH_MONTHS`, but still seconds of
+    // uninterrupted CPU on the blocking pool. It ran comfortably inside the normal deadline
+    // only while the horizon was capped at five years. Its `PrivateWindow` cache policy is a
+    // separate question and unchanged: this is how long one may take, not how long the answer
+    // stays good for.
+    LongRoute {
+        method: Method::GET,
+        template: "/api/forecast",
     },
     LongRoute {
         method: Method::POST,

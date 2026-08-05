@@ -4,8 +4,9 @@
 
 use sqlx::FromRow;
 use sure_core::{
-    AppError, AppResult, ForecastAssumption, ForecastEvent, ForecastEventKind, ForecastTargetType,
-    SaveForecastAssumption, SaveForecastEvent,
+    AppError, AppResult, EffectColumns, ForecastAssumption, ForecastEvent, ForecastEventEffect,
+    ForecastEventRelation, ForecastTargetType, LifeEffectKind, LifeEffectSpec, RelationKind,
+    SaveForecastAssumption, SaveForecastEvent, SaveForecastEventRelation,
 };
 
 use crate::Db;
@@ -18,6 +19,7 @@ struct ForecastAssumptionRow {
     annual_growth_bps: Option<i64>,
     annual_volatility_bps: Option<i64>,
     dividend_yield_bps: Option<i64>,
+    long_run_growth_bps: Option<i64>,
     notes: Option<String>,
     created_at: String,
     updated_at: String,
@@ -41,6 +43,7 @@ impl TryFrom<ForecastAssumptionRow> for ForecastAssumption {
             annual_growth_bps: r.annual_growth_bps,
             annual_volatility_bps: r.annual_volatility_bps,
             dividend_yield_bps: r.dividend_yield_bps,
+            long_run_growth_bps: r.long_run_growth_bps,
             notes: r.notes,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -102,12 +105,14 @@ pub async fn upsert_assumption(
     }
     sqlx::query_as::<_, ForecastAssumptionRow>(
         "INSERT INTO forecast_assumptions
-            (target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps, notes)
-         VALUES (?1,?2,?3,?4,?5,?6)
+            (target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps,
+             long_run_growth_bps, notes)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)
          ON CONFLICT(target_type, target_id) DO UPDATE SET
             annual_growth_bps=excluded.annual_growth_bps,
             annual_volatility_bps=excluded.annual_volatility_bps,
             dividend_yield_bps=excluded.dividend_yield_bps,
+            long_run_growth_bps=excluded.long_run_growth_bps,
             notes=excluded.notes,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          RETURNING *",
@@ -117,6 +122,7 @@ pub async fn upsert_assumption(
     .bind(input.annual_growth_bps)
     .bind(input.annual_volatility_bps)
     .bind(input.dividend_yield_bps)
+    .bind(input.long_run_growth_bps)
     .bind(input.notes)
     .fetch_one(db)
     .await?
@@ -158,82 +164,388 @@ pub async fn trailing_dividends_minor(db: &Db, account_id: i64, since: &str) -> 
 #[derive(Debug, FromRow)]
 struct ForecastEventRow {
     id: i64,
-    target_type: String,
-    target_id: i64,
-    kind: String,
-    effective_date: String,
-    amount_minor: i64,
     label: String,
+    kind: String,
+    person_id: Option<i64>,
+    expected_on: String,
+    timing_spread_months: i64,
+    probability_bps: i64,
+    notes: Option<String>,
     created_at: String,
+    updated_at: String,
 }
 
-impl TryFrom<ForecastEventRow> for ForecastEvent {
+#[derive(Debug, FromRow)]
+struct EffectRow {
+    id: i64,
+    event_id: i64,
+    kind: String,
+    sort_order: i64,
+    income_stream_id: Option<i64>,
+    person_id: Option<i64>,
+    category_id: Option<i64>,
+    account_id: Option<i64>,
+    amount_minor: Option<i64>,
+    rate_bps: Option<i64>,
+    delay_months: Option<i64>,
+    ramp_months: Option<i64>,
+    duration_months: Option<i64>,
+}
+
+impl TryFrom<EffectRow> for ForecastEventEffect {
     type Error = AppError;
 
-    fn try_from(r: ForecastEventRow) -> AppResult<Self> {
-        let target_type: ForecastTargetType = r
-            .target_type
-            .parse()
-            .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))?;
-        let kind: ForecastEventKind = r
-            .kind
-            .parse()
-            .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))?;
-        Ok(ForecastEvent {
-            id: r.id,
-            target_type,
-            target_id: r.target_id,
+    fn try_from(r: EffectRow) -> AppResult<Self> {
+        let bad = |e: String| AppError::Internal(anyhow::anyhow!(e));
+        let kind: LifeEffectKind = r.kind.parse().map_err(bad)?;
+        // `from_columns` refuses every combination the migration's CHECK already makes impossible,
+        // so an error here means the row was written around every writer we own. Reported rather
+        // than coerced: a silently-defaulted effect is a projection quietly missing the change the
+        // user typed.
+        let spec = LifeEffectSpec::from_columns(
             kind,
-            effective_date: r.effective_date,
-            amount_minor: r.amount_minor,
-            label: r.label,
-            created_at: r.created_at,
+            EffectColumns {
+                income_stream_id: r.income_stream_id,
+                person_id: r.person_id,
+                category_id: r.category_id,
+                account_id: r.account_id,
+                amount_minor: r.amount_minor,
+                rate_bps: r.rate_bps,
+                delay_months: r.delay_months,
+                ramp_months: r.ramp_months,
+                duration_months: r.duration_months,
+            },
+        )
+        .map_err(bad)?;
+        Ok(ForecastEventEffect {
+            id: r.id,
+            event_id: r.event_id,
+            sort_order: r.sort_order,
+            spec,
         })
     }
 }
 
-/// Every known future step-change/one-off, soonest first.
+#[derive(Debug, FromRow)]
+struct RelationRow {
+    id: i64,
+    event_id: i64,
+    depends_on_event_id: i64,
+    kind: String,
+    min_gap_months: i64,
+}
+
+impl TryFrom<RelationRow> for ForecastEventRelation {
+    type Error = AppError;
+
+    fn try_from(r: RelationRow) -> AppResult<Self> {
+        let kind: RelationKind = r
+            .kind
+            .parse()
+            .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))?;
+        Ok(ForecastEventRelation {
+            id: r.id,
+            event_id: r.event_id,
+            depends_on_event_id: r.depends_on_event_id,
+            kind,
+            min_gap_months: r.min_gap_months,
+        })
+    }
+}
+
+/// Every event with its effects and relations attached, soonest first.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_events(db: &Db) -> AppResult<Vec<ForecastEvent>> {
-    sqlx::query_as::<_, ForecastEventRow>(
-        "SELECT * FROM forecast_events ORDER BY effective_date, id",
+    let rows = sqlx::query_as::<_, ForecastEventRow>(
+        "SELECT * FROM forecast_events ORDER BY expected_on, id",
+    )
+    .fetch_all(db)
+    .await?;
+    // Two queries for all the children rather than two per event: this list is always wanted whole.
+    let effects = sqlx::query_as::<_, EffectRow>(
+        "SELECT * FROM forecast_event_effects ORDER BY event_id, sort_order, id",
+    )
+    .fetch_all(db)
+    .await?;
+    let relations = sqlx::query_as::<_, RelationRow>(
+        "SELECT * FROM forecast_event_relations ORDER BY event_id, id",
+    )
+    .fetch_all(db)
+    .await?;
+
+    let mut eff_by: std::collections::HashMap<i64, Vec<ForecastEventEffect>> = Default::default();
+    for e in effects {
+        let id = e.event_id;
+        eff_by.entry(id).or_default().push(e.try_into()?);
+    }
+    let mut rel_by: std::collections::HashMap<i64, Vec<ForecastEventRelation>> = Default::default();
+    for r in relations {
+        let id = r.event_id;
+        rel_by.entry(id).or_default().push(r.try_into()?);
+    }
+    rows.into_iter()
+        .map(|r| {
+            let bad = |e: String| AppError::Internal(anyhow::anyhow!(e));
+            Ok(ForecastEvent {
+                effects: eff_by.remove(&r.id).unwrap_or_default(),
+                relations: rel_by.remove(&r.id).unwrap_or_default(),
+                kind: r.kind.parse().map_err(bad)?,
+                id: r.id,
+                label: r.label,
+                person_id: r.person_id,
+                expected_on: r.expected_on,
+                timing_spread_months: r.timing_spread_months,
+                probability_bps: r.probability_bps,
+                notes: r.notes,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            })
+        })
+        .collect()
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn get_event(db: &Db, id: i64) -> AppResult<ForecastEvent> {
+    list_events(db)
+        .await?
+        .into_iter()
+        .find(|e| e.id == id)
+        .ok_or(AppError::NotFound("forecast event"))
+}
+
+fn validate(input: &SaveForecastEvent) -> AppResult<()> {
+    let mut problems = input.validate().err().unwrap_or_default();
+    problems.extend(
+        sure_core::effect_amounts_in_range(&input.effects)
+            .err()
+            .unwrap_or_default(),
+    );
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::validation(problems.join("; ")))
+    }
+}
+
+/// `sqlx::Error` is `#[non_exhaustive]` upstream, so a catch-all is the only option here
+/// (CLAUDE.md rule 2's escape hatch).
+#[allow(clippy::wildcard_enum_match_arm)]
+fn fk_error(e: sqlx::Error) -> AppError {
+    match e {
+        sqlx::Error::Database(ref db) if db.is_foreign_key_violation() => AppError::validation(
+            "an effect points at a person, income stream, account or category that does not exist",
+        ),
+        sqlx::Error::Database(ref db) if db.is_check_violation() => AppError::validation(
+            "an effect is missing a field its kind requires, or carries one it must not",
+        ),
+        other => AppError::from(other),
+    }
+}
+
+/// Would the proposed relation set close a cycle?
+///
+/// Walked at write time so the answer is a sentence naming the loop rather than an opaque failure,
+/// and again at resolve time in `sure-app` — the two layers `categories` already uses, where a
+/// parent cycle is refused on write but the read path still carries a seen-check so a hand-edited
+/// database cannot hang a report.
+async fn would_cycle(
+    db: &Db,
+    event_id: Option<i64>,
+    proposed: &[SaveForecastEventRelation],
+) -> AppResult<Option<String>> {
+    // Every existing edge except this event's own outgoing ones, which the write replaces.
+    let mut edges: Vec<(i64, i64)> = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT event_id, depends_on_event_id FROM forecast_event_relations",
     )
     .fetch_all(db)
     .await?
     .into_iter()
-    .map(TryInto::try_into)
-    .collect()
+    .filter(|(from, _)| Some(*from) != event_id)
+    .collect();
+
+    // A create has no id yet; a sentinel that cannot collide stands in for it, and any cycle through
+    // it is a cycle through the row about to exist.
+    let me = event_id.unwrap_or(i64::MIN);
+    edges.extend(proposed.iter().map(|r| (me, r.depends_on_event_id)));
+
+    let mut adj: std::collections::HashMap<i64, Vec<i64>> = Default::default();
+    for (from, to) in edges {
+        adj.entry(from).or_default().push(to);
+    }
+    // Depth-first from the event being written: if it can reach itself, the set closes a loop.
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![me];
+    while let Some(node) = stack.pop() {
+        for &next in adj.get(&node).map(Vec::as_slice).unwrap_or(&[]) {
+            if next == me {
+                return Ok(Some(format!(
+                    "that would make this change wait for #{node}, which already waits for it"
+                )));
+            }
+            if seen.insert(next) {
+                stack.push(next);
+            }
+        }
+    }
+    Ok(None)
 }
 
+async fn write_children(
+    txn: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event_id: i64,
+    input: &SaveForecastEvent,
+) -> AppResult<()> {
+    sqlx::query("DELETE FROM forecast_event_effects WHERE event_id=?1")
+        .bind(event_id)
+        .execute(&mut **txn)
+        .await?;
+    sqlx::query("DELETE FROM forecast_event_relations WHERE event_id=?1")
+        .bind(event_id)
+        .execute(&mut **txn)
+        .await?;
+    for (i, spec) in input.effects.iter().enumerate() {
+        let c = spec.as_columns();
+        sqlx::query(
+            "INSERT INTO forecast_event_effects
+                (event_id, kind, sort_order, income_stream_id, person_id, category_id, account_id,
+                 amount_minor, rate_bps, delay_months, ramp_months, duration_months)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        )
+        .bind(event_id)
+        .bind(spec.kind().as_str())
+        .bind(i as i64)
+        .bind(c.income_stream_id)
+        .bind(c.person_id)
+        .bind(c.category_id)
+        .bind(c.account_id)
+        .bind(c.amount_minor)
+        .bind(c.rate_bps)
+        .bind(c.delay_months)
+        .bind(c.ramp_months)
+        .bind(c.duration_months)
+        .execute(&mut **txn)
+        .await
+        .map_err(fk_error)?;
+    }
+    for r in &input.relations {
+        sqlx::query(
+            "INSERT INTO forecast_event_relations
+                (event_id, depends_on_event_id, kind, min_gap_months)
+             VALUES (?1,?2,?3,?4)",
+        )
+        .bind(event_id)
+        .bind(r.depends_on_event_id)
+        .bind(r.kind.as_str())
+        .bind(r.min_gap_months)
+        .execute(&mut **txn)
+        .await
+        .map_err(fk_error)?;
+    }
+    Ok(())
+}
+
+/// Create the event, its effects and its relations in one transaction.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn create_event(db: &Db, input: SaveForecastEvent) -> AppResult<ForecastEvent> {
-    if input.label.trim().is_empty() {
-        return Err(AppError::validation("label is required"));
+    validate(&input)?;
+    if let Some(cycle) = would_cycle(db, None, &input.relations).await? {
+        return Err(AppError::conflict(cycle));
     }
-    sqlx::query_as::<_, ForecastEventRow>(
-        "INSERT INTO forecast_events (target_type, target_id, kind, effective_date, amount_minor, label)
-         VALUES (?1,?2,?3,?4,?5,?6) RETURNING *",
+    let mut txn = db.begin().await?;
+    let row = sqlx::query_as::<_, ForecastEventRow>(
+        "INSERT INTO forecast_events
+            (label, kind, person_id, expected_on, timing_spread_months, probability_bps, notes)
+         VALUES (?1,?2,?3,?4,?5,?6,?7) RETURNING *",
     )
-    .bind(input.target_type.as_str())
-    .bind(input.target_id)
-    .bind(input.kind.as_str())
-    .bind(input.effective_date.to_string())
-    .bind(input.amount_minor.minor())
     .bind(input.label.trim())
-    .fetch_one(db)
-    .await?
-    .try_into()
+    .bind(input.kind.as_str())
+    .bind(input.person_id)
+    .bind(input.expected_on.to_string())
+    .bind(input.timing_spread_months)
+    .bind(input.probability_bps)
+    .bind(input.notes.as_deref())
+    .fetch_one(&mut *txn)
+    .await
+    .map_err(fk_error)?;
+    let id = row.id;
+    write_children(&mut txn, id, &input).await?;
+    txn.commit().await?;
+    get_event(db, id).await
 }
 
+/// Full replace, effects and relations included.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn update_event(db: &Db, id: i64, input: SaveForecastEvent) -> AppResult<ForecastEvent> {
+    validate(&input)?;
+    if let Some(cycle) = would_cycle(db, Some(id), &input.relations).await? {
+        return Err(AppError::conflict(cycle));
+    }
+    let mut txn = db.begin().await?;
+    let res = sqlx::query(
+        "UPDATE forecast_events SET
+            label=?2, kind=?3, person_id=?4, expected_on=?5, timing_spread_months=?6,
+            probability_bps=?7, notes=?8,
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id=?1",
+    )
+    .bind(id)
+    .bind(input.label.trim())
+    .bind(input.kind.as_str())
+    .bind(input.person_id)
+    .bind(input.expected_on.to_string())
+    .bind(input.timing_spread_months)
+    .bind(input.probability_bps)
+    .bind(input.notes.as_deref())
+    .execute(&mut *txn)
+    .await
+    .map_err(fk_error)?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound("forecast event"));
+    }
+    write_children(&mut txn, id, &input).await?;
+    txn.commit().await?;
+    get_event(db, id).await
+}
+
+/// Delete an event.
+///
+/// Asymmetric on purpose, because the two relation kinds differ in what deletion *costs*. A dangling
+/// `after` is pure ordering and is dropped silently — refusing would trap the user in a graph they
+/// could only escape by editing every dependent first. A dangling `only_if` is refused: an event the
+/// user believed was conditional would quietly become unconditional in every future projection,
+/// which is a change of meaning with no trace.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete_event(db: &Db, id: i64) -> AppResult<()> {
+    let conditional: Vec<String> = sqlx::query_scalar(
+        "SELECT e.label
+           FROM forecast_event_relations r
+           JOIN forecast_events e ON e.id = r.event_id
+          WHERE r.depends_on_event_id = ?1 AND r.kind = 'only_if'
+          ORDER BY e.label",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await?;
+    if !conditional.is_empty() {
+        return Err(AppError::conflict(format!(
+            "These changes only happen if this one does, so they would silently become certain: {}",
+            crate::people::summarise(&conditional)
+        )));
+    }
+    let mut txn = db.begin().await?;
+    // Pure ordering edges pointing at it: dropped, since the ordering is meaningless without it.
+    sqlx::query("DELETE FROM forecast_event_relations WHERE depends_on_event_id=?1")
+        .bind(id)
+        .execute(&mut *txn)
+        .await?;
     let res = sqlx::query("DELETE FROM forecast_events WHERE id=?1")
         .bind(id)
-        .execute(db)
+        .execute(&mut *txn)
         .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound("forecast event"));
     }
+    txn.commit().await?;
     Ok(())
 }
 
@@ -261,6 +573,7 @@ mod tests {
             annual_growth_bps: Some(700),
             annual_volatility_bps,
             dividend_yield_bps: None,
+            long_run_growth_bps: None,
             notes: None,
         }
     }

@@ -14,7 +14,9 @@ pub mod currencies;
 pub mod equity;
 pub mod error;
 pub mod forecast;
+pub mod income;
 pub mod iso_date;
+pub mod life_events;
 pub mod merchants;
 pub mod money;
 pub mod people;
@@ -22,6 +24,7 @@ pub mod providers;
 pub mod rules;
 pub mod settings;
 pub mod stock_prices;
+pub mod tax;
 pub mod transactions;
 pub mod types;
 pub mod valuations;
@@ -37,11 +40,17 @@ pub use equity::{
     AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
 };
 pub use error::{AppError, AppResult, ErrorBody, ErrorDetail};
-pub use forecast::{
-    ForecastAssumption, ForecastEvent, ForecastEventKind, ForecastTargetType,
-    SaveForecastAssumption, SaveForecastEvent,
+pub use forecast::{ForecastAssumption, ForecastTargetType, SaveForecastAssumption};
+pub use income::{
+    IncomeBasis, IncomeStream, IncomeStreamStep, PayFrequency, PayStep, SaveIncomeStream,
+    SaveIncomeStreamStep, TakeHome, TakeHomeSource,
 };
 pub use iso_date::IsoDate;
+pub use life_events::{
+    effect_amounts_in_range, EffectColumns, EffectTarget, ForecastEvent, ForecastEventEffect,
+    ForecastEventRelation, LifeEffectKind, LifeEffectSpec, LifeEventKind, RelationKind,
+    SaveForecastEvent, SaveForecastEventRelation, StepAmount,
+};
 pub use merchants::{Merchant, SaveMerchant};
 pub use money::{Money, MAX_MONEY_MINOR};
 pub use people::{
@@ -58,6 +67,11 @@ pub use rules::{
 };
 pub use settings::{Settings, UpdateSettings};
 pub use stock_prices::StockPrice;
+pub use tax::{
+    average_take_home_bps, latest_scale, marginal_take_home_bps, paye, scale_for, PayeBreakdown,
+    PayeInput, TaxScale, TaxScaleId, KIWISAVER_DEFAULT_BPS, KIWISAVER_EMPLOYEE_RATES_BPS,
+    NZ_TAX_SCALES,
+};
 pub use transactions::{
     BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,
     TxQuery,

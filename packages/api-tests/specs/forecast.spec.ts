@@ -212,17 +212,26 @@ test("an unknown ?currency= on the forecast is a 400", async ({ api }) => {
 
 test("forecast events CRUD, and deleting a nonexistent one 404s", async ({ api }) => {
   const cat = await createCategory(api, "Salary", "income");
+  // The unified shape: identity and timing on the event, what it does in its effects. A dated,
+  // exact change is this model with probability 100% and no spread — which is all it ever was.
   const created = await api.POST("/api/forecast/events", {
     body: {
-      target_type: "category",
-      target_id: cat.id,
-      kind: "step_change",
-      effective_date: "2027-01-01",
-      amount_minor: 750_000,
       label: "Promotion",
+      kind: "adjustment",
+      expected_on: "2027-01-01",
+      effects: [
+        {
+          kind: "set_baseline",
+          target: { kind: "category", category_id: cat.id },
+          amount_minor: 750_000,
+        },
+      ],
     },
   });
-  expect(created.response.status).toBe(201);
+  expect(created.response.status, JSON.stringify(created.error)).toBe(201);
+  expect(created.data!.probability_bps).toBe(10_000);
+  expect(created.data!.timing_spread_months).toBe(0);
+  expect(created.data!.effects).toHaveLength(1);
 
   const list = await api.GET("/api/forecast/events", {});
   expect(list.data?.some((e) => e.id === created.data!.id)).toBe(true);
@@ -279,12 +288,16 @@ test("a promotion step-change event raises the projected net worth from its mont
 
   await api.POST("/api/forecast/events", {
     body: {
-      target_type: "category",
-      target_id: salary.id,
-      kind: "step_change",
-      effective_date: new Date().toISOString().slice(0, 10),
-      amount_minor: 1_000_000, // double the ~$5,000/mo baseline
       label: "Promotion",
+      kind: "promotion",
+      expected_on: new Date().toISOString().slice(0, 10),
+      effects: [
+        {
+          kind: "set_baseline",
+          target: { kind: "category", category_id: salary.id },
+          amount_minor: 1_000_000, // double the ~$5,000/mo baseline
+        },
+      ],
     },
   });
   const after = await api.GET("/api/forecast", { params: { query: params } });
@@ -294,4 +307,124 @@ test("a promotion step-change event raises the projected net worth from its mont
       before.data!.months[i].net_worth.median_minor
     );
   }
+});
+
+// ---- long horizon ------------------------------------------------------------------
+// The Rust unit tests own the decay arithmetic (that a fitted rate is untouched inside the
+// window it was fitted over, and what it compounds to beyond it). These cover the parts only
+// the wire can answer: that the ceiling moved, that the path budget is reported rather than
+// applied silently, and that raising the ceiling did not reintroduce the non-finite band that
+// used to take this endpoint down permanently.
+
+test("a thirty-year horizon returns thirty years of months", async ({ api }) => {
+  const { data } = await api.GET("/api/forecast", {
+    params: { query: { horizon_months: 360, simulations: 100, seed: 7 } },
+  });
+  expect(data!.months).toHaveLength(360);
+  expect(data!.horizon_months).toBe(360);
+});
+
+test("a horizon past the ceiling is clamped and says so, rather than being refused", async ({
+  api,
+}) => {
+  const { data, response } = await api.GET("/api/forecast", {
+    params: { query: { horizon_months: 5_000, simulations: 100, seed: 7 } },
+  });
+  expect(response.status).toBe(200);
+  expect(data!.horizon_months).toBe(360);
+  expect(data!.months).toHaveLength(360);
+});
+
+test("a long horizon trades paths for months, and reports the count it actually ran", async ({
+  api,
+}) => {
+  // Asking for the maximum path count over the maximum horizon exceeds the path-month budget,
+  // so the run is cut back. Without `simulations` on the response there was no way to tell.
+  const long = await api.GET("/api/forecast", {
+    params: { query: { horizon_months: 360, simulations: 5_000, seed: 7 } },
+  });
+  expect(long.data!.simulations).toBe(2_000);
+
+  // At any horizon that was legal before the ceiling moved, the budget cannot bind — otherwise
+  // raising it would have silently coarsened every projection anyone had already looked at.
+  const short = await api.GET("/api/forecast", {
+    params: { query: { horizon_months: 60, simulations: 5_000, seed: 7 } },
+  });
+  expect(short.data!.simulations).toBe(5_000);
+});
+
+test("thirty years of compounding still produces finite bands, ordered p10 <= median <= p90", async ({
+  api,
+}) => {
+  // The guard this pins: `exp()` saturates past ±745, and a saturated draw makes `0.0 * inf`
+  // = NaN, which used to reach the percentile sort and 500 the endpoint until the offending
+  // row was deleted. Six times the horizon is six times the exponent, so the arithmetic that
+  // was comfortably safe at five years had to be re-checked at thirty.
+  const shares = await createAccount(api, "Volatile fund", "shares_nz");
+  const today = new Date();
+  for (let i = 24; i >= 0; i--) {
+    const d = new Date(today);
+    d.setMonth(d.getMonth() - i);
+    await api.POST("/api/accounts/{id}/valuations", {
+      params: { path: { id: shares.id } },
+      body: {
+        as_of: d.toISOString().slice(0, 10),
+        // Alternating hard up/down, so the fitted volatility is as large as a real series can
+        // make it rather than as large as an override could assert.
+        value_minor: i % 2 === 0 ? 20_000_00 : 60_000_00,
+      },
+    });
+  }
+
+  const { data } = await api.GET("/api/forecast", {
+    params: { query: { horizon_months: 360, simulations: 500, seed: 3 } },
+  });
+  for (const m of data!.months) {
+    for (const band of [m.net_worth, m.assets, m.liabilities]) {
+      for (const v of Object.values(band)) {
+        expect(Number.isFinite(v)).toBe(true);
+      }
+      expect(band.p10_minor).toBeLessThanOrEqual(band.median_minor);
+      expect(band.median_minor).toBeLessThanOrEqual(band.p90_minor);
+    }
+  }
+});
+
+test("the share of paths that go cash-negative is reported per month", async ({ api }) => {
+  // A band around net worth cannot answer "could we actually afford this": a path that ends
+  // rich having been thousands overdrawn on the way looks identical to one that never was.
+  // Enough to cover the 13 months of history below and leave ~10 months of runway on top, so
+  // the rate starts at zero and climbs — which is the shape that makes this figure worth
+  // reporting. Without the opening balance the pool is already under water in month 1 and the
+  // series is a flat 10 000, which proves only that the field exists.
+  const bank = await createAccount(api, "Everyday", "bank", "NZD", {
+    opening_balance_minor: 69_000_00,
+    opening_balance_date: "2024-01-01",
+  });
+  const rent = await createCategory(api, "Rent", "expense");
+  const today = new Date();
+  for (let i = 13; i >= 1; i--) {
+    const d = new Date(today);
+    d.setMonth(d.getMonth() - i);
+    await createTransaction(api, {
+      account_id: bank.id,
+      posted_at: d.toISOString().slice(0, 10),
+      amount_minor: -3_000_00,
+      description: "Rent",
+      category_id: rent.id,
+    });
+  }
+
+  const { data } = await api.GET("/api/forecast", {
+    params: { query: { horizon_months: 60, simulations: 300, seed: 5 } },
+  });
+  expect(data!.negative_cash_rate_bps).toHaveLength(data!.months.length);
+  for (const bps of data!.negative_cash_rate_bps) {
+    expect(bps).toBeGreaterThanOrEqual(0);
+    expect(bps).toBeLessThanOrEqual(10_000);
+  }
+  // Solvent at the start…
+  expect(data!.negative_cash_rate_bps[0]).toBe(0);
+  // …and rent with no income drains it, so by five years out every path is under water.
+  expect(data!.negative_cash_rate_bps.at(-1)).toBeGreaterThan(9_000);
 });

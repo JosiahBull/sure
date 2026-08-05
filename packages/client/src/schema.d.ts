@@ -2333,11 +2333,16 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    /** @description How many months forward to project (1-60). Defaults to 12. */
+                    /**
+                     * @description How many months forward to project (1-360). Defaults to 12. A value past the ceiling is
+                     *     clamped rather than refused; `ForecastResult::horizon_months` reports what was run.
+                     */
                     horizon_months?: number;
                     /**
                      * @description Monte Carlo path count (100-5000, more = smoother percentiles, slower).
-                     *     Defaults to 2000.
+                     *     Defaults to 2000. Long horizons are additionally capped by a path-month budget, so a
+                     *     30-year projection runs 2000 paths however many were asked for —
+                     *     `ForecastResult::simulations` reports what was run.
                      */
                     simulations?: number;
                     /**
@@ -2540,8 +2545,12 @@ export interface paths {
         };
         put?: never;
         /**
-         * Record a known future step-change (a promotion, a fixed appreciation rate) or
-         *     one-off (a planned bonus, a lump-sum contribution).
+         * Record a change to the future: a promotion, a child, a career break, a job starting or ending,
+         *     or a dated adjustment you are certain about.
+         * @description Effects and relations travel in the same body and are saved in one transaction. A partial save
+         *     would leave a state the user cannot see and did not ask for, every problem across every effect
+         *     can then be collected into one 422, and the cycle check needs the complete proposed graph rather
+         *     than one edge at a time.
          */
         post: {
             parameters: {
@@ -2562,6 +2571,14 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["ForecastEvent"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
                 422: {
@@ -2587,9 +2604,94 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
+        /** One event, with its effects and relations. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ForecastEvent"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        /** Replace an event, its effects and relations included — so removing one is omitting it. */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveForecastEvent"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ForecastEvent"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
         post?: never;
+        /**
+         * Remove an event.
+         * @description Ordering rules pointing at it are dropped — an ordering is meaningless without the thing it
+         *     orders against, and refusing would trap you in a graph you could only escape by editing every
+         *     dependent first. But a 409 when something happens *only if* this does: that event would quietly
+         *     become certain, which is a change of meaning with no trace.
+         */
         delete: {
             parameters: {
                 query?: never;
@@ -2608,6 +2710,14 @@ export interface paths {
                     content?: never;
                 };
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -2653,6 +2763,173 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/income-streams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every income stream in the household, with its dated pay-scale steps attached.
+         * @description Flat and unfiltered: the income screen wants every person's streams at once, and one request
+         *     per person would be N round trips for a few rows.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomeStream"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/income-streams/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One income stream. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomeStream"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        /**
+         * Replace an income stream, its pay-scale schedule included.
+         * @description The steps sent here *are* the schedule afterwards, so removing one is omitting it — the
+         *     full-replace contract `PUT /api/forecast/assumptions` already has.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveIncomeStream"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomeStream"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        /**
+         * Remove an income stream. Refused with 409 while a forecast change still points at it — repoint
+         *     or remove those first, so a promotion cannot quietly become a no-op.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -3013,6 +3290,68 @@ export interface paths {
                 };
             };
         };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/people/{person_id}/income-streams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record income for someone in the household.
+         * @description Nested under the person, and flat for every mutation below — the `valuations` arrangement. It
+         *     puts `person_id` in the path, where it cannot be omitted or contradicted by the body, and keeps
+         *     the mutation URLs stable.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    person_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveIncomeStream"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomeStream"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4915,7 +5254,7 @@ export interface components {
             warnings: string[];
         };
         /** @enum {string} */
-        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history";
+        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history" | "contribution_driven" | "modelled_from_income";
         BackfillResult: {
             /**
              * Format: int64
@@ -5290,6 +5629,25 @@ export interface components {
             tax_credit_minor?: number | null;
             currency_code: string;
         };
+        /**
+         * @description What a baseline change or a one-off lands on.
+         *
+         *     An account amount is in that account's own currency; a category amount is in the base reporting
+         *     currency, because a category has no currency of its own. That asymmetry is inherited from how
+         *     the projection already treats the two and is why this is a tagged union rather than a pair of
+         *     nullable ids.
+         */
+        EffectTarget: {
+            /** Format: int64 */
+            account_id: number;
+            /** @enum {string} */
+            kind: "account";
+        } | {
+            /** Format: int64 */
+            category_id: number;
+            /** @enum {string} */
+            kind: "category";
+        };
         EquityExercise: {
             /** Format: int64 */
             id: number;
@@ -5363,6 +5721,67 @@ export interface components {
             /** @description Human-readable description. */
             message: string;
         };
+        /**
+         * @description How an event actually landed across the simulated paths — not what was typed.
+         *
+         *     Relations move timing, so the configured `expected_on ± spread` and the realised distribution
+         *     genuinely differ. The chart draws this; the editor shows the input. Drawing the input would be a
+         *     lie about precisely the thing the chart exists to show.
+         */
+        EventOutcome: {
+            /** Format: int64 */
+            event_id: number;
+            label: string;
+            kind: components["schemas"]["LifeEventKind"];
+            /**
+             * Format: int64
+             * @description Whose event it is, so the chart can colour its band with that person's swatch. Absent for a
+             *     household event.
+             */
+            person_id?: number | null;
+            /**
+             * Format: int64
+             * @description What was configured, for comparison with `occurrence_rate_bps` below.
+             */
+            probability_bps: number;
+            /**
+             * Format: int64
+             * @description Paths it occurred on. Differs from `probability_bps` exactly when an `only_if` bound.
+             */
+            occurrence_rate_bps: number;
+            /**
+             * Format: int64
+             * @description …of which also landed inside the horizon.
+             */
+            in_window_rate_bps: number;
+            /**
+             * Format: int64
+             * @description Realised timing as month offsets from today; `null` if it never occurred. Taken over *all*
+             *     occurring paths, so a p90 beyond the chart says so rather than being pulled back to the edge.
+             */
+            month_p10?: number | null;
+            /** Format: int64 */
+            month_median?: number | null;
+            /** Format: int64 */
+            month_p90?: number | null;
+            date_p10?: string | null;
+            date_median?: string | null;
+            date_p90?: string | null;
+            /**
+             * Format: int64
+             * @description Of occurring paths, how many had the date moved by an ordering constraint. The honesty
+             *     signal: "your ±2y window was pushed by 'after the promotion' in 34% of runs."
+             */
+            constrained_rate_bps: number;
+            /**
+             * Format: int64
+             * @description Of occurring paths, how many sampled a month at or before today — so "your expected date is
+             *     in the past" is visible rather than inferred.
+             */
+            clamped_early_rate_bps: number;
+            /** @description The p90 ran past the horizon, so the chart should draw an open end. */
+            truncated: boolean;
+        };
         ForecastAssumption: {
             /** Format: int64 */
             id: number;
@@ -5375,6 +5794,16 @@ export interface components {
             annual_volatility_bps?: number | null;
             /** Format: int64 */
             dividend_yield_bps?: number | null;
+            /**
+             * Format: int64
+             * @description The annual rate a *derived* growth trend decays toward beyond the window it was
+             *     fitted over, in basis points. `None` reads as 0 — flat in nominal terms, which is
+             *     what `AssumptionSource::InsufficientHistory` already yields, so it is the
+             *     conservative claim rather than an invented one. Ignored when
+             *     `annual_growth_bps` is set: that is the user asserting a rate, and an assertion is
+             *     not decayed.
+             */
+            long_run_growth_bps?: number | null;
             notes?: string | null;
             created_at: string;
             updated_at: string;
@@ -5382,22 +5811,43 @@ export interface components {
         ForecastEvent: {
             /** Format: int64 */
             id: number;
-            target_type: components["schemas"]["ForecastTargetType"];
-            /** Format: int64 */
-            target_id: number;
-            kind: components["schemas"]["ForecastEventKind"];
-            effective_date: string;
-            /** Format: int64 */
-            amount_minor: number;
             label: string;
+            kind: components["schemas"]["LifeEventKind"];
+            /** Format: int64 */
+            person_id?: number | null;
+            expected_on: string;
+            /**
+             * Format: int64
+             * @description Half-width of a uniform hard window, in months. 0 = the date is certain.
+             */
+            timing_spread_months: number;
+            /** Format: int64 */
+            probability_bps: number;
+            notes?: string | null;
+            effects: components["schemas"]["ForecastEventEffect"][];
+            relations: components["schemas"]["ForecastEventRelation"][];
             created_at: string;
+            updated_at: string;
         };
-        /**
-         * @description A known future change, applied identically across every simulated path (it's a
-         *     certainty the user is asserting, not a statistical estimate).
-         * @enum {string}
-         */
-        ForecastEventKind: "step_change" | "one_off_amount";
+        ForecastEventEffect: components["schemas"]["LifeEffectSpec"] & {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            event_id: number;
+            /** Format: int64 */
+            sort_order: number;
+        };
+        ForecastEventRelation: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            event_id: number;
+            /** Format: int64 */
+            depends_on_event_id: number;
+            kind: components["schemas"]["RelationKind"];
+            /** Format: int64 */
+            min_gap_months: number;
+        };
         ForecastMonth: {
             as_of: string;
             net_worth: components["schemas"]["Band"];
@@ -5417,6 +5867,51 @@ export interface components {
             unconverted: string[];
             /** @description Newest date across the exchange rates used (ISO-8601), `null` if none are on record. */
             rates_as_of?: string | null;
+            /**
+             * Format: int64
+             * @description The horizon actually projected, after clamping. Equal to `months.length`.
+             */
+            horizon_months: number;
+            /**
+             * Format: int64
+             * @description The Monte Carlo path count actually run, after the path-month budget. Asking for 5000
+             *     paths over 360 months yields 2000, and this is how a caller can tell.
+             */
+            simulations: number;
+            /**
+             * @description Household net income landing in each projected month. Same length as `months`.
+             *
+             *     A band rather than a figure because it will not stay deterministic: once a change can pause
+             *     or step someone's pay on some paths and not others, this is where that spread appears.
+             */
+            income_net: components["schemas"]["Band"][];
+            /**
+             * @description Per linked income category, what the streams claim against what history recorded. Reported
+             *     beside the projection rather than folded into it — a diagnostic that silently changes the
+             *     thing it diagnoses stops being one.
+             *     How each event landed across the paths. What the chart draws.
+             */
+            events: components["schemas"]["EventOutcome"][];
+            reconciliations: components["schemas"]["StreamReconciliation"][];
+            /**
+             * @description Figures the projection is standing in for, and places where linking something changed what an
+             *     account's numbers mean. Prose, because each needs to say what to do about it.
+             */
+            warnings: string[];
+            /**
+             * @description Income streams left out of the projection, and why. A figure the user can see is incomplete
+             *     beats one they cannot.
+             */
+            unmodelled_streams: string[];
+            /**
+             * @description Per month, the fraction of simulated paths whose pooled cash balance was negative, in
+             *     basis points. Same length as `months`.
+             *
+             *     A band around net worth cannot answer "could we actually afford this": a path that ends
+             *     rich having gone thousands overdrawn in year three looks identical to one that never
+             *     did. This counts that directly.
+             */
+            negative_cash_rate_bps: number[];
         };
         /**
          * @description What kind of thing a `forecast_assumptions` row tunes.
@@ -5455,6 +5950,148 @@ export interface components {
             provider?: string | null;
             created_at: string;
         };
+        /**
+         * @description Which direction a stream's recorded figure points, and — when it is before deductions — whose
+         *     rules apply.
+         *
+         *     One enum rather than a `taxable` flag beside a separate `tax_scale`, because those would be two
+         *     independent encodings of the same fact and free to drift apart (CLAUDE.md rule 1). Adding
+         *     another jurisdiction is one variant here, and the exhaustive-match lint then finds every site
+         *     that has to decide what it means.
+         * @enum {string}
+         */
+        IncomeBasis: "net" | "gross_nz_paye";
+        IncomeStream: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            person_id: number;
+            label: string;
+            employer?: string | null;
+            currency_code: string;
+            /** Format: int64 */
+            annual_amount_minor: number;
+            basis: components["schemas"]["IncomeBasis"];
+            pay_frequency: components["schemas"]["PayFrequency"];
+            first_payment_on: string;
+            starts_on: string;
+            ends_on?: string | null;
+            /** Format: int64 */
+            annual_increase_bps: number;
+            /** Format: int64 */
+            kiwisaver_bps: number;
+            /**
+             * Format: int64
+             * @description The employer's contribution, in basis points of gross. Never part of take-home.
+             */
+            employer_kiwisaver_bps: number;
+            student_loan: boolean;
+            /** Format: int64 */
+            take_home_bps?: number | null;
+            /** Format: int64 */
+            linked_category_id?: number | null;
+            /**
+             * Format: int64
+             * @description The account KiwiSaver contributions land in. Setting it takes that account off its fitted
+             *     growth rate — see `0023_income_contribution_targets.sql` for why that is unavoidable.
+             */
+            kiwisaver_account_id?: number | null;
+            /**
+             * Format: int64
+             * @description The student loan these deductions pay down. Same consequence for that account.
+             */
+            student_loan_account_id?: number | null;
+            enabled: boolean;
+            /** Format: int64 */
+            sort_order: number;
+            notes?: string | null;
+            /**
+             * @description The dated pay scale, ascending. Loaded with the stream — a schedule is not useful without
+             *     the thing it schedules, and the UI edits them together.
+             */
+            steps: components["schemas"]["IncomeStreamStep"][];
+            created_at: string;
+            updated_at: string;
+        };
+        IncomeStreamStep: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            income_stream_id: number;
+            effective_on: string;
+            /** Format: int64 */
+            annual_amount_minor: number;
+            label?: string | null;
+        };
+        /**
+         * @description The discriminant of a `forecast_event_effects` row. Text only at the column edge.
+         * @enum {string}
+         */
+        LifeEffectKind: "income_step" | "income_start" | "income_end" | "income_pause" | "recurring_delta" | "set_baseline" | "one_off_amount";
+        /**
+         * @description One thing an event does. An event has N of them, which is what lets "a child" mean daycare *and*
+         *     a paused salary *and* a pram in one place.
+         */
+        LifeEffectSpec: {
+            /** Format: int64 */
+            income_stream_id: number;
+            amount: components["schemas"]["StepAmount"];
+            /** @enum {string} */
+            kind: "income_step";
+        } | {
+            /** Format: int64 */
+            income_stream_id: number;
+            /** @enum {string} */
+            kind: "income_start";
+        } | {
+            /** Format: int64 */
+            income_stream_id: number;
+            /** @enum {string} */
+            kind: "income_end";
+        } | {
+            /** Format: int64 */
+            person_id: number;
+            /** Format: int64 */
+            months: number;
+            /** Format: int64 */
+            replacement_rate_bps: number;
+            /** @enum {string} */
+            kind: "income_pause";
+        } | {
+            /** Format: int64 */
+            category_id: number;
+            /** Format: int64 */
+            amount_minor: number;
+            /** Format: int64 */
+            delay_months: number;
+            /** Format: int64 */
+            ramp_months: number;
+            /** Format: int64 */
+            duration_months?: number | null;
+            /** @enum {string} */
+            kind: "recurring_delta";
+        } | {
+            target: components["schemas"]["EffectTarget"];
+            /** Format: int64 */
+            amount_minor: number;
+            /** @enum {string} */
+            kind: "set_baseline";
+        } | {
+            target: components["schemas"]["EffectTarget"];
+            /** Format: int64 */
+            amount_minor: number;
+            /** @enum {string} */
+            kind: "one_off_amount";
+        };
+        /**
+         * @description What sort of event this is, for presentation and for choosing a form template.
+         *
+         *     **The simulation never branches on this.** It branches on the event's *effects*, which is what
+         *     makes adding a variant here a UI change rather than a change to the projection. A career break
+         *     that pauses pay and a job ending that stops it are the same arithmetic; only the words differ.
+         * @enum {string}
+         */
+        LifeEventKind: "promotion" | "child" | "career_break" | "job_start" | "job_end" | "adjustment" | "custom";
         LinkGroupMember: {
             /** @description The upstream's stable identifier (`ProviderAccount::external_id`). */
             external_id: string;
@@ -5742,6 +6379,15 @@ export interface components {
             /** @enum {string} */
             kind: "joint";
         };
+        /**
+         * @description How often a stream pays.
+         *
+         *     The simulation steps in months, so this plus an anchor date is what puts a quarterly payment in
+         *     the month it actually lands in and gives a fortnightly payer three paydays in the months that
+         *     really have three.
+         * @enum {string}
+         */
+        PayFrequency: "weekly" | "fortnightly" | "four_weekly" | "monthly" | "quarterly" | "annual";
         /** @description One member of the household. */
         Person: {
             /** Format: int64 */
@@ -5951,6 +6597,11 @@ export interface components {
          */
         RateType: "fixed" | "floating" | "split";
         /**
+         * @description How one event constrains another.
+         * @enum {string}
+         */
+        RelationKind: "after" | "only_if";
+        /**
          * @description How often a loan's contractual repayment is actually made. Weekly and fortnightly are
          *     the NZ norm; the forecast annualises them (×52/12, ×26/12) rather than treating them as
          *     ×4/×2 — the extra payments a year are exactly why paying weekly clears a loan sooner.
@@ -5966,6 +6617,13 @@ export interface components {
             annual_growth_bps: number;
             /** Format: int64 */
             annual_volatility_bps: number;
+            /**
+             * Format: int64
+             * @description The annual rate `annual_growth_bps` decays toward beyond the five years it was fitted
+             *     over, in basis points. Only applied when `source` is `derived` — an override or a
+             *     cron-configured rate is something the user asserted, and an assertion is not decayed.
+             */
+            long_run_growth_bps: number;
             /**
              * Format: int64
              * @description Only set for Investment-class accounts (brokerage/shares).
@@ -6201,17 +6859,39 @@ export interface components {
             annual_volatility_bps?: number | null;
             /** Format: int64 */
             dividend_yield_bps?: number | null;
+            /** Format: int64 */
+            long_run_growth_bps?: number | null;
             notes?: string | null;
         };
+        /**
+         * @description Write body: a **full replace**, effects and relations included.
+         *
+         *     One body and one transaction, for three reasons. A partial save (event stored, effect rejected)
+         *     leaves a state the user cannot see and did not ask for; every problem across every effect can be
+         *     collected into one 422, which is the `AccountMetadata::validate_for` contract; and the cycle check
+         *     needs the *complete proposed graph*, which a per-relation endpoint could only ever validate
+         *     mid-edit.
+         */
         SaveForecastEvent: {
-            target_type: components["schemas"]["ForecastTargetType"];
-            /** Format: int64 */
-            target_id: number;
-            kind: components["schemas"]["ForecastEventKind"];
-            effective_date: string;
-            /** Format: int64 */
-            amount_minor: number;
             label: string;
+            kind: components["schemas"]["LifeEventKind"];
+            /** Format: int64 */
+            person_id?: number | null;
+            expected_on: string;
+            /** Format: int64 */
+            timing_spread_months?: number;
+            /** Format: int64 */
+            probability_bps?: number;
+            notes?: string | null;
+            effects?: components["schemas"]["LifeEffectSpec"][];
+            relations?: components["schemas"]["SaveForecastEventRelation"][];
+        };
+        SaveForecastEventRelation: {
+            /** Format: int64 */
+            depends_on_event_id: number;
+            kind: components["schemas"]["RelationKind"];
+            /** Format: int64 */
+            min_gap_months?: number;
         };
         SaveGrant: {
             company: string;
@@ -6246,6 +6926,49 @@ export interface components {
             /** Format: int64 */
             fee_minor?: number;
             kind?: components["schemas"]["LotKind"];
+        };
+        /**
+         * @description Write body. `steps` is a **full replace**, like `SaveForecastAssumption` is a full-replace
+         *     upsert: the steps sent here *are* the schedule after the write, so deleting one is omitting it.
+         *     One body and one transaction, so a schedule can never be half-saved.
+         */
+        SaveIncomeStream: {
+            label: string;
+            employer?: string | null;
+            currency_code: string;
+            /** Format: int64 */
+            annual_amount_minor: number;
+            basis: components["schemas"]["IncomeBasis"];
+            pay_frequency: components["schemas"]["PayFrequency"];
+            first_payment_on: string;
+            starts_on: string;
+            ends_on?: string | null;
+            /** Format: int64 */
+            annual_increase_bps?: number;
+            /** Format: int64 */
+            kiwisaver_bps?: number;
+            /** Format: int64 */
+            employer_kiwisaver_bps?: number;
+            student_loan?: boolean;
+            /** Format: int64 */
+            take_home_bps?: number | null;
+            /** Format: int64 */
+            linked_category_id?: number | null;
+            /** Format: int64 */
+            kiwisaver_account_id?: number | null;
+            /** Format: int64 */
+            student_loan_account_id?: number | null;
+            enabled?: boolean;
+            /** Format: int64 */
+            sort_order?: number;
+            notes?: string | null;
+            steps?: components["schemas"]["SaveIncomeStreamStep"][];
+        };
+        SaveIncomeStreamStep: {
+            effective_on: string;
+            /** Format: int64 */
+            annual_amount_minor: number;
+            label?: string | null;
         };
         SaveMerchant: {
             name: string;
@@ -6348,6 +7071,23 @@ export interface components {
             notes?: string | null;
         };
         /**
+         * @description How a promotion moves a stream's level.
+         *
+         *     Absolute versus relative matters: "+12%" composes with an earlier promotion and with the dated
+         *     pay scale underneath it, and an absolute figure does not.
+         */
+        StepAmount: {
+            /** Format: int64 */
+            annual_amount_minor: number;
+            /** @enum {string} */
+            basis: "absolute";
+        } | {
+            /** Format: int64 */
+            rate_bps: number;
+            /** @enum {string} */
+            basis: "percent";
+        };
+        /**
          * @description A single day's cached closing price for a ticker (see
          *     `sure_providers::StockPriceProvider`), keyed by `(ticker, exchange, as_of)`.
          */
@@ -6362,6 +7102,39 @@ export interface components {
             currency_code: string;
             /** @description When this row was fetched (ISO-8601 timestamp, UTC). */
             fetched_at: string;
+        };
+        /**
+         * @description What the income streams linked to one category claim, beside what that category's own history
+         *     recorded. A modelled figure well above the observed one is the signature of a gross salary being
+         *     modelled as take-home.
+         */
+        StreamReconciliation: {
+            /** Format: int64 */
+            person_id: number;
+            /** Format: int64 */
+            category_id: number;
+            category_label: string;
+            /**
+             * Format: int64
+             * @description Monthly net the streams model as of today.
+             */
+            modelled_net_minor: number;
+            /**
+             * Format: int64
+             * @description The category's own fitted monthly baseline — what history saw.
+             */
+            observed_net_minor: number;
+            /**
+             * Format: int64
+             * @description `modelled / observed`, in basis points. Over 10 000 means the streams claim more than the
+             *     category ever recorded: a wrong link or a wrong figure, not good news.
+             */
+            coverage_bps: number;
+            /**
+             * Format: int64
+             * @description What is left for the fitted trend once the streams are netted out.
+             */
+            residual_minor: number;
         };
         /**
          * @description Result of a myIR student-loan export upload (`POST
@@ -6433,6 +7206,22 @@ export interface components {
             /** @description Inline data for payload-based providers (e.g. CSV text). */
             payload?: string | null;
         };
+        /**
+         * @description Where a stream's gross→net map came from.
+         *
+         *     The same precedence shape as `sure_app::forecast::AssumptionSource`: an override wins, else it
+         *     is computed.
+         *
+         *     There is deliberately **no** `Reconciled` variant. The reconciliation — this person's modelled
+         *     gross against the net actually observed in the linked income category — is reported *beside*
+         *     the projection as a check on it, not folded into the rate. Two reasons: the statutory scale
+         *     always resolves, so a reconciled rate would only ever be overriding a known-correct answer with
+         *     a measured one whose error bars nobody can see; and a diagnostic that silently changes the thing
+         *     it is diagnosing stops being a diagnostic. A variant that cannot be produced is worse than no
+         *     variant at all, so it is not carried "for later".
+         * @enum {string}
+         */
+        TakeHomeSource: "override" | "already_net" | "statutory";
         /**
          * @description How gains on a holding are taxed. Not stored for share/brokerage accounts, where it
          *     is derived from the account's `subtype` instead.

@@ -349,3 +349,46 @@ export async function postOversized(
   }
   throw new Error("the server never returned a complete response to an oversized body");
 }
+
+/**
+ * Someone in the household. Open-coded in three specs before this existed, each slightly
+ * differently.
+ */
+export async function createPerson(api: SureClient, name: string, color?: string) {
+  const { data, response } = await api.POST("/api/people", {
+    body: { name, color, sort_order: 0 },
+  });
+  expect(response.status, "create person").toBe(201);
+  return data!;
+}
+
+/**
+ * An income stream for `personId`.
+ *
+ * Defaults to a fortnightly gross NZ salary already running, because that is the shape almost
+ * every case wants; anything a spec is actually asserting on it passes explicitly. Figures are
+ * invented (CLAUDE.md rule 3 — a salary is personal data and `pii-scan` matches shapes, not
+ * amounts, so this is a discipline the tooling cannot enforce).
+ */
+export async function createIncomeStream(
+  api: SureClient,
+  personId: number,
+  over: Partial<Schemas["SaveIncomeStream"]> = {}
+) {
+  const body: Schemas["SaveIncomeStream"] = {
+    label: "Salary",
+    currency_code: "NZD",
+    annual_amount_minor: 88_000_00,
+    basis: "gross_nz_paye",
+    pay_frequency: "fortnightly",
+    first_payment_on: "2026-04-03",
+    starts_on: "2026-04-01",
+    ...over,
+  };
+  const { data, response } = await api.POST("/api/people/{person_id}/income-streams", {
+    params: { path: { person_id: personId } },
+    body,
+  });
+  expect(response.status, `create income stream: ${JSON.stringify(body)}`).toBe(201);
+  return data!;
+}

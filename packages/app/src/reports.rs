@@ -230,6 +230,10 @@ pub struct EquityPosition {
 /// rather than erroring, and a client typo is its own visible symptom (the window it asked
 /// for isn't the window it got). Leading-10 truncation is deliberate here so a UI that sends
 /// a full datetime still bounds correctly.
+pub(crate) fn parse_date_pub(s: &str) -> Option<NaiveDate> {
+    parse_date(s)
+}
+
 pub(crate) fn parse_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s.get(0..10).unwrap_or(s), "%Y-%m-%d").ok()
 }
@@ -322,6 +326,10 @@ pub(crate) fn sum_minor(
     amounts: impl Iterator<Item = i64>,
 ) -> i64 {
     narrow_minor(what, account_id, amounts.map(i128::from).sum::<i128>())
+}
+
+pub(crate) fn last_day_of_month_pub(year: i32, month: u32) -> NaiveDate {
+    last_day_of_month(year, month)
 }
 
 pub(crate) fn last_day_of_month(y: i32, m: u32) -> NaiveDate {
