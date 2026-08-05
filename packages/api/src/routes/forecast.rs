@@ -42,6 +42,10 @@ pub enum AssumptionSource {
     /// Not enough history to derive a default; mean/volatility are 0 rather than a
     /// guess — set an override to use this target in a forecast.
     InsufficientHistory,
+    /// This category's cash flow comes from per-person income streams rather than its own fitted
+    /// trend. `baseline_minor` is then the *residual* — the part of the category the streams do
+    /// not explain — so a non-zero one means some income here is still un-modelled.
+    ModelledFromIncome,
 }
 
 impl From<sure_app::forecast::AssumptionSource> for AssumptionSource {
@@ -53,6 +57,7 @@ impl From<sure_app::forecast::AssumptionSource> for AssumptionSource {
             S::Derived => AssumptionSource::Derived,
             S::Deterministic => AssumptionSource::Deterministic,
             S::InsufficientHistory => AssumptionSource::InsufficientHistory,
+            S::ModelledFromIncome => AssumptionSource::ModelledFromIncome,
         }
     }
 }
@@ -200,6 +205,39 @@ impl From<sure_app::forecast::ForecastMonth> for ForecastMonth {
     }
 }
 
+/// What the income streams linked to one category claim, beside what that category's own history
+/// recorded. A modelled figure well above the observed one is the signature of a gross salary being
+/// modelled as take-home.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StreamReconciliation {
+    pub person_id: i64,
+    pub category_id: i64,
+    pub category_label: String,
+    /// Monthly net the streams model as of today.
+    pub modelled_net_minor: i64,
+    /// The category's own fitted monthly baseline — what history saw.
+    pub observed_net_minor: i64,
+    /// `modelled / observed`, in basis points. Over 10 000 means the streams claim more than the
+    /// category ever recorded: a wrong link or a wrong figure, not good news.
+    pub coverage_bps: i64,
+    /// What is left for the fitted trend once the streams are netted out.
+    pub residual_minor: i64,
+}
+
+impl From<sure_app::forecast::StreamReconciliation> for StreamReconciliation {
+    fn from(r: sure_app::forecast::StreamReconciliation) -> Self {
+        StreamReconciliation {
+            person_id: r.person_id,
+            category_id: r.category_id,
+            category_label: r.category_label,
+            modelled_net_minor: r.modelled_net_minor,
+            observed_net_minor: r.observed_net_minor,
+            coverage_bps: r.coverage_bps,
+            residual_minor: r.residual_minor,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ForecastResult {
     pub currency: String,
@@ -217,6 +255,18 @@ pub struct ForecastResult {
     /// The Monte Carlo path count actually run, after the path-month budget. Asking for 5000
     /// paths over 360 months yields 2000, and this is how a caller can tell.
     pub simulations: i64,
+    /// Household net income landing in each projected month. Same length as `months`.
+    ///
+    /// A band rather than a figure because it will not stay deterministic: once a change can pause
+    /// or step someone's pay on some paths and not others, this is where that spread appears.
+    pub income_net: Vec<Band>,
+    /// Per linked income category, what the streams claim against what history recorded. Reported
+    /// beside the projection rather than folded into it — a diagnostic that silently changes the
+    /// thing it diagnoses stops being one.
+    pub reconciliations: Vec<StreamReconciliation>,
+    /// Income streams left out of the projection, and why. A figure the user can see is incomplete
+    /// beats one they cannot.
+    pub unmodelled_streams: Vec<String>,
     /// Per month, the fraction of simulated paths whose pooled cash balance was negative, in
     /// basis points. Same length as `months`.
     ///
@@ -236,6 +286,9 @@ impl From<sure_app::forecast::ForecastResult> for ForecastResult {
             rates_as_of: r.rates_as_of,
             horizon_months: r.horizon_months,
             simulations: r.simulations,
+            income_net: r.income_net.into_iter().map(Into::into).collect(),
+            reconciliations: r.reconciliations.into_iter().map(Into::into).collect(),
+            unmodelled_streams: r.unmodelled_streams,
             negative_cash_rate_bps: r.negative_cash_rate_bps,
         }
     }

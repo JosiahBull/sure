@@ -5149,7 +5149,7 @@ export interface components {
             warnings: string[];
         };
         /** @enum {string} */
-        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history";
+        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history" | "modelled_from_income";
         BackfillResult: {
             /**
              * Format: int64
@@ -5672,6 +5672,24 @@ export interface components {
              *     paths over 360 months yields 2000, and this is how a caller can tell.
              */
             simulations: number;
+            /**
+             * @description Household net income landing in each projected month. Same length as `months`.
+             *
+             *     A band rather than a figure because it will not stay deterministic: once a change can pause
+             *     or step someone's pay on some paths and not others, this is where that spread appears.
+             */
+            income_net: components["schemas"]["Band"][];
+            /**
+             * @description Per linked income category, what the streams claim against what history recorded. Reported
+             *     beside the projection rather than folded into it — a diagnostic that silently changes the
+             *     thing it diagnoses stops being one.
+             */
+            reconciliations: components["schemas"]["StreamReconciliation"][];
+            /**
+             * @description Income streams left out of the projection, and why. A figure the user can see is incomplete
+             *     beats one they cannot.
+             */
+            unmodelled_streams: string[];
             /**
              * @description Per month, the fraction of simulated paths whose pooled cash balance was negative, in
              *     basis points. Same length as `months`.
@@ -6740,6 +6758,39 @@ export interface components {
             fetched_at: string;
         };
         /**
+         * @description What the income streams linked to one category claim, beside what that category's own history
+         *     recorded. A modelled figure well above the observed one is the signature of a gross salary being
+         *     modelled as take-home.
+         */
+        StreamReconciliation: {
+            /** Format: int64 */
+            person_id: number;
+            /** Format: int64 */
+            category_id: number;
+            category_label: string;
+            /**
+             * Format: int64
+             * @description Monthly net the streams model as of today.
+             */
+            modelled_net_minor: number;
+            /**
+             * Format: int64
+             * @description The category's own fitted monthly baseline — what history saw.
+             */
+            observed_net_minor: number;
+            /**
+             * Format: int64
+             * @description `modelled / observed`, in basis points. Over 10 000 means the streams claim more than the
+             *     category ever recorded: a wrong link or a wrong figure, not good news.
+             */
+            coverage_bps: number;
+            /**
+             * Format: int64
+             * @description What is left for the fitted trend once the streams are netted out.
+             */
+            residual_minor: number;
+        };
+        /**
          * @description Result of a myIR student-loan export upload (`POST
          *     /api/accounts/{id}/student-loan/import`). Mirrors [`ProviderSync`]'s imported/skipped
          *     counts, plus what the exports covered — the window is the useful part, because the
@@ -6812,11 +6863,19 @@ export interface components {
         /**
          * @description Where a stream's gross→net map came from.
          *
-         *     The same shape, and the same philosophy, as `sure_app::forecast::AssumptionSource`: an override
-         *     wins, else it is computed or derived, else it is *flagged* rather than guessed.
+         *     The same precedence shape as `sure_app::forecast::AssumptionSource`: an override wins, else it
+         *     is computed.
+         *
+         *     There is deliberately **no** `Reconciled` variant. The reconciliation — this person's modelled
+         *     gross against the net actually observed in the linked income category — is reported *beside*
+         *     the projection as a check on it, not folded into the rate. Two reasons: the statutory scale
+         *     always resolves, so a reconciled rate would only ever be overriding a known-correct answer with
+         *     a measured one whose error bars nobody can see; and a diagnostic that silently changes the thing
+         *     it is diagnosing stops being a diagnostic. A variant that cannot be produced is worse than no
+         *     variant at all, so it is not carried "for later".
          * @enum {string}
          */
-        TakeHomeSource: "override" | "already_net" | "statutory" | "reconciled" | "inherited" | "unresolved";
+        TakeHomeSource: "override" | "already_net" | "statutory";
         /**
          * @description How gains on a holding are taxed. Not stored for share/brokerage accounts, where it
          *     is derived from the account's `subtype` instead.

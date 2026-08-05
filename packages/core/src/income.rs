@@ -152,28 +152,25 @@ impl FromStr for IncomeBasis {
 
 /// Where a stream's gross→net map came from.
 ///
-/// The same shape, and the same philosophy, as `sure_app::forecast::AssumptionSource`: an override
-/// wins, else it is computed or derived, else it is *flagged* rather than guessed.
+/// The same precedence shape as `sure_app::forecast::AssumptionSource`: an override wins, else it
+/// is computed.
+///
+/// There is deliberately **no** `Reconciled` variant. The reconciliation — this person's modelled
+/// gross against the net actually observed in the linked income category — is reported *beside*
+/// the projection as a check on it, not folded into the rate. Two reasons: the statutory scale
+/// always resolves, so a reconciled rate would only ever be overriding a known-correct answer with
+/// a measured one whose error bars nobody can see; and a diagnostic that silently changes the thing
+/// it is diagnosing stops being a diagnostic. A variant that cannot be produced is worse than no
+/// variant at all, so it is not carried "for later".
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TakeHomeSource {
-    /// `take_home_bps` is set — the user asserting it.
+    /// `take_home_bps` is set — the user asserting it, and an assertion wins.
     Override,
     /// `basis` is already net, so take-home is the recorded figure by definition.
     AlreadyNet,
-    /// Computed from the statutory scale in `sure_core::tax`.
+    /// Computed from the statutory scale in [`crate::tax`].
     Statutory,
-    /// Measured: this person's modelled gross against the net actually observed in the linked
-    /// income category over the trailing twelve months.
-    Reconciled,
-    /// Reconciled for another of this person's streams and reused, because this one has no history
-    /// of its own — a job that has not started yet.
-    Inherited,
-    /// Neither overridable, computable nor derivable. The stream is left out of the projection and
-    /// named, on exactly the argument `Fx::try_base_scale` makes for an unconvertible currency: an
-    /// amount counted at the wrong rate is a wrong number that looks like a right one, and a
-    /// figure the user can see is incomplete beats one they cannot.
-    Unresolved,
 }
 
 impl TakeHomeSource {
@@ -182,9 +179,6 @@ impl TakeHomeSource {
             TakeHomeSource::Override => "override",
             TakeHomeSource::AlreadyNet => "already_net",
             TakeHomeSource::Statutory => "statutory",
-            TakeHomeSource::Reconciled => "reconciled",
-            TakeHomeSource::Inherited => "inherited",
-            TakeHomeSource::Unresolved => "unresolved",
         }
     }
 }

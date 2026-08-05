@@ -160,6 +160,10 @@ pub enum AssumptionSource {
     /// Fewer than 2 data points (or under `MIN_HISTORY_DAYS`/3 months of history) — mean
     /// and volatility default to 0 rather than inventing a plausible-looking number.
     InsufficientHistory,
+    /// This category's cash flow comes from per-person income streams, not from its own fitted
+    /// trend. The baseline shown is the *residual* — the part of the category the streams do not
+    /// explain — so a non-zero one means some income here is still un-modelled.
+    ModelledFromIncome,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +263,9 @@ pub struct SimulationInputs {
     assumptions: Vec<ResolvedAssumption>,
     account_sims: Vec<AccountSim>,
     category_sims: Vec<CategorySim>,
+    stream_sims: Vec<StreamSim>,
+    reconciliations: Vec<StreamReconciliation>,
+    unmodelled_streams: Vec<String>,
 }
 
 /// A percentile band across every simulated path, in the report currency's minor units.
@@ -298,6 +305,21 @@ pub struct ForecastResult {
     /// The number of paths actually run, after [`MAX_PATH_MONTHS`]. A caller asking for 5 000
     /// paths over 360 months gets 2 000, and without this had no way to know.
     pub simulations: i64,
+    /// Household net income landing in each projected month, in the report currency.
+    ///
+    /// A band rather than a single figure because it will not stay deterministic: once events can
+    /// pause or step a stream per path, this is where that spread shows up. Same length as
+    /// `months`.
+    pub income_net: Vec<Band>,
+    /// Per linked income category, what the streams claim against what history actually saw.
+    ///
+    /// Reported rather than folded into the projection: a diagnostic that silently changes the
+    /// thing it is diagnosing stops being one. This is the check that catches a salary entered
+    /// before tax and modelled as take-home.
+    pub reconciliations: Vec<StreamReconciliation>,
+    /// Streams left out of the projection, and why — `Fx::unconverted`'s contract. A figure the
+    /// user can see is incomplete beats one they cannot.
+    pub unmodelled_streams: Vec<String>,
     /// Per month, the fraction of paths whose pooled cash balance was negative, in basis points.
     ///
     /// The projection has always filed a negative cash pool under liabilities by sign, and still
@@ -306,6 +328,28 @@ pub struct ForecastResult {
     /// overdrawn in year three looks identical to one that never did. This is that question,
     /// counted directly. Same length as `months`.
     pub negative_cash_rate_bps: Vec<i64>,
+}
+
+/// What the income streams linked to one category claim, beside what that category's own history
+/// actually recorded.
+///
+/// The pair is the point. A modelled figure 18-45% above the observed one is the exact signature of
+/// a gross salary being modelled as take-home at NZ marginal rates — a mistake that is invisible in
+/// a net-worth band and obvious here.
+#[derive(Debug, Clone)]
+pub struct StreamReconciliation {
+    pub person_id: i64,
+    pub category_id: i64,
+    pub category_label: String,
+    /// Monthly net the streams model as of today, report currency minor units.
+    pub modelled_net_minor: i64,
+    /// The category's own fitted monthly baseline, report currency minor units — what history saw.
+    pub observed_net_minor: i64,
+    /// `modelled / observed`, in basis points. Above 10 000 means the streams claim more than the
+    /// category ever recorded, which is a wrong link or a wrong figure rather than good news.
+    pub coverage_bps: i64,
+    /// What is left for the fitted trend to project once the streams are netted out.
+    pub residual_minor: i64,
 }
 
 pub struct ForecastService {
@@ -691,7 +735,7 @@ impl ForecastService {
 
         let (base, fx) = self.currency_and_fx(params.currency.as_deref()).await?;
 
-        let assumptions = self.resolved_assumptions_with(&fx).await?;
+        let mut assumptions = self.resolved_assumptions_with(&fx).await?;
         let by_target: HashMap<(ForecastTargetType, i64), &ResolvedAssumption> = assumptions
             .iter()
             .map(|a| ((a.target_type, a.target_id), a))
@@ -796,10 +840,112 @@ impl ForecastService {
             });
         }
 
+        // ---- income streams ------------------------------------------------------------
+        //
+        // Built before `category_sims`, because what a stream models has to be netted out of the
+        // category it lands in before that category's baseline is fixed. Without that, a salary
+        // recorded here *and* fitted from the bank statement is counted twice.
+        let streams = self.forecast.list_income_streams().await?;
+        let mut stream_sims: Vec<StreamSim> = Vec::new();
+        let mut unmodelled_streams: Vec<String> = Vec::new();
+        // Modelled monthly net per linked category, base-currency major units.
+        let mut modelled_by_category: HashMap<i64, (i64, f64)> = HashMap::new();
+
+        // A person's brackets are progressive over their *total* gross, so the level every gross
+        // stream is taxed against is the sum of them — pricing each alone would tax each as if the
+        // other did not exist and under-tax both.
+        let mut person_gross: HashMap<i64, i64> = HashMap::new();
+        for st in streams.iter().filter(|s| s.enabled && s.basis.is_gross()) {
+            let (level, _, _, _) = crate::income::level_schedule(st, today, horizon);
+            *person_gross.entry(st.person_id).or_default() += level as i64;
+        }
+
+        for st in &streams {
+            if !st.enabled {
+                continue;
+            }
+            // Same argument as an account: a stream in a currency with no rate to the projection
+            // currency is left out and named, never counted at parity.
+            let Some(base_scale) = fx.try_base_scale(&st.currency_code) else {
+                unmodelled_streams.push(format!(
+                    "{} — no exchange rate from {} to {base}",
+                    st.label, st.currency_code
+                ));
+                continue;
+            };
+            let Some(anchor) = reports::parse_date(&st.first_payment_on) else {
+                unmodelled_streams.push(format!("{} — unreadable first payment date", st.label));
+                continue;
+            };
+            // Outside the projection window entirely: left out rather than included paying zero,
+            // so it cannot be mistaken for a stream that earns nothing.
+            let Some((active_from, active_to)) = crate::income::active_window(st, today, horizon)
+            else {
+                continue;
+            };
+            let (start_level, steps, residual_from_month, monthly_increase) =
+                crate::income::level_schedule(st, today, horizon);
+            let gross_total = person_gross.get(&st.person_id).copied().unwrap_or(0);
+            let take_home = crate::income::take_home(st, gross_total, today);
+
+            // The monthly net this stream claims, for netting and for the reconciliation. Annual
+            // over twelve, not this month's paydays: a category baseline is a monthly *average*, so
+            // that is the like-for-like comparison.
+            let annual_net = take_home.net_annual(start_level, start_level);
+            let monthly_net_base = annual_net / 12.0 * base_scale;
+            if let Some(cat) = st.linked_category_id {
+                let entry = modelled_by_category
+                    .entry(cat)
+                    .or_insert((st.person_id, 0.0));
+                entry.1 += monthly_net_base;
+            }
+
+            stream_sims.push(StreamSim {
+                base_scale,
+                payments: crate::income::payment_counts(st.pay_frequency, anchor, today, horizon),
+                periods_per_year: st.pay_frequency.periods_per_year(),
+                start_level,
+                calibrated_level: start_level,
+                steps,
+                monthly_increase,
+                residual_from_month,
+                active_from,
+                active_to,
+                take_home,
+            });
+        }
+
         let mut category_sims = Vec::new();
-        for a in &assumptions {
+        let mut reconciliations: Vec<StreamReconciliation> = Vec::new();
+        for a in &mut assumptions {
             if a.target_type != ForecastTargetType::Category {
                 continue;
+            }
+            // Net the streams out of the category they land in, and report the pair. The residual
+            // — not zero — is what the fitted trend still projects: excluding the category outright
+            // would silently drop the income the streams do not explain (interest, a gift, a second
+            // job nobody modelled).
+            if let Some(&(person_id, modelled)) = modelled_by_category.get(&a.target_id) {
+                let observed = a
+                    .baseline_minor
+                    .and_then(|m| fx.try_to_base_major(m, &base))
+                    .unwrap_or(0.0);
+                let residual = (observed - modelled).max(0.0);
+                reconciliations.push(StreamReconciliation {
+                    person_id,
+                    category_id: a.target_id,
+                    category_label: a.label.clone(),
+                    modelled_net_minor: fx.base_minor(modelled),
+                    observed_net_minor: fx.base_minor(observed),
+                    coverage_bps: if observed > 0.0 {
+                        (modelled / observed * 10_000.0).round() as i64
+                    } else {
+                        0
+                    },
+                    residual_minor: fx.base_minor(residual),
+                });
+                a.baseline_minor = Some(fx.base_minor(residual));
+                a.source = AssumptionSource::ModelledFromIncome;
             }
             let Some(baseline_minor) = a.baseline_minor else {
                 continue; // no derived trend to anchor to — contributes nothing
@@ -841,6 +987,9 @@ impl ForecastService {
             assumptions,
             account_sims,
             category_sims,
+            stream_sims,
+            reconciliations,
+            unmodelled_streams,
         })
     }
 
@@ -874,6 +1023,9 @@ impl ForecastService {
             assumptions,
             account_sims,
             category_sims,
+            stream_sims,
+            reconciliations,
+            unmodelled_streams,
         } = inputs;
 
         let cash_start: f64 = accounts
@@ -914,6 +1066,9 @@ impl ForecastService {
                 net_worth: Vec::with_capacity(n_paths),
             })
             .collect();
+        // Household net income per month, per path — a band, because events will make it one.
+        let mut income_samples: Vec<Vec<f64>> =
+            (0..horizon).map(|_| Vec::with_capacity(n_paths)).collect();
         // Paths whose cash pool was negative, per month. A count rather than samples: the answer
         // is a single fraction, so there is nothing to take percentiles of.
         let mut negative_cash: Vec<u32> = vec![0; horizon as usize];
@@ -929,6 +1084,13 @@ impl ForecastService {
                     cat_baselines[i] = val;
                 }
             }
+
+            // Per-path income state. Deterministic today — every path runs the same schedule — but
+            // per-path from the start, because a promotion or a career break moves the level on some
+            // paths and not others, and retrofitting that into shared state is how a path leaks into
+            // its neighbour.
+            let mut stream_levels: Vec<f64> = stream_sims.iter().map(|s| s.start_level).collect();
+            let mut stream_next_step: Vec<usize> = vec![0; stream_sims.len()];
 
             // Per-path repayment state, parallel to `acc_values` (`None` for every
             // non-amortising account). Opening a schedule draws this path's post-refix
@@ -1053,10 +1215,44 @@ impl ForecastService {
                         -contribution
                     };
                 }
+                // ---- income streams -----------------------------------------------------
+                //
+                // Base-currency major units, like `cash`. Ordered deliberately: the level moves
+                // first (a pay-scale step effective this month pays at the new level *this*
+                // month), then the residual increase, then the window gate, then the calendar.
+                let mut stream_net = 0.0;
+                for (i, sim) in stream_sims.iter().enumerate() {
+                    while stream_next_step[i] < sim.steps.len()
+                        && sim.steps[stream_next_step[i]].0 <= m
+                    {
+                        stream_levels[i] = sim.steps[stream_next_step[i]].1;
+                        stream_next_step[i] += 1;
+                    }
+                    if m > sim.residual_from_month {
+                        stream_levels[i] *= sim.monthly_increase;
+                    }
+                    if m < sim.active_from || m > sim.active_to {
+                        continue;
+                    }
+                    let paydays = f64::from(sim.payments[m as usize]);
+                    if paydays == 0.0 {
+                        continue;
+                    }
+                    let level = stream_levels[i];
+                    let gross = paydays * level / sim.periods_per_year;
+                    // The take-home *ratio* comes from the annual level and the month's amount from
+                    // the calendar. Annualising the month instead would push a quarterly bonus into
+                    // the top bracket for that month alone, which is not how PAYE works.
+                    let net_annual = sim.take_home.net_annual(level, sim.calibrated_level);
+                    let ratio = if level > 0.0 { net_annual / level } else { 0.0 };
+                    stream_net += gross * ratio * sim.base_scale;
+                }
+
                 // Servicing the debt is real money leaving. Net worth therefore falls by
                 // exactly the interest each month: the principal moves from cash to the
                 // liability and nets out, the interest simply goes.
-                cash += net_flow - repayments;
+                cash += net_flow + stream_net - repayments;
+                income_samples[(m - 1) as usize].push(stream_net);
 
                 let mut assets = 0.0;
                 let mut liabilities = 0.0;
@@ -1106,6 +1302,12 @@ impl ForecastService {
             rates_as_of: fx.rates_as_of().map(str::to_string),
             horizon_months: horizon,
             simulations: n_paths as i64,
+            income_net: income_samples
+                .iter_mut()
+                .map(|s| band_from_samples(s, &fx))
+                .collect(),
+            reconciliations,
+            unmodelled_streams,
             negative_cash_rate_bps: negative_cash
                 .iter()
                 .map(|&c| (c as i64) * 10_000 / n_paths.max(1) as i64)
@@ -1198,6 +1400,33 @@ struct CategorySim {
     step_changes: Vec<(i64, f64)>,
     /// `(month_index, delta)`, base-currency dollars — a one-time bonus/expense.
     one_offs: Vec<(i64, f64)>,
+}
+
+/// One income stream, resolved. Everything here is path-invariant; the *level* is not — a promotion
+/// moves it — so that lives in the path loop beside `acc_values`.
+struct StreamSim {
+    /// Native minor units -> base-currency major units, resolved once. A stream whose currency has
+    /// no rate never becomes a `StreamSim` at all; it is named in `unmodelled_streams`.
+    base_scale: f64,
+    /// Paydays landing in each month index, `0..=horizon`. Index 0 is always 0.
+    payments: Vec<u8>,
+    periods_per_year: f64,
+    /// Annual level at month 0, native minor units, after any pay-scale step already in force.
+    start_level: f64,
+    /// The level the take-home map was calibrated at — the denominator its marginal rate prices
+    /// increments above.
+    calibrated_level: f64,
+    /// `(month_index, new_annual_level)` from the dated pay scale, ascending. Deterministic on every
+    /// path: a published scale is a certainty.
+    steps: Vec<(i64, f64)>,
+    /// `(1 + annual_increase)^(1/12)`, applied only from `residual_from_month` on — so a published
+    /// scale and a typed-in annual rise cannot both apply to the same month.
+    monthly_increase: f64,
+    residual_from_month: i64,
+    /// Inclusive month window from `starts_on`/`ends_on`, clamped into `1..=horizon`.
+    active_from: i64,
+    active_to: i64,
+    take_home: sure_core::TakeHome,
 }
 
 /// `(month_index, value)` pairs an event contributes: a step-change's new value, or a
@@ -1367,6 +1596,10 @@ fn long_run_anchor(a: &ResolvedAssumption) -> Option<i64> {
         | AssumptionSource::Cron
         | AssumptionSource::Deterministic
         | AssumptionSource::InsufficientHistory => None,
+        // The baseline here is a *residual* — whatever the income streams did not explain — and the
+        // streams themselves carry their own dated schedule. Decaying the residual would be decaying
+        // a leftover, which says nothing about the long run either way, so it is left flat.
+        AssumptionSource::ModelledFromIncome => None,
     }
 }
 
@@ -1417,6 +1650,18 @@ fn band_from_samples(samples: &mut Vec<f64>, fx: &Fx) -> Band {
         p75_minor: fx.base_minor(percentile(samples, 0.75)),
         p90_minor: fx.base_minor(percentile(samples, 0.90)),
     }
+}
+
+/// [`months_between`], for `crate::income`. The payment calendar has to agree with the simulation
+/// about what month a date falls in, to the month — two copies of this arithmetic would be two
+/// answers.
+pub(crate) fn months_between_pub(a: NaiveDate, b: NaiveDate) -> i64 {
+    months_between(a, b)
+}
+
+/// [`add_months`], for `crate::income`, on the same argument.
+pub(crate) fn add_months_pub(d: NaiveDate, n: i64) -> NaiveDate {
+    add_months(d, n)
 }
 
 fn months_between(a: NaiveDate, b: NaiveDate) -> i64 {
