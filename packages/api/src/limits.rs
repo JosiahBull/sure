@@ -25,7 +25,9 @@ use axum::response::Response;
 // shapes for "busy, come back" would get one of them wrong. Re-exported here because this
 // is where the middleware that produces them lives, and every existing caller
 // (`crate::cache`, `crate::telemetry`) names them through this module.
-pub use crate::error::{clothe_error, overloaded_response, ErrorAlreadyClothed};
+pub use crate::error::{
+    clothe_error, overloaded_response, ErrorAlreadyClothed, PreservedErrorCode,
+};
 
 // ---- per-client rate limit --------------------------------------------------------
 

@@ -97,8 +97,18 @@ const READ_ONLY_FILES: &[&str] = &["/dev/urandom"];
 /// certificates will be read from.
 const CA_CERT_VARS: &[&str] = &["SSL_CERT_FILE", "SSL_CERT_DIR"];
 
-/// The only port any outbound request goes to: every provider base URL in
-/// `sure-providers` is `https://`, and none of them is configurable at runtime.
+/// The only port the *built-in* provider endpoints reach: every adapter's
+/// `DEFAULT_BASE_URL` in `sure-providers` is `https://`, so 443 and DNS are the whole of a
+/// default process's egress.
+///
+/// A configured endpoint need not be. `FRANKFURTER_BASE_URL` and its two siblings can name a
+/// loopback record/replay proxy on an ephemeral port ([`Config::provider_endpoints`]), and
+/// that port is deliberately **not** derived from the config and folded in here: every entry
+/// in `connect_ports` should be one an operator asked for, or the policy this module logs
+/// stops being a policy anyone can predict from what they set. The cost is that a denied
+/// `connect(2)` surfaces as an ordinary connection error from whichever adapter was pointed
+/// at the proxy, naming nothing about Landlock — so a harness aiming one at `sure-testproxy`
+/// has to list the port in `SURE_SANDBOX_CONNECT_PORTS`, or run with `SURE_SANDBOX=off`.
 const HTTPS_PORT: u16 = 443;
 
 /// DNS. Landlock only mediates TCP, and a resolver's normal path is UDP — which no

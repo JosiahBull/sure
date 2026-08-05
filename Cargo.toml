@@ -9,6 +9,10 @@ members = [
     "packages/app",
     "packages/api",
     "packages/server",
+    # Test support, never linked into a release binary: the programmable-proxy cluster that
+    # stands in for the third-party hosts `sure-providers` reaches. A workspace member (not a
+    # dev-dep-only sidecar) so clippy and `cargo test` cover it like everything else.
+    "packages/testproxy",
 ]
 
 [workspace.package]
@@ -116,6 +120,20 @@ log = "0.4"
 uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 csv = "1"
+# Test-only, and never linked into `sure-api`: the programmable HTTP proxy every provider
+# adapter is exercised against, so a test can answer for what a bank/price feed said without
+# reaching one. Pinned by `rev` because the crate is not on crates.io — there is no version
+# to resolve and no tag to move, so the commit is the only stable name for it. Bump the rev
+# deliberately and re-run `cargo test -p sure-providers` (see `tests/proxy_contract.rs`, which
+# pins the behaviours the fixtures depend on).
+partly-proxy-lib = { git = "https://github.com/thepartly/partly-proxy", rev = "0d9c7450ea9a9af59acaffd4519c07a1ef8bf08a" }
+# Named directly by the proxy middleware and test fixtures: `http::{Method, StatusCode, Uri}`
+# and `bytes::Bytes` are the currency of `partly_proxy_lib::{ProxyRequest, ProxyResponse}`, so
+# anything that writes a matcher or rewrites a body needs them. `hyper` already depends on
+# both; declaring them here is what lets a crate say so without guessing a compatible version.
+http = "1"
+bytes = "1"
+tempfile = "3"
 zen-expression = "0.55"
 # The forecast's Monte Carlo simulation: a seedable RNG (reproducible in tests) plus the
 # normal distribution its stochastic accounts/categories draw monthly returns from.
@@ -130,6 +148,10 @@ sure-dal = { path = "packages/dal" }
 sure-providers = { path = "packages/providers" }
 sure-app = { path = "packages/app" }
 sure-api = { path = "packages/api" }
+# Test support only. Depends on nothing else in the workspace *on purpose*: the dependency
+# runs one way (`sure-providers` dev-depends on it), so the shared proxy middleware can be
+# used by a provider test without a dependency cycle.
+sure-testproxy = { path = "packages/testproxy" }
 
 [profile.release]
 opt-level = 3

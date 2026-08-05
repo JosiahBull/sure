@@ -112,20 +112,84 @@ test("SIGINT is reported as its own trigger and is just as clean", async () => {
   }
 });
 
-test("the background scheduler is cancelled and waited for, not abandoned", async () => {
+test("the background scheduler is cancelled and waited for, not abandoned", async ({ testproxy }) => {
   // `BACKGROUND_TASKS` is off for the rest of the suite, so this is the only test that
   // exercises the scheduler's own shutdown — the loop that used to be a bare
-  // `tokio::spawn` running until the process died under it, mid-sweep.
+  // `tokio::spawn` running until the process died under it, mid-sweep. `packages/server`
+  // calls that drain load-bearing in as many words: "a provider poll part-way through
+  // writing a sync row is exactly the thing that must not be cut off."
   //
-  // Its first check fires immediately and its tasks reach live upstreams, so this test
-  // tolerates whatever those do: it asserts only that the loop stopped when asked.
+  // Which means the sweep has to still be running when the signal lands, and the stub below
+  // is the only thing that makes that true. On a fresh database the exchange-rate poll is
+  // the one registered task with anything to fetch, and an unstubbed call is the proxy's
+  // replay-miss 503 in about a millisecond — so for as long as this test relied on the sweep
+  // reaching a live upstream, the 300ms sleep guaranteed the *opposite* of what it claimed
+  // and the drain resolved an empty tracker. It passed identically with `scheduler.run`
+  // never spawned at all.
+  //
+  // `delay_ms`, and deliberately not `pause` — the obvious tool for holding a call open, and
+  // wrong here twice over. A paused request is never recorded, so `assertCount` below — the
+  // only evidence the sweep ever reached the wire — could never see it; and it is never
+  // answered, so the poll would die on `sure_providers::http`'s 6s `REQUEST_TIMEOUT` and the
+  // drain would be timing a client-side abort rather than a request that finished. A delayed
+  // stub is in flight for a known length and then completes, which is the production shape.
+  //
+  // Long enough that the sweep is provably still out when the signal lands 300ms in, short
+  // enough to stay well inside both ceilings it would otherwise collide with: that same 6s
+  // `REQUEST_TIMEOUT`, and the 10s drain grace whose expiry is what `abandoned=0` denies.
+  const HELD_MS = 3_000;
+  // Registered before `startServer`, because the scheduler's first check fires as the
+  // process comes up: a stub registered after it returns is already racing the call it is
+  // meant to answer (docs/TESTING.md's fourth gotcha).
+  await testproxy.stub({
+    upstream: "frankfurter",
+    method: "GET",
+    path_pattern: "^/v1/latest$",
+    status: 200,
+    response_headers: { "content-type": "application/json" },
+    delay_ms: HELD_MS,
+    // Well-formed, so what the drain waits on is the ordinary poll path rather than an error
+    // unwinding out of a parse — a body the adapter rejects would hold the request for just
+    // as long and prove rather less. The figures are invented; `specs/exchange-rates.spec.ts`
+    // owns what the task does with them.
+    body: JSON.stringify({ amount: 1, base: "NZD", date: "2026-03-09", rates: { USD: 0.625 } }),
+  });
+
   const server = await startServer({ ...SHUTDOWN_LOGS, BACKGROUND_TASKS: "on" }, { capture: true });
   try {
-    // Long enough for the immediate first sweep to be under way when the signal lands.
+    // Slack rather than a race: `serve` spawns the scheduler before it binds the listener,
+    // so the poll is on the wire before the health check `startServer` just awaited could
+    // answer, and it cannot come back for another `HELD_MS` regardless. The measurement
+    // below is what confirms it rather than this comment — the poll turns out to leave
+    // ~20ms ahead of the health check.
     await new Promise((r) => setTimeout(r, 300));
+    const signalledAt = Date.now();
     server.proc.kill("SIGTERM");
     const code = await server.waitForExit();
     expectCleanShutdown(server, code, "terminate");
+
+    // The assertion that tells a real drain from an idle one, and the reason it exists:
+    // `clean=true` above holds in *both* worlds, because an empty tracker drains cleanly and
+    // instantly — so the report alone cannot say whether anything was waited for, and for as
+    // long as the sweep finished during the sleep it was saying nothing at all. The clock
+    // can say it. An exit that beat the stub means the process walked away from a poll
+    // instead of finishing it.
+    //
+    // The real figure is `HELD_MS` less the sleep, measured at 2676-2705ms across ten runs
+    // on five parallel workers; the bound leaves over a second of that as slack, because this
+    // is an assertion about two constants rather than about how loaded the machine is.
+    const waited = Date.now() - signalledAt;
+    expect(waited, `the drain returned in ${waited}ms, without waiting for the in-flight sweep`)
+      .toBeGreaterThan(1_500);
+
+    // …and the sweep really did put a request on the wire, rather than the drain having
+    // waited on something else entirely. Counted after the exit, not before: an exchange is
+    // recorded when it is *answered*, so this reads zero for as long as the stub is still
+    // holding it. Which makes the two assertions one fact read from opposite sides — the
+    // count is only observable because the drain kept the process alive to receive the
+    // answer, and a process that exited early would fail both.
+    const polled = await testproxy.assertCount({ upstream: "frankfurter" }, 1);
+    expect(polled.passed, polled.message).toBe(true);
   } finally {
     server.stop();
   }

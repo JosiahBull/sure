@@ -15,7 +15,12 @@ use tokio::sync::Mutex;
 
 use sure_app::ports::{StockPriceProvider, StockPriceQuote};
 
-const BASE_URL: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
+use crate::http::Endpoint;
+
+/// The real endpoint. `pub` because the composition root owns the decision of where this
+/// provider points (it is the only place configuration is read) and needs a default to fall
+/// back to.
+pub const DEFAULT_BASE_URL: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
 
 /// Yahoo has no published rate limit for this endpoint, but hammering it risks a
 /// temporary IP block — this keeps consecutive requests from this provider instance
@@ -23,16 +28,32 @@ const BASE_URL: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(500);
 
 pub struct YahooFinanceProvider {
-    base_url: String,
+    endpoint: Endpoint,
     client: reqwest::Client,
     last_request: Mutex<Option<Instant>>,
 }
 
 impl YahooFinanceProvider {
-    pub fn new() -> Self {
+    /// The only constructor, and deliberately so: there is no argument-free `new()` that
+    /// reaches for [`DEFAULT_BASE_URL`] itself. That const is the composition root's fallback
+    /// (`Config::from_env` parses it into an [`Endpoint`]), and a second constructor holding
+    /// the same URL would be the one a future caller reached for by reflex — pointing an
+    /// adapter at the live API from inside a test, past the configuration that was supposed to
+    /// decide it. The same reasoning removed `Registry`'s `Default`; see `lib.rs`.
+    ///
+    /// In practice the endpoint is either that parsed default or the record/replay proxy a
+    /// test binds on loopback, which is the only way the fetch path below is exercisable at all
+    /// without reaching an undocumented endpoint that could change without notice.
+    ///
+    /// The throttle is per-instance: [`MIN_REQUEST_INTERVAL`] is about not getting this app's
+    /// IP blocked, so it belongs to whichever upstream the instance talks to. A test that pays
+    /// 500ms between two requests to its own proxy is paying it in exactly the place production
+    /// does, which is the point of not special-casing it.
+    pub fn with_endpoint(endpoint: Endpoint) -> Self {
+        let client = crate::http::client(&endpoint);
         Self {
-            base_url: BASE_URL.to_string(),
-            client: crate::http::client(),
+            endpoint,
+            client,
             last_request: Mutex::new(None),
         }
     }
@@ -50,12 +71,6 @@ impl YahooFinanceProvider {
             }
         }
         *last_request = Some(Instant::now());
-    }
-}
-
-impl Default for YahooFinanceProvider {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -139,7 +154,7 @@ impl StockPriceProvider for YahooFinanceProvider {
         let period2 = to_unix(to + ChronoDuration::days(1));
         let url = format!(
             "{}/{symbol}?period1={period1}&period2={period2}&interval=1d",
-            self.base_url
+            self.endpoint.url()
         );
 
         self.throttle().await;

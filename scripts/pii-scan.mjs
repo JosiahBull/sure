@@ -14,6 +14,12 @@
 // Confirmed-invented literals live in ALLOWED below, baselined from a tree verified clean.
 // Adding to it is the intended way to introduce a new fake — the entry is the audit trail.
 //
+// Recorded HTTP snapshots (`*.ndjson`) need a decode before any of that applies: they are
+// text, so they sail past the binary check in `wholeTree`, but their request and response
+// bodies are base64 and every pattern below matches nothing against base64. See
+// `expandSnapshots` — and `AKAHU_SNAPSHOT_PATH` for the one upstream whose recordings are
+// not committable at all.
+//
 //   node scripts/pii-scan.mjs          # staged additions only (what the pre-commit hook runs)
 //   node scripts/pii-scan.mjs --all    # every tracked text file
 //
@@ -23,6 +29,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, openSync, readSync, closeSync, statSync } from "node:fs";
 import path from "node:path";
+import { gunzipSync, inflateSync } from "node:zlib";
 
 const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
   encoding: "utf8",
@@ -168,6 +175,9 @@ function liveDbHits(needles) {
 
 const skip = (file) => SKIP_FILE.some((re) => re.test(file));
 
+/** Declared here rather than at the scan below, because `scannedPaths` reads it. */
+const all = process.argv.includes("--all");
+
 /** Every tracked text file, as `{ file, line, text }` rows. */
 function wholeTree() {
   const files = execFileSync("git", ["ls-files", "-z"], { maxBuffer: 1 << 28 })
@@ -218,10 +228,199 @@ function stagedAdditions() {
   return rows;
 }
 
+/**
+ * The paths this run is answerable for, names only.
+ *
+ * Separate from the row sources above because the Akahu guard is a judgement about a *path*,
+ * and a path can be disqualifying while contributing no rows to scan: an empty file has no
+ * added lines, and a pure rename has none either. Costs one extra `git` call in the
+ * milliseconds this whole script is budgeted for.
+ */
+function scannedPaths() {
+  const args = all
+    ? ["ls-files", "-z"]
+    : ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"];
+  return execFileSync("git", args, { maxBuffer: 1 << 28 })
+    .toString("utf8")
+    .split("\0")
+    .filter(Boolean);
+}
+
+// ------------------------------------------------------- inside recorded HTTP snapshots
+
+const NDJSON_FILE = /\.ndjson$/i;
+
+/**
+ * Akahu recordings, which must never be committed.
+ *
+ * The other two upstreams are public market data — a Frankfurter rate table and a Yahoo
+ * close series say nothing about whose money it is — so those snapshots *may* be recorded and
+ * committed. Akahu's traffic *is* the personal data: real account numbers, real balances,
+ * real transaction memos and payee names, in bulk. No scrub survives that, so the policy is
+ * categorical rather than per-literal: an Akahu fixture is hand-authored with invented
+ * identifiers, and a real recording is a local developer tool that never lands.
+ *
+ * Frankfurter and Yahoo *are* recorded and committed — `packages/providers/tests/snapshots/`
+ * — which is what makes this guard load-bearing rather than theoretical: the recorder that
+ * wrote those two is one `Upstream` away from writing a third.
+ *
+ * `.gitignore` covers the directory; this covers the `git add -f` that walks past it, and the
+ * recording dropped somewhere the ignore rule does not name.
+ *
+ * Two spellings, because there are two ways an Akahu recording gets its name. A per-upstream
+ * *directory* is the layout `.gitignore` names. But `sure_testproxy` names snapshot files from
+ * `Upstream::name()` — `<name>.ndjson`, side by side — which is the layout the committed
+ * captures actually use, and where a recorder pointed at all three upstreams would drop
+ * `akahu.ndjson` beside the two public ones. The content check below would catch that file once
+ * it had a line in it; it would not catch an *empty* one, which is exactly what a
+ * credential-less recording run leaves behind.
+ */
+const AKAHU_SNAPSHOT_PATH = /(?:^|\/)(?:snapshots\/akahu\/[^/]*|akahu)\.ndjson$/i;
+
+/** As `serde_json` writes it, plus tolerance for a re-serialiser that adds spaces. */
+const AKAHU_UPSTREAM = /"upstream"\s*:\s*"akahu"/i;
+
+/**
+ * Ceiling on what one *decompression* may produce, which is the only step here whose output
+ * is not bounded by its input: a kilobyte of gzip expands to gigabytes, and this is the
+ * cheapest gate in the pre-commit hook precisely because nothing in it is allowed to take
+ * long. Well clear of anything a legitimate fixture holds — `sure_providers::http`'s
+ * `MAX_BODY_BYTES` refuses to buffer more than 8MiB in the first place, so a body that hits
+ * this never came from one of our own clients.
+ */
+const MAX_DECODED_BYTES = 64 << 20;
+
+/**
+ * Expand each `*.ndjson` row into itself plus a row per decoded body, and note which files
+ * turn out to be Akahu recordings.
+ *
+ * The raw row is always kept, and kept first: header values, the URI, `labels` and anything
+ * else stored as plain text are already scannable as JSON, and a body that turns out not to
+ * be base64 after all is still covered that way. The decoded rows only ever *add* reach.
+ *
+ * Every decoded row inherits the NDJSON line number of the exchange it came out of, which is
+ * the only line number that means anything here — one line is one whole request/response
+ * pair, so "line 7" is a place a reviewer can actually look. It carries `inside` as well, so
+ * the report can warn that grepping the file for the literal will come up empty; without
+ * that, a reviewer checking the finding by hand concludes it was a false positive.
+ */
+function expandSnapshots(rows) {
+  const akahuFiles = new Map();
+  /** First reason wins: the path is the more actionable one to report when both apply. */
+  const flagAkahu = (file, why) => {
+    if (!akahuFiles.has(file)) akahuFiles.set(file, why);
+  };
+  for (const file of scannedPaths()) {
+    // The two spellings AKAHU_SNAPSHOT_PATH covers report differently, because the fix differs:
+    // a directory is a whole recording tree to move, a bare `akahu.ndjson` is one file a
+    // three-upstream recorder dropped beside the public captures.
+    if (AKAHU_SNAPSHOT_PATH.test(file)) {
+      flagAkahu(
+        file,
+        /akahu\.ndjson$/i.test(file) && !/\/akahu\//i.test(file)
+          ? "is an Akahu snapshot file (named from Upstream::name())"
+          : "sits under a snapshots/akahu/ path",
+      );
+    }
+  }
+
+  const out = [];
+  for (const row of rows) {
+    out.push(row);
+    if (!NDJSON_FILE.test(row.file) || row.text.trim() === "") continue;
+
+    let exchange;
+    try {
+      exchange = JSON.parse(row.text);
+    } catch {
+      // Fail soft, never throw: a gate that crashes is a gate that gets bypassed, and the
+      // raw line is already in `out` so nothing goes unscanned — only the decode is lost.
+      // A truncated line must still trip the Akahu guard, hence the textual fallback.
+      if (AKAHU_UPSTREAM.test(row.text)) {
+        flagAkahu(row.file, `line ${row.line} records akahu`);
+      }
+      continue;
+    }
+    if (exchange === null || typeof exchange !== "object") continue;
+    if (exchange.upstream === "akahu") {
+      flagAkahu(row.file, `line ${row.line} records akahu`);
+    }
+
+    // `outcome` is internally tagged: only `kind: "response"` carries a body at all, an
+    // error outcome is a message. Both `?.` chains guard a hand-edited fixture that is
+    // valid JSON but not a valid exchange.
+    const bodies = [
+      ["request", exchange.request?.body],
+      ["response", exchange.outcome?.kind === "response" ? exchange.outcome.body : undefined],
+    ];
+    for (const [where, encoded] of bodies) {
+      const text = decodeBody(encoded);
+      if (text === null) continue;
+      out.push({
+        file: row.file,
+        line: row.line,
+        text,
+        inside: `the base64 ${where} body`,
+        of: exchangeLabel(exchange),
+      });
+    }
+  }
+  return { rows: out, akahuFiles };
+}
+
+/** `METHOD /path` when the exchange has one, for orienting a reader inside a long file. */
+function exchangeLabel(exchange) {
+  const method = exchange.request?.method;
+  const uri = exchange.request?.uri;
+  return typeof method === "string" && typeof uri === "string" ? `${method} ${uri}` : null;
+}
+
+/**
+ * Base64 → text, `null` for anything that isn't a body worth scanning.
+ *
+ * `Buffer.from(s, "base64")` never throws — it skips characters outside the alphabet — so
+ * there is no validity check to make here and no error path to take. A field that wasn't
+ * base64 decodes to noise no pattern matches, which is harmless: the raw JSON line carrying
+ * that same field verbatim is scanned regardless.
+ */
+function decodeBody(encoded) {
+  if (typeof encoded !== "string" || encoded === "") return null;
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.length === 0) return null;
+  return decompressed(bytes).toString("utf8");
+}
+
+/**
+ * Undo transport compression, recognised by magic bytes rather than by the recorded
+ * `content-encoding` header — the header is a claim, the magic is the payload.
+ *
+ * Not currently reachable: the workspace builds `reqwest` with `default-features = false`
+ * and no `gzip`, so our clients never send `Accept-Encoding` and no upstream we record has
+ * reason to compress. `partly-proxy` has no content-encoding handling of any kind (grepped:
+ * zero hits), so it stores whatever bytes crossed the wire — which means the day someone
+ * adds `"gzip"` to that feature list, or records a fixture with `curl`, every body in the
+ * snapshot becomes opaque to the patterns above and this gate goes quiet without saying so.
+ * Ten lines to make that a non-event.
+ */
+function decompressed(bytes) {
+  const options = { maxOutputLength: MAX_DECODED_BYTES };
+  try {
+    if (bytes[0] === 0x1f && bytes[1] === 0x8b) return gunzipSync(bytes, options);
+    // zlib-wrapped deflate: low nibble 8 is the only defined compression method, and the
+    // two-byte header is a multiple of 31.
+    if ((bytes[0] & 0x0f) === 0x08 && ((bytes[0] << 8) | bytes[1]) % 31 === 0) {
+      return inflateSync(bytes, options);
+    }
+  } catch {
+    // Truncated, over the ceiling, or a coincidental magic-byte match on plain content.
+    // Scanning the bytes as they are beats scanning nothing.
+  }
+  return bytes;
+}
+
 // ------------------------------------------------------------------------------------- scan
 
-const all = process.argv.includes("--all");
-const rows = all ? wholeTree() : stagedAdditions();
+const { rows, akahuFiles } = expandSnapshots(all ? wholeTree() : stagedAdditions());
 
 const findings = [];
 for (const row of rows) {
@@ -236,9 +435,32 @@ for (const row of rows) {
   }
 }
 
+// Reported first, and separately: this one does not go through ALLOWED or the provenance
+// grep, because the failure is not "that literal might be real" but "this file cannot be in
+// this repository at all" — a hand-authored Akahu fixture with invented identifiers has
+// nothing to record and so never reaches here.
+if (akahuFiles.size > 0) {
+  console.error(`\n✗ recorded Akahu traffic cannot be committed\n`);
+  for (const [file, why] of akahuFiles) console.error(`  ${file}  (${why})`);
+  console.error(`
+Frankfurter and Yahoo snapshots are public market data and may be committed. Akahu's may not:
+that traffic is real account numbers, balances, transaction memos and payee names, and no
+scrub gets them back out once they are in history — the last one cost a 58-commit rewrite.
+
+  * Record Akahu locally if you need to, under packages/api-tests/snapshots/akahu/, which
+    .gitignore already excludes. Do not \`git add -f\` it.
+  * A committed Akahu fixture is hand-authored with invented identifiers. The proxy records
+    a stub-served exchange (see packages/providers/tests/proxy_contract.rs), so a fixture
+    can be built that way without an upstream ever being contacted.
+`);
+}
+
 if (findings.length === 0) {
-  console.log(`✓ no personal-data shapes in ${all ? "the tree" : "staged changes"}`);
-  process.exit(0);
+  if (akahuFiles.size === 0) {
+    console.log(`✓ no personal-data shapes in ${all ? "the tree" : "staged changes"}`);
+    process.exit(0);
+  }
+  process.exit(1);
 }
 
 const hits = liveDbHits([...new Set(findings.map((f) => f.literal))]);
@@ -250,6 +472,13 @@ console.error(
 for (const f of findings) {
   console.error(`  ${f.file}:${f.line}  [${f.name}]  ${f.literal}`);
   console.error(`      looks like ${f.what}`);
+  if (f.inside) {
+    // Said before the provenance verdict, because it changes how the finding is checked: a
+    // reviewer who greps the file for this literal will not find it, and would otherwise
+    // write the whole thing off as a false positive.
+    const where = f.of ? `${f.inside} of ${f.of}` : f.inside;
+    console.error(`      ↳ inside ${where} on that line — decoded, so not greppable as text`);
+  }
   if (hits === null) {
     console.error(`      ↳ data/sure.db not present — provenance unchecked`);
   } else if (hits.get(f.literal)) {

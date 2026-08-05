@@ -15,8 +15,15 @@ whenever a version tag is pushed. Everything lives under [`.github/`](../.github
 
 ### Merge gates (`checks.yml`)
 
+- **Personal-data scan** — `node scripts/pii-scan.mjs --all` (CLAUDE.md rule 3). First, mirroring
+  the pre-commit hook, because it is the cheapest gate and the only one guarding something a
+  later gate cannot undo. It is *also* in CI and not only in the hook: a hook is bypassable with
+  `--no-verify` and is installed per clone by the `prepare` script, so the hook is the
+  convenience and this is the gate.
 - **Rustfmt** — `cargo fmt --all --check`
 - **Clippy** — `cargo clippy --workspace --all-targets --all-features -D warnings`
+- **Cargo tests** — `cargo test --workspace --all-features` (unit, integration and doctests;
+  deliberately not `--all-targets`, which for `cargo test` *excludes* doctests)
 - **Typecheck** — `svelte-check` (web) + `tsc` (api-tests), after `pnpm gen:client`
 - **API e2e tests** — `pnpm test:api` (Playwright driving the real backend, no browser)
 - **Web visual tests** — `pnpm test:web` (Playwright screenshot suite), run inside the
@@ -70,9 +77,10 @@ These need to be done once in the GitHub repo settings after the first push:
    allow GitHub Actions to create/write packages (the release job pushes to GHCR with
    the built-in `GITHUB_TOKEN`) and, for Dependabot auto-merge, "Allow auto-merge" under
    Settings → General.
-2. **Branch protection** on `main` — require the CI checks (Rustfmt, Clippy, Typecheck,
-   API e2e tests, Web visual tests, Versions) as status checks. Dependabot auto-merge
-   relies on these being required.
+2. **Branch protection** on `main` — require the CI checks (Personal-data scan, Rustfmt,
+   Clippy, Cargo tests, Typecheck, API e2e tests, Web visual tests, Versions) as status
+   checks. Dependabot auto-merge relies on these being required, so a job missing from this
+   list is a job a green-looking dependency bump can merge past.
 3. **Bootstrap the Linux screenshot baselines** — the committed baselines are macOS
    (`-darwin.png`); CI runs on Linux and needs `-linux.png`. Run the **Update snapshots**
    workflow once (Actions tab → Update snapshots → Run workflow). It generates the

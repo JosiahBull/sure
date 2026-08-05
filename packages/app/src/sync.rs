@@ -12,9 +12,13 @@ use crate::ports::{
     AccountRepo, Clock, ImportRow, ProviderRegistry, ProviderRepo, SyncContext, ValuationRepo,
 };
 
-/// How much of a provider's error text [`sync_detail`] keeps. 500 chars is enough to name
-/// the failing field and offset, which is all a diagnosis needs.
-pub const MAX_SYNC_DETAIL_CHARS: usize = 500;
+/// How much of a provider's error text [`sync_detail`] keeps.
+///
+/// Aliased rather than restated: `AppError::upstream` bounds the same kind of text on its way
+/// into a log, and the two used to be independent 500s that nothing tied together. The name
+/// stays because this crate's callers and tests are about the sync path specifically; the
+/// number, and the reasoning for it, live in one place.
+pub const MAX_SYNC_DETAIL_CHARS: usize = sure_core::error::MAX_UPSTREAM_DETAIL_CHARS;
 
 /// Bound a provider error's text before it is stored or shown.
 ///

@@ -1,14 +1,20 @@
 import { test, expect } from "../fixtures";
 import { createAccount, makeZip, postOversized } from "../helpers";
 
-// The value snapshot (GET .../brokerage) prices each holding via the live Yahoo Finance
-// endpoint on a cache miss, so — like stock-prices.spec.ts / akahu.spec.ts — it isn't
-// asserted here (CI must not depend on a third-party API). These specs cover everything
-// the import path can get wrong on its own: parsing the zip, persisting the three ledgers,
-// deduping a re-import, and auto-linking a wallet↔bank transfer. The post-import history
-// backfill is a fire-and-forget background task and is likewise not awaited/asserted.
+// Everything the import path can get wrong on its own: parsing the zip, persisting the three
+// ledgers, deduping a re-import, and auto-linking a wallet↔bank transfer. Nothing here is priced —
+// the value snapshot resolves every holding through the Yahoo adapter, and the post-import history
+// backfill is a fire-and-forget background task neither awaited nor asserted in this file. Both
+// used to be unassertable anywhere, because asserting a close meant depending on a third party's
+// uptime; the proxy retired that constraint and specs/brokerage-pricing.spec.ts now pins both to
+// the cent.
 
-// A fake ticker so the background history backfill never resolves a real Yahoo symbol.
+// A fake ticker, left deliberately unstubbed: a price is irrelevant to everything asserted in this
+// file, and every test here would go on passing if the feed answered anything at all. So the
+// background backfill each import starts finds no stub, takes the proxy's replay miss, and logs a
+// `replay miss` WARN — which is the containment guarantee working, not a missing fixture. (Reaching
+// a real Yahoo symbol is no longer a hazard the name has to prevent: nothing in this suite can
+// leave the machine.)
 const LOOKUP = JSON.stringify({
   "fund-zz": { symbol: "ZZTEST", name: "Test Instrument", exchange: "NZX", currency: "NZD" },
 });

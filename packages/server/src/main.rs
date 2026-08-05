@@ -14,9 +14,11 @@ use sure_server::sandbox;
 /// lifecycle helper that insisted on constructing its own would have to run before the
 /// sandbox, or the sandbox would have to run after it. Neither is acceptable.
 fn main() -> anyhow::Result<()> {
-    // First of all: `init_tracing` reads `RUST_LOG`, and the provider clients read their
-    // tokens lazily on the first sync — both have to see whatever the file sets. That
-    // costs the log line a subscriber, so the path is reported once there is one.
+    // First of all, and now more strictly than before: `init_tracing` reads `RUST_LOG`, and
+    // everything a provider needs — its base URL in `Config::from_env`, Akahu's token pair in
+    // `serve` — is read once, at startup, rather than on the first sync. Nothing gets a second
+    // chance to notice the file. That costs the log line a subscriber, so the path is reported
+    // once there is one.
     let env_file = load_dotenv()?;
     sure_api::init_tracing();
     if let Some(path) = &env_file {

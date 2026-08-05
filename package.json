@@ -25,6 +25,7 @@
     "test:web": "pnpm --filter @sure/web test",
     "test:web:install": "pnpm --filter @sure/web exec playwright install chromium",
     "seed": "node scripts/seed.mjs",
+    "fixtures:record": "cargo test -p sure-providers --test recorded_upstreams -- --ignored --nocapture",
     "lint:rust": "cargo clippy --all-targets -- -D warnings",
     "fmt:rust": "cargo fmt --all",
     "prepare": "git config core.hooksPath .githooks || true"

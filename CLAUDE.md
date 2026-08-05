@@ -6,8 +6,11 @@ Rust workspace (`Cargo.toml`): `packages/core` (domain types, zero I/O) → `pac
 talks to the DAL only through `sure_app::ports` traits) → `packages/api` (Axum routes,
 OpenAPI) → `packages/server` (binary: wires it together, HTTP transport concerns) —
 plus `packages/providers` (bank/broker/price feed adapters), `packages/scheduler`
-(cron runner), and `packages/appbase` (process lifecycle: signals, cancellation, and
-draining what the process spawned — depends on nothing else in the workspace).
+(cron runner), `packages/appbase` (process lifecycle: signals, cancellation, and
+draining what the process spawned — depends on nothing else in the workspace), and
+`packages/testproxy` (test support: the record/replay proxy cluster standing in for every
+third-party host, so no test reaches one — also depends on nothing else in the workspace,
+because `sure-providers` dev-depends on *it*; see `docs/TESTING.md`).
 pnpm workspace (`pnpm-workspace.yaml`): `packages/web` (the SPA),
 `packages/client` (generated typed API client), `packages/api-tests` (Playwright
 backend e2e suite).
@@ -163,6 +166,22 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   `#[track_caller]`, so a debug build names the spawning line when a task overruns the
   drain; a helper that wraps it needs `#[track_caller]` too or it becomes the reported
   site for everything it spawns. See `docs/HTTP.md` for the phases and their env vars.
+- **Provider endpoints are injected; a test that needs an upstream stubs it.** Every adapter
+  in `packages/providers` is constructed with an `Endpoint` (`src/http.rs`: `https://` anywhere,
+  or plaintext only to loopback, for a test proxy) and `AkahuProvider` with its credentials as
+  values — so nothing reads the environment on a request path and only `sure-server` decides
+  where an adapter points. Never reach for a `DEFAULT_BASE_URL` at a call site. A test that
+  needs an upstream registers a stub on the `sure-testproxy` cluster (`packages/testproxy`) it
+  is pointed at: every backend both Playwright suites spawn is, in replay mode with no
+  snapshots, so a call nobody stubbed is a `503 {}` that never leaves the machine rather than a
+  dependency on someone else's uptime. **Akahu traffic is never recorded into this repo** —
+  `scripts/pii-scan.mjs` refuses one by path *and* by content, and decodes base64 bodies so an
+  `.ndjson` cannot smuggle an account number past it. Frankfurter and Yahoo are public market
+  data and *are* recorded, in `packages/providers/tests/snapshots/`: those captures are what prove
+  the adapters still parse the real document, rather than the subset of it a hand-written fixture
+  would carry. Nothing re-checks them against the live API, so a capture is evidence about the day
+  it was taken — `pnpm fixtures:record` and read the diff when a price or FX path misbehaves
+  against the real app but not in the suite. Tiers, fixtures and the traps: `docs/TESTING.md`.
 - **Pre-commit** (`.githooks/pre-commit`, wired by the `prepare` script): runs
   `node scripts/pii-scan.mjs` (rule 3; first, because it is the cheapest gate and the only
   one guarding something a later gate cannot undo), then `cargo fmt --all --check`,
@@ -216,7 +235,8 @@ match_wildcard_for_single_variants = "deny"
 ```
 
 ```toml
-# each member crate's Cargo.toml (packages/core, dal, app, api, server, providers, scheduler)
+# every member crate's Cargo.toml — no exceptions, test-support crates included
+# (packages/core, dal, app, api, server, providers, scheduler, appbase, testproxy)
 [lints]
 workspace = true
 ```

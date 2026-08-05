@@ -1,0 +1,35 @@
+[package]
+name = "sure-testproxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Never goes to a registry, and never linked into `sure-api`: this crate exists so a test can
+# answer for what a bank or a price feed said.
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# The out-of-process host, spawned by the Playwright suites (`@sure/api-tests`, `@sure/web`).
+# The in-process Rust tests in `sure-providers` use the library directly and never run this.
+[[bin]]
+name = "sure-testproxy"
+path = "src/main.rs"
+
+[dependencies]
+partly-proxy-lib = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+reqwest = { workspace = true }

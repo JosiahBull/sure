@@ -83,6 +83,7 @@ packages/
   app/          Rust: the application core — use-case services + repo ports, no SQL/HTTP (sure-app).
   api/          Rust: Axum routes/handlers + OpenAPI, depends only on sure-app; `gen-openapi` bin (sure-api).
   server/       Rust: the composition root — wires sure-dal/sure-providers into sure-app/sure-api; owns `main` (sure-server).
+  testproxy/    Rust: the record/replay proxy cluster standing in for every third-party host (sure-testproxy).
   api-tests/    TypeScript: Playwright e2e — spawns the real binary per test, driven through @sure/client.
   client/       Generated TypeScript client (openapi-typescript + openapi-fetch).
   web/          Svelte 5 SPA (Vite, vite-plugin-pwa) + Playwright tests.
@@ -215,18 +216,38 @@ you're looking at.
 
 ## Testing
 
+Three tiers — which one a test belongs in, how to add a fixture, and where the traps are —
+in [docs/TESTING.md](docs/TESTING.md). The property they share: **no test reaches a
+third-party host.** Every outbound provider request goes to `sure-testproxy`
+(`packages/testproxy`), a local reverse-proxy cluster standing in for Frankfurter, Yahoo
+Finance and Akahu, in a mode that cannot dial an upstream at all — so a call nobody stubbed
+comes back `503` with the method and URI logged, rather than depending on someone else's
+uptime.
+
+- **Providers** (`packages/providers/tests`, `packages/testproxy/tests`) — in-process Rust
+  fixtures that stand up a proxy cluster and aim one adapter at it. This is the half of an
+  adapter no unit test can reach: the URL it builds, the headers it sends, the date window
+  it asks for, whether its pagination loop follows the cursor, and how the transport copes
+  with a server misbehaving to order (a redirect, a body over the byte ceiling, malformed
+  JSON, silence). Milliseconds each, and where a provider bug is cheapest to find.
 - **API** (`packages/api-tests`) — TypeScript + Playwright. Each test spawns the *real*
   compiled `sure-api` binary on an ephemeral port against its own temp-file SQLite
   database and drives it **through the generated `@sure/client`** — so a failure means
   the API *or* the client is wrong, and `pnpm test:api:check` (`tsc`) validates the
-  request/response types against the client at compile time. No mocking; fully parallel
-  and isolated. Covers CRUD, filtering, transfers, the rules engine (classify / audit /
-  undo / manual protection + merchant actions), crons, reports (incl. multi-currency via
-  snapshot import), equity vesting, CSV provider sync, and config import/export.
+  request/response types against the client at compile time. Third-party HTTP is the only
+  thing stubbed; everything else is real, fully parallel and isolated. Covers CRUD,
+  filtering, transfers, the rules engine (classify / audit / undo / manual protection +
+  merchant actions), crons, reports (incl. multi-currency via snapshot import), equity
+  vesting, config import/export, and the provider surface end to end — CSV sync, an Akahu
+  sync's re-sync window, stock-price backfill and its cache, the exchange-rate poll.
 - **Frontend** (`packages/web/tests`): Playwright drives a mobile-Chromium context
   against the built SPA + a freshly-seeded backend, with **screenshot snapshots** of
   every page (baselines committed under `tests/*-snapshots/`, pinned to the dark theme).
   Regenerate with `pnpm --filter @sure/web exec playwright test --update-snapshots`.
+  It stubs nothing: the proxy is there because the browser is a second caller — a click on
+  "Sync now" or "Revalue" makes the backend dial a third party on demand. Claims a
+  screenshot cannot pin get their own DOM assertion, since a baseline's 3% tolerance
+  passes a two-line notice naming the wrong currency.
 
 ## Production (single binary)
 

@@ -1,11 +1,19 @@
 //! [`TransactionProvider`] backed by [Akahu](https://akahu.nz), a NZ open-banking data
 //! aggregator, via the `akahu-client` crate. Unlike the keyless CSV/Frankfurter
 //! providers, this one needs credentials — an app token identifying this app and a user
-//! token identifying whose accounts to read — supplied via `AKAHU_APP_TOKEN` /
-//! `AKAHU_USER_TOKEN` env vars (no in-app OAuth flow; Akahu's personal-app model issues a
-//! static user token directly, and `AppSecret` is only needed for app-scoped endpoints we
-//! don't use here). Also implements account discovery, since one set of credentials can
-//! surface many bank accounts — see [`TransactionProvider::list_accounts`].
+//! token identifying whose accounts to read — read from `AKAHU_APP_TOKEN` /
+//! `AKAHU_USER_TOKEN` by [`AkahuCredentials::from_env`] and *injected* (no in-app OAuth flow;
+//! Akahu's personal-app model issues a static user token directly, and `AppSecret` is only
+//! needed for app-scoped endpoints we don't use here). Also implements account discovery,
+//! since one set of credentials can surface many bank accounts — see
+//! [`TransactionProvider::list_accounts`].
+//!
+//! Injected rather than read here, even though this is the only file that wants them, for two
+//! reasons. The composition root is documented as the only place the environment is read
+//! (`sure-server`'s `config.rs`), and `client` below used to break that on *every* request;
+//! and an in-process test cannot hand this provider credentials without `std::env::set_var`,
+//! which mutates state shared with every other test in the binary. What must **not** move is
+//! *when* a missing token is reported: see [`AkahuProvider::credentials`].
 
 use std::time::{Duration, Instant};
 
@@ -19,7 +27,11 @@ use sure_app::ports::{
 };
 use sure_core::{AccountKind, IsoDate, ProviderAccount};
 
-const BASE_URL: &str = "https://api.akahu.io/v1";
+use crate::http::Endpoint;
+
+/// The real API. `pub` because the composition root owns the decision of where this provider
+/// points (it is the only place configuration is read) and needs a default to fall back to.
+pub const DEFAULT_BASE_URL: &str = "https://api.akahu.io/v1";
 /// Re-fetch a small window before the last successful sync, since a transaction's
 /// settlement date can shift slightly as NZ bank data trickles in.
 const OVERLAP: chrono::Duration = chrono::Duration::days(3);
@@ -51,7 +63,69 @@ const MAX_PAGES: usize = 100;
 /// token to reach in here, which `SyncContext` does not yet carry.
 const SWEEP_BUDGET: Duration = Duration::from_secs(60);
 
-pub struct AkahuProvider;
+/// The two tokens Akahu needs.
+pub struct AkahuCredentials {
+    /// Identifies this app. Sent as `X-Akahu-Id`, a *custom* header — which is why
+    /// `crate::http`'s redirect policy is `none()` (reqwest strips only the headers it
+    /// recognises as credentials on a cross-host redirect) and why [`Endpoint`] will not
+    /// represent a plaintext non-loopback URL.
+    pub app_token: String,
+    /// Identifies whose accounts to read. Sent as the bearer token.
+    pub user_token: String,
+}
+
+/// Which token is missing — kept rather than discarded so the error a sync surfaces can still
+/// name the variable the user has to set.
+///
+/// The obvious smaller shape — `Option<AkahuCredentials>` — loses exactly the piece of
+/// information the message needs. "Akahu is not configured" sends someone to the README;
+/// "AKAHU_APP_TOKEN is not set" *is* the fix, and `packages/api-tests/specs/akahu.spec.ts`
+/// asserts on that literal substring coming back through a 422.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingToken {
+    AppToken,
+    UserToken,
+}
+
+impl MissingToken {
+    /// The env var whose absence this is.
+    pub fn env_var(self) -> &'static str {
+        match self {
+            MissingToken::AppToken => "AKAHU_APP_TOKEN",
+            MissingToken::UserToken => "AKAHU_USER_TOKEN",
+        }
+    }
+}
+
+impl AkahuCredentials {
+    /// Read both tokens from the environment. Called once, by the composition root.
+    ///
+    /// `AKAHU_APP_TOKEN` is checked **first**, deliberately: with neither set — the state of
+    /// every CI run and of anyone who does not use Akahu — the reported variable is whichever
+    /// is checked first, and that string is pinned by `specs/akahu.spec.ts`. Swapping these two
+    /// lines is a passing build and a failing e2e suite.
+    pub fn from_env() -> Result<Self, MissingToken> {
+        let app_token = std::env::var("AKAHU_APP_TOKEN").map_err(|_| MissingToken::AppToken)?;
+        let user_token = std::env::var("AKAHU_USER_TOKEN").map_err(|_| MissingToken::UserToken)?;
+        Ok(Self {
+            app_token,
+            user_token,
+        })
+    }
+}
+
+pub struct AkahuProvider {
+    endpoint: Endpoint,
+    /// The composition root's result, kept unresolved rather than unwrapped there.
+    ///
+    /// Akahu unconfigured is the *normal* state — it is one optional integration of several —
+    /// so the server has to boot without it, which rules out failing at startup. But the
+    /// failure still has to arrive with a name attached when someone asks for a sync or an
+    /// account listing, which rules out dropping the error. Holding the `Result` is what
+    /// satisfies both: nothing looks at it until [`AkahuProvider::client`] does, and by then
+    /// there is a request to fail and a message to fail it with.
+    credentials: Result<AkahuCredentials, MissingToken>,
+}
 
 #[async_trait]
 impl TransactionProvider for AkahuProvider {
@@ -201,18 +275,33 @@ fn external_account_id(config: &Value) -> anyhow::Result<AccountId> {
 }
 
 impl AkahuProvider {
-    /// Build an authenticated client from env credentials. Returns a clear error naming
-    /// the missing var rather than panicking, since misconfiguration is expected until the
-    /// user provides their env file.
+    /// `endpoint` is where the API lives ([`DEFAULT_BASE_URL`] in production, a loopback proxy
+    /// in a fixture); `credentials` is whatever the composition root got from the environment,
+    /// error and all — see the field.
+    pub fn new(endpoint: Endpoint, credentials: Result<AkahuCredentials, MissingToken>) -> Self {
+        Self {
+            endpoint,
+            credentials,
+        }
+    }
+
+    /// Build an authenticated client. Returns a clear error naming the missing var rather
+    /// than panicking, since misconfiguration is expected until the user provides their env
+    /// file.
+    ///
+    /// The message is `"{VAR} is not set"` and has to stay exactly that shape:
+    /// `specs/akahu.spec.ts` asserts a discover-accounts call on an unconfigured install
+    /// answers 422 with a body containing `AKAHU_APP_TOKEN`, which is how a user finds out
+    /// what to do. It travels there as an `anyhow` error through `sure_app::sync`.
     fn client(&self) -> anyhow::Result<(AkahuClient, UserToken)> {
-        let app_token = std::env::var("AKAHU_APP_TOKEN")
-            .map_err(|_| anyhow::anyhow!("AKAHU_APP_TOKEN is not set"))?;
-        let user_token = std::env::var("AKAHU_USER_TOKEN")
-            .map_err(|_| anyhow::anyhow!("AKAHU_USER_TOKEN is not set"))?;
+        let credentials = self
+            .credentials
+            .as_ref()
+            .map_err(|missing| anyhow::anyhow!("{} is not set", missing.env_var()))?;
         let client = AkahuClient::new(
-            crate::http::akahu_client(),
-            app_token,
-            Some(BASE_URL.to_string()),
+            crate::http::akahu_client(&self.endpoint),
+            credentials.app_token.clone(),
+            Some(self.endpoint.url().to_string()),
         )
         // The one bound `crate::http` cannot apply from the outside: `akahu-client` reads the
         // response body itself, so `json_capped` never sees a `Response` to cut short. Passing
@@ -220,7 +309,7 @@ impl AkahuProvider {
         // happens to be the same 8MiB today — is what keeps the two providers on one number
         // when either side changes its mind.
         .with_max_response_bytes(crate::http::MAX_BODY_BYTES);
-        Ok((client, UserToken::new(user_token)))
+        Ok((client, UserToken::new(credentials.user_token.clone())))
     }
 }
 
@@ -446,6 +535,60 @@ fn map_transaction(t: akahu_client::Transaction) -> Option<ProviderTransaction> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A provider aimed at a port nothing is listening on: every test below that uses it
+    /// asserts on a failure that happens *before* a socket is opened.
+    fn unconfigured(missing: MissingToken) -> AkahuProvider {
+        AkahuProvider::new(
+            Endpoint::parse("http://127.0.0.1:1/v1").expect("loopback plaintext is allowed"),
+            Err(missing),
+        )
+    }
+
+    /// The message `specs/akahu.spec.ts` reads through a 422 body, pinned in-process where it
+    /// costs microseconds instead of a Playwright run.
+    ///
+    /// This test is only possible *because* the credentials are injected: asserting it before
+    /// meant `std::env::remove_var` inside a test binary that runs in parallel, which is a
+    /// race against every other test rather than a check.
+    #[test]
+    fn an_unconfigured_provider_names_the_variable_the_user_must_set() {
+        let err = unconfigured(MissingToken::AppToken)
+            .client()
+            // `err()` rather than `expect_err`, which would need `AkahuClient: Debug`.
+            .err()
+            .expect("no credentials, no client")
+            .to_string();
+        assert_eq!(err, "AKAHU_APP_TOKEN is not set");
+
+        let err = unconfigured(MissingToken::UserToken)
+            .client()
+            .err()
+            .expect("no credentials, no client")
+            .to_string();
+        assert_eq!(err, "AKAHU_USER_TOKEN is not set");
+    }
+
+    /// Fully configured, no environment touched, no upstream contacted: proof that supplying
+    /// credentials is now a value a caller constructs. The client it builds is aimed at the
+    /// loopback endpoint it was given, which is what a fixture needs.
+    #[test]
+    fn injected_credentials_build_a_client_without_the_environment() {
+        let provider = AkahuProvider::new(
+            Endpoint::parse("http://127.0.0.1:1/v1").expect("loopback plaintext is allowed"),
+            Ok(AkahuCredentials {
+                app_token: "app_token_test".to_string(),
+                user_token: "user_token_test".to_string(),
+            }),
+        );
+        assert!(provider.client().is_ok());
+    }
+
+    #[test]
+    fn each_missing_token_maps_to_its_own_variable() {
+        assert_eq!(MissingToken::AppToken.env_var(), "AKAHU_APP_TOKEN");
+        assert_eq!(MissingToken::UserToken.env_var(), "AKAHU_USER_TOKEN");
+    }
 
     fn fixture_account() -> akahu_client::Account {
         serde_json::from_str(

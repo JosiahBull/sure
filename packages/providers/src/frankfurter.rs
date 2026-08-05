@@ -11,25 +11,35 @@ use serde::Deserialize;
 
 use sure_app::ports::{ExchangeRateProvider, ExchangeRateQuote};
 
-const DEFAULT_BASE_URL: &str = "https://api.frankfurter.dev/v1";
+use crate::http::Endpoint;
+
+/// The real API. `pub` because the composition root owns the decision of where this provider
+/// points (it is the only place configuration is read) and needs a default to fall back to.
+pub const DEFAULT_BASE_URL: &str = "https://api.frankfurter.dev/v1";
 
 pub struct FrankfurterProvider {
-    base_url: String,
+    endpoint: Endpoint,
     client: reqwest::Client,
 }
 
 impl FrankfurterProvider {
-    pub fn new() -> Self {
-        Self {
-            base_url: DEFAULT_BASE_URL.to_string(),
-            client: crate::http::client(),
-        }
-    }
-}
-
-impl Default for FrankfurterProvider {
-    fn default() -> Self {
-        Self::new()
+    /// The only constructor, and deliberately so: there is no argument-free `new()` that
+    /// reaches for [`DEFAULT_BASE_URL`] itself. That const is the composition root's fallback
+    /// (`Config::from_env` parses it into an [`Endpoint`]), and a second constructor holding
+    /// the same URL would be the one a future caller reached for by reflex — pointing an
+    /// adapter at the live API from inside a test, past the configuration that was supposed to
+    /// decide it. The same reasoning removed `Registry`'s `Default`; see `lib.rs`.
+    ///
+    /// In practice the endpoint is either that parsed default or the record/replay proxy a
+    /// test binds on loopback, which is the only way the fetch path below is exercisable at
+    /// all without reaching the live API.
+    ///
+    /// The client is built from the endpoint rather than shared: whether a plaintext request
+    /// is refused is a property of the `Client`, fixed when it is built, not something a
+    /// per-request URL can override.
+    pub fn with_endpoint(endpoint: Endpoint) -> Self {
+        let client = crate::http::client(&endpoint);
+        Self { endpoint, client }
     }
 }
 
@@ -50,7 +60,7 @@ impl ExchangeRateProvider for FrankfurterProvider {
     }
 
     async fn fetch_rates(&self, base: &str) -> anyhow::Result<Vec<ExchangeRateQuote>> {
-        let url = format!("{}/latest?base={base}", self.base_url);
+        let url = format!("{}/latest?base={base}", self.endpoint.url());
         let response = self.client.get(&url).send().await?.error_for_status()?;
         // `json_capped`, not `.json()`: the whole rate table is ~2KB, and the request timeout
         // bounds how long an upstream may talk, not how much it may say. See `http.rs`.

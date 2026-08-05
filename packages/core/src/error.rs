@@ -21,6 +21,32 @@ pub enum AppError {
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 
+    /// A third-party host this server only *reads* from would not answer usefully — a price
+    /// feed, a rate table, a bank aggregator.
+    ///
+    /// Distinct from [`AppError::Internal`] because the two ask a caller for opposite things.
+    /// `Internal` means "a bug here, the request will fail again the same way"; this means
+    /// "someone else's server is having a bad minute, the same request may work later". Sending
+    /// both as `500 internal` cost twice: a client could not tell which it had, and every
+    /// upstream blip landed in the logs looking like a defect in `sure` — which is exactly the
+    /// reasoning [`AppError::is_overloaded`] already applied to a saturated database, so that a
+    /// 500 keeps meaning "a bug to look at".
+    ///
+    /// **502, not 503.** 503 is already spoken for: it is this server's single "busy, come
+    /// back" contract ([`OVERLOADED_CODE`], with a `Retry-After`), and a client that backs off
+    /// identically for "sure is saturated" and "Yahoo is down" will get one of them wrong — the
+    /// first clears in milliseconds, the second in minutes. 502 is also the literal meaning: a
+    /// gateway received an invalid response from an inbound server. No `Retry-After`, because
+    /// nothing here knows when the upstream returns and a guessed number is worse than none.
+    ///
+    /// The message still does not reach the client — 502 is a 5xx, so `into_response` scrubs it
+    /// — and that is deliberate rather than incidental: the text is a third-party `Display`
+    /// which has historically carried the whole upstream payload with it (see
+    /// `sure_app::sync::sync_detail`). The `upstream` *code* is the part a client needs, and the
+    /// text is for the log. Construct through [`AppError::upstream`], which bounds it.
+    #[error("{0}")]
+    Upstream(String),
+
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -38,6 +64,20 @@ pub const OVERLOADED_MESSAGE: &str = "The server is busy. Try again shortly.";
 /// clears in milliseconds when it clears at all.
 pub const OVERLOADED_RETRY_AFTER_SECS: u64 = 1;
 
+/// How much of a third-party error's text this process keeps, wherever it keeps it.
+///
+/// 500 chars is enough to name the failing field and offset, which is all a diagnosis needs.
+/// The reason there is a ceiling at all is that the text is someone else's `Display` and
+/// nothing upstream of us bounds it — `akahu-client`'s deserialisation error used to
+/// interpolate the *entire* response body, so a schema change turned a page of real bank
+/// transactions into an error message. A 75 MB body would otherwise become a 75 MB log line
+/// and a 75 MB `provider_syncs.detail` row.
+///
+/// One number for both destinations on purpose: [`AppError::upstream`] bounds what reaches a
+/// log, and `sure_app::sync::sync_detail` bounds what reaches a durable column and a 4xx body.
+/// They are the same hazard from two directions, and two consts would drift.
+pub const MAX_UPSTREAM_DETAIL_CHARS: usize = 500;
+
 impl AppError {
     pub fn bad_request(msg: impl Into<String>) -> Self {
         Self::BadRequest(msg.into())
@@ -47,6 +87,20 @@ impl AppError {
     }
     pub fn conflict(msg: impl Into<String>) -> Self {
         Self::Conflict(msg.into())
+    }
+
+    /// Wrap a failure that came back from a third-party host, bounding its text.
+    ///
+    /// Takes the error rather than a `String` so there is one place the bound is applied and no
+    /// call site can forget it. `sure_app::sync::sync_detail` is the same bound for the paths
+    /// that answer 4xx instead — one number, [`MAX_UPSTREAM_DETAIL_CHARS`], because the thing
+    /// being bounded is the same in both: an upstream's `Display`, which nothing upstream of us
+    /// limits, on its way into a log line or a durable column.
+    pub fn upstream(err: &anyhow::Error) -> Self {
+        Self::Upstream(truncate_for_wire(
+            &err.to_string(),
+            MAX_UPSTREAM_DETAIL_CHARS,
+        ))
     }
 
     /// Stable machine-readable code, independent of the transport.
@@ -64,6 +118,7 @@ impl AppError {
             AppError::Database(sqlx::Error::RowNotFound) => "not_found",
             #[cfg(feature = "sqlx")]
             AppError::Database(_) => "internal",
+            AppError::Upstream(_) => "upstream",
             AppError::Internal(_) => "internal",
         }
     }
@@ -117,6 +172,36 @@ fn sqlite_is_busy(code: Option<&str>) -> bool {
 
 pub type AppResult<T> = Result<T, AppError>;
 
+/// The bound on upstream error text, which needs neither of this module's optional features —
+/// unlike everything in `sqlx_tests` below, so it runs on a bare `cargo test -p sure-core` too.
+#[cfg(test)]
+mod upstream_tests {
+    use super::*;
+
+    /// A constructor that bounds, so no call site has to remember to.
+    ///
+    /// The failure this prevents is not hypothetical: an upstream `Display` that interpolated a
+    /// whole response body turned a schema change into a megabytes-long log line. `Upstream` is
+    /// a plain `String`, so the only thing standing between that and the log is this function —
+    /// hence testing the constructor rather than `truncate_for_wire`, which is already covered.
+    #[test]
+    fn the_constructor_bounds_what_an_upstream_said() {
+        let huge = "x".repeat(MAX_UPSTREAM_DETAIL_CHARS * 3);
+        let AppError::Upstream(detail) = AppError::upstream(&anyhow::anyhow!("{huge}")) else {
+            panic!("upstream() must build an Upstream");
+        };
+        assert_eq!(
+            detail.chars().count(),
+            MAX_UPSTREAM_DETAIL_CHARS + "… (truncated)".chars().count()
+        );
+
+        // Under the cap it is passed through whole — a bound that mangled every short message
+        // would make the log worse, not safer.
+        let short = AppError::upstream(&anyhow::anyhow!("504 from api.frankfurter.dev"));
+        assert_eq!(short.to_string(), "504 from api.frankfurter.dev");
+    }
+}
+
 /// JSON error envelope: `{ "error": { "code": "...", "message": "..." } }`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorBody {
@@ -155,7 +240,7 @@ pub fn truncate_for_wire(text: &str, max_chars: usize) -> String {
 /// callers name them as `sure_core::error::{clothe_error, ..}` (and `sure_api::limits`
 /// re-exports them again, where the middleware that uses them lives).
 #[cfg(feature = "axum")]
-pub use http::{clothe_error, overloaded_response, ErrorAlreadyClothed};
+pub use http::{clothe_error, overloaded_response, ErrorAlreadyClothed, PreservedErrorCode};
 
 #[cfg(feature = "axum")]
 mod http {
@@ -176,6 +261,25 @@ mod http {
     /// `overloaded` code to `internal`, undoing the whole point of distinguishing them.
     #[derive(Clone, Copy, Debug)]
     pub struct ErrorAlreadyClothed;
+
+    /// The `code` a 5xx body must keep when the API's scrubber replaces its *message*.
+    ///
+    /// Scrubbing a 5xx has two jobs that were previously one: drop the detail, and say
+    /// `internal`. Only the first is about safety. A code is never third-party text — it comes
+    /// from [`AppError::code`], a closed match returning `&'static str` — so replacing it buys
+    /// nothing and costs the one thing a client can act on. That was invisible while every 5xx
+    /// really was internal; [`AppError::Upstream`] is the first one that is somebody else's
+    /// fault, and it arrived as `internal` until this existed.
+    ///
+    /// An extension rather than a parsed body because the scrubber discards the body it
+    /// replaces without ever reading it, and buffering one to recover a field we already had in
+    /// hand would be a strange way to spend a hot path.
+    ///
+    /// Distinct from [`ErrorAlreadyClothed`], which means "do not touch this response at all" —
+    /// that one is for a body carrying a `Retry-After` and a message worth keeping. This one
+    /// still wants the message scrubbed, and the `request_id` the scrubber puts in its place.
+    #[derive(Clone, Copy, Debug)]
+    pub struct PreservedErrorCode(pub &'static str);
 
     /// Build an error response in the API's standard envelope, marked so nothing downstream
     /// rewrites it.
@@ -236,6 +340,7 @@ mod http {
                 AppError::Database(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
                 #[cfg(feature = "sqlx")]
                 AppError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                AppError::Upstream(_) => StatusCode::BAD_GATEWAY,
                 AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             }
         }
@@ -261,13 +366,20 @@ mod http {
             } else {
                 self.to_string()
             };
+            let code = self.code();
             let body = super::ErrorBody {
                 error: super::ErrorDetail {
-                    code: self.code().to_string(),
+                    code: code.to_string(),
                     message,
                 },
             };
-            (status, Json(body)).into_response()
+            let mut response = (status, Json(body)).into_response();
+            // Survives the scrub above us. Attached for every variant rather than only the ones
+            // whose code differs from `internal`: the alternative is a second place that knows
+            // which codes are "interesting", and it would be wrong the first time a variant is
+            // added without anybody thinking about the middleware.
+            response.extensions_mut().insert(PreservedErrorCode(code));
+            response
         }
     }
 }
@@ -400,13 +512,55 @@ mod sqlx_tests {
             );
         }
 
+        /// A third-party host failing is a 502 the client can act on, and a body it cannot
+        /// read.
+        ///
+        /// Both halves matter and they pull in opposite directions, which is why they are
+        /// asserted together. The `code` has to be distinguishable — that is the entire reason
+        /// this variant exists rather than reusing `Internal`, and a client's retry decision
+        /// hangs off it. The message must *not* be: 502 is a 5xx, so it takes the same scrub as
+        /// a genuine internal error, because the text is an upstream's `Display` and
+        /// `akahu-client`'s used to carry the whole response payload with it.
+        ///
+        /// And no `Retry-After`. That header belongs to the saturation contract above, where
+        /// the wait is known to be about a second; nothing here knows when Yahoo comes back.
+        #[test]
+        fn an_upstream_failure_is_a_502_whose_detail_stays_server_side() {
+            let err = AppError::upstream(&anyhow::anyhow!("UPSTREAM-ONLY-MARKER: 503 from feed"));
+            assert_eq!(err.code(), "upstream");
+            assert!(!err.is_overloaded());
+
+            let response = err.into_response();
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            assert!(response.headers().get(header::RETRY_AFTER).is_none());
+            let body = body_of(response);
+            assert!(body.contains("\"code\":\"upstream\""), "{body}");
+            assert!(
+                !body.contains("UPSTREAM-ONLY-MARKER"),
+                "detail leaked: {body}"
+            );
+        }
+
         /// A genuine internal error keeps its 500 and its scrubbed body: this mapping must
         /// not turn every database failure into "come back later".
+        ///
+        /// Also the other half of [`PreservedErrorCode`]. The code the scrubber will be handed
+        /// is decided here, so this is the place to pin that a real fault still says `internal`
+        /// — otherwise the only end-to-end coverage of `internal` is a spec asserting a status,
+        /// and a marker wired to the wrong string would pass it.
         #[test]
         fn a_real_database_error_is_still_a_scrubbed_500() {
             let response = db_error("1").into_response();
             assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
             assert!(response.headers().get(header::RETRY_AFTER).is_none());
+            assert_eq!(
+                response
+                    .extensions()
+                    .get::<PreservedErrorCode>()
+                    .expect("every AppError response carries its code")
+                    .0,
+                "internal"
+            );
             let body = body_of(response);
             assert!(body.contains("\"code\":\"internal\""), "{body}");
             assert!(!body.contains("synthetic"), "detail leaked: {body}");

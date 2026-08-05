@@ -106,15 +106,33 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
 
     // The concrete provider adapters, built once here (the composition root is the only
     // crate that names them) and shared between the scheduled tasks and the HTTP handlers.
-    let registry: Arc<dyn ProviderRegistry> = Arc::new(sure_providers::Registry::new());
+    // Each is handed the endpoint `Config` parsed for it: `sure-providers` reads no
+    // configuration of its own, so where an adapter points is decided exactly here.
+    let akahu = sure_providers::AkahuProvider::new(
+        config.provider_endpoints.akahu.clone(),
+        // The one environment read outside `config` (see the note on `Config`), and the result
+        // is *stored* rather than propagated. Akahu is one optional integration of several, so
+        // absent tokens are the ordinary state — of every CI run, and of anyone who doesn't
+        // bank in NZ — and `?` here would turn that into a server that refuses to start. The
+        // error still has to arrive with a variable name attached when someone asks for a
+        // sync, which is why the provider keeps the `Result`: `specs/akahu.spec.ts` asserts
+        // the 422 from `/api/provider-kinds/akahu/accounts` says `AKAHU_APP_TOKEN`.
+        sure_providers::AkahuCredentials::from_env(),
+    );
+    let registry: Arc<dyn ProviderRegistry> = Arc::new(sure_providers::Registry::new(akahu));
     let stock_price_provider: Arc<dyn StockPriceProvider> =
-        Arc::new(sure_providers::YahooFinanceProvider::new());
+        Arc::new(sure_providers::YahooFinanceProvider::with_endpoint(
+            config.provider_endpoints.yahoo_finance.clone(),
+        ));
 
     // Opt-out (`BACKGROUND_TASKS=off`) because the scheduler's first check runs
     // immediately, so every never-run task fires during startup: the API e2e suite turns
     // it off so the provider poll — which records a sync row per enabled provider — can't
-    // race a test's own fixtures, and so no test reaches the exchange-rate or stock-price
-    // APIs over the network.
+    // race a test's own fixtures. Containment is no longer one of the reasons, though it
+    // was: every adapter that suite spawns is pointed at `sure-testproxy`, so a sweep that
+    // does run reaches a stub or a replay-miss 503 rather than the network whatever this
+    // flag says — which is what lets `specs/shutdown.spec.ts` turn it back on and drain a
+    // poll that is genuinely in flight.
     if config.background_tasks {
         let task_state = Arc::new(sure_dal::scheduled_tasks::SqliteTaskStateStore::new(
             pool.clone(),
@@ -138,7 +156,11 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         scheduler.register(Box::new(
             sure_app::tasks::exchange_rates::ExchangeRateTask::new(
                 store.clone(),
-                Arc::new(sure_providers::FrankfurterProvider::new()),
+                // The only Frankfurter instance in the process — nothing but this task fetches
+                // rates — so unlike Yahoo's it is built here rather than above.
+                Arc::new(sure_providers::FrankfurterProvider::with_endpoint(
+                    config.provider_endpoints.frankfurter.clone(),
+                )),
             ),
         ));
         scheduler.register(Box::new(

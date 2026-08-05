@@ -45,3 +45,21 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # format for us, so a date column arrives as `Data::DateTime` rather than a bare Excel
 # serial we'd have to map back through the workbook's style table by hand.
 calamine = { version = "0.36.1", default-features = false, features = ["dates"] }
+
+# Every adapter in this crate reaches a third-party host, which is why until now the only
+# thing its tests could assert was parsing — the fetch itself was only exercisable against
+# the live API, so `stock-prices.spec.ts` and `akahu.spec.ts` both open with a comment
+# explaining which success path they cannot cover. `partly-proxy-lib` closes that: a test
+# binds a proxy on loopback, points the adapter at it, and answers for what the upstream
+# said. See `tests/proxy_contract.rs` for the proxy behaviours the fixtures rely on.
+[dev-dependencies]
+partly-proxy-lib = { workspace = true }
+# The proxy middleware the fixtures share with the Playwright suites, so `proxy_contract.rs`
+# pins the implementation those suites actually run rather than a copy of it. A *dev*-dependency
+# only: `sure-testproxy` depends on nothing in this workspace, and it must stay that way for
+# this edge to exist at all.
+sure-testproxy = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

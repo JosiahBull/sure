@@ -5,10 +5,16 @@
  * These assert on headers and status codes rather than payloads, so they use `fetch`
  * directly where the generated client would hide the response. Anything needing
  * non-default configuration spawns its own backend via `startServer`.
+ *
+ * The last two sections need something the rest of the file does not: a handler genuinely
+ * suspended at an await point. A deadline and an in-flight ceiling are both only observable
+ * against a request that is *still running*, and the only await a test can hold open from
+ * outside the process is an outbound provider call — so those tests drive `testproxy.pause`
+ * and nothing else in the file does.
  */
 import http2 from "node:http2";
 
-import { test, expect, startServer } from "../fixtures";
+import { test, expect, startServer, createSureClient } from "../fixtures";
 import { createAccount, postOversized } from "../helpers";
 
 /** Case-insensitive header read that fails loudly rather than returning null. */
@@ -331,6 +337,227 @@ test("cross-origin reads are limited to the configured allowlist", async ({ serv
   // A request with no Origin at all (curl, this suite, the seed script) is untouched.
   const plain = await fetch(`${server.baseURL}/api/health`);
   expect(plain.status).toBe(200);
+});
+
+// ---- the per-request deadline -------------------------------------------------------
+//
+// `pause` is what makes this section possible. It holds every request to an upstream
+// received-but-unanswered, so the handler waiting on it is suspended for exactly as long as
+// the test likes — the one await point in a request that a spec can control. Neither test
+// below registers a stub, and that is deliberate rather than an omission: the pause gate runs
+// ahead of the proxy's stub scan, so an unstubbed request is held just the same and, once
+// resumed, takes the ordinary replay miss. A deadline test that carried a provider's document
+// shape would fail the day that document changed, for a reason having nothing to do with
+// deadlines.
+
+test("a handler stuck on an upstream is cut loose at the request deadline", async ({
+  testproxy,
+}) => {
+  // `deadline_for` is unit-tested as a pure function, which leaves two things nothing can see.
+  //
+  // The layer reads `MatchedPath`, an extension that exists only because the layer sits inside
+  // routing: hoist it above the router in a refactor and every route silently falls back to
+  // the *normal* deadline while the pure test stays green. Here the 408 simply stops arriving.
+  //
+  // And an ordering that is otherwise invisible. `sure_providers::http` puts a 6s
+  // `REQUEST_TIMEOUT` on the outbound call, so a 1s server deadline has to be the one that
+  // fires; if it ever stopped winning, a client would wait six times the deadline it
+  // configured and be told 502 (an upstream failed) rather than 408 (we gave up).
+  const server = await startServer({ REQUEST_TIMEOUT_SECS: "1" });
+  try {
+    const api = createSureClient(server.baseURL);
+    // `shares_us` comes with a ticker and an exchange (helpers.ts), which is what makes this
+    // route reach the price feed at all — without them it 404s before a socket is opened.
+    const account = await createAccount(api, "Vanguard S&P 500", "shares_us", "USD");
+
+    await testproxy.pause("yahoo_finance");
+    const started = Date.now();
+    const res = await fetch(`${server.baseURL}/api/accounts/${account.id}/stock-price`);
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(408);
+    // `timeout` is the code `cache::timeout` emits. Worth pinning rather than settling for the
+    // status: 408 with any other code would mean something else on the request path gave up,
+    // and the fix would be somewhere else entirely.
+    expect(await res.json()).toEqual({
+      error: { code: "timeout", message: expect.any(String) },
+    });
+    // The margin is against the adapter's 6s ceiling, which is the only other way this request
+    // could have ended. The layer answers at 1s and the adapter cannot answer before 6s, so
+    // 4s separates them by 3s in one direction and 2s in the other — a gap no ordinary runner
+    // jitters across, and one that fails loudly (as a 502 at ~6s) if the deadline is lost.
+    expect(elapsed, `408 arrived after ${elapsed}ms`).toBeLessThan(4_000);
+  } finally {
+    // Before the server goes, and on the failure path too: a paused upstream left behind holds
+    // whatever is in flight, which turns a clean assertion failure into a teardown timeout.
+    await testproxy.resume("yahoo_finance");
+    server.stop();
+  }
+});
+
+/**
+ * Credentials, injected, so a sync gets far enough to make an outbound call — the fixture
+ * strips both from every server it spawns. Invented and obviously so, and the same pair
+ * `specs/provider-sync-behaviour.spec.ts` and `packages/providers/tests/akahu.rs` already use
+ * (CLAUDE.md rule 3). `acc_spend01` likewise: `AccountId::new` only checks the `acc_` prefix.
+ */
+const AKAHU_TOKENS = { AKAHU_APP_TOKEN: "app_token_test", AKAHU_USER_TOKEN: "user_token_test" };
+
+test("a long route is not held to the normal deadline", async ({ testproxy }) => {
+  // `LONG_ROUTES` exists because `POST /api/providers/{id}/sync` waits on somebody else's API.
+  // Its unit test proves the *table*; it cannot prove a request was given the table's answer,
+  // and the ways that wiring breaks are all silent — a `Deadlines` built from one field twice,
+  // the layer moved somewhere `MatchedPath` is absent, an entry whose template drifts from the
+  // `.route(..)` call. Any of them and every bank sync starts dying at the ordinary deadline,
+  // which on a real feed is most of them, reported as a timeout rather than as a lost setting.
+  const server = await startServer({
+    ...AKAHU_TOKENS,
+    REQUEST_TIMEOUT_SECS: "2",
+    LONG_REQUEST_TIMEOUT_SECS: "20",
+  });
+  try {
+    const api = createSureClient(server.baseURL);
+    const account = await createAccount(api, "Everyday", "bank");
+    // `POST /api/providers`, not `/api/providers/link`: linking fires an immediate best-effort
+    // sync, and this test wants the only outbound call to be the one it starts itself.
+    const created = await api.POST("/api/providers", {
+      body: {
+        name: "Akahu — Everyday",
+        kind: "akahu",
+        account_id: account.id,
+        enabled: true,
+        config: { external_account_id: "acc_spend01" },
+      },
+    });
+    expect(created.response.status, "create provider").toBe(201);
+
+    await testproxy.pause("akahu");
+    const syncing = api
+      .POST("/api/providers/{id}/sync", {
+        params: { path: { id: created.data!.id } },
+        body: {},
+      })
+      .then((r) => r.response.status)
+      // This promise is deliberately left unawaited for seconds, and abandoned entirely on a
+      // failing path where `finally` then kills the server out from under it. A rejection there
+      // is unhandled — a second, louder error stacked on the assertion that actually failed —
+      // so it is caught here and asserted on below instead of being allowed to escape.
+      .catch((err: unknown) => `no response at all: ${String(err)}`);
+
+    // 3.5s, bracketed by the two events that could end this request early: the 2s normal
+    // deadline is 1.5s behind it, and the 6s ceiling `sure_providers::http` puts on the
+    // outbound call is 2.5s ahead. The 20s long deadline is never reached — waiting it out
+    // would cost twenty seconds to learn what the first 1.5s of margin already says.
+    const verdict = await Promise.race([
+      syncing.then((status) => `answered ${status}`),
+      new Promise<string>((r) => setTimeout(() => r("still running"), 3_500)),
+    ]);
+    expect(verdict, "the sync was cut off before the long deadline").toBe("still running");
+
+    await testproxy.resume("akahu");
+    // Answered by the handler once its upstream came back — a replay miss, since this test
+    // stubs nothing. *Which* status a failed sweep produces belongs to
+    // `specs/provider-sync-behaviour.spec.ts`; all this test asks is who answered. Checked for
+    // a status first, so a request that never got one cannot satisfy "not 408" by default.
+    const answered = await syncing;
+    expect(answered, "the sync produced no response at all").toEqual(expect.any(Number));
+    expect(answered, "the deadline layer answered after all").not.toBe(408);
+  } finally {
+    await testproxy.resume("akahu");
+    server.stop();
+  }
+});
+
+// ---- the in-flight ceiling ------------------------------------------------------------
+
+test("an in-flight permit is held for the whole request and handed back afterwards", async ({
+  testproxy,
+}) => {
+  // `RateLimiter` and the shape of `overloaded_response` both have unit tests; the layer
+  // between them has none, and the property it owns is the permit's *lifetime*. Released
+  // early, the ceiling is decorative and a burst walks through it. Never released, the first
+  // slow request wedges the process into answering 503 to everything until a restart. A test
+  // that only fires one request cannot tell either from a working shedder, which is why the
+  // second half below — a request that succeeds once the first finishes — is the load-bearing
+  // one rather than the 503.
+  const server = await startServer({ MAX_IN_FLIGHT: "1" });
+  try {
+    const api = createSureClient(server.baseURL);
+    const account = await createAccount(api, "Vanguard S&P 500", "shares_us", "USD");
+
+    await testproxy.pause("yahoo_finance");
+    let heldStatus: number | undefined;
+    const held = fetch(`${server.baseURL}/api/accounts/${account.id}/stock-price`)
+      .then(async (r) => {
+        heldStatus = r.status;
+        // Drained so the connection is released rather than left half-read behind us.
+        await r.text();
+      })
+      // Swallowed, because on a failing path this promise is abandoned and `finally` kills the
+      // server out from under it: without this, every assertion failure below arrives with a
+      // "socket closed" rejection stacked on top of the one that matters. Observed while
+      // checking that this test fails when the ceiling is raised.
+      .catch(() => {});
+
+    // Let the held request take the slot before anything else asks for it. The margin is not a
+    // guess at how long the handler runs — the pause gate holds it indefinitely once it gets
+    // there — so all 500ms has to cover is a loopback request reaching an axum handler, which
+    // is a fraction of a millisecond.
+    //
+    // A sleep, because there is nothing to observe: a paused request is not recorded, so
+    // `assertSeen` blocks to timeout on exactly this case. And it cannot be dropped in favour
+    // of the poll below. A probe fired alongside the held request is not racing it by
+    // microseconds, it is *simultaneous* with it: whichever reaches `try_acquire_owned` first
+    // takes the only permit and the other is shed, which measured at roughly a coin flip —
+    // this test failed two runs in five before the wait existed.
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Now confirm the slot is *taken* rather than assuming it: while the paused request holds
+    // the only one, every other request is shed, so a 503 from the cheapest route in the API
+    // is the ceiling reporting its own state. Still a loop, so a runner slower than the margin
+    // above costs an iteration rather than a failure — and the in-loop check names the case
+    // where even the whole deadline was not enough, because "the paused request was itself
+    // shed" and "the shedder is broken" look identical from out here and want opposite fixes.
+    let shed: Response | undefined;
+    const deadline = Date.now() + 5_000;
+    while (!shed && Date.now() < deadline) {
+      const probe = await fetch(`${server.baseURL}/api/health`);
+      if (probe.status === 503) shed = probe;
+      else await probe.text();
+      expect(heldStatus, "the probe won the slot and the paused request was shed").toBeUndefined();
+      if (!shed) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(shed, "nothing was shed while the only in-flight slot was occupied").toBeTruthy();
+
+    // The whole trio `sure_core::error::overloaded_response` emits, because it is deliberately
+    // one shape: a client that recognises the 503 but not the code cannot tell "this server is
+    // busy" from "an upstream is down" — which is a 502 here precisely so the two back off
+    // differently — and one that reads neither header has to guess how long to wait.
+    // `OVERLOADED_RETRY_AFTER_SECS` is 1, because a full slot table clears in milliseconds.
+    expect(header(shed!, "retry-after")).toBe("1");
+    expect(await shed!.json()).toEqual({
+      error: { code: "overloaded", message: expect.any(String) },
+    });
+
+    await testproxy.resume("yahoo_finance");
+    await held;
+    // No sleep between the two, and none needed: `_permit` is bound in the match arm that
+    // awaits the inner service, so it is dropped as that arm ends — before the response is
+    // handed back up the stack, let alone written to a socket. A client holding the whole
+    // response therefore already knows the slot is free; waiting on the held request *is*
+    // waiting on the permit.
+    const after = await fetch(`${server.baseURL}/api/health`);
+    expect(after.status, "the permit was not returned when the request finished").toBe(200);
+
+    // And the held request was served rather than shed on its way in — the distinction the
+    // first half of this test rests on. A 503 could only have come from the shedder: the
+    // proxy's own replay-miss 503 reaches the client as a 502 (`AppError::Upstream`).
+    expect(typeof heldStatus, "the held request produced no response at all").toBe("number");
+    expect(heldStatus, "the held request was shed rather than served").not.toBe(503);
+  } finally {
+    await testproxy.resume("yahoo_finance");
+    server.stop();
+  }
 });
 
 // Shutdown lives in `shutdown.spec.ts`. It used to be one exit-code assertion here, which

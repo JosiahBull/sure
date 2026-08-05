@@ -3,17 +3,24 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
+use anyhow::Context;
 use sure_api::config::{ApiConfig, Limits, DEFAULT_CORS_ORIGINS};
 use sure_appbase::LifecycleConfig;
+use sure_providers::Endpoint;
 
 use crate::http::HttpConfig;
 use crate::sandbox::{SandboxConfig, SandboxMode};
 
 /// Runtime configuration, sourced from the environment with sensible local defaults.
 ///
-/// This is the only place the environment is read. `sure-api` defines the shape of its
-/// own tunables ([`ApiConfig`]) but parses nothing — configuration is a concern of
-/// *running* the server, not of the routes.
+/// This is the only place the environment is read, with one deliberate exception: the Akahu
+/// token pair, which `serve` reads at the point it hands it to the adapter that carries it.
+/// The two are secrets, and `Config` is `Clone + Debug` and travels the length of startup —
+/// a value in here is a value that can end up in a `{config:?}`. Where those tokens are
+/// *sent* is configuration and does live here ([`ProviderEndpoints`]); what they are is not.
+///
+/// `sure-api` defines the shape of its own tunables ([`ApiConfig`]) but parses nothing —
+/// configuration is a concern of *running* the server, not of the routes.
 #[derive(Clone, Debug)]
 pub struct Config {
     /// sqlx connection string, e.g. `sqlite:data/sure.db` or `sqlite::memory:`.
@@ -31,6 +38,8 @@ pub struct Config {
     /// transfer linking) runs at all. On outside tests — see `serve` for why the e2e suite
     /// turns it off.
     pub background_tasks: bool,
+    /// Where the three network-facing provider adapters point.
+    pub provider_endpoints: ProviderEndpoints,
     /// The Landlock self-sandbox: how hard to insist on it, and anything to allow beyond
     /// what the server needs on its own.
     pub sandbox: SandboxConfig,
@@ -38,6 +47,28 @@ pub struct Config {
     /// [`HttpConfig::shutdown_grace`], which bounds only the connection drain *inside*
     /// the application future — these bound the sequence around it.
     pub lifecycle: LifecycleConfig,
+}
+
+/// The base URL of each provider adapter, already checked to be somewhere a credential may
+/// travel (see [`sure_providers::Endpoint`]).
+///
+/// These are settings at all for one reason: `partly-proxy-lib` is a *reverse* proxy — one
+/// listener per named upstream, forwarding to a fixed base URL — so the only way to put it in
+/// front of an adapter is to tell the adapter a different URL. A `CONNECT` proxy honoured via
+/// `HTTPS_PROXY` would have needed no configuration here at all; the library does not offer
+/// one, and it would have meant a CA the process is made to trust, which is a wider hole than
+/// three URLs that cannot name a plaintext host off this machine.
+///
+/// Nothing sets them in production, where each is its adapter's own `DEFAULT_BASE_URL`.
+#[derive(Clone, Debug)]
+pub struct ProviderEndpoints {
+    /// `FRANKFURTER_BASE_URL` — exchange rates.
+    pub frankfurter: Endpoint,
+    /// `YAHOO_FINANCE_BASE_URL` — stock prices.
+    pub yahoo_finance: Endpoint,
+    /// `AKAHU_BASE_URL` — NZ bank feeds. The tokens that go with it are not part of `Config`;
+    /// see the note on [`Config`].
+    pub akahu: Endpoint,
 }
 
 /// Fold a `.env` file into the process environment, before anything reads it, and return
@@ -137,6 +168,22 @@ impl Config {
             connect_ports: ports("SURE_SANDBOX_CONNECT_PORTS"),
         };
 
+        // Each default is the const in the adapter's own module rather than the URL retyped
+        // here: one host, one spelling. A copy in this file is the one nobody would think to
+        // change when an upstream moves, and it would be wrong in the direction that is hard
+        // to notice — every request still succeeding, against the old host.
+        let provider_endpoints = ProviderEndpoints {
+            frankfurter: endpoint(
+                "FRANKFURTER_BASE_URL",
+                sure_providers::frankfurter::DEFAULT_BASE_URL,
+            )?,
+            yahoo_finance: endpoint(
+                "YAHOO_FINANCE_BASE_URL",
+                sure_providers::yahoo_finance::DEFAULT_BASE_URL,
+            )?,
+            akahu: endpoint("AKAHU_BASE_URL", sure_providers::akahu::DEFAULT_BASE_URL)?,
+        };
+
         let lifecycle_defaults = LifecycleConfig::default();
         let lifecycle = LifecycleConfig {
             // Zero by default. Nothing routes to this process — it is a single binary a
@@ -161,6 +208,7 @@ impl Config {
             api,
             http,
             background_tasks: flag("BACKGROUND_TASKS", true),
+            provider_endpoints,
             sandbox,
             lifecycle,
         })
@@ -185,6 +233,53 @@ fn parsed<T: FromStr>(name: &str, default: T) -> T {
 
 fn secs(name: &str, default: Duration) -> Duration {
     Duration::from_secs(parsed(name, default.as_secs()))
+}
+
+/// Read `name` as a provider base URL, falling back to the adapter's own production const
+/// when it is unset.
+///
+/// The one value in this file where a bad setting is **fatal**, and a deliberate break with
+/// [`parsed`] two functions up. Warn-and-continue is right for a limit: the wrong number is
+/// still the right behaviour aimed at the right place, and refusing to boot over a mistyped
+/// byte ceiling is worse than running the default. For an endpoint the same fallback means
+/// this process sends its requests — and, for Akahu, an app token — to a *different host*
+/// than the operator named, while the warning explaining that scrolls past in the log. There
+/// is no useful default for "somewhere else": either the URL is usable or the operator has to
+/// see it. [`load_dotenv`] already draws the line here for `SURE_ENV_FILE`, on the same
+/// reasoning — being explicit and wrong should be loud.
+///
+/// What counts as usable is [`Endpoint`]'s judgement, not this function's: `https://`
+/// anywhere, `http://` only to this machine. That check lives on the type precisely so it
+/// cannot be relaxed by anything set in the same file as the URL it is protecting.
+fn endpoint(name: &str, default: &str) -> anyhow::Result<Endpoint> {
+    let configured = std::env::var(name).ok();
+    resolve_endpoint(name, configured.as_deref(), default)
+}
+
+/// The decision [`endpoint`] makes, given what the environment said.
+///
+/// Split from it so that decision — the fatal-vs-fallback one, which is the whole reason this
+/// value doesn't go through [`parsed`] — is testable without `set_var`, which mutates the
+/// process every other test in this binary is also reading.
+fn resolve_endpoint(
+    name: &str,
+    configured: Option<&str>,
+    default: &str,
+) -> anyhow::Result<Endpoint> {
+    let raw = configured
+        // Trimmed before it is parsed, not after: `Endpoint` deliberately stores the string it
+        // was given verbatim (the adapters append `/latest?…` to it), and a URL parser treats
+        // surrounding whitespace as insignificant — so an `.env` line with a trailing space
+        // would parse happily and then build `https://api.frankfurter.dev/v1 /latest`.
+        .map(str::trim)
+        // Set-but-empty reads as unset, as `WEB_DIR` does above: a blank line in a `.env` is
+        // how that file spells "no value", and it is the one unusable setting that says nothing
+        // about where the operator wanted to point — so there is nothing to be loud about.
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or(default);
+    // The context names the variable, because that is what the operator edits;
+    // `Endpoint::parse`'s own message quotes the URL and says what is wrong with it.
+    Endpoint::parse(raw).with_context(|| format!("{name}={raw}"))
 }
 
 /// Accepts the spellings people actually type.
@@ -252,5 +347,82 @@ fn cors_origins() -> Vec<String> {
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every built-in default, i.e. the configuration of a fresh checkout.
+    const DEFAULTS: [&str; 3] = [
+        sure_providers::frankfurter::DEFAULT_BASE_URL,
+        sure_providers::yahoo_finance::DEFAULT_BASE_URL,
+        sure_providers::akahu::DEFAULT_BASE_URL,
+    ];
+
+    /// With nothing set, `from_env` parses three consts, and an unusable one is fatal — so this
+    /// test is the difference between an empty environment booting and not booting.
+    ///
+    /// It is also the only cover any of the three has, and structurally so: `sure-providers` has
+    /// no argument-free constructor left, so nothing in the workspace parses one of these consts
+    /// except the line above. A default that stopped being `https://` — or stopped being a URL —
+    /// would take down every boot, and this is the test that says so before a boot does.
+    #[test]
+    fn every_built_in_provider_default_reaches_the_real_api_over_tls() {
+        for default in DEFAULTS {
+            let endpoint = resolve_endpoint("UNSET_IN_THIS_TEST", None, default)
+                .unwrap_or_else(|err| panic!("{default}: {err:#}"));
+            assert_eq!(endpoint, Endpoint::Secure(default.to_string()));
+        }
+    }
+
+    /// The departure from [`parsed`], which the rest of this file follows. Route these through
+    /// it "for consistency" later and a run that mistypes `AKAHU_BASE_URL` — a test aiming at
+    /// its proxy, say — warns once and then sends real credentials to the live api.akahu.io,
+    /// which is the outcome the whole record/replay arrangement exists to make impossible.
+    #[test]
+    fn an_unusable_endpoint_stops_startup_and_names_both_the_variable_and_the_url() {
+        for bad in [
+            // Plaintext off this machine — `Endpoint`'s reason for existing.
+            "http://evil.example/v1",
+            "not-a-url",
+            "ftp://api.akahu.io/v1",
+        ] {
+            let err = resolve_endpoint(
+                "AKAHU_BASE_URL",
+                Some(bad),
+                sure_providers::akahu::DEFAULT_BASE_URL,
+            )
+            .expect_err("an unusable endpoint must not fall back to the default host");
+            // Alternate Display, not `to_string()`: the variable is this file's context and the
+            // diagnosis is `Endpoint::parse`'s cause, and only `{:#}` renders both — which is
+            // also how `main` returning `anyhow::Result` prints it.
+            let rendered = format!("{err:#}");
+            assert!(rendered.contains("AKAHU_BASE_URL"), "{rendered}");
+            assert!(rendered.contains(bad), "{rendered}");
+        }
+    }
+
+    /// The two shapes a `.env` produces that are not really values: a variable listed with
+    /// nothing after the `=`, and one with a stray trailing space. Neither may reach
+    /// `Endpoint`, which keeps the string it is handed verbatim — " …/v1 " parses as a URL and
+    /// then concatenates into a request path with a space in the middle of it.
+    #[test]
+    fn a_blank_setting_defaults_and_a_padded_one_is_trimmed() {
+        let default = sure_providers::frankfurter::DEFAULT_BASE_URL;
+        for blank in [Some(""), Some("   "), None] {
+            let endpoint = resolve_endpoint("FRANKFURTER_BASE_URL", blank, default)
+                .unwrap_or_else(|err| panic!("{blank:?}: {err:#}"));
+            assert_eq!(endpoint.url(), default, "{blank:?}");
+        }
+
+        let padded = resolve_endpoint(
+            "FRANKFURTER_BASE_URL",
+            Some("  http://127.0.0.1:53219/v1\n"),
+            default,
+        )
+        .expect("a padded loopback URL is still a loopback URL");
+        assert_eq!(padded.url(), "http://127.0.0.1:53219/v1");
     }
 }

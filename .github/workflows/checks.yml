@@ -13,6 +13,27 @@ env:
   COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
 
 jobs:
+  # CLAUDE.md rule 3, and the Akahu-recording guard described in docs/TESTING.md. The
+  # pre-commit hook runs this first because it is the cheapest gate and the only one guarding
+  # something a later gate cannot undo — but a hook is bypassable (`--no-verify`) and per-clone
+  # (`core.hooksPath` is set by the `prepare` script), so the gate that matters is this one.
+  # `--all` sweeps every tracked file rather than the staged diff a hook sees, which is what a
+  # PR needs: the additions may have landed in an earlier commit on the branch.
+  #
+  # No toolchain, no `pnpm install` — plain node over `git ls-files`, so nothing to cache.
+  # `data/sure.db` is a developer's machine only, so provenance cannot be checked here and the
+  # script says so per finding; the shape patterns and the Akahu path/content refusal do not
+  # need it and are what this job is for.
+  pii-scan:
+    name: Personal-data scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node scripts/pii-scan.mjs --all
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
@@ -71,8 +92,13 @@ jobs:
       - run: pnpm --filter @sure/web check
       - run: pnpm --filter @sure/api-tests check
 
-  # Backend e2e suite: Playwright drives the real compiled backend over HTTP (no
-  # browser). global-setup builds `sure-api`; each test spawns its own isolated instance.
+  # Backend e2e suite: Playwright drives the real compiled backend over HTTP (no browser).
+  # global-setup builds both binaries it needs — `sure-api` and `sure-testproxy` — so there is
+  # no cargo step here; each test spawns its own isolated backend, and each worker one proxy.
+  # Nothing in the suite needs network access or extra environment: the proxy binds ephemeral
+  # loopback ports and hands the harness the endpoint map *and* the `SURE_SANDBOX_CONNECT_PORTS`
+  # that Landlock needs to let the backend reach it (see docs/TESTING.md — a missing one is
+  # green locally and red only here).
   api-tests:
     name: API e2e tests
     runs-on: ubuntu-latest
@@ -96,10 +122,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Frontend visual suite: builds the SPA, boots the real backend serving it, seeds demo
-  # data, and screenshot-compares every page. Runs INSIDE the pinned Playwright image so
-  # the Chromium build + font stack exactly match the committed *-linux.png baselines —
-  # keep the image tag in lockstep with @playwright/test (regenerate via snapshots.yml).
+  # Frontend visual suite: builds the SPA, boots the real backend serving it behind a
+  # `sure-testproxy` (so a click that makes the backend dial a third party cannot leave the
+  # container), seeds demo data, and screenshot-compares every page. Its global-setup builds
+  # `sure-api` and `sure-testproxy` in one cargo invocation, which is why the only step here is
+  # `pnpm test:web` — but the Rust toolchain install below is what makes that possible, since
+  # the Playwright image ships neither cargo nor a C toolchain.
+  #
+  # Runs INSIDE the pinned Playwright image so the Chromium build + font stack exactly match
+  # the committed *-linux.png baselines — keep the image tag in lockstep with @playwright/test
+  # (regenerate via snapshots.yml).
   web-tests:
     name: Web visual tests
     runs-on: ubuntu-latest

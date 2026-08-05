@@ -65,7 +65,8 @@ async fn ensure_brokerage(st: &AppState, id: i64) -> AppResult<()> {
 /// The account's computed value snapshot (positions priced + wallet cash) as of a date.
 #[utoipa::path(get, path = "/api/accounts/{id}/brokerage", tag = "brokerage",
     params(("id" = i64, Path,), AsOfQuery),
-    responses((status = 200, body = BrokerageSnapshot), (status = 404, body = crate::error::ErrorBody)))]
+    responses((status = 200, body = BrokerageSnapshot), (status = 404, body = crate::error::ErrorBody),
+        (status = 502, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = BROKERAGE_SNAPSHOT,
     level = "debug",
@@ -332,7 +333,8 @@ pub async fn import(
 #[utoipa::path(post, path = "/api/accounts/{id}/brokerage/revalue", tag = "brokerage",
     params(("id" = i64, Path,), AsOfQuery),
     responses((status = 200, body = BrokerageSnapshot), (status = 404, body = crate::error::ErrorBody),
-        (status = 422, body = crate::error::ErrorBody)))]
+        (status = 422, body = crate::error::ErrorBody),
+        (status = 502, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = BROKERAGE_REVALUE,
     level = "debug",
@@ -363,9 +365,19 @@ pub struct BackfillResult {
 /// Rebuild the whole daily valuation history from the price cache/provider. Runs
 /// synchronously (unlike the post-import background backfill) so the response reports how
 /// many days were valued — the manual retry escape hatch.
+///
+/// Note this route's response set differs from `snapshot`'s and `revalue`'s, and not by
+/// oversight: **it cannot answer 502.** `BrokerageService::backfill_history` catches each
+/// ticker's `fetch_daily_prices` failure and only warns — one delisted ticker must not sink a
+/// whole history — then walks the days with `provider=None`, which opens no socket. So a total
+/// price-feed outage answers 200 here, with a history of cash-only valuations. Declaring a 502 a
+/// client can never receive is worse than declaring nothing: it invites a caller to wait for a
+/// signal that does not come. The 422 below is the one it really can produce, propagated out of
+/// `revalue`'s refusal to persist a total it could not convert.
 #[utoipa::path(post, path = "/api/accounts/{id}/brokerage/backfill", tag = "brokerage",
     params(("id" = i64, Path,)),
-    responses((status = 200, body = BackfillResult), (status = 404, body = crate::error::ErrorBody)))]
+    responses((status = 200, body = BackfillResult), (status = 404, body = crate::error::ErrorBody),
+        (status = 422, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = BROKERAGE_BACKFILL,
     level = "debug",

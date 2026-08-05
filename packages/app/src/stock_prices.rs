@@ -65,9 +65,21 @@ pub async fn price_at(
 
     let from = as_of - chrono::Duration::days(BACKFILL_LOOKBACK_DAYS);
     let exchange_hint = Some(exchange).filter(|e| !e.is_empty());
+    // The one call here that leaves the process, and the only place its failure can still be
+    // told apart from anything else that went wrong. A bare `?` converts `anyhow::Error`
+    // straight into `AppError::Internal`, which meant a Yahoo outage answered `500 internal`
+    // from all five routes that reach this function — this one and the four brokerage endpoints
+    // through `BrokerageService::resolve_price`. See [`AppError::Upstream`] for why that is the
+    // wrong thing to tell a client and the wrong thing to leave in a log.
+    //
+    // Note what is deliberately *not* an upstream error: a 404 for a delisted symbol, which
+    // `YahooFinanceProvider` already returns as an empty vec, and a quote in a currency the
+    // price table will not take, which the loop below drops. Both mean "no price", and the
+    // caller handles that as `None`.
     let quotes = provider
         .fetch_daily_prices(ticker, exchange_hint, from, as_of)
-        .await?;
+        .await
+        .map_err(|err| AppError::upstream(&err))?;
     for quote in &quotes {
         // A quote in an unknown currency is dropped, not fatal: the caller is a panel asking
         // for one price, and failing the whole backfill over one unusable day turned a

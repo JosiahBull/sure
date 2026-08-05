@@ -26,6 +26,9 @@ dist-ssr
 /packages/web/blob-report
 /packages/web/.playwright
 /packages/web/tests/.server.pid
+# The proxy global-setup spawns beside that backend. Both files are removed on teardown, so one
+# surviving means a run died before it — which is exactly when someone is about to `git add -A`.
+/packages/web/tests/.proxy.pid
 /packages/api-tests/test-results
 /.playwright-mcp
 
@@ -41,6 +44,15 @@ dist-ssr
 
 # Exports from asb.
 asb-export/
+
+# Recorded Akahu traffic (see scripts/pii-scan.mjs) — real account numbers, balances and
+# transaction memos, never publish this. The reason this is not merely theoretical: Frankfurter
+# and Yahoo recordings *are* committed, in packages/providers/tests/snapshots/, being public
+# market data — so a recorder already exists and is one `Upstream` away from writing a third
+# file. This rule plus pii-scan's are what keep that one local rather than making it a decision
+# someone has to remember. An Akahu fixture that lands is hand-authored with invented
+# identifiers, so nothing legitimate ever arrives in this directory.
+/packages/api-tests/snapshots/akahu/
 
 # Env / editor
 .env

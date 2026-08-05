@@ -37,7 +37,7 @@ use tracing::{field::Empty, Span};
 use uuid::Uuid;
 
 use crate::error::{ErrorBody, ErrorDetail};
-use crate::limits::ErrorAlreadyClothed;
+use crate::limits::{ErrorAlreadyClothed, PreservedErrorCode};
 
 tokio::task_local! {
     /// The correlation id for the request currently being handled. Set once per request
@@ -394,11 +394,27 @@ fn describe(status: StatusCode) -> String {
 /// Replace an internal-error (5xx) body with a generic one carrying only the
 /// `request_id`. Keeps the same `{ "error": { "code", "message" } }` envelope the rest of
 /// the API uses, so clients parse it uniformly.
+///
+/// The *message* is what has to go — it may carry a SQL error, an `anyhow` chain, or an
+/// upstream's own text. The `code` does not: it comes from `AppError::code`, a closed match
+/// over our own enum returning `&'static str`, so it names a category and can never carry
+/// detail. A response that told us its code via [`PreservedErrorCode`] keeps it; anything else
+/// — a framework 5xx, a panic caught downstream, a hand-built body — has no code worth trusting
+/// and gets `internal`.
+///
+/// Until `AppError::Upstream` existed this distinction was invisible, because every 5xx really
+/// was `internal`. It stopped being free the moment one of them meant "a third party is down,
+/// try again later": that arrived as `internal`, which is the opposite of what a client should
+/// do about it.
 fn scrub_internal_error(response: Response, request_id: Uuid) -> Response {
+    let code = response
+        .extensions()
+        .get::<PreservedErrorCode>()
+        .map_or("internal", |preserved| preserved.0);
     rewrite_body(
         response,
         ErrorDetail {
-            code: "internal".to_string(),
+            code: code.to_string(),
             message: format!("Internal Error: Something went wrong! request_id={request_id}"),
         },
     )

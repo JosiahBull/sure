@@ -404,6 +404,14 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
+                502: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
             };
         };
         put?: never;
@@ -427,6 +435,14 @@ export interface paths {
          * Rebuild the whole daily valuation history from the price cache/provider. Runs
          *     synchronously (unlike the post-import background backfill) so the response reports how
          *     many days were valued — the manual retry escape hatch.
+         * @description Note this route's response set differs from `snapshot`'s and `revalue`'s, and not by
+         *     oversight: **it cannot answer 502.** `BrokerageService::backfill_history` catches each
+         *     ticker's `fetch_daily_prices` failure and only warns — one delisted ticker must not sink a
+         *     whole history — then walks the days with `provider=None`, which opens no socket. So a total
+         *     price-feed outage answers 200 here, with a history of cash-only valuations. Declaring a 502 a
+         *     client can never receive is worse than declaring nothing: it invites a caller to wait for a
+         *     signal that does not come. The 422 below is the one it really can produce, propagated out of
+         *     `revalue`'s refusal to persist a total it could not convert.
          */
         post: {
             parameters: {
@@ -448,6 +464,14 @@ export interface paths {
                     };
                 };
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -673,6 +697,14 @@ export interface paths {
                     };
                 };
                 422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                502: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -1080,6 +1112,14 @@ export interface paths {
                     };
                 };
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                502: {
                     headers: {
                         [name: string]: unknown;
                     };

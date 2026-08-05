@@ -162,9 +162,18 @@ generically. The bundled `CsvProvider` is a credential-free reference implementa
 add a bank/broker integration you implement the trait and add it to `Registry::new()` —
 `sure-app` and `sure-api` never change.
 
+Nothing in `sure-providers` reads configuration. An adapter that talks to the network is
+constructed with an `Endpoint` (its base URL, already checked to be `https://` or a proxy on
+this machine — see `packages/providers/src/http.rs`), which is why `Registry::new` takes the
+built `AkahuProvider` rather than building one: only `sure-server` knows where it points and
+whether there are credentials. That is also what lets a test aim an adapter at the local
+record/replay proxy (`packages/testproxy`) instead of the live API.
+
 `list_accounts` is the account-discovery half: providers whose credentials can surface
-many upstream accounts (e.g. `AkahuProvider`, reading `AKAHU_APP_TOKEN`/`AKAHU_USER_TOKEN`
-from the environment) implement it to enumerate accounts not yet linked to a local one.
+many upstream accounts (e.g. `AkahuProvider`, holding the `AKAHU_APP_TOKEN`/`AKAHU_USER_TOKEN`
+pair `serve` read for it — or the error saying which one is unset, so an unconfigured install
+still boots and fails with a variable name when someone asks for a sync) implement it to
+enumerate accounts not yet linked to a local one.
 `POST /api/providers/link` then creates (or attaches to) a local account and the
 `providers` row in one step, storing the upstream identifier in `config`
 (`{"external_account_id": "..."}`) — no schema change needed, since `providers.config` is

@@ -27,7 +27,8 @@ pub struct AsOfQuery {
 /// backfilling the historical cache from the configured provider on a miss.
 #[utoipa::path(get, path = "/api/accounts/{id}/stock-price", tag = "accounts",
     params(("id" = i64, Path,), AsOfQuery),
-    responses((status = 200, body = StockPrice), (status = 404, body = crate::error::ErrorBody)))]
+    responses((status = 200, body = StockPrice), (status = 404, body = crate::error::ErrorBody),
+        (status = 502, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = STOCK_PRICES_GET,
     level = "debug",
