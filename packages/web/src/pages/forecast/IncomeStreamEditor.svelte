@@ -35,7 +35,10 @@
     ends_on: initial?.ends_on ?? "",
     annual_increase: ((initial?.annual_increase_bps ?? 0) / 100).toString(),
     kiwisaver: ((initial?.kiwisaver_bps ?? 350) / 100).toString(),
+    employer_kiwisaver: ((initial?.employer_kiwisaver_bps ?? 350) / 100).toString(),
+    kiwisaver_account_id: initial?.kiwisaver_account_id ?? null,
     student_loan: initial?.student_loan ?? false,
+    student_loan_account_id: initial?.student_loan_account_id ?? null,
     take_home: initial?.take_home_bps != null ? (initial.take_home_bps / 100).toString() : "",
     linked_category_id: initial?.linked_category_id ?? null,
     currency_code: initial?.currency_code ?? "NZD",
@@ -66,6 +69,17 @@
         .map((c) => ({ id: c.id, name: c.name }));
     });
   });
+
+  let accounts = $state<Schemas["Account"][]>([]);
+  $effect(() => {
+    api.GET("/api/accounts", {}).then(({ data }) => (accounts = data ?? []));
+  });
+  // KiwiSaver is an investment; a student loan is a student loan. Offering every account would let
+  // someone point contributions at their mortgage, which the projection would then dutifully model.
+  const kiwisaverAccounts = $derived(
+    accounts.filter((a) => ["brokerage", "shares_nz", "shares_us", "shares_private"].includes(a.kind))
+  );
+  const studentLoanAccounts = $derived(accounts.filter((a) => a.kind === "student_loan"));
 
   /**
    * Append a step, pre-filled a year on from the last one at 3% more.
@@ -107,7 +121,10 @@
       ends_on: f.ends_on || null,
       annual_increase_bps: Math.round(parseFloat(f.annual_increase || "0") * 100),
       kiwisaver_bps: Math.round(parseFloat(f.kiwisaver || "0") * 100),
+      employer_kiwisaver_bps: Math.round(parseFloat(f.employer_kiwisaver || "0") * 100),
+      kiwisaver_account_id: f.kiwisaver_account_id,
       student_loan: f.student_loan,
+      student_loan_account_id: f.student_loan ? f.student_loan_account_id : null,
       take_home_bps: f.take_home ? Math.round(parseFloat(f.take_home) * 100) : null,
       linked_category_id: f.linked_category_id,
       enabled: f.enabled,
@@ -219,8 +236,12 @@
   {#if f.basis === "gross_nz_paye"}
     <div class="grid-fields">
       <label class="field">
-        <span class="lbl">KiwiSaver %</span>
+        <span class="lbl">KiwiSaver, you %</span>
         <input class="input tabular" bind:value={f.kiwisaver} />
+      </label>
+      <label class="field">
+        <span class="lbl">KiwiSaver, employer %</span>
+        <input class="input tabular" bind:value={f.employer_kiwisaver} />
       </label>
       <label class="field">
         <span class="lbl">Student loan</span>
@@ -232,6 +253,35 @@
         <input class="input tabular" placeholder="from tax rates" bind:value={f.take_home} />
       </label>
     </div>
+
+    <div class="grid-fields">
+      <label class="field">
+        <span class="lbl">KiwiSaver goes to</span>
+        <select class="select" bind:value={f.kiwisaver_account_id}>
+          <option value={null}>Not tracked</option>
+          {#each kiwisaverAccounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+        </select>
+      </label>
+      {#if f.student_loan}
+        <label class="field">
+          <span class="lbl">Repayments pay down</span>
+          <select class="select" bind:value={f.student_loan_account_id}>
+            <option value={null}>Not tracked</option>
+            {#each studentLoanAccounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+          </select>
+        </label>
+      {/if}
+    </div>
+    {#if f.kiwisaver_account_id !== null || f.student_loan_account_id !== null}
+      <!-- Saying this up front, because it changes what those accounts' numbers mean and the
+           consequence is invisible otherwise: a balance that grew while contributions were flowing
+           in cannot tell market growth and contributions apart, so the measured rate has to go. -->
+      <p class="small faint" style="margin:0 0 10px">
+        Linking an account means its own measured growth rate is set aside — otherwise the money
+        would be counted twice. Set an expected return on it in the Assumptions tab, or it is
+        projected flat.
+      </p>
+    {/if}
   {/if}
 
   <details class="more" open={steps.length > 0}>

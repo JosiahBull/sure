@@ -42,6 +42,8 @@
         return "not enough history";
       case "modelled_from_income":
         return "modelled from income streams";
+      case "contribution_driven":
+        return "receives contributions — measured rate set aside";
     }
   }
 
@@ -72,6 +74,15 @@
     if (a.source !== "derived" || a.annual_growth_bps === 0) return null;
     const anchor = a.long_run_growth_bps;
     return `held 5 years, then eases toward ${pct(anchor)}/yr`;
+  }
+
+  /**
+   * An account that receives contributions and has no expected return is projected flat, which is a
+   * placeholder rather than an answer. Say so on the row itself — this tab is where the override
+   * that fixes it lives, so the prompt belongs next to the button.
+   */
+  function needsReturn(a: ResolvedAssumption): boolean {
+    return a.source === "contribution_driven" && a.annual_growth_bps === 0;
   }
 
   // ---- assumption override editing ------------------------------------------------
@@ -167,6 +178,8 @@
             <div class="a-meta row spread">
               <span class="small faint">
                 {scheduleLabel(a)}{#if decayNote(a)}<span class="faint"> · {decayNote(a)}</span
+                  >{/if}{#if needsReturn(a)}<span class="needs-return">
+                    · set an expected return, or this stays flat</span
                   >{/if}
               </span>
               {#if a.source !== "deterministic"}
@@ -236,6 +249,9 @@
   }
   .target-badge {
     text-transform: capitalize;
+  }
+  .needs-return {
+    color: var(--warn);
   }
   .ell {
     overflow: hidden;

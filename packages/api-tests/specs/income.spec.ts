@@ -410,3 +410,273 @@ function firstOfNextMonth(): string {
   d.setMonth(d.getMonth() + 1, 1);
   return d.toISOString().slice(0, 10);
 }
+
+// ---- where the deductions go ---------------------------------------------------------
+// KiwiSaver and student-loan deductions were computed correctly and then vanished. These cover the
+// two claims that matter: the money now accumulates somewhere, and linking an account stops its own
+// fitted rate being used — because that rate already contains the contributions.
+
+/** An investment account with a rising valuation history, so it has a fitted growth rate to discard. */
+async function kiwisaverAccount(api: Parameters<typeof createPerson>[0]) {
+  const acct = await createAccount(api, "KiwiSaver", "brokerage");
+  const today = new Date();
+  let value = 40_000_00;
+  for (let i = 14; i >= 0; i--) {
+    const d = new Date(today);
+    d.setMonth(d.getMonth() - i);
+    await api.POST("/api/accounts/{id}/valuations", {
+      params: { path: { id: acct.id } },
+      body: { as_of: d.toISOString().slice(0, 10), value_minor: Math.round(value) },
+    });
+    value *= 1.015; // ~20%/yr — market *and* contributions, indistinguishable after the fact
+  }
+  return acct;
+}
+
+test("KiwiSaver contributions accumulate in the linked account instead of vanishing", async ({
+  api,
+}) => {
+  const p = await createPerson(api, "Rua");
+  const ks = await kiwisaverAccount(api);
+  const params = { horizon_months: 60, simulations: 200, seed: 8 };
+
+  // An explicit expected return on both runs, so growth is identical either way and the *only*
+  // difference is whether the contributions land. Without it this compares two different things:
+  // linking deliberately discards the fitted rate, so an unlinked run keeps a ~20%/yr figure that is
+  // partly contributions already — and it wins on magnitude while being wrong.
+  await api.PUT("/api/forecast/assumptions", {
+    body: {
+      target_type: "account",
+      target_id: ks.id,
+      annual_growth_bps: 500,
+      annual_volatility_bps: 0,
+    },
+  });
+
+  const stream = await createIncomeStream(api, p.id, {
+    label: "Salary",
+    basis: "gross_nz_paye",
+    annual_amount_minor: 100_000_00,
+    pay_frequency: "monthly",
+    first_payment_on: firstOfNextMonth(),
+    starts_on: firstOfNextMonth(),
+    kiwisaver_bps: 350,
+    employer_kiwisaver_bps: 350,
+  });
+  const before = await api.GET("/api/forecast", { params: { query: params } });
+
+  await api.PUT("/api/income-streams/{id}", {
+    params: { path: { id: stream.id } },
+    body: {
+      label: "Salary",
+      currency_code: "NZD",
+      annual_amount_minor: 100_000_00,
+      basis: "gross_nz_paye",
+      pay_frequency: "monthly",
+      first_payment_on: firstOfNextMonth(),
+      starts_on: firstOfNextMonth(),
+      kiwisaver_bps: 350,
+      employer_kiwisaver_bps: 350,
+      kiwisaver_account_id: ks.id,
+    },
+  });
+  const after = await api.GET("/api/forecast", { params: { query: params } });
+
+  // Five years of 3.5% + 3.5% less 33% ESCT on $100k is about $29k of contributions, before the
+  // growth each one then earns.
+  const assetsBefore = before.data!.months[59].assets.median_minor;
+  const assetsAfter = after.data!.months[59].assets.median_minor;
+  expect(assetsAfter - assetsBefore).toBeGreaterThan(28_000_00);
+  expect(assetsAfter - assetsBefore).toBeLessThan(40_000_00);
+
+  // Take-home is untouched: the employer's half was never spendable, and the employee's was already
+  // deducted before this change.
+  expect(after.data!.income_net[11].median_minor).toBe(before.data!.income_net[11].median_minor);
+});
+
+/// Linking can make a projection *smaller*, and that is the feature rather than a regression: a
+/// fitted rate on an account that has been receiving contributions is flattering, because part of
+/// what it measured was the money going in rather than growth.
+test("linking replaces a flattering fitted rate, so the projection can honestly fall", async ({
+  api,
+}) => {
+  const p = await createPerson(api, "Rua");
+  const ks = await kiwisaverAccount(api);
+  const params = { horizon_months: 60, simulations: 200, seed: 8 };
+  const stream = await createIncomeStream(api, p.id, {
+    label: "Salary",
+    basis: "gross_nz_paye",
+    annual_amount_minor: 100_000_00,
+    pay_frequency: "monthly",
+    first_payment_on: firstOfNextMonth(),
+    starts_on: firstOfNextMonth(),
+    kiwisaver_bps: 350,
+    employer_kiwisaver_bps: 350,
+  });
+  const before = await api.GET("/api/forecast", { params: { query: params } });
+
+  await api.PUT("/api/income-streams/{id}", {
+    params: { path: { id: stream.id } },
+    body: {
+      label: "Salary",
+      currency_code: "NZD",
+      annual_amount_minor: 100_000_00,
+      basis: "gross_nz_paye",
+      pay_frequency: "monthly",
+      first_payment_on: firstOfNextMonth(),
+      starts_on: firstOfNextMonth(),
+      kiwisaver_bps: 350,
+      employer_kiwisaver_bps: 350,
+      kiwisaver_account_id: ks.id,
+    },
+  });
+  const after = await api.GET("/api/forecast", { params: { query: params } });
+
+  // ~20%/yr compounding on the starting balance beats five years of contributions on a flat one.
+  expect(after.data!.months[59].assets.median_minor).toBeLessThan(
+    before.data!.months[59].assets.median_minor
+  );
+  // And the user is told why, rather than left to wonder where the growth went.
+  expect(after.data!.warnings.join(" ")).toContain("discarded");
+});
+
+test("linking an account discards its fitted rate, and says why", async ({ api }) => {
+  const p = await createPerson(api, "Rua");
+  const ks = await kiwisaverAccount(api);
+
+  const unlinked = await api.GET("/api/forecast/assumptions", {});
+  const derived = unlinked.data!.find((a) => a.target_type === "account" && a.target_id === ks.id);
+  // It has a real fitted rate — which is exactly the problem: that ~20%/yr is market growth *and*
+  // contributions, and nothing can separate them after the fact.
+  expect(derived?.source).toBe("derived");
+  expect(derived!.annual_growth_bps).toBeGreaterThan(1_000);
+
+  await createIncomeStream(api, p.id, {
+    label: "Salary",
+    basis: "gross_nz_paye",
+    annual_amount_minor: 100_000_00,
+    pay_frequency: "monthly",
+    first_payment_on: firstOfNextMonth(),
+    starts_on: firstOfNextMonth(),
+    kiwisaver_bps: 350,
+    employer_kiwisaver_bps: 350,
+    kiwisaver_account_id: ks.id,
+  });
+
+  const { data } = await api.GET("/api/forecast", {
+    params: { query: { horizon_months: 12, simulations: 200, seed: 8 } },
+  });
+  const a = data!.assumptions.find((x) => x.target_type === "account" && x.target_id === ks.id);
+  expect(a?.source).toBe("contribution_driven");
+  expect(a!.annual_growth_bps).toBe(0);
+  // …and it does not do that silently.
+  expect(data!.warnings.join(" ")).toContain("KiwiSaver");
+});
+
+test("an expected return set by hand is kept, because that is an assertion not a measurement", async ({
+  api,
+}) => {
+  const p = await createPerson(api, "Rua");
+  const ks = await kiwisaverAccount(api);
+  await api.PUT("/api/forecast/assumptions", {
+    body: {
+      target_type: "account",
+      target_id: ks.id,
+      annual_growth_bps: 600,
+      annual_volatility_bps: 1_200,
+    },
+  });
+  await createIncomeStream(api, p.id, {
+    label: "Salary",
+    basis: "gross_nz_paye",
+    annual_amount_minor: 100_000_00,
+    pay_frequency: "monthly",
+    first_payment_on: firstOfNextMonth(),
+    starts_on: firstOfNextMonth(),
+    kiwisaver_bps: 350,
+    kiwisaver_account_id: ks.id,
+  });
+  const { data } = await api.GET("/api/forecast", {
+    params: { query: { horizon_months: 12, simulations: 200, seed: 8 } },
+  });
+  const a = data!.assumptions.find((x) => x.target_type === "account" && x.target_id === ks.id);
+  // An override survives: the user asserted 6%, which cannot contain contributions the way a
+  // measured rate does. No warning either — there is nothing to warn about.
+  expect(a?.source).toBe("override");
+  expect(a!.annual_growth_bps).toBe(600);
+  expect(data!.warnings.join(" ")).not.toContain("KiwiSaver");
+});
+
+test("student loan repayments pay the loan down, and it stops at zero", async ({ api }) => {
+  const p = await createPerson(api, "Rua");
+  const loan = await createAccount(api, "Student loan", "student_loan", "NZD", {
+    metadata: { profile: "student_loan", lender: "Inland Revenue", interest_rate_bps: 0 },
+  });
+  // A small balance, so five years of 12%-over-threshold repayments clears it inside the horizon.
+  await api.POST("/api/accounts/{id}/valuations", {
+    params: { path: { id: loan.id } },
+    body: { as_of: new Date().toISOString().slice(0, 10), value_minor: -6_000_00 },
+  });
+  await createIncomeStream(api, p.id, {
+    label: "Salary",
+    basis: "gross_nz_paye",
+    annual_amount_minor: 90_000_00,
+    pay_frequency: "monthly",
+    first_payment_on: firstOfNextMonth(),
+    starts_on: firstOfNextMonth(),
+    student_loan: true,
+    student_loan_account_id: loan.id,
+  });
+
+  const { data } = await api.GET("/api/forecast", {
+    params: { query: { horizon_months: 60, simulations: 200, seed: 8 } },
+  });
+  // 12% of ($90k - $24,128) is ~$7,900/yr, so a $6,000 loan is gone within the first year…
+  expect(data!.months[11].liabilities.median_minor).toBe(0);
+  // …and stays gone. A repaid debt must not run past zero into being an asset.
+  expect(data!.months[59].liabilities.median_minor).toBe(0);
+});
+
+test("a contribution pointed at an account the projection does not model is reported", async ({
+  api,
+}) => {
+  const p = await createPerson(api, "Rua");
+  // A cash account is pooled rather than simulated, so it has no slot to credit.
+  const bank = await createAccount(api, "Everyday", "bank");
+  await createIncomeStream(api, p.id, {
+    label: "Salary",
+    basis: "gross_nz_paye",
+    annual_amount_minor: 90_000_00,
+    pay_frequency: "monthly",
+    first_payment_on: firstOfNextMonth(),
+    starts_on: firstOfNextMonth(),
+    kiwisaver_bps: 350,
+    kiwisaver_account_id: bank.id,
+  });
+  const { data } = await api.GET("/api/forecast", {
+    params: { query: { horizon_months: 12, simulations: 200, seed: 8 } },
+  });
+  // Left where it was rather than credited to the wrong place, and named so it can be fixed.
+  expect(data!.warnings.join(" ")).toContain("not being tracked");
+});
+
+test("deleting an account a stream contributes to is refused rather than silently unlinked", async ({
+  api,
+}) => {
+  const p = await createPerson(api, "Rua");
+  const ks = await kiwisaverAccount(api);
+  await createIncomeStream(api, p.id, {
+    label: "Salary",
+    basis: "gross_nz_paye",
+    annual_amount_minor: 90_000_00,
+    pay_frequency: "monthly",
+    first_payment_on: firstOfNextMonth(),
+    starts_on: firstOfNextMonth(),
+    kiwisaver_bps: 350,
+    kiwisaver_account_id: ks.id,
+  });
+  // Unlinking silently would put the account back on a rate that has contributions baked into it —
+  // the exact double count the link exists to avoid, done invisibly.
+  const { response } = await api.DELETE("/api/accounts/{id}", { params: { path: { id: ks.id } } });
+  expect(response.status).toBeGreaterThanOrEqual(400);
+});

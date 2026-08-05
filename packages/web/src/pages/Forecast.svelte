@@ -140,6 +140,14 @@
 
 {#if error}<div class="error-banner" style="margin-bottom:16px">{error}</div>{/if}
 
+{#if result?.warnings.length}
+  <!-- Things that changed meaning rather than things that went wrong: linking an account discards
+       its measured rate, and saying so is the only way that is visible. -->
+  <div class="notice" style="margin-bottom:16px">
+    {#each result.warnings as w (w)}<div>{w}</div>{/each}
+  </div>
+{/if}
+
 <section class="card" style="margin-bottom:16px">
   <div class="card-title">
     <h2>Net worth: history &amp; projection</h2>
@@ -234,6 +242,16 @@
     background: var(--surface);
     color: var(--text);
     box-shadow: var(--shadow);
+  }
+  .notice {
+    padding: 10px 12px;
+    border-radius: var(--r-sm);
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+    background: color-mix(in srgb, var(--warn) 7%, transparent);
+    font-size: 12.5px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
   .tab-btn:focus-visible {
     outline: 2px solid var(--accent);

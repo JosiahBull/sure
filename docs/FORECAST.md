@@ -17,6 +17,8 @@ the ledger — unlike `crons`, which persists real rows.
 | A category with linked income streams | the **residual**: fitted baseline minus what the streams model |
 | A salary's take-home | an override, else "already net", else `sure_core::tax`'s dated statutory scale |
 | When an event happens | sampled per path from a uniform hard window around `expected_on` |
+| A KiwiSaver balance | its own growth rate is *discarded* when linked (see below); contributions credited monthly |
+| A student loan's paydown | the deductions themselves, plus `StudentLoanMeta::interest_rate_bps` (0 for an NZ-based borrower) |
 
 ## The traps, and why the code looks the way it does
 
@@ -59,6 +61,20 @@ reversed edge.
 history every baseline was fitted from, so firing there would double-apply. `clamped_early_rate_bps`
 reports when this happened.
 
+**A fitted rate on an account receiving contributions is flattering.** A KiwiSaver balance rising
+15%/yr might be 8% market and 7% contributions, and nothing can separate them from a balance series
+after the fact. So linking a contribution target *discards* that rate: growth comes from an override,
+else the long-run anchor, else flat, reported as `contribution_driven` with a warning. The measured
+volatility is kept — the scatter is real either way. A consequence worth expecting: linking often
+makes the projection **smaller**, because the honest flat rate plus real contributions is less than
+the flattering rate was.
+
+**ESCT comes off the employer's contribution, not on top of it.** business.govt.nz: "the tax you take
+off the cash contributions you make". The account receives contribution × (1 − ESCT). Getting this
+backwards overstates a KiwiSaver balance by up to 39% of every employer dollar. ESCT is a *flat* rate
+chosen by which bracket the total lands in, not a progressive slice, and its thresholds sit exactly
+20% above the PAYE ones.
+
 **A 24-month fit is not evidence about year twenty-nine.** Past month 60 a *derived* rate decays
 toward its long-run anchor with a 24-month half-life. At the derived growth ceiling that is ×5.97
 over thirty years instead of ×807; an ordinary +3%/yr goes ×1.26 instead of ×2.43. Overrides and
@@ -72,12 +88,11 @@ its expected date. Drawing `expected_on` would misrepresent the one thing the ch
 - **Per-person expenses.** Income is attributed; spending is the household's.
 - **Overdraft interest.** A negative cash pool is filed under liabilities by sign and reported via
   `negative_cash_rate_bps`, but costs nothing to hold.
-- **KiwiSaver and student-loan destinations.** Both are deducted correctly, but the contributions do
-  not yet credit a KiwiSaver account or pay down the student loan. Doing so requires switching that
-  account off its fitted trend at the same time, or the repayments are counted twice — the trap
-  `AccountSim::repayment_debits_cash` documents.
 - **A jurisdiction other than New Zealand.** `IncomeBasis::Net` / `TaxScaleId::None` is the escape
   hatch: record take-home and no scale is applied.
+- **A KiwiSaver account's expected return.** It has to be set by hand once linked, because the only
+  rate the data could offer is the contaminated one.
+- **Employer contributions above the compulsory minimum varying over time.** One rate per stream.
 - **Scenarios.** There is one plan, not a set to compare. `enabled` on a stream and
   `probability_bps: 0` on an event are the closest thing.
 

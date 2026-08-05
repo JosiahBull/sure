@@ -349,6 +349,14 @@ pub struct IncomeStreamRow {
     pub enabled: bool,
     pub sort_order: i64,
     pub notes: Option<String>,
+    /// Added by 0023 — `#[serde(default)]` so a snapshot taken before contributions could be routed
+    /// still imports, with the money going nowhere exactly as it did then.
+    #[serde(default)]
+    pub employer_kiwisaver_bps: i64,
+    #[serde(default)]
+    pub kiwisaver_account_id: Option<i64>,
+    #[serde(default)]
+    pub student_loan_account_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -740,13 +748,14 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             .execute(&mut *txn).await?;
     }
     for s in &snap.income_streams {
-        sqlx::query("INSERT INTO income_streams (id, person_id, label, employer, currency_code, annual_amount_minor, basis, pay_frequency, first_payment_on, starts_on, ends_on, annual_increase_bps, kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled, sort_order, notes, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)")
+        sqlx::query("INSERT INTO income_streams (id, person_id, label, employer, currency_code, annual_amount_minor, basis, pay_frequency, first_payment_on, starts_on, ends_on, annual_increase_bps, kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled, sort_order, notes, created_at, updated_at, employer_kiwisaver_bps, kiwisaver_account_id, student_loan_account_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)")
             .bind(s.id).bind(s.person_id).bind(&s.label).bind(&s.employer).bind(&s.currency_code)
             .bind(s.annual_amount_minor).bind(&s.basis).bind(&s.pay_frequency)
             .bind(&s.first_payment_on).bind(&s.starts_on).bind(&s.ends_on)
             .bind(s.annual_increase_bps).bind(s.kiwisaver_bps).bind(s.student_loan)
             .bind(s.take_home_bps).bind(s.linked_category_id).bind(s.enabled).bind(s.sort_order)
             .bind(&s.notes).bind(&s.created_at).bind(&s.updated_at)
+            .bind(s.employer_kiwisaver_bps).bind(s.kiwisaver_account_id).bind(s.student_loan_account_id)
             .execute(&mut *txn).await?;
     }
     for s in &snap.income_stream_steps {

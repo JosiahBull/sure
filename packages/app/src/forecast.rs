@@ -160,6 +160,17 @@ pub enum AssumptionSource {
     /// Fewer than 2 data points (or under `MIN_HISTORY_DAYS`/3 months of history) — mean
     /// and volatility default to 0 rather than inventing a plausible-looking number.
     InsufficientHistory,
+    /// This account receives payroll contributions — KiwiSaver, or student-loan repayments — so its
+    /// fitted rate has been **discarded**.
+    ///
+    /// Not a preference. A balance series that rose while contributions were flowing into it cannot
+    /// be decomposed into market growth and contributions after the fact, so a rate fitted from it
+    /// already contains the money this projection is about to add. Using both counts it twice, and
+    /// the error compounds for the whole horizon. Growth therefore comes from an explicit override,
+    /// else the long-run anchor, else flat — and a warning says so, because flat is a placeholder
+    /// rather than an answer. The measured *volatility* is kept: month-to-month scatter is real
+    /// either way.
+    ContributionDriven,
     /// This category's cash flow comes from per-person income streams, not from its own fitted
     /// trend. The baseline shown is the *residual* — the part of the category the streams do not
     /// explain — so a non-zero one means some income here is still un-modelled.
@@ -265,6 +276,7 @@ pub struct SimulationInputs {
     category_sims: Vec<CategorySim>,
     stream_sims: Vec<StreamSim>,
     event_sims: Vec<EventSim>,
+    warnings: Vec<String>,
     reconciliations: Vec<StreamReconciliation>,
     unmodelled_streams: Vec<String>,
 }
@@ -321,6 +333,9 @@ pub struct ForecastResult {
     /// window — relations move timing, so the two genuinely differ.
     pub events: Vec<EventOutcome>,
     pub reconciliations: Vec<StreamReconciliation>,
+    /// Things that changed meaning, or figures the projection is standing in for. Prose, because
+    /// each one needs to say what to do about it and there is nothing for a caller to branch on.
+    pub warnings: Vec<String>,
     /// Streams left out of the projection, and why — `Fx::unconverted`'s contract. A figure the
     /// user can see is incomplete beats one they cannot.
     pub unmodelled_streams: Vec<String>,
@@ -752,6 +767,48 @@ impl ForecastService {
         let (base, fx) = self.currency_and_fx(params.currency.as_deref()).await?;
 
         let mut assumptions = self.resolved_assumptions_with(&fx).await?;
+        // Loaded before `by_target`, because which accounts receive payroll contributions decides
+        // whether their fitted rate may be used at all — and that has to be settled before the
+        // account projections are built from it.
+        let streams = self.forecast.list_income_streams().await?;
+        let mut warnings: Vec<String> = Vec::new();
+        let mut contribution_targets: HashMap<i64, &'static str> = HashMap::new();
+        for st in streams.iter().filter(|s| s.enabled) {
+            if let Some(id) = st.kiwisaver_account_id {
+                contribution_targets.insert(id, "KiwiSaver contributions");
+            }
+            if let Some(id) = st.student_loan_account_id {
+                contribution_targets.insert(id, "student loan repayments");
+            }
+        }
+        for a in &mut assumptions {
+            if a.target_type != ForecastTargetType::Account {
+                continue;
+            }
+            let Some(&what) = contribution_targets.get(&a.target_id) else {
+                continue;
+            };
+            // A deterministic mortgage/loan has no fitted rate to discard, so there is nothing to
+            // guard against — and overriding its schedule would be strictly worse.
+            if a.source == AssumptionSource::Deterministic {
+                continue;
+            }
+            let asserted = a.source == AssumptionSource::Override;
+            if !asserted {
+                // The fitted rate contains the contributions. Drop it rather than double count.
+                a.annual_growth_bps = a.long_run_growth_bps;
+                a.source = AssumptionSource::ContributionDriven;
+                if a.long_run_growth_bps == 0 {
+                    warnings.push(format!(
+                        "{} now receives {what}, so its own measured growth rate was discarded — a \
+                         balance that rose while money was flowing in cannot tell the two apart. It \
+                         is projected flat until you set an expected return on it.",
+                        a.label
+                    ));
+                }
+            }
+        }
+
         let by_target: HashMap<(ForecastTargetType, i64), &ResolvedAssumption> = assumptions
             .iter()
             .map(|a| ((a.target_type, a.target_id), a))
@@ -857,7 +914,6 @@ impl ForecastService {
         // Built before `category_sims`, because what a stream models has to be netted out of the
         // category it lands in before that category's baseline is fixed. Without that, a salary
         // recorded here *and* fitted from the bank statement is counted twice.
-        let streams = self.forecast.list_income_streams().await?;
         let mut stream_sims: Vec<StreamSim> = Vec::new();
         let mut unmodelled_streams: Vec<String> = Vec::new();
         // Modelled monthly net per linked category, base-currency major units.
@@ -899,6 +955,30 @@ impl ForecastService {
                 crate::income::level_schedule(st, today, horizon);
             let gross_total = person_gross.get(&st.person_id).copied().unwrap_or(0);
             let take_home = crate::income::take_home(st, gross_total, today);
+            let (kiwisaver_fraction, student_loan_fraction) =
+                crate::income::contribution_rates(st, gross_total, today);
+
+            // The contribution is in the stream's currency and the balance is in the account's, so
+            // the factor is one over the other — both are already native-minor-to-base-major.
+            let mut target = |account_id: Option<i64>, label: &str| -> Option<(usize, f64)> {
+                let id = account_id?;
+                match account_sims.iter().position(|s| s.account_id == id) {
+                    Some(i) => Some((i, base_scale / account_sims[i].base_scale)),
+                    None => {
+                        // Cash accounts are pooled rather than simulated, and an unconvertible one is
+                        // left out entirely — so a link can point at something that has no slot. The
+                        // money is left where it was rather than credited to the wrong place.
+                        warnings.push(format!(
+                            "{}'s {label} are not being tracked: the account it points at is not in \
+                             the projection (a pooled cash account, or one with no exchange rate).",
+                            st.label
+                        ));
+                        None
+                    }
+                }
+            };
+            let kiwisaver_target = target(st.kiwisaver_account_id, "KiwiSaver contributions");
+            let student_loan_target = target(st.student_loan_account_id, "student loan repayments");
 
             // The monthly net this stream claims, for netting and for the reconciliation. Annual
             // over twelve, not this month's paydays: a category baseline is a monthly *average*, so
@@ -926,6 +1006,10 @@ impl ForecastService {
                 active_from,
                 active_to,
                 take_home,
+                kiwisaver_target,
+                student_loan_target,
+                kiwisaver_fraction,
+                student_loan_fraction,
             });
         }
 
@@ -1008,6 +1092,7 @@ impl ForecastService {
             category_sims,
             stream_sims,
             event_sims,
+            warnings,
             reconciliations,
             unmodelled_streams,
         })
@@ -1045,6 +1130,7 @@ impl ForecastService {
             category_sims,
             stream_sims,
             event_sims,
+            warnings,
             reconciliations,
             unmodelled_streams,
         } = inputs;
@@ -1432,6 +1518,24 @@ impl ForecastService {
                     let net_annual = sim.take_home.net_annual(level, sim.calibrated_level);
                     let ratio = if level > 0.0 { net_annual / level } else { 0.0 };
                     stream_net += gross * ratio * sim.base_scale;
+
+                    // The deductions no longer vanish. Over thirty years these two lines are most of
+                    // a retirement balance and the whole of a student loan being cleared.
+                    //
+                    // Applied to the *paused* gross deliberately: nobody contributes to KiwiSaver or
+                    // repays a student loan out of pay they are not receiving.
+                    if let Some((i, scale)) = sim.kiwisaver_target {
+                        acc_values[i] += gross * sim.kiwisaver_fraction * scale;
+                    }
+                    if let Some((i, scale)) = sim.student_loan_target {
+                        // A loan balance is negative, so a repayment moves it *up* toward zero. The
+                        // `LinearPaydown` arm clamps at zero, so an overpayment cannot turn a repaid
+                        // loan into an asset.
+                        acc_values[i] += gross * sim.student_loan_fraction * scale;
+                        if acc_values[i] > 0.0 {
+                            acc_values[i] = 0.0;
+                        }
+                    }
                 }
 
                 // Servicing the debt is real money leaving. Net worth therefore falls by
@@ -1494,6 +1598,7 @@ impl ForecastService {
                 .collect(),
             events: summarise_events(&event_sims, &event_outcomes, today, horizon),
             reconciliations,
+            warnings,
             unmodelled_streams,
             negative_cash_rate_bps: negative_cash
                 .iter()
@@ -1617,6 +1722,17 @@ struct StreamSim {
     active_from: i64,
     active_to: i64,
     take_home: sure_core::TakeHome,
+    /// Slot in `account_sims` that KiwiSaver contributions land in, with the multiplier from this
+    /// stream's native minor units to that account's. `None` when nothing is linked, in which case
+    /// the money leaves the projection exactly as it did before.
+    kiwisaver_target: Option<(usize, f64)>,
+    /// Likewise for the student loan the deductions pay down.
+    student_loan_target: Option<(usize, f64)>,
+    /// Share of each gross dollar reaching the KiwiSaver account — employee plus employer, net of
+    /// ESCT (see `crate::income::contribution_rates`).
+    kiwisaver_fraction: f64,
+    /// Share of each gross dollar deducted for the student loan.
+    student_loan_fraction: f64,
 }
 
 struct MonthSamples {
@@ -2131,6 +2247,9 @@ fn long_run_anchor(a: &ResolvedAssumption) -> Option<i64> {
         // streams themselves carry their own dated schedule. Decaying the residual would be decaying
         // a leftover, which says nothing about the long run either way, so it is left flat.
         AssumptionSource::ModelledFromIncome => None,
+        // The rate here is already the long-run anchor (or an override that was left alone), because
+        // the fitted one was discarded — so there is nothing left to decay toward.
+        AssumptionSource::ContributionDriven => None,
     }
 }
 

@@ -176,6 +176,10 @@ pub(crate) fn take_home(
             let input = tax::PayeInput {
                 annual_gross_minor: person_annual_gross,
                 kiwisaver_bps: stream.kiwisaver_bps,
+                // Deliberately 0 here: the employer's contribution never touches take-home, and
+                // including it would leave the average and marginal rates unchanged while making the
+                // reader wonder whether it did. `contribution_rates` is where it matters.
+                employer_kiwisaver_bps: 0,
                 student_loan: stream.student_loan,
             };
             TakeHome {
@@ -185,6 +189,48 @@ pub(crate) fn take_home(
             }
         }
     }
+}
+
+/// What share of each gross dollar leaves the payslip for somewhere it can be tracked.
+///
+/// Returned as fractions so the caller can multiply the month's *actual* gross by them — the same
+/// arrangement the take-home ratio uses, and for the same reason: the rates are annual questions and
+/// the amounts are monthly ones.
+///
+/// Both are computed against the person's whole gross, because both thresholds are personal rather
+/// than per-job: the student-loan threshold applies once across all income, and the ESCT rate is
+/// chosen by the total. Where a person has several gross streams and only some carry a student loan,
+/// attributing the deduction proportionally across all of them is an approximation — a small one, and
+/// the same one the take-home ratio already makes.
+pub(crate) fn contribution_rates(
+    stream: &IncomeStream,
+    person_annual_gross: i64,
+    on: NaiveDate,
+) -> (f64, f64) {
+    if !stream.basis.is_gross() || person_annual_gross <= 0 {
+        return (0.0, 0.0);
+    }
+    let Some(scale) = stream
+        .basis
+        .tax_scale()
+        .and_then(|id| tax::scale_for(id, on).or_else(|| tax::latest_scale(id)))
+    else {
+        return (0.0, 0.0);
+    };
+    let b = tax::paye(
+        scale,
+        tax::PayeInput {
+            annual_gross_minor: person_annual_gross,
+            kiwisaver_bps: stream.kiwisaver_bps,
+            employer_kiwisaver_bps: stream.employer_kiwisaver_bps,
+            student_loan: stream.student_loan,
+        },
+    );
+    let per_dollar = |v: i64| v as f64 / person_annual_gross as f64;
+    (
+        per_dollar(b.kiwisaver_credited_minor),
+        per_dollar(b.student_loan_minor),
+    )
 }
 
 /// A stream's active window as month indices, clamped into `0..=horizon`.
@@ -239,9 +285,12 @@ mod tests {
             ends_on: None,
             annual_increase_bps: 0,
             kiwisaver_bps: 0,
+            employer_kiwisaver_bps: 0,
             student_loan: false,
             take_home_bps: None,
             linked_category_id: None,
+            kiwisaver_account_id: None,
+            student_loan_account_id: None,
             enabled: true,
             sort_order: 0,
             notes: None,
@@ -445,6 +494,41 @@ mod tests {
         let th = take_home(&n, 88_000_00, d("2026-08-05"));
         assert_eq!(th.average_bps, 10_000);
         assert_eq!(th.source, TakeHomeSource::AlreadyNet);
+    }
+
+    /// Both contributions come out of gross, and the KiwiSaver share includes the employer's — net
+    /// of ESCT. A projection that credited only the employee's half would understate the balance by
+    /// roughly half over a career.
+    #[test]
+    fn contribution_rates_include_the_employer_share_net_of_esct() {
+        let mut s = stream(PayFrequency::Fortnightly);
+        s.annual_amount_minor = 100_000_00;
+        s.kiwisaver_bps = 350;
+        s.employer_kiwisaver_bps = 350;
+        s.student_loan = true;
+        let (ks, sl) = contribution_rates(&s, 100_000_00, d("2026-08-05"));
+        // 3.5% + 3.5% less 33% ESCT on the employer half = 5.845% of gross.
+        assert!((ks - 0.058_45).abs() < 1e-6, "kiwisaver share was {ks}");
+        // 12% of the excess over the threshold, as a share of the whole salary.
+        let expected_sl = 0.12 * (100_000.0 - 24_128.0) / 100_000.0;
+        assert!(
+            (sl - expected_sl).abs() < 1e-4,
+            "student loan share was {sl}"
+        );
+    }
+
+    /// A stream recorded as take-home has already had everything taken off it, so there is nothing
+    /// left to route anywhere.
+    #[test]
+    fn a_net_stream_contributes_nothing_to_route() {
+        let mut s = stream(PayFrequency::Monthly);
+        s.basis = IncomeBasis::Net;
+        s.kiwisaver_bps = 350;
+        s.student_loan = true;
+        assert_eq!(
+            contribution_rates(&s, 80_000_00, d("2026-08-05")),
+            (0.0, 0.0)
+        );
     }
 
     #[test]

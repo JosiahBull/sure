@@ -48,6 +48,11 @@ pub enum AssumptionSource {
     /// Not enough history to derive a default; mean/volatility are 0 rather than a
     /// guess — set an override to use this target in a forecast.
     InsufficientHistory,
+    /// This account receives payroll contributions, so its own measured growth rate was discarded:
+    /// a balance that rose while money flowed into it cannot tell market growth and contributions
+    /// apart, and using both would count them twice. Growth comes from an override, else the
+    /// long-run rate, else flat — see `warnings`.
+    ContributionDriven,
     /// This category's cash flow comes from per-person income streams rather than its own fitted
     /// trend. `baseline_minor` is then the *residual* — the part of the category the streams do
     /// not explain — so a non-zero one means some income here is still un-modelled.
@@ -64,6 +69,7 @@ impl From<sure_app::forecast::AssumptionSource> for AssumptionSource {
             S::Deterministic => AssumptionSource::Deterministic,
             S::InsufficientHistory => AssumptionSource::InsufficientHistory,
             S::ModelledFromIncome => AssumptionSource::ModelledFromIncome,
+            S::ContributionDriven => AssumptionSource::ContributionDriven,
         }
     }
 }
@@ -332,6 +338,9 @@ pub struct ForecastResult {
     /// How each event landed across the paths. What the chart draws.
     pub events: Vec<EventOutcome>,
     pub reconciliations: Vec<StreamReconciliation>,
+    /// Figures the projection is standing in for, and places where linking something changed what an
+    /// account's numbers mean. Prose, because each needs to say what to do about it.
+    pub warnings: Vec<String>,
     /// Income streams left out of the projection, and why. A figure the user can see is incomplete
     /// beats one they cannot.
     pub unmodelled_streams: Vec<String>,
@@ -357,6 +366,7 @@ impl From<sure_app::forecast::ForecastResult> for ForecastResult {
             income_net: r.income_net.into_iter().map(Into::into).collect(),
             events: r.events.into_iter().map(Into::into).collect(),
             reconciliations: r.reconciliations.into_iter().map(Into::into).collect(),
+            warnings: r.warnings,
             unmodelled_streams: r.unmodelled_streams,
             negative_cash_rate_bps: r.negative_cash_rate_bps,
         }

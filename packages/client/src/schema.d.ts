@@ -5254,7 +5254,7 @@ export interface components {
             warnings: string[];
         };
         /** @enum {string} */
-        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history" | "modelled_from_income";
+        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history" | "contribution_driven" | "modelled_from_income";
         BackfillResult: {
             /**
              * Format: int64
@@ -5894,6 +5894,11 @@ export interface components {
             events: components["schemas"]["EventOutcome"][];
             reconciliations: components["schemas"]["StreamReconciliation"][];
             /**
+             * @description Figures the projection is standing in for, and places where linking something changed what an
+             *     account's numbers mean. Prose, because each needs to say what to do about it.
+             */
+            warnings: string[];
+            /**
              * @description Income streams left out of the projection, and why. A figure the user can see is incomplete
              *     beats one they cannot.
              */
@@ -5975,11 +5980,27 @@ export interface components {
             annual_increase_bps: number;
             /** Format: int64 */
             kiwisaver_bps: number;
+            /**
+             * Format: int64
+             * @description The employer's contribution, in basis points of gross. Never part of take-home.
+             */
+            employer_kiwisaver_bps: number;
             student_loan: boolean;
             /** Format: int64 */
             take_home_bps?: number | null;
             /** Format: int64 */
             linked_category_id?: number | null;
+            /**
+             * Format: int64
+             * @description The account KiwiSaver contributions land in. Setting it takes that account off its fitted
+             *     growth rate — see `0023_income_contribution_targets.sql` for why that is unavoidable.
+             */
+            kiwisaver_account_id?: number | null;
+            /**
+             * Format: int64
+             * @description The student loan these deductions pay down. Same consequence for that account.
+             */
+            student_loan_account_id?: number | null;
             enabled: boolean;
             /** Format: int64 */
             sort_order: number;
@@ -6926,11 +6947,17 @@ export interface components {
             annual_increase_bps?: number;
             /** Format: int64 */
             kiwisaver_bps?: number;
+            /** Format: int64 */
+            employer_kiwisaver_bps?: number;
             student_loan?: boolean;
             /** Format: int64 */
             take_home_bps?: number | null;
             /** Format: int64 */
             linked_category_id?: number | null;
+            /** Format: int64 */
+            kiwisaver_account_id?: number | null;
+            /** Format: int64 */
+            student_loan_account_id?: number | null;
             enabled?: boolean;
             /** Format: int64 */
             sort_order?: number;

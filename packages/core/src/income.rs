@@ -235,9 +235,16 @@ pub struct IncomeStream {
     pub ends_on: Option<String>,
     pub annual_increase_bps: i64,
     pub kiwisaver_bps: i64,
+    /// The employer's contribution, in basis points of gross. Never part of take-home.
+    pub employer_kiwisaver_bps: i64,
     pub student_loan: bool,
     pub take_home_bps: Option<i64>,
     pub linked_category_id: Option<i64>,
+    /// The account KiwiSaver contributions land in. Setting it takes that account off its fitted
+    /// growth rate — see `0023_income_contribution_targets.sql` for why that is unavoidable.
+    pub kiwisaver_account_id: Option<i64>,
+    /// The student loan these deductions pay down. Same consequence for that account.
+    pub student_loan_account_id: Option<i64>,
     pub enabled: bool,
     pub sort_order: i64,
     pub notes: Option<String>,
@@ -282,11 +289,17 @@ pub struct SaveIncomeStream {
     #[serde(default)]
     pub kiwisaver_bps: i64,
     #[serde(default)]
+    pub employer_kiwisaver_bps: i64,
+    #[serde(default)]
     pub student_loan: bool,
     #[serde(default)]
     pub take_home_bps: Option<i64>,
     #[serde(default)]
     pub linked_category_id: Option<i64>,
+    #[serde(default)]
+    pub kiwisaver_account_id: Option<i64>,
+    #[serde(default)]
+    pub student_loan_account_id: Option<i64>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]

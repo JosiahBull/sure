@@ -24,9 +24,12 @@ struct IncomeStreamRow {
     ends_on: Option<String>,
     annual_increase_bps: i64,
     kiwisaver_bps: i64,
+    employer_kiwisaver_bps: i64,
     student_loan: bool,
     take_home_bps: Option<i64>,
     linked_category_id: Option<i64>,
+    kiwisaver_account_id: Option<i64>,
+    student_loan_account_id: Option<i64>,
     enabled: bool,
     sort_order: i64,
     notes: Option<String>,
@@ -58,9 +61,12 @@ impl IncomeStreamRow {
             ends_on: self.ends_on,
             annual_increase_bps: self.annual_increase_bps,
             kiwisaver_bps: self.kiwisaver_bps,
+            employer_kiwisaver_bps: self.employer_kiwisaver_bps,
             student_loan: self.student_loan,
             take_home_bps: self.take_home_bps,
             linked_category_id: self.linked_category_id,
+            kiwisaver_account_id: self.kiwisaver_account_id,
+            student_loan_account_id: self.student_loan_account_id,
             enabled: self.enabled,
             sort_order: self.sort_order,
             notes: self.notes,
@@ -153,6 +159,12 @@ fn validate(input: &SaveIncomeStream) -> AppResult<()> {
             input.kiwisaver_bps
         ));
     }
+    if !(0..=10_000).contains(&input.employer_kiwisaver_bps) {
+        problems.push(format!(
+            "employer_kiwisaver_bps must be between 0 and 10000, got {}",
+            input.employer_kiwisaver_bps
+        ));
+    }
     if let Some(th) = input.take_home_bps {
         if !(0..=10_000).contains(&th) {
             problems.push(format!(
@@ -226,8 +238,9 @@ pub async fn create(db: &Db, person_id: i64, input: SaveIncomeStream) -> AppResu
         "INSERT INTO income_streams
             (person_id, label, employer, currency_code, annual_amount_minor, basis, pay_frequency,
              first_payment_on, starts_on, ends_on, annual_increase_bps, kiwisaver_bps,
-             student_loan, take_home_bps, linked_category_id, enabled, sort_order, notes)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+             student_loan, take_home_bps, linked_category_id, enabled, sort_order, notes,
+             employer_kiwisaver_bps, kiwisaver_account_id, student_loan_account_id)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
          RETURNING *",
     )
     .bind(person_id)
@@ -248,6 +261,9 @@ pub async fn create(db: &Db, person_id: i64, input: SaveIncomeStream) -> AppResu
     .bind(input.enabled)
     .bind(input.sort_order)
     .bind(input.notes.as_deref())
+    .bind(input.employer_kiwisaver_bps)
+    .bind(input.kiwisaver_account_id)
+    .bind(input.student_loan_account_id)
     .fetch_one(&mut *txn)
     .await
     .map_err(fk_error)?;
@@ -268,6 +284,7 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
             pay_frequency=?7, first_payment_on=?8, starts_on=?9, ends_on=?10,
             annual_increase_bps=?11, kiwisaver_bps=?12, student_loan=?13, take_home_bps=?14,
             linked_category_id=?15, enabled=?16, sort_order=?17, notes=?18,
+            employer_kiwisaver_bps=?19, kiwisaver_account_id=?20, student_loan_account_id=?21,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id=?1",
     )
@@ -289,6 +306,9 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
     .bind(input.enabled)
     .bind(input.sort_order)
     .bind(input.notes.as_deref())
+    .bind(input.employer_kiwisaver_bps)
+    .bind(input.kiwisaver_account_id)
+    .bind(input.student_loan_account_id)
     .execute(&mut *txn)
     .await
     .map_err(fk_error)?;
@@ -394,9 +414,12 @@ mod tests {
             ends_on: None,
             annual_increase_bps: 0,
             kiwisaver_bps: 350,
+            employer_kiwisaver_bps: 350,
             student_loan: true,
             take_home_bps: None,
             linked_category_id: None,
+            kiwisaver_account_id: None,
+            student_loan_account_id: None,
             enabled: true,
             sort_order: 0,
             notes: None,

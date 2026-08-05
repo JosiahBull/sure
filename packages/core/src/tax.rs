@@ -86,6 +86,17 @@ pub struct TaxScale {
     /// Annual income above which student loan repayments are deducted.
     pub student_loan_threshold_minor: i64,
     pub student_loan_rate_bps: i64,
+    /// ESCT brackets, same `(upper_bound, rate_bps)` shape as `brackets`.
+    ///
+    /// Employer superannuation contribution tax is taken **off** the employer's KiwiSaver
+    /// contribution — business.govt.nz: "the tax you take off the cash contributions you make to
+    /// employees' superannuation accounts" — so the amount reaching the account is the contribution
+    /// less ESCT, not the contribution. Getting that backwards overstates a KiwiSaver balance by up
+    /// to 39% of every employer dollar, which over thirty years is not a rounding error.
+    ///
+    /// Unlike PAYE this is a *flat* rate chosen by which bracket the employee's total lands in, not
+    /// a progressive slice-by-slice calculation.
+    pub esct_brackets: &'static [(i64, i64)],
 }
 
 /// New Zealand, ascending by `effective_from`.
@@ -112,6 +123,7 @@ pub const NZ_TAX_SCALES: &[TaxScale] = &[
         acc_income_cap_minor: 152_790_00,
         student_loan_threshold_minor: 24_128_00,
         student_loan_rate_bps: 1_200,
+        esct_brackets: NZ_ESCT_2025,
     },
     TaxScale {
         effective_from: "2026-04-01",
@@ -121,6 +133,7 @@ pub const NZ_TAX_SCALES: &[TaxScale] = &[
         acc_income_cap_minor: 156_641_00,
         student_loan_threshold_minor: 24_128_00,
         student_loan_rate_bps: 1_200,
+        esct_brackets: NZ_ESCT_2025,
     },
 ];
 
@@ -135,6 +148,20 @@ const NZ_BRACKETS_2025: &[(i64, i64)] = &[
     (i64::MAX, 3_900),
 ];
 
+/// ESCT thresholds, reset 1 April 2025 and unchanged for 2026-27.
+///
+/// They are exactly 20% above [`NZ_BRACKETS_2025`]'s thresholds — 15,600 x 1.2 = 18,720, and so on
+/// for every one of them. That is by design rather than coincidence, and it is worth knowing:
+/// a future bracket change that leaves these untouched is a signal to go and check, not a saving.
+/// The rates themselves are the same five as PAYE.
+const NZ_ESCT_2025: &[(i64, i64)] = &[
+    (18_720_00, 1_050),
+    (64_200_00, 1_750),
+    (93_720_00, 3_000),
+    (216_000_00, 3_300),
+    (i64::MAX, 3_900),
+];
+
 /// KiwiSaver employee contribution rates an employee may elect, in basis points.
 ///
 /// 3.5% became the default on 1 April 2026 (rising to 4% on 1 April 2028); 3% remains available
@@ -146,11 +173,17 @@ pub const KIWISAVER_EMPLOYEE_RATES_BPS: &[i64] = &[300, 350, 400, 600, 800, 1_00
 pub const KIWISAVER_DEFAULT_BPS: i64 = 350;
 
 /// What one gross annual salary is subject to.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct PayeInput {
     pub annual_gross_minor: i64,
     /// Employee KiwiSaver contribution, in basis points of gross. 0 for someone not enrolled.
     pub kiwisaver_bps: i64,
+    /// The employer's contribution, in basis points of gross.
+    ///
+    /// Not a deduction from take-home — it is money the employer adds on top — so it does not touch
+    /// `net_minor`. It matters because it lands in the KiwiSaver account, which over a thirty-year
+    /// horizon is most of the balance. [`KIWISAVER_DEFAULT_BPS`] is the compulsory minimum.
+    pub employer_kiwisaver_bps: i64,
     /// Whether IR deducts student loan repayments from this income.
     pub student_loan: bool,
 }
@@ -168,6 +201,14 @@ pub struct PayeBreakdown {
     pub kiwisaver_minor: i64,
     pub student_loan_minor: i64,
     pub net_minor: i64,
+    /// The employer's gross contribution, before ESCT.
+    pub employer_kiwisaver_minor: i64,
+    /// ESCT taken off that contribution.
+    pub esct_minor: i64,
+    /// What actually reaches the KiwiSaver account: the employee's contribution plus the employer's
+    /// net of ESCT. This is the figure a projection should credit, and the reason the three
+    /// components above are itemised rather than collapsed into it.
+    pub kiwisaver_credited_minor: i64,
 }
 
 /// The scale in force on `on`, or `None` if the date precedes every scale on record.
@@ -242,6 +283,12 @@ pub fn paye(scale: &TaxScale, input: PayeInput) -> PayeBreakdown {
     // On gross, before tax — a KiwiSaver contribution is not a deduction from take-home, it is a
     // slice of gross that never becomes take-home.
     let kiwisaver = bps_of(gross, input.kiwisaver_bps.max(0));
+    let employer_ks = bps_of(gross, input.employer_kiwisaver_bps.max(0));
+    // The rate is chosen by the employee's total — salary plus the employer's contribution — and
+    // applied flat, not sliced progressively like income tax. In a projection the current annual
+    // figures stand in for IR's "prior year plus expected contributions", which is the same number
+    // for anyone whose pay is not changing and the closest available one for anyone whose is.
+    let esct = bps_of(employer_ks, esct_rate_bps(scale, gross + employer_ks));
     let student_loan = if input.student_loan {
         bps_of(
             (gross - scale.student_loan_threshold_minor).max(0),
@@ -256,8 +303,26 @@ pub fn paye(scale: &TaxScale, input: PayeInput) -> PayeBreakdown {
         acc_levy_minor: acc,
         kiwisaver_minor: kiwisaver,
         student_loan_minor: student_loan,
+        // The employer's contribution is deliberately absent here: it was never the employee's to
+        // take home, so adding it would overstate spendable income by 3.5% of gross.
         net_minor: gross - income_tax - acc - kiwisaver - student_loan,
+        employer_kiwisaver_minor: employer_ks,
+        esct_minor: esct,
+        kiwisaver_credited_minor: kiwisaver + employer_ks - esct,
     }
+}
+
+/// The flat ESCT rate for an employee whose salary plus employer contributions total
+/// `esct_income_minor`.
+pub fn esct_rate_bps(scale: &TaxScale, esct_income_minor: i64) -> i64 {
+    scale
+        .esct_brackets
+        .iter()
+        .find(|&&(upper, _)| esct_income_minor <= upper)
+        .map(|&(_, rate)| rate)
+        // Unreachable: the last bracket's bound is `i64::MAX`. The top rate is the safe direction
+        // to fail if someone appends a table without one.
+        .unwrap_or_else(|| scale.esct_brackets.last().map(|&(_, r)| r).unwrap_or(3_900))
 }
 
 /// Take-home as a fraction of gross, in basis points — the *average* rate at this salary.
@@ -352,6 +417,7 @@ mod tests {
             PayeInput {
                 annual_gross_minor: s.acc_income_cap_minor,
                 kiwisaver_bps: 0,
+                employer_kiwisaver_bps: 0,
                 student_loan: false,
             },
         );
@@ -360,6 +426,7 @@ mod tests {
             PayeInput {
                 annual_gross_minor: s.acc_income_cap_minor + 50_000_00,
                 kiwisaver_bps: 0,
+                employer_kiwisaver_bps: 0,
                 student_loan: false,
             },
         );
@@ -377,6 +444,7 @@ mod tests {
                 PayeInput {
                     annual_gross_minor: gross,
                     kiwisaver_bps: 0,
+                    employer_kiwisaver_bps: 0,
                     student_loan: true,
                 },
             )
@@ -396,6 +464,7 @@ mod tests {
             PayeInput {
                 annual_gross_minor: 100_000_00,
                 kiwisaver_bps: 0,
+                employer_kiwisaver_bps: 0,
                 student_loan: false,
             },
         );
@@ -404,6 +473,7 @@ mod tests {
             PayeInput {
                 annual_gross_minor: 100_000_00,
                 kiwisaver_bps: KIWISAVER_DEFAULT_BPS,
+                employer_kiwisaver_bps: 0,
                 student_loan: false,
             },
         );
@@ -423,6 +493,7 @@ mod tests {
                 PayeInput {
                     annual_gross_minor: gross,
                     kiwisaver_bps: KIWISAVER_DEFAULT_BPS,
+                    employer_kiwisaver_bps: 0,
                     student_loan: true,
                 },
             );
@@ -447,6 +518,7 @@ mod tests {
         let input = PayeInput {
             annual_gross_minor: 135_000_00,
             kiwisaver_bps: KIWISAVER_DEFAULT_BPS,
+            employer_kiwisaver_bps: 0,
             student_loan: true,
         };
         let avg = average_take_home_bps(s, input);
@@ -471,6 +543,7 @@ mod tests {
                 PayeInput {
                     annual_gross_minor: gross,
                     kiwisaver_bps: 0,
+                    employer_kiwisaver_bps: 0,
                     student_loan: false,
                 },
             )
@@ -479,6 +552,81 @@ mod tests {
         let above = mk(s.acc_income_cap_minor + 20_000_00);
         assert!(above > below, "expected {above} > {below} past the cap");
         assert_eq!(above - below, s.acc_levy_bps);
+    }
+
+    /// ESCT is a *flat* rate picked by which bracket the total lands in — not a progressive slice.
+    /// Treating it like income tax would understate it substantially at every level.
+    #[test]
+    fn esct_is_a_flat_rate_chosen_by_bracket() {
+        let s = scale();
+        assert_eq!(esct_rate_bps(s, 10_000_00), 1_050);
+        assert_eq!(esct_rate_bps(s, 18_720_00), 1_050);
+        assert_eq!(esct_rate_bps(s, 18_721_00), 1_750);
+        assert_eq!(esct_rate_bps(s, 64_200_00), 1_750);
+        assert_eq!(esct_rate_bps(s, 93_720_00), 3_000);
+        assert_eq!(esct_rate_bps(s, 216_000_00), 3_300);
+        assert_eq!(esct_rate_bps(s, 500_000_00), 3_900);
+    }
+
+    /// The ESCT thresholds sit exactly 20% above the income tax thresholds. Pinned because it is a
+    /// deliberate relationship: if a future bracket change breaks it, that is worth being told about
+    /// rather than silently carrying two tables that have drifted apart.
+    #[test]
+    fn the_esct_thresholds_are_twenty_percent_above_the_paye_thresholds() {
+        let s = scale();
+        for (paye, esct) in s.brackets.iter().zip(s.esct_brackets.iter()) {
+            if paye.0 == i64::MAX {
+                assert_eq!(esct.0, i64::MAX);
+                continue;
+            }
+            assert_eq!(esct.0, paye.0 * 12 / 10, "threshold {paye:?} vs {esct:?}");
+            assert_eq!(esct.1, paye.1, "rates should match: {paye:?} vs {esct:?}");
+        }
+    }
+
+    /// The whole point of modelling the employer side: what reaches the account is the contribution
+    /// **less** ESCT. Getting this backwards overstates a KiwiSaver balance by up to 39% of every
+    /// employer dollar.
+    #[test]
+    fn esct_comes_off_the_employer_contribution_not_on_top_of_it() {
+        let s = scale();
+        let b = paye(
+            s,
+            PayeInput {
+                annual_gross_minor: 100_000_00,
+                kiwisaver_bps: KIWISAVER_DEFAULT_BPS,
+                employer_kiwisaver_bps: KIWISAVER_DEFAULT_BPS,
+                student_loan: false,
+            },
+        );
+        // 3.5% each way on $100k.
+        assert_eq!(b.kiwisaver_minor, 3_500_00);
+        assert_eq!(b.employer_kiwisaver_minor, 3_500_00);
+        // $103,500 total puts the ESCT rate at 33%.
+        assert_eq!(b.esct_minor, 1_155_00);
+        // The account receives both contributions, less the tax on the employer's.
+        assert_eq!(b.kiwisaver_credited_minor, 3_500_00 + 3_500_00 - 1_155_00);
+        assert!(b.kiwisaver_credited_minor < b.kiwisaver_minor + b.employer_kiwisaver_minor);
+    }
+
+    /// The employer's contribution is not the employee's to spend, so it must not appear in
+    /// take-home — an easy and expensive mistake to make while adding it.
+    #[test]
+    fn the_employer_contribution_does_not_change_take_home() {
+        let s = scale();
+        let mk = |employer_bps: i64| {
+            paye(
+                s,
+                PayeInput {
+                    annual_gross_minor: 90_000_00,
+                    kiwisaver_bps: 300,
+                    employer_kiwisaver_bps: employer_bps,
+                    student_loan: true,
+                },
+            )
+        };
+        assert_eq!(mk(0).net_minor, mk(KIWISAVER_DEFAULT_BPS).net_minor);
+        assert_eq!(mk(0).kiwisaver_credited_minor, 90_000_00 * 300 / 10_000);
     }
 
     #[test]
