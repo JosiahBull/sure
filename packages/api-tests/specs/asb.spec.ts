@@ -583,6 +583,74 @@ test("a stored account number matches exactly", async ({ api, server }) => {
   expect(r.exports[0].matched_by).toBe("account_number");
 });
 
+/**
+ * The last-resort tier: an account whose number nothing recorded, matched by the transactions
+ * it already holds. A day's tolerance is what makes it work — a feed and the bank's own export
+ * routinely disagree about *when* a transaction landed and never about the amount, so these
+ * rows are deliberately stamped a day earlier than the export's.
+ */
+test("an export routes itself by the transactions the account already holds", async ({ api, server }) => {
+  const mine = await createAccount(api, "Everyday", "bank", "NZD", { institution: "ASB" });
+  const decoy = await createAccount(api, "Other", "savings", "NZD", { institution: "ASB" });
+
+  // Twelve rows, enough to clear the evidence floor a coincidence can't.
+  const shared = Array.from({ length: 12 }, (_, i) => ({
+    day: 10 + i,
+    amount: -(100 + i * 7),
+  }));
+  for (const { day, amount } of shared) {
+    const res = await api.POST("/api/transactions", {
+      body: {
+        account_id: mine.id,
+        // A day earlier than the export says, as a feed stamps it.
+        posted_at: `2024-03-${String(day).padStart(2, "0")}`,
+        amount_minor: amount,
+        description: "from the feed",
+      },
+    });
+    expect(res.response.status, "seed a feed row").toBe(201);
+  }
+
+  const rows: AsbRow[] = shared.map(({ day, amount }, i) =>
+    row(
+      `2024/03/${String(day + 1).padStart(2, "0")}`,
+      `2024030${String(i).padStart(3, "0")}`,
+      "EFTPOS",
+      "SHOP",
+      "EFTPOS",
+      (amount / 100).toFixed(2)
+    )
+  );
+  const zip = zipOf({ "mystery.csv": rows }, { "mystery.csv": { account: "0000123-77" } });
+
+  const r = await (await uploadAll(server.baseURL, zip, true)).json();
+  expect(r.exports[0].account_id).toBe(mine.id);
+  expect(r.exports[0].matched_by).toBe("transaction_history");
+  expect(r.exports[0].account_id).not.toBe(decoy.id);
+});
+
+/** Rate alone is not evidence: two matching rows is a transfer pair, not an identification. */
+test("a perfect match on too few rows does not route an export", async ({ api, server }) => {
+  const acc = await createAccount(api, "Everyday", "bank", "NZD", { institution: "ASB" });
+  const seeded = await api.POST("/api/transactions", {
+    body: {
+      account_id: acc.id,
+      posted_at: "2024-03-10",
+      amount_minor: -200_00,
+      description: "the only row",
+    },
+  });
+  expect(seeded.response.status, "seed the one row").toBe(201);
+  const rows: AsbRow[] = [
+    row("2024/03/11", "2024031101", "TFR OUT", "MB TRANSFER", "TO 12-3136- 0000123-51", "-200.00"),
+  ];
+  const zip = zipOf({ "mystery.csv": rows }, { "mystery.csv": { account: "0000123-77" } });
+
+  const r = await (await uploadAll(server.baseURL, zip, true)).json();
+  expect(r.exports[0].account_id).toBe(null);
+  expect(r.exports[0].matched_by).toBe(null);
+});
+
 test("an unmatched export is reported and left alone, while its neighbours import", async ({ api, server }) => {
   const chequing = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
   const zip = zipOf(

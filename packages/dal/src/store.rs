@@ -112,6 +112,14 @@ impl AccountRepo for SqliteStore {
         crate::accounts::set_original_amount(&self.db, account_id, original_amount_minor).await
     }
 
+    async fn set_account_number_if_unset(
+        &self,
+        account_id: i64,
+        account_number: &str,
+    ) -> AppResult<()> {
+        crate::accounts::set_account_number_if_unset(&self.db, account_id, account_number).await
+    }
+
     async fn set_institution_if_unset(&self, account_id: i64, institution: &str) -> AppResult<()> {
         crate::accounts::set_institution_if_unset(&self.db, account_id, institution).await
     }
@@ -778,6 +786,14 @@ impl TransactionRepo for SqliteStore {
 
     async fn sample_external_ids(&self, provider_prefix: &str) -> AppResult<Vec<(i64, String)>> {
         crate::transactions::sample_external_ids(&self.db, provider_prefix).await
+    }
+
+    async fn amounts_for_matching(
+        &self,
+        account_ids: &[i64],
+        limit: i64,
+    ) -> AppResult<Vec<(i64, String, i64)>> {
+        crate::transactions::amounts_for_matching(&self.db, account_ids, limit).await
     }
 
     async fn earliest_posted_at(&self, account_id: i64) -> AppResult<Option<String>> {

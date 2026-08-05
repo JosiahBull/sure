@@ -497,6 +497,13 @@ mod tests {
         ) -> AppResult<()> {
             unreachable!("BrokerageService never mutates account metadata")
         }
+        async fn set_account_number_if_unset(
+            &self,
+            _account_id: i64,
+            _account_number: &str,
+        ) -> AppResult<()> {
+            unreachable!("BrokerageService never mutates account metadata")
+        }
     }
 
     #[derive(Default, Clone)]

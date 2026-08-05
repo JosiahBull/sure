@@ -38,7 +38,7 @@ impl std::str::FromStr for SyncOutcome {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Provider {
     pub id: i64,
     pub name: String,
@@ -161,6 +161,11 @@ pub enum AsbMatch {
     /// would otherwise be indistinguishable ("Emergency Fund (0000123-51)"). A hint, not
     /// proof — worth pre-selecting, worth showing as a guess.
     AccountName,
+    /// The export's own rows match the transactions this account already holds, over the
+    /// window both cover. The last resort, for an account whose number nothing recorded — but
+    /// evidence-rich when it fires: a busy account's run of dated amounts is close to a
+    /// fingerprint, and the match is reported with the counts behind it.
+    TransactionHistory,
 }
 
 impl AsbMatch {
@@ -172,6 +177,7 @@ impl AsbMatch {
             PreviousImport => "previous_import",
             AccountNumber => "account_number",
             AccountName => "account_name",
+            TransactionHistory => "transaction_history",
         }
     }
 }

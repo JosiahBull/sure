@@ -735,6 +735,43 @@ pub async fn set_original_amount(
 /// overwritten by a later sync, unlike the numeric provider-sourced fields above which
 /// always refresh to stay in sync with the live source.
 #[tracing::instrument(level = "debug", skip_all)]
+/// Record the account number a feed reports, but never overwrite one already there — a number
+/// the user typed is the one they meant, and this runs unattended on every link.
+///
+/// Worth storing rather than leaving to the feed because it is the only *identifier* two
+/// accounts at one bank don't share: it is what `sure-api`'s ASB import matches an export
+/// against (`routes::asb::stored_number`), and without it a household with two "Emergency
+/// Fund"s has nothing to route by. Akahu reports it as `formatted_account`; see
+/// `sure_app::sync::SyncService::adopt_account_numbers`.
+pub async fn set_account_number_if_unset(
+    db: &Db,
+    account_id: i64,
+    account_number: &str,
+) -> AppResult<()> {
+    let account = get(db, account_id).await?;
+    let metadata = match account.metadata {
+        AccountMetadata::Depository(mut meta) => {
+            if meta.account_number.is_some() {
+                return Ok(());
+            }
+            meta.account_number = Some(account_number.to_string());
+            AccountMetadata::Depository(meta)
+        }
+        // Only a depository profile has the field. A mortgage or loan is identified to its
+        // lender by a loan number, which is not this and does not belong in this column.
+        AccountMetadata::Property(_)
+        | AccountMetadata::Mortgage(_)
+        | AccountMetadata::Loan(_)
+        | AccountMetadata::StudentLoan(_)
+        | AccountMetadata::Vehicle(_)
+        | AccountMetadata::Shares(_)
+        | AccountMetadata::Brokerage(_)
+        | AccountMetadata::Crypto(_)
+        | AccountMetadata::Generic(_) => return Ok(()),
+    };
+    write_metadata(db, account_id, &metadata).await
+}
+
 pub async fn set_institution_if_unset(
     db: &Db,
     account_id: i64,

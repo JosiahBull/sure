@@ -28,7 +28,7 @@
 //! It's the same code path up to one branch, so a preview cannot describe an import that
 //! wouldn't happen.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -191,10 +191,13 @@ pub async fn upload(
         .collect();
     let assigned = parse_assignments(q.assign.as_deref())?;
     let prior = prior_imports(&st).await?;
+    // Only for the exports the deterministic tiers leave unmatched, and decided across the
+    // whole upload at once so two exports can't claim one account — see `match_by_history`.
+    let by_history = match_by_history(&st, &upload.exports, &accounts, &assigned, &prior).await?;
 
     let mut exports = Vec::new();
     for export in upload.exports {
-        let matched = resolve(&export.account, &accounts, &assigned, &prior);
+        let matched = resolve(&export.account, &accounts, &assigned, &prior, &by_history);
         exports.push(import_one(&st, export, matched, &opts).await?);
     }
     Ok(Json(AsbUploadResult {
@@ -439,13 +442,19 @@ fn describe(
 
 /// Which Sure account an ASB account number belongs to, and on what evidence. In priority
 /// order: what the request said, then a previous import of that same ASB account, then the
-/// account's stored number, then its name. Only an unambiguous match counts — two accounts
-/// answering to one number resolves to neither.
+/// account's stored number, then its name, then the transactions the account already holds.
+/// Only an unambiguous match counts — two accounts answering to one number resolves to neither.
+///
+/// Content matching is last deliberately. Every tier above it is an *identifier*; matching rows
+/// is inference, and while the inference is strong when there is a lot of it (see
+/// [`match_by_history`]), a stored number that disagrees with it means something is wrong with
+/// the number, which is a thing to tell the user rather than quietly route around.
 fn resolve<'a>(
     asb_account: &str,
     accounts: &'a [Account],
     assigned: &HashMap<String, i64>,
     prior: &HashMap<String, i64>,
+    by_history: &HashMap<String, i64>,
 ) -> Option<(&'a Account, Option<AsbMatch>)> {
     let by_id =
         |id: i64, how: AsbMatch| accounts.iter().find(|a| a.id == id).map(|a| (a, Some(how)));
@@ -469,8 +478,180 @@ fn resolve<'a>(
     // The distinctive tail — `0000123-50` — is what a name carries when two accounts would
     // otherwise be indistinguishable. Ten characters, so a coincidental hit is unlikely; a
     // hint all the same, which is why it's reported as one.
-    let tail = asb_account.splitn(3, '-').nth(2)?;
-    only_match(accounts, |a| a.name.contains(tail)).map(|a| (a, Some(AsbMatch::AccountName)))
+    if let Some(tail) = asb_account.splitn(3, '-').nth(2) {
+        if let Some(found) = only_match(accounts, |a| a.name.contains(tail)) {
+            return Some((found, Some(AsbMatch::AccountName)));
+        }
+    }
+    by_history
+        .get(asb_account)
+        .and_then(|id| by_id(*id, AsbMatch::TransactionHistory))
+}
+
+/// How much agreement is enough to route an export by its contents alone.
+mod history_match {
+    /// Days either side a row may differ by and still be the same transaction. A feed and the
+    /// bank's own export disagree about *when* far more often than about what: over one
+    /// account's overlapping year, exact dates matched 1 row in 161 while a single day's
+    /// tolerance matched 161 of 161, because Akahu stamps these a day earlier than ASB does.
+    ///
+    /// One day, not more. The same comparison over a busier account showed a tail of genuine
+    /// +6 and +13 day offsets, and widening far enough to catch those starts matching rows that
+    /// merely happen to share an amount — which is the failure that misfiles an account.
+    pub const DAY_TOLERANCE: i64 = 1;
+    /// Matched rows needed before a match counts at all, however good the rate looks. This is
+    /// the guard that matters: a savings export scored a *perfect* 2 of 2 against the chequing
+    /// account — a transfer pair, seen from both sides — and on rate alone that would have filed
+    /// seven years of one account's history into another.
+    pub const MIN_ROWS: usize = 10;
+    /// …and the share of the overlapping window that must match, so a long run of coincidences
+    /// can't win either.
+    pub const MIN_RATE: f64 = 0.8;
+    /// Existing rows read per upload. Comfortably past a decade of a busy account, and bounds
+    /// the comparison whatever is in the database.
+    pub const MAX_ROWS_READ: i64 = 200_000;
+}
+
+/// Route the exports nothing else could place, by matching their rows against the transactions
+/// each candidate account already holds.
+///
+/// Signed amounts, and a day's tolerance on the date (see [`history_match`]). Signs matter: a
+/// transfer out of one account is an inflow to another, so comparing magnitudes would make the
+/// two sides of every internal transfer look like each other.
+///
+/// Decided for the whole upload at once rather than per export, because the constraint that
+/// makes it safe is a global one — **one account cannot be the answer to two exports**. Highest
+/// evidence wins first, and each winner takes its account out of the running, so a thin export
+/// can't claim an account a 997-row match has already earned.
+async fn match_by_history(
+    st: &AppState,
+    exports: &[AsbExport],
+    accounts: &[Account],
+    assigned: &HashMap<String, i64>,
+    prior: &HashMap<String, i64>,
+) -> AppResult<HashMap<String, i64>> {
+    // Anything an identifier already placed is out of the running on both sides: its export
+    // needs no guess, and its account is taken.
+    let placed: HashSet<i64> = accounts
+        .iter()
+        .filter(|a| {
+            let claimed = |m: &HashMap<String, i64>| m.values().any(|id| *id == a.id);
+            claimed(assigned) || claimed(prior) || stored_number(a).is_some()
+        })
+        .map(|a| a.id)
+        .collect();
+    let unplaced: Vec<&AsbExport> = exports
+        .iter()
+        .filter(|e| !assigned.contains_key(&e.account) && !prior.contains_key(&e.account))
+        .collect();
+    let candidates: Vec<i64> = accounts
+        .iter()
+        .map(|a| a.id)
+        .filter(|id| !placed.contains(id))
+        .collect();
+    if unplaced.is_empty() || candidates.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = st
+        .transactions
+        .amounts_for_matching(&candidates, history_match::MAX_ROWS_READ)
+        .await?;
+    // `amount -> dates`, per account: the shape the scoring walks.
+    let mut have: HashMap<i64, HashMap<i64, Vec<NaiveDate>>> = HashMap::new();
+    for (account_id, date, amount_minor) in rows {
+        if let Ok(date) = NaiveDate::parse_from_str(&date, "%Y-%m-%d") {
+            have.entry(account_id)
+                .or_default()
+                .entry(amount_minor)
+                .or_default()
+                .push(date);
+        }
+    }
+
+    // Every (export, account) pair worth considering, best evidence first.
+    let mut scored: Vec<(usize, &str, i64)> = Vec::new();
+    for export in &unplaced {
+        for account_id in &candidates {
+            let Some(theirs) = have.get(account_id) else {
+                continue;
+            };
+            let (matched, window) = score_history(export, theirs);
+            let rate = if window == 0 {
+                0.0
+            } else {
+                matched as f64 / window as f64
+            };
+            if matched >= history_match::MIN_ROWS && rate >= history_match::MIN_RATE {
+                scored.push((matched, export.account.as_str(), *account_id));
+            }
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)).then(a.2.cmp(&b.2)));
+
+    let mut out: HashMap<String, i64> = HashMap::new();
+    let mut taken: HashSet<i64> = HashSet::new();
+    for (matched, asb_account, account_id) in scored {
+        if out.contains_key(asb_account) || taken.contains(&account_id) {
+            continue;
+        }
+        tracing::debug!(
+            asb_account,
+            account_id,
+            matched,
+            "routed an ASB export by its transaction history"
+        );
+        out.insert(asb_account.to_string(), account_id);
+        taken.insert(account_id);
+    }
+    Ok(out)
+}
+
+/// `(matched, window)` — how many of this export's rows are already on the account, out of how
+/// many fall inside the window the account's own rows cover. Greedy and one-to-one: each
+/// existing row can be claimed once, so a repeated amount can't match itself many times over.
+fn score_history(export: &AsbExport, theirs: &HashMap<i64, Vec<NaiveDate>>) -> (usize, usize) {
+    let Some((first, last)) =
+        theirs
+            .values()
+            .flatten()
+            .fold(None, |acc: Option<(NaiveDate, NaiveDate)>, d| match acc {
+                None => Some((*d, *d)),
+                Some((lo, hi)) => Some((lo.min(*d), hi.max(*d))),
+            })
+    else {
+        return (0, 0);
+    };
+    let mut used: HashMap<i64, HashSet<usize>> = HashMap::new();
+    let (mut matched, mut window) = (0usize, 0usize);
+    for row in &export.transactions {
+        let Some(date) = row
+            .posted_at
+            .get(..10)
+            .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        else {
+            continue;
+        };
+        if date < first || date > last {
+            continue;
+        }
+        window += 1;
+        let Some(dates) = theirs.get(&row.amount_minor) else {
+            continue;
+        };
+        let spent = used.entry(row.amount_minor).or_default();
+        for (i, theirs_date) in dates.iter().enumerate() {
+            if spent.contains(&i) {
+                continue;
+            }
+            if (*theirs_date - date).num_days().abs() <= history_match::DAY_TOLERANCE {
+                spent.insert(i);
+                matched += 1;
+                break;
+            }
+        }
+    }
+    (matched, window)
 }
 
 /// The one account satisfying `pred`, or `None` if none or several do.
@@ -806,5 +987,163 @@ mod tests {
         // `str::get` returns `None` mid-codepoint rather than panicking the way slicing
         // would; the point of this test is that the handler stays a 422 either way.
         assert!(!refused(Some("2019-07-0\u{1f600}3"), &[]).is_empty());
+    }
+
+    // ------------------------------------------- routing an export by its transaction history
+
+    /// An export holding `rows` of `(date, amount)`. Only the fields the scoring reads carry
+    /// anything, and no real identifier belongs in a fixture (CLAUDE.md rule 3).
+    fn export_of(rows: &[(&str, i64)]) -> AsbExport {
+        AsbExport {
+            account: "12-3136-0000123-50".to_string(),
+            transactions: rows
+                .iter()
+                .map(
+                    |(date, amount_minor)| sure_app::ports::ProviderTransaction {
+                        external_id: format!("asb:x:{date}{amount_minor}"),
+                        posted_at: format!("{date}T12:00:00+00:00"),
+                        amount_minor: *amount_minor,
+                        currency_code: None,
+                        description: "X".to_string(),
+                        merchant: None,
+                        category: None,
+                    },
+                )
+                .collect(),
+            ..AsbExport::default()
+        }
+    }
+
+    /// What an account already holds, in the shape the scoring walks.
+    fn holds(rows: &[(&str, i64)]) -> HashMap<i64, Vec<NaiveDate>> {
+        let mut out: HashMap<i64, Vec<NaiveDate>> = HashMap::new();
+        for (date, amount_minor) in rows {
+            out.entry(*amount_minor)
+                .or_default()
+                .push(NaiveDate::parse_from_str(date, "%Y-%m-%d").expect("fixture date parses"));
+        }
+        out
+    }
+
+    /// The measurement this whole tier rests on: a feed and the bank's own export disagree about
+    /// *when*, routinely by a day, and not about the amount. Exact dates score close to nothing.
+    #[test]
+    fn a_days_tolerance_is_what_makes_the_match_work_at_all() {
+        let export = export_of(&[
+            ("2025-08-04", 77_184),
+            ("2025-08-06", -3_280),
+            ("2025-08-11", -77_184),
+        ]);
+        // The same three transactions, each stamped a day earlier — as Akahu stamps them —
+        // plus one of the account's own the export doesn't have, so the window it covers
+        // reaches past the export's last row. The window is the *account's* span by design.
+        let theirs = holds(&[
+            ("2025-08-03", 77_184),
+            ("2025-08-05", -3_280),
+            ("2025-08-10", -77_184),
+            ("2025-08-20", -9_99),
+        ]);
+        assert_eq!(score_history(&export, &theirs), (3, 3));
+
+        // Three days out is not the same transaction, and must not be treated as one.
+        let far = holds(&[
+            ("2025-07-31", 77_184),
+            ("2025-08-02", -3_280),
+            ("2025-08-07", -77_184),
+            ("2025-08-20", -9_99),
+        ]);
+        assert_eq!(score_history(&export, &far).0, 0);
+    }
+
+    /// Signed, so the two sides of an internal transfer don't look like each other — the same
+    /// amount on the same day with the sign flipped is the shape every transfer has.
+    #[test]
+    fn an_inflow_does_not_match_the_outflow_it_mirrors() {
+        let export = export_of(&[("2025-08-13", -2_954_15)]);
+        let theirs = holds(&[("2025-08-13", 2_954_15)]);
+        assert_eq!(score_history(&export, &theirs), (0, 1));
+    }
+
+    /// One-to-one: a repeated amount can't match one existing row over and over, which would let
+    /// a standing order inflate a score until it looked like proof.
+    #[test]
+    fn one_existing_row_is_claimed_only_once() {
+        let export = export_of(&[
+            ("2025-08-04", -20_00),
+            ("2025-08-04", -20_00),
+            ("2025-08-04", -20_00),
+        ]);
+        let theirs = holds(&[("2025-08-04", -20_00)]);
+        assert_eq!(score_history(&export, &theirs), (1, 3));
+    }
+
+    /// Only the window the account's own rows cover is scored — an export reaching back seven
+    /// years must not be marked down for the six the feed never had.
+    #[test]
+    fn rows_outside_the_accounts_own_window_are_not_counted_against_it() {
+        let export = export_of(&[
+            ("2019-01-01", -1_00), // long before the feed
+            ("2025-08-04", -20_00),
+            ("2026-09-09", -3_00), // long after it
+        ]);
+        let theirs = holds(&[("2025-08-04", -20_00)]);
+        // One row in the window, and it matched: a clean 1/1 rather than 1/3.
+        assert_eq!(score_history(&export, &theirs), (1, 1));
+    }
+
+    /// The guard that matters most. A savings export scored a *perfect* 2 of 2 against the
+    /// chequing account on a transfer pair seen from both sides; on rate alone that would have
+    /// filed seven years of one account's history into another.
+    #[test]
+    fn a_perfect_score_on_too_few_rows_is_not_enough() {
+        let export = export_of(&[("2025-08-04", -500_00), ("2025-08-05", -250_00)]);
+        let theirs = holds(&[("2025-08-04", -500_00), ("2025-08-05", -250_00)]);
+        let (matched, window) = score_history(&export, &theirs);
+        assert_eq!((matched, window), (2, 2), "it really does score 100%");
+        assert!(
+            matched < history_match::MIN_ROWS,
+            "and is refused anyway, on {matched} rows of evidence"
+        );
+    }
+
+    /// The rate floor is the second guard, and it bites where the row floor doesn't: enough
+    /// matches to clear `MIN_ROWS`, but most of the window unaccounted for.
+    #[test]
+    fn a_low_rate_over_enough_rows_is_still_not_enough() {
+        // Forty days, forty distinct amounts.
+        let dates: Vec<String> = (1..=40)
+            .map(|d| {
+                NaiveDate::from_ymd_opt(2025, 8, 1)
+                    .and_then(|s| s.checked_add_days(chrono::Days::new(d)))
+                    .expect("in range")
+                    .to_string()
+            })
+            .collect();
+        let rows: Vec<(&str, i64)> = dates
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.as_str(), -1_00 * (i as i64 + 1)))
+            .collect();
+        let export = export_of(&rows);
+        // Twelve of the forty are on the account, and its last row is the export's last, so the
+        // whole export sits inside the window it covers.
+        let mut theirs_rows = rows[..12].to_vec();
+        theirs_rows.push(rows[39]);
+        let theirs = holds(&theirs_rows);
+
+        let (matched, window) = score_history(&export, &theirs);
+        assert_eq!(
+            window, 40,
+            "the whole export is inside the account's window"
+        );
+        assert!(
+            matched >= history_match::MIN_ROWS,
+            "{matched} matches clears the row floor, so only the rate can refuse this"
+        );
+        let rate = matched as f64 / window as f64;
+        assert!(
+            rate < history_match::MIN_RATE,
+            "a rate of {rate} should be refused"
+        );
     }
 }

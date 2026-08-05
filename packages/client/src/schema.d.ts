@@ -4894,7 +4894,7 @@ export interface components {
          *     UI can say *why* it pre-selected one, and so a guess is visibly a guess.
          * @enum {string}
          */
-        AsbMatch: "assigned" | "previous_import" | "account_number" | "account_name";
+        AsbMatch: "assigned" | "previous_import" | "account_number" | "account_name" | "transaction_history";
         /** @description Result of removing a previous ASB import (`DELETE /api/accounts/{id}/asb/import`). */
         AsbUndoResult: {
             /** Format: int64 */
