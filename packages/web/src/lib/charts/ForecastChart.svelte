@@ -14,6 +14,8 @@
     height = 240,
     onhover,
     checkpoints = [3, 6, 9, 12],
+    events = [],
+    onselectevent,
   }: {
     history: { x: string; y: number }[];
     months: Schemas["ForecastMonth"][];
@@ -28,14 +30,36 @@
      * years and four marks landed inside the first 3% of the axis.
      */
     checkpoints?: number[];
+    /**
+     * How each event *actually landed* across the simulated paths — realised timing, not the
+     * configured window. Relations move dates, so the two genuinely differ, and drawing the input
+     * would be a lie about precisely the thing this chart exists to show.
+     */
+    events?: ChartEvent[];
+    /** Fires when a marker is activated, so the page can scroll to that event's editor. */
+    onselectevent?: (eventId: number) => void;
   } = $props();
+
+  export type ChartEvent = {
+    id: number;
+    name: string;
+    /** A CSS colour — the person's swatch, or a neutral for a household event. */
+    color: string;
+    probabilityBps: number;
+    /** Month offsets from today. The parent owns the date→index mapping, as it does for `months`. */
+    p10: number;
+    median: number;
+    p90: number;
+    /** The p90 ran past the horizon, so the band's right edge must not read as a committed date. */
+    truncated: boolean;
+  };
 
   const W = CHART_W;
   // Split by axis. `sx` and pointer-mapping read `padX`; only `sy` reads `padY`. The two are
   // separate so the vertical padding can later grow with the number of event-label lanes —
   // which are packed by x — without the lane packing depending on its own output.
   const padX = CHART_PAD_X;
-  const padY = { t: 14, b: 22 };
+  const LANE_H = 15;
 
   const seam = $derived(history.at(-1));
   const histLen = $derived(history.length);
@@ -125,6 +149,90 @@
 
   const zeroY = $derived(minY < 0 ? sy(0) : null);
 
+  // ---- life-event annotations ------------------------------------------------------
+  //
+  // A single vertical line per event would assert a date the model does not have. The timing is a
+  // distribution, so it is drawn as the p10–p90 window with a marker at the median. Indices are
+  // clamped into the projection rather than dropped: an event whose window runs past the horizon is
+  // drawn to the edge and flagged, because "it may not have happened yet by then" is exactly what a
+  // thirty-year chart is being asked.
+  function clampIdx(i: number): number {
+    return Math.max(histLen - 1, Math.min(totalPoints - 1, i));
+  }
+
+  const eventBands = $derived.by(() =>
+    events.map((e) => {
+      const lo = clampIdx(seriesIndex(histLen, e.p10));
+      const mid = clampIdx(seriesIndex(histLen, e.median));
+      const hi = clampIdx(seriesIndex(histLen, e.p90));
+      const x = sx(lo);
+      const p = Math.max(0, Math.min(1, e.probabilityBps / 10_000));
+      return {
+        ...e,
+        mid,
+        x,
+        w: Math.max(2, sx(hi) - x),
+        mx: sx(mid),
+        p,
+        // Probability drives four channels, because none of them is legible alone on a 240px-tall
+        // chart. Fill opacity, marker radius, and a dash pattern — read by area, by size or by
+        // texture, a 40%-likely event cannot be mistaken for a 95% one, and the dash survives
+        // greyscale. The fourth channel is the number itself, in the label: every visual encoding
+        // is a hint, and only the number is an answer.
+        fill: 0.05 + 0.14 * p,
+        r: 2.4 + 2.6 * p,
+        dash: p >= 0.85 ? undefined : p >= 0.6 ? "3 2" : "1.5 2.5",
+        filled: p >= 0.85,
+      };
+    })
+  );
+
+  // Greedy first-fit lane packing. Sorted by median x, each label takes the topmost lane whose
+  // previous label ended at least 4 units earlier. Two events a month apart therefore stack, while
+  // the common case — a handful of events years apart — all lands in lane 0 and costs no vertical
+  // space at all.
+  const CHAR_W = 5.1;
+  const laid = $derived.by(() => {
+    const laneEnd: number[] = [];
+    return eventBands
+      .slice()
+      .sort((a, b) => a.mx - b.mx)
+      .map((e) => {
+        const w = 30 + e.name.length * CHAR_W;
+        const left = Math.max(padX.l, Math.min(e.mx - w / 2, W - padX.r - w));
+        let lane = laneEnd.findIndex((end) => end <= left - 4);
+        if (lane === -1) {
+          lane = laneEnd.length;
+          laneEnd.push(0);
+        }
+        laneEnd[lane] = left + w;
+        return { ...e, labelX: left, labelW: w, lane };
+      });
+  });
+  const laneCount = $derived(laid.reduce((n, e) => Math.max(n, e.lane + 1), 0));
+
+  // Declared here, below the packing, because it *reads* it. The label lanes grow the top padding,
+  // so a single `pad` object would be a reactive cycle: packing reads `sx`, `sy` reads the padding,
+  // and the marker positions read `sy`. Splitting by axis breaks it — `sx` never touches `padY` —
+  // and the marker y-positions live in their own `$derived` rather than inside the packing.
+  const padY = $derived({ t: 14 + laneCount * LANE_H, b: 22 });
+
+  // Separate from `laid` on purpose: this reads `sy`, which reads `padY`, which reads `laneCount`.
+  // Folding it into the packing closes that loop.
+  const markers = $derived(laid.map((e) => ({ ...e, my: sy(medianY[e.mid] ?? 0) })));
+
+  let evHover = $state<number | null>(null);
+  let selectedEvent = $state<number | null>(null);
+  const hoveredEvent = $derived(laid.find((e) => e.id === evHover) ?? null);
+
+  function fmtWindow(e: { p10: number; p90: number; truncated: boolean }): string {
+    const at = (m: number) => monthAt(seriesIndex(histLen, m))?.as_of ?? "";
+    const lo = at(e.p10);
+    const hi = at(e.p90);
+    const range = lo && hi ? `${formatDate(lo)} – ${formatDate(hi)}` : "unknown";
+    return e.truncated ? `${range}, or later` : range;
+  }
+
   // ---- hover (no brush/zoom — a forward projection isn't something you zoom into) ---
   let svgEl = $state<SVGSVGElement | null>(null);
   let hover = $state<number | null>(null);
@@ -156,6 +264,8 @@
   }
   function onPointerMove(e: PointerEvent) {
     if (!svgEl || totalPoints === 0) return;
+    // One tooltip at a time: two of them fighting for the same forty pixels is unreadable.
+    if (evHover !== null) return;
     setHover(idxFromClientX(e.clientX));
   }
   function onPointerLeave() {
@@ -207,6 +317,27 @@
               stroke="var(--border-strong)" stroke-dasharray="2 3" vector-effect="non-scaling-stroke" />
       {/if}
 
+      <!-- Behind the projection paths, so the median line stays the most legible thing on the
+           chart, but in front of the "today" seam so a band starting at today is not cut in half. -->
+      <g class="ev-bands" aria-hidden="true">
+        {#each eventBands as e (e.id)}
+          <g style="--ev:{e.color}">
+            <rect
+              x={e.x} y={padY.t} width={e.w} height={height - padY.t - padY.b}
+              fill="var(--ev, var(--accent))" fill-opacity={e.fill}
+              stroke="var(--ev, var(--accent))" stroke-opacity={e.fill * 1.6}
+              stroke-dasharray="2 3" vector-effect="non-scaling-stroke" rx="2"
+              data-ev-band={e.id}
+            />
+            <line
+              x1={e.mx} x2={e.mx} y1={padY.t} y2={height - padY.b}
+              stroke="var(--ev, var(--accent))" stroke-opacity={0.25 + 0.45 * e.p}
+              stroke-dasharray={e.dash} vector-effect="non-scaling-stroke"
+            />
+          </g>
+        {/each}
+      </g>
+
       <path d={bandPath} fill="var(--accent)" fill-opacity="0.12" stroke="none" />
       <path d={historyPath} fill="none" stroke="var(--accent)" stroke-width="1.5"
             stroke-linejoin="round" vector-effect="non-scaling-stroke" />
@@ -218,6 +349,26 @@
               stroke="var(--border)" stroke-dasharray="1 3" vector-effect="non-scaling-stroke" />
         <circle cx={sx(c.index)} cy={sy(c.month.net_worth.median_minor)} r="3" fill="var(--accent)" />
       {/each}
+
+      <g class="ev-marks">
+        {#each markers as e (e.id)}
+          <g style="--ev:{e.color}" class:sel={selectedEvent === e.id || evHover === e.id}>
+            <circle
+              cx={e.mx} cy={e.my} r={e.r}
+              fill={e.filled ? "var(--ev, var(--accent))" : "var(--bg-elev)"}
+              stroke="var(--ev, var(--accent))" stroke-width="1.4"
+              stroke-dasharray={e.dash} vector-effect="non-scaling-stroke"
+            />
+            {#if e.truncated}
+              <!-- An open arrow rather than a closed edge: the window runs past the horizon, so the
+                   band's right-hand end must not read as a date the model committed to. -->
+              <path d="M {W - padX.r - 7} {padY.t + 5} l 5 4 l -5 4"
+                    fill="none" stroke="var(--ev, var(--accent))" stroke-opacity="0.7"
+                    vector-effect="non-scaling-stroke" />
+            {/if}
+          </g>
+        {/each}
+      </g>
 
       {#if hover !== null}
         <line x1={sx(hover)} x2={sx(hover)} y1={padY.t} y2={height - padY.b}
@@ -240,7 +391,63 @@
         </div>
       </div>
     {/if}
+    <!-- Labels are HTML, not SVG <text>. `preserveAspectRatio="none"` stretches the viewBox
+         horizontally to fill the container and would stretch glyphs by the same factor — which is
+         why every label in this file has always been HTML. It also makes them real focusable
+         buttons in DOM order, so typography and keyboard access are solved in one move. -->
+    <div class="ev-layer">
+      {#each laid as e (e.id)}
+        <button
+          type="button"
+          class="ev-label"
+          class:sel={selectedEvent === e.id}
+          style="--ev:{e.color};left:{(e.labelX / W) * 100}%;top:{4 + e.lane * LANE_H}px;--o:{0.5 +
+            0.5 * e.p}"
+          onpointerenter={() => (evHover = e.id)}
+          onpointerleave={() => (evHover = null)}
+          onfocus={() => (evHover = e.id)}
+          onblur={() => (evHover = null)}
+          onclick={() => {
+            selectedEvent = e.id;
+            onselectevent?.(e.id);
+          }}
+        >
+          <span class="ev-dot" class:hollow={!e.filled}></span>
+          <span class="ev-name">{e.name}</span>
+          <!-- The fourth probability channel, and the only unambiguous one: every visual encoding
+               is a hint, the number is the answer. -->
+          <span class="ev-pct tabular">{Math.round(e.p * 100)}%</span>
+        </button>
+      {/each}
+    </div>
+    {#if hoveredEvent}
+      <div
+        class="tooltip ev"
+        class:below={hoveredEvent.lane * LANE_H < 40}
+        style="left:{(hoveredEvent.mx / W) * 100}%;top:{18 + hoveredEvent.lane * LANE_H}px"
+      >
+        <div class="tt-val">{hoveredEvent.name}</div>
+        <div class="tt-range tabular">{Math.round(hoveredEvent.p * 100)}% likely</div>
+        <div class="tt-date">
+          around {formatDate(monthAt(hoveredEvent.mid)?.as_of ?? "")}
+          <span class="faint"> · 80% of runs {fmtWindow(hoveredEvent)}</span>
+        </div>
+      </div>
+    {/if}
   </div>
+  {#if laid.length > 0}
+    <!-- `role="img"` hides the SVG's children from assistive tech whatever is drawn inside it, so
+         the annotations would otherwise be invisible. Same facts, as text. -->
+    <ul class="sr-only">
+      {#each laid as e (e.id)}
+        <li>
+          {e.name}: {Math.round(e.p * 100)}% likely, around {formatDate(
+            monthAt(e.mid)?.as_of ?? ""
+          )}, 80% of runs {fmtWindow(e)}.
+        </li>
+      {/each}
+    </ul>
+  {/if}
   <!-- Ticks are HTML, not SVG <text>: `preserveAspectRatio="none"` stretches the viewBox
        horizontally to fill the container, and it would stretch glyphs by the same factor. The
        percentages come from the same scale the SVG uses, so they line up exactly. -->
@@ -290,6 +497,69 @@
   }
   .tooltip.below {
     transform: translate(-50%, 12px);
+  }
+  /* The event tooltip hangs off a lane rather than off the median line, so it positions from the
+     top instead of flipping around a data point. */
+  .tooltip.ev {
+    transform: translate(-50%, 0);
+    z-index: 4;
+  }
+  .tooltip.ev.below {
+    transform: translate(-50%, 0);
+  }
+  .ev-layer {
+    position: absolute;
+    inset: 0;
+    /* The layer must not eat the crosshair; only the labels themselves are interactive. */
+    pointer-events: none;
+  }
+  .ev-label {
+    all: unset;
+    position: absolute;
+    pointer-events: auto;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    white-space: nowrap;
+    font-size: 10.5px;
+    line-height: 1.3;
+    opacity: var(--o);
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ev) 35%, var(--border));
+  }
+  .ev-label:hover,
+  .ev-label.sel {
+    opacity: 1;
+    color: var(--text);
+    background: var(--bg-elev);
+  }
+  .ev-label:focus-visible {
+    outline: 2px solid var(--ev);
+    outline-offset: 1px;
+    opacity: 1;
+  }
+  .ev-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ev);
+    flex: none;
+  }
+  /* Hollow mirrors the marker on the chart: the same "less certain" reading in both places. */
+  .ev-dot.hollow {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--ev);
+  }
+  .ev-pct {
+    color: var(--text-faint);
+    font-size: 9.5px;
+  }
+  .ev-marks .sel circle {
+    stroke-width: 2.2;
   }
   .tt-val {
     font-size: 13.5px;

@@ -5735,6 +5735,12 @@ export interface components {
             kind: components["schemas"]["LifeEventKind"];
             /**
              * Format: int64
+             * @description Whose event it is, so the chart can colour its band with that person's swatch. Absent for a
+             *     household event.
+             */
+            person_id?: number | null;
+            /**
+             * Format: int64
              * @description What was configured, for comparison with `occurrence_rate_bps` below.
              */
             probability_bps: number;

@@ -1,45 +1,29 @@
 <script lang="ts">
-  // What the projection assumed, and the two ways to disagree with it: an override on a rate,
-  // or a dated change you are certain about.
+  // What the projection assumed, and how to disagree with a rate.
+  //
+  // Dated changes used to live here too. They moved to the Life events tab when the event model was
+  // unified: a certainty is that model with 100% probability and no spread, so keeping a second
+  // editor for the same rows would have been two places to look for one thing.
   //
   // Owns its own edit state and calls the API directly, reporting back through `onchanged` so
   // the page can re-run the simulation — the `oncreated` arrangement the modals already use.
   // The alternative, lifting `editingKey`/`editForm` into the page, would put state there that
   // only this tab can interpret.
-  import { api, formatMoney, formatDate, type Schemas } from "../../lib/api";
+  import { api, formatMoney, type Schemas } from "../../lib/api";
 
   type ResolvedAssumption = Schemas["ResolvedAssumption"];
-  type ForecastEvent = Schemas["ForecastEvent"];
 
   let {
     result,
-    events,
     currency,
     onchanged,
     onerror,
   }: {
     result: Schemas["ForecastResult"] | null;
-    events: ForecastEvent[];
     currency: string;
     onchanged: () => void;
     onerror: (message: string) => void;
   } = $props();
-
-  // Only targets the simulation actually resolved an assumption for — excludes cash (pooled)
-  // and everyday transaction accounts, so the form can't be pointed at a target that would
-  // silently have no effect.
-  const targets = $derived(
-    (result?.assumptions ?? []).map((a) => ({
-      key: `${a.target_type}:${a.target_id}`,
-      target_type: a.target_type,
-      target_id: a.target_id,
-      label: a.label,
-    }))
-  );
-  const targetLabels = $derived(new Map(targets.map((t) => [t.key, t.label])));
-  function targetLabel(e: ForecastEvent): string {
-    return targetLabels.get(`${e.target_type}:${e.target_id}`) ?? `#${e.target_id}`;
-  }
 
   function pct(bps: number): string {
     return `${bps >= 0 ? "+" : ""}${(bps / 100).toFixed(1)}%`;
@@ -133,42 +117,6 @@
     onchanged();
   }
 
-  // ---- certain changes ---------------------------------------------------------------
-  let ef = $state({
-    targetKey: "",
-    kind: "step_change" as Schemas["ForecastEventKind"],
-    effective_date: new Date().toISOString().slice(0, 10),
-    amount: "",
-    label: "",
-  });
-
-  async function addEvent() {
-    if (!ef.targetKey || !ef.label.trim() || !ef.amount) return;
-    const [target_type, target_id] = ef.targetKey.split(":") as [
-      Schemas["ForecastTargetType"],
-      string,
-    ];
-    const body: Schemas["SaveForecastEvent"] = {
-      target_type,
-      target_id: Number(target_id),
-      kind: ef.kind,
-      effective_date: ef.effective_date,
-      amount_minor: Math.round(parseFloat(ef.amount) * 100),
-      label: ef.label.trim(),
-    };
-    const { error: e } = await api.POST("/api/forecast/events", { body });
-    if (e) {
-      onerror("Failed to add the change.");
-      return;
-    }
-    ef.label = "";
-    ef.amount = "";
-    onchanged();
-  }
-  async function deleteEvent(id: number) {
-    await api.DELETE("/api/forecast/events/{id}", { params: { path: { id } } });
-    onchanged();
-  }
 </script>
 
 <div class="grid cards">
@@ -266,49 +214,6 @@
     {/if}
   </section>
 
-  <section class="card">
-    <div class="card-title">
-      <h2>Certain changes</h2>
-      <span class="muted small"
-        >a dated, exact adjustment — applied to every simulated path, not estimated</span
-      >
-    </div>
-    <div class="event-form">
-      <select class="select" bind:value={ef.targetKey}>
-        <option value="" disabled>Target…</option>
-        {#each targets as t (t.key)}<option value={t.key}>{t.label}</option>{/each}
-      </select>
-      <select class="select" bind:value={ef.kind}>
-        <option value="step_change">New recurring baseline from date</option>
-        <option value="one_off_amount">One-off amount on date</option>
-      </select>
-      <input class="input" type="date" bind:value={ef.effective_date} />
-      <input class="input tabular" placeholder="Amount" bind:value={ef.amount} />
-      <input class="input" placeholder="Label" bind:value={ef.label} />
-      <button class="btn btn-primary" onclick={addEvent}>Add</button>
-    </div>
-    {#if result?.assumptions.length === 0}
-      <div class="small faint" style="margin-top:8px">Add an account or category first.</div>
-    {/if}
-    <div class="event-list">
-      {#each events as e (e.id)}
-        <div class="line row spread">
-          <span>
-            <span class="badge target-badge"
-              >{e.kind === "step_change" ? "step change" : "one-off"}</span
-            >
-            {e.label} on {targetLabel(e)}
-            <span class="faint small">from {formatDate(e.effective_date)}</span>
-          </span>
-          <div class="row" style="gap:8px">
-            <span class="tabular small">{formatMoney(e.amount_minor, currency)}</span>
-            <button class="btn btn-sm btn-danger" onclick={() => deleteEvent(e.id)}>✕</button>
-          </div>
-        </div>
-      {/each}
-      {#if events.length === 0}<div class="small faint">None yet.</div>{/if}
-    </div>
-  </section>
 </div>
 
 <style>
@@ -354,18 +259,5 @@
   }
   .field .input {
     width: 100px;
-  }
-  .event-form {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 10px;
-    margin-bottom: 12px;
-  }
-  .line {
-    padding: 10px 0;
-    border-top: 1px solid var(--border);
-  }
-  .line:first-of-type {
-    border-top: none;
   }
 </style>

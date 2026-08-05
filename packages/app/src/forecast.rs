@@ -1719,6 +1719,7 @@ struct EventSim {
     event_id: i64,
     label: String,
     kind: LifeEventKind,
+    person_id: Option<i64>,
     probability: f64,
     /// Month offset of `expected_on` from today. Signed and unclamped — a date already past is a
     /// real case, handled by the window clamp rather than by dropping the event.
@@ -1898,6 +1899,7 @@ fn resolve_events(events: &[ForecastEvent], today: NaiveDate, horizon: i64) -> V
             event_id: e.id,
             label: e.label.clone(),
             kind: e.kind,
+            person_id: e.person_id,
             probability: e.probability_bps as f64 / 10_000.0,
             expected_month,
             spread: e.timing_spread_months as f64,
@@ -1920,6 +1922,9 @@ pub struct EventOutcome {
     pub event_id: i64,
     pub label: String,
     pub kind: LifeEventKind,
+    /// Whose event it is, so the chart can colour the band with their swatch. `None` for a
+    /// household event.
+    pub person_id: Option<i64>,
     pub probability_bps: i64,
     /// Paths it occurred on at all, in basis points. Differs from `probability_bps` exactly when an
     /// `only_if` bound.
@@ -1985,6 +1990,7 @@ fn summarise_events(
                 event_id: ev.event_id,
                 label: ev.label.clone(),
                 kind: ev.kind,
+                person_id: ev.person_id,
                 probability_bps: (ev.probability * 10_000.0).round() as i64,
                 occurrence_rate_bps: rate(occurred),
                 in_window_rate_bps: rate(in_window),
@@ -3409,6 +3415,7 @@ mod tests {
             event_id: 1,
             label: "Already happened".into(),
             kind: sure_core::LifeEventKind::Custom,
+            person_id: None,
             probability: 1.0,
             expected_month: -18.0,
             spread: 0.0,
@@ -3429,6 +3436,7 @@ mod tests {
             event_id: 1,
             label: "Far off".into(),
             kind: sure_core::LifeEventKind::Custom,
+            person_id: None,
             probability: 1.0,
             expected_month: 400.0,
             spread: 0.0,
@@ -3453,6 +3461,7 @@ mod tests {
             event_id: 1,
             label: "Child".into(),
             kind: sure_core::LifeEventKind::Child,
+            person_id: None,
             probability: 1.0,
             expected_month: 36.0,
             spread: 12.0,
@@ -3482,6 +3491,7 @@ mod tests {
             event_id: 1,
             label: "Promotion".into(),
             kind: sure_core::LifeEventKind::Promotion,
+            person_id: None,
             probability: 1.0,
             expected_month: 24.0,
             spread: 0.0,
@@ -3493,6 +3503,7 @@ mod tests {
             event_id: 2,
             label: "Child".into(),
             kind: sure_core::LifeEventKind::Child,
+            person_id: None,
             probability: 1.0,
             // Would land at month 6 unconstrained — well before the promotion.
             expected_month: 6.0,
@@ -3533,6 +3544,7 @@ mod tests {
             event_id: 42,
             label: "Maybe".into(),
             kind: sure_core::LifeEventKind::Custom,
+            person_id: None,
             probability: 0.5,
             expected_month: 12.0,
             spread: 0.0,

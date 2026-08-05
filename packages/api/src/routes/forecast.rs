@@ -254,6 +254,9 @@ pub struct EventOutcome {
     pub event_id: i64,
     pub label: String,
     pub kind: LifeEventKind,
+    /// Whose event it is, so the chart can colour its band with that person's swatch. Absent for a
+    /// household event.
+    pub person_id: Option<i64>,
     /// What was configured, for comparison with `occurrence_rate_bps` below.
     pub probability_bps: i64,
     /// Paths it occurred on. Differs from `probability_bps` exactly when an `only_if` bound.
@@ -284,6 +287,7 @@ impl From<sure_app::forecast::EventOutcome> for EventOutcome {
             event_id: o.event_id,
             label: o.label,
             kind: o.kind,
+            person_id: o.person_id,
             probability_bps: o.probability_bps,
             occurrence_rate_bps: o.occurrence_rate_bps,
             in_window_rate_bps: o.in_window_rate_bps,

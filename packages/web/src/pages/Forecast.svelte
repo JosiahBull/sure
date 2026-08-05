@@ -15,14 +15,15 @@
   import ProjectionTab from "./forecast/ProjectionTab.svelte";
   import AssumptionsTab from "./forecast/AssumptionsTab.svelte";
   import IncomeTab from "./forecast/IncomeTab.svelte";
+  import LifeEventsTab from "./forecast/LifeEventsTab.svelte";
+  import { people, personColor } from "../lib/people.svelte";
   import { queryParams, setQueryParam } from "../lib/router.svelte";
   import { HORIZONS, checkpointsFor, historyMonthsFor } from "../lib/charts/forecastScale";
-
-  type ForecastEvent = Schemas["ForecastEvent"];
 
   const TABS = [
     { key: "projection", label: "Projection" },
     { key: "income", label: "Income" },
+    { key: "events", label: "Life events" },
     { key: "assumptions", label: "Assumptions" },
   ] as const;
   type TabKey = (typeof TABS)[number]["key"];
@@ -45,7 +46,6 @@
 
   let history = $state<{ x: string; y: number }[]>([]);
   let result = $state<Schemas["ForecastResult"] | null>(null);
-  let events = $state<ForecastEvent[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let hoverPoint = $state<{ as_of: string; median: number; p10?: number; p90?: number } | null>(
@@ -60,19 +60,17 @@
       // year against thirty projected ones is a 3% sliver. See `historyMonthsFor`.
       const from = new Date();
       from.setMonth(from.getMonth() - historyMonthsFor(horizon));
-      const [nw, fc, ev] = await Promise.all([
+      const [nw, fc] = await Promise.all([
         api.GET("/api/reports/net-worth", {
           params: {
             query: { from: from.toISOString().slice(0, 10), interval: "month" },
           },
         }),
         api.GET("/api/forecast", { params: { query: { horizon_months: horizon } } }),
-        api.GET("/api/forecast/events", {}),
       ]);
       history = (nw.data?.points ?? []).map((p) => ({ x: p.as_of, y: p.net_worth_minor }));
       result = fc.data ?? null;
-      events = ev.data ?? [];
-      if (nw.error || fc.error || ev.error) error = "Failed to load forecast.";
+      if (nw.error || fc.error) error = "Failed to load forecast.";
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -89,6 +87,40 @@
   // Derived from the horizon and passed to the chart as well, so the tiles and the marks on the
   // chart cannot disagree about which months they describe.
   const checkpoints = $derived(checkpointsFor(horizon));
+
+  /**
+   * The events, shaped for the chart: *realised* timing, and a colour per person.
+   *
+   * Realised, not configured — a timing rule can push an event years later than what was typed, and
+   * the chart has to show where it actually lands. An event that never occurred on any path has no
+   * timing to draw, so it is dropped rather than pinned to its expected date.
+   */
+  const chartEvents = $derived(
+    (result?.events ?? [])
+      .filter((e) => e.month_median != null && e.occurrence_rate_bps > 0)
+      .map((e) => {
+        const who = e.person_id != null ? people.list.find((p) => p.id === e.person_id) : null;
+        return {
+          id: e.event_id,
+          name: e.label,
+          color: who ? personColor(who) : "var(--text-muted)",
+          // The *realised* rate, so an `only_if` that never fires reads as unlikely on the chart
+          // even when the event itself was configured as a certainty.
+          probabilityBps: e.occurrence_rate_bps,
+          p10: e.month_p10 ?? e.month_median!,
+          median: e.month_median!,
+          p90: e.month_p90 ?? e.month_median!,
+          truncated: e.truncated,
+        };
+      })
+  );
+
+  /** Set when a chart marker is clicked, so the Life events tab opens that row. */
+  let focusEventId = $state<number | null>(null);
+  function selectEvent(id: number) {
+    focusEventId = id;
+    setQueryParam("tab", "events");
+  }
 </script>
 
 <div class="row spread" style="margin-bottom:14px">
@@ -134,6 +166,8 @@
     months={result?.months ?? []}
     {currency}
     {checkpoints}
+    events={chartEvents}
+    onselectevent={selectEvent}
     onhover={(p) => (hoverPoint = p)}
   />
   <!-- An account whose currency has no rate is left out of the simulation entirely rather
@@ -158,14 +192,10 @@
   <ProjectionTab {result} {checkpoints} {currency} />
 {:else if tab === "income"}
   <IncomeTab {result} {currency} onchanged={load} />
+{:else if tab === "events"}
+  <LifeEventsTab {result} {currency} onchanged={load} {focusEventId} />
 {:else if tab === "assumptions"}
-  <AssumptionsTab
-    {result}
-    {events}
-    {currency}
-    onchanged={load}
-    onerror={(m) => (error = m)}
-  />
+  <AssumptionsTab {result} {currency} onchanged={load} onerror={(m) => (error = m)} />
 {/if}
 
 {#if loading && !result}
