@@ -839,6 +839,11 @@ mod tests {
 
     /// A database with one of most things — the *shape* a real backup has (a person owning an
     /// account, transactions, a valuation, a category, a rate), never anybody's real data.
+    ///
+    /// Every id here is the one the database hands back rather than a literal. That is not tidiness:
+    /// these rows used to claim `id = 1`, which was free until a migration started seeding default
+    /// categories and then collided with the first of them. A fixture that picks its own ids is
+    /// asserting something about the rest of the schema that it has no way to keep true.
     async fn populated_db() -> Db {
         let db = empty_db().await;
         let person: i64 = sqlx::query_scalar(
@@ -847,36 +852,40 @@ mod tests {
         .fetch_one(&db)
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO categories (id, name, kind, sort_order) VALUES (1, 'Groceries', 'expense', 0)",
+        let category: i64 = sqlx::query_scalar(
+            "INSERT INTO categories (name, kind, sort_order)
+             VALUES ('Groceries (fixture)', 'expense', 0) RETURNING id",
         )
-        .execute(&db)
+        .fetch_one(&db)
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (id, name, kind, currency_code, metadata, ownership, person_id)
-             VALUES (1, 'Everyday', 'bank', 'NZD', '{}', 'person', ?1)",
+        let account: i64 = sqlx::query_scalar(
+            "INSERT INTO accounts (name, kind, currency_code, metadata, ownership, person_id)
+             VALUES ('Everyday', 'bank', 'NZD', '{}', 'person', ?1) RETURNING id",
         )
         .bind(person)
-        .execute(&db)
+        .fetch_one(&db)
         .await
         .unwrap();
         for (posted_at, amount) in [("2026-01-05", 5_000_00i64), ("2026-01-20", -1_200_00)] {
             sqlx::query(
                 "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code,
                                            description, category_id)
-                 VALUES (1, ?1, ?2, 'NZD', 'x', 1)",
+                 VALUES (?1, ?2, ?3, 'NZD', 'x', ?4)",
             )
+            .bind(account)
             .bind(posted_at)
             .bind(amount)
+            .bind(category)
             .execute(&db)
             .await
             .unwrap();
         }
         sqlx::query(
             "INSERT INTO valuations (account_id, as_of, value_minor, currency_code)
-             VALUES (1, '2026-02-01', 3_800_00, 'NZD')",
+             VALUES (?1, '2026-02-01', 3_800_00, 'NZD')",
         )
+        .bind(account)
         .execute(&db)
         .await
         .unwrap();
