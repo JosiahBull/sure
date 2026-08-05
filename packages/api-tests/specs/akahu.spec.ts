@@ -713,3 +713,48 @@ test("linking with an unknown provider kind is rejected", async ({ api }) => {
   });
   expect(response.status).toBe(422);
 });
+
+// A brokerage platform arrives as one Akahu account per currency wallet, and all of them belong
+// to a single Sure account — so the connect dialog posts them together (`/link-group`) rather
+// than once each. The body below is field-for-field the one `ProviderConnectModal.linkGroup`
+// builds, which is the point of the test: `link_group` has DAL-level coverage already, and the
+// half that was never checked from outside is whether the *client's* body is accepted. It omits
+// `metadata` and both `opening_balance_*` fields — a brokerage account's value comes from its
+// holdings ledger, not an opening figure — and either of those becoming required would surface
+// to a user as the same thing a mis-keyed form did: "Failed to link brokerage account".
+test("group-linking every wallet of a brokerage platform creates one account", async ({ api }) => {
+  const before = await api.GET("/api/accounts", {});
+  const beforeCount = before.data?.length ?? 0;
+
+  const wallets = ["acc_grp_nzd", "acc_grp_usd", "acc_grp_aud"];
+  const { data: providers, response } = await api.POST("/api/providers/link-group", {
+    body: {
+      kind: "akahu",
+      members: wallets.map((id) => ({ external_id: id, name: `Akahu — ${id} Wallet` })),
+      new_account: {
+        name: "Sharesies",
+        kind: "brokerage",
+        currency_code: "NZD",
+        institution: "Sharesies",
+        archived: false,
+        sort_order: 0,
+        ownership: { kind: "joint" },
+      },
+    },
+  });
+  expect(response.status).toBe(201);
+
+  // One provider row per wallet, every one of them pointing at the same single new account.
+  expect(providers?.length).toBe(3);
+  const accountIds = new Set(providers?.map((p) => p.account_id));
+  expect(accountIds.size).toBe(1);
+  expect(
+    providers?.map((p) => (p.config as { external_account_id?: string }).external_account_id).sort(),
+  ).toEqual([...wallets].sort());
+
+  const after = await api.GET("/api/accounts", {});
+  expect(after.data?.length).toBe(beforeCount + 1);
+  const created = after.data?.find((a) => a.id === providers![0].account_id);
+  expect(created?.kind).toBe("brokerage");
+  expect(created?.name).toBe("Sharesies");
+});

@@ -89,10 +89,23 @@
 
   const label = $derived(providerLabel(kind.kind));
 
+  /**
+   * The key a brokerage platform's wallets are grouped under.
+   *
+   * Authorisation *and* institution, not institution alone: two people who each connect
+   * their own Sharesies would otherwise have every wallet merged into one account.
+   *
+   * One function, because this is half of a lookup — `groupForms[g.key]`, seeded in
+   * `discover` and read back when a row is expanded. Derived separately in those two
+   * places, the halves drifted (the authorisation went into the grouping and not the
+   * seeding), the lookup missed, and every brokerage row expanded onto an empty box with
+   * no form and no way to link it. A single expression cannot disagree with itself.
+   */
+  const brokerageGroupKey = (a: Schemas["ProviderAccount"]) =>
+    `${a.authorisation_id ?? ""}:${a.institution ?? a.external_id}`;
+
   // A brokerage platform (e.g. Sharesies) surfaces one upstream account per currency
-  // wallet; group them and link together into a single Brokerage account. Keyed by
-  // authorisation *and* institution, not institution alone: two people who each connect
-  // their own Sharesies would otherwise have every wallet merged into one account.
+  // wallet; group them and link together into a single Brokerage account.
   const brokerageGroups = $derived.by(() => {
     const groups = new Map<
       string,
@@ -100,7 +113,7 @@
     >();
     for (const a of discovered) {
       if (a.kind_hint !== "brokerage") continue;
-      const key = `${a.authorisation_id ?? ""}:${a.institution ?? a.external_id}`;
+      const key = brokerageGroupKey(a);
       let g = groups.get(key);
       if (!g) {
         g = { key, institution: a.institution ?? null, members: [] };
@@ -226,8 +239,10 @@
       // trips Svelte 5's unsafe-mutation guard and silently aborts the {#each} render.
       for (const a of discovered) {
         if (a.kind_hint === "brokerage") {
-          const key = a.institution ?? a.external_id;
-          groupForms[key] ??= {
+          // Same key the rows are grouped under — see `brokerageGroupKey`; the row body is
+          // only rendered when this lookup resolves, so a key that differs here is a
+          // brokerage account that cannot be linked at all.
+          groupForms[brokerageGroupKey(a)] ??= {
             target: "new",
             name: a.institution ?? a.name,
             currency: baseCurrency,
