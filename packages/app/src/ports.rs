@@ -24,9 +24,9 @@ use sure_core::{
     NewValuation, Ownership, Person, Provider, ProviderAccount, ProviderKind, ProviderSync, Rule,
     RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
     SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
-    SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTransaction, Settings,
-    StockPrice, SyncOutcome, Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation,
-    VestingStatus,
+    SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTaxScale,
+    SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId, Transaction,
+    TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
 };
 
 // ---- Clock ------------------------------------------------------------------
@@ -887,6 +887,34 @@ pub trait ForecastRepo: Send + Sync {
     ) -> AppResult<IncomeStream>;
     /// Refused with a conflict naming the forecast changes whose effects target it.
     async fn delete_income_stream(&self, id: i64) -> AppResult<()>;
+
+    /// Every stored tax scale, oldest first.
+    ///
+    /// The forecast reads these rather than `sure_core::tax`'s constants, which are now only a seed
+    /// and a fallback — otherwise editing a rate in settings would change nothing, which is the
+    /// whole point of storing them.
+    async fn list_tax_scales(&self) -> AppResult<Vec<StoredTaxScale>>;
+    async fn create_tax_scale(
+        &self,
+        scale_id: TaxScaleId,
+        input: SaveTaxScale,
+    ) -> AppResult<StoredTaxScale>;
+    async fn update_tax_scale(&self, id: i64, input: SaveTaxScale) -> AppResult<StoredTaxScale>;
+    /// Refused when it is the last one: an empty table taxes every gross salary at nothing.
+    async fn delete_tax_scale(&self, id: i64) -> AppResult<()>;
+    /// Throw the stored scales away and re-seed from the built-in figures.
+    async fn restore_tax_scales(&self) -> AppResult<Vec<StoredTaxScale>>;
+
+    /// Money *into* an account since `from`, for finding a salary already in the ledger.
+    ///
+    /// One narrow method here rather than a dependency on the whole `TransactionRepo`: the forecast
+    /// wants one query, and taking the twelve-method port for it would make every test fake carry
+    /// eleven `unreachable!()`s that say nothing.
+    async fn income_transactions(
+        &self,
+        from: &str,
+        account_id: Option<i64>,
+    ) -> AppResult<Vec<Transaction>>;
 }
 
 /// The config export/import blob is treated as opaque JSON at this boundary — its shape

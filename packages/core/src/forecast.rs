@@ -53,6 +53,13 @@ pub struct ForecastAssumption {
     /// `annual_growth_bps` is set: that is the user asserting a rate, and an assertion is
     /// not decayed.
     pub long_run_growth_bps: Option<i64>,
+    /// Annual fund fee in basis points, deducted from this account's growth every month.
+    ///
+    /// `None` means "not modelled" rather than zero — a fund that charges nothing is a claim worth
+    /// making on purpose, and assuming it is flattering.
+    pub annual_fee_bps: Option<i64>,
+    /// A flat annual membership or administration fee, in the account's own minor units.
+    pub annual_fixed_fee_minor: Option<i64>,
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -73,6 +80,10 @@ pub struct SaveForecastAssumption {
     pub dividend_yield_bps: Option<i64>,
     #[serde(default)]
     pub long_run_growth_bps: Option<i64>,
+    #[serde(default)]
+    pub annual_fee_bps: Option<i64>,
+    #[serde(default)]
+    pub annual_fixed_fee_minor: Option<i64>,
     #[serde(default)]
     pub notes: Option<String>,
 }

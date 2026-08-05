@@ -184,6 +184,10 @@ pub struct ResolvedAssumption {
     pub label: String,
     pub annual_growth_bps: i64,
     pub annual_volatility_bps: i64,
+    /// Annual fund fee in basis points, and a flat annual fee in the account's own minor units.
+    /// `None` for both means fees are not modelled here.
+    pub annual_fee_bps: Option<i64>,
+    pub annual_fixed_fee_minor: Option<i64>,
     /// The annual rate `annual_growth_bps` decays toward past
     /// [`TREND_FULL_STRENGTH_MONTHS`], in basis points. Only consulted when `source` is
     /// [`AssumptionSource::Derived`] — see [`long_run_anchor`] for why every other source is
@@ -492,6 +496,8 @@ impl ForecastService {
                     annual_growth_bps: 0,
                     annual_volatility_bps: 0,
                     long_run_growth_bps: 0,
+                    annual_fee_bps: None,
+                    annual_fixed_fee_minor: None,
                     dividend_yield_bps: None,
                     baseline_minor: None,
                     schedule: Some(LoanScheduleSummary {
@@ -554,6 +560,8 @@ impl ForecastService {
                 annual_growth_bps: growth,
                 annual_volatility_bps: vol,
                 long_run_growth_bps: ov.and_then(|o| o.long_run_growth_bps).unwrap_or(0),
+                annual_fee_bps: ov.and_then(|o| o.annual_fee_bps),
+                annual_fixed_fee_minor: ov.and_then(|o| o.annual_fixed_fee_minor),
                 dividend_yield_bps,
                 baseline_minor: None,
                 schedule: None,
@@ -614,6 +622,9 @@ impl ForecastService {
                 annual_growth_bps: growth,
                 annual_volatility_bps: vol,
                 long_run_growth_bps: ov.and_then(|o| o.long_run_growth_bps).unwrap_or(0),
+                // A category has no balance to charge a fee against.
+                annual_fee_bps: None,
+                annual_fixed_fee_minor: None,
                 dividend_yield_bps: None,
                 baseline_minor,
                 schedule: None,
@@ -728,6 +739,49 @@ impl ForecastService {
 
     pub async fn delete_income_stream(&self, id: i64) -> AppResult<()> {
         self.forecast.delete_income_stream(id).await
+    }
+
+    pub async fn list_tax_scales(&self) -> AppResult<Vec<sure_core::StoredTaxScale>> {
+        self.forecast.list_tax_scales().await
+    }
+
+    pub async fn create_tax_scale(
+        &self,
+        input: sure_core::SaveTaxScale,
+    ) -> AppResult<sure_core::StoredTaxScale> {
+        self.forecast
+            .create_tax_scale(sure_core::TaxScaleId::NzPaye, input)
+            .await
+    }
+
+    pub async fn update_tax_scale(
+        &self,
+        id: i64,
+        input: sure_core::SaveTaxScale,
+    ) -> AppResult<sure_core::StoredTaxScale> {
+        self.forecast.update_tax_scale(id, input).await
+    }
+
+    pub async fn delete_tax_scale(&self, id: i64) -> AppResult<()> {
+        self.forecast.delete_tax_scale(id).await
+    }
+
+    pub async fn restore_tax_scales(&self) -> AppResult<Vec<sure_core::StoredTaxScale>> {
+        self.forecast.restore_tax_scales().await
+    }
+
+    /// Salaries the ledger appears to contain, for someone about to record one by hand.
+    ///
+    /// Reads a two-year window, which is enough to see an annual payment twice and far more than
+    /// enough for anything more frequent.
+    pub async fn detect_income(
+        &self,
+        account_id: Option<i64>,
+    ) -> AppResult<Vec<crate::detect::DetectedStream>> {
+        let today = self.clock.today();
+        let from = (today - chrono::Duration::days(730)).to_string();
+        let txns = self.forecast.income_transactions(&from, account_id).await?;
+        Ok(crate::detect::detect(&txns, today))
     }
 
     /// Monte Carlo projection: `params.simulations` independent monthly paths out to
@@ -850,11 +904,20 @@ impl ForecastService {
                 let resolved = by_target.get(&(ForecastTargetType::Account, a.id));
                 let annual_growth = resolved.map(|r| r.annual_growth_bps).unwrap_or(0);
                 let annual_vol = resolved.map(|r| r.annual_volatility_bps).unwrap_or(0);
-                let drift = drift_series(
+                // The fee comes off the growth rate, which is what a percentage fee is. Subtracted
+                // as a *log* return rather than from the annual bps, so 6% gross less a 1.05% fee
+                // compounds to exactly what 4.95% net would — the two differ by a few basis points
+                // a year otherwise, and over thirty years that is visible.
+                let fee_bps = resolved.and_then(|r| r.annual_fee_bps).unwrap_or(0);
+                let fee_log = annual_rate_to_monthly_log_return(fee_bps);
+                let drift: Vec<f64> = drift_series(
                     annual_growth,
                     resolved.and_then(|r| long_run_anchor(r)),
                     horizon,
-                );
+                )
+                .into_iter()
+                .map(|r| r - fee_log)
+                .collect();
                 let monthly_vol = annual_vol_to_monthly_sd(annual_vol);
                 if class == AccountClass::Liability {
                     // Project a debt the same way its rate was measured. `derive_account_rate`
@@ -904,6 +967,11 @@ impl ForecastService {
                 // the intent where the reader is looking.
                 repayment_debits_cash: reports::is_excluded_from_spend(a.kind)
                     && a.kind != AccountKind::StudentLoan,
+                monthly_fixed_fee: by_target
+                    .get(&(ForecastTargetType::Account, a.id))
+                    .and_then(|r| r.annual_fixed_fee_minor)
+                    .unwrap_or(0) as f64
+                    / 12.0,
                 account_id: a.id,
                 takes_events,
             });
@@ -914,6 +982,8 @@ impl ForecastService {
         // Built before `category_sims`, because what a stream models has to be netted out of the
         // category it lands in before that category's baseline is fixed. Without that, a salary
         // recorded here *and* fitted from the bank statement is counted twice.
+        // The stored scales, resolved once for the whole run rather than per stream per month.
+        let tax_scales = crate::income::TaxScales::new(&self.forecast.list_tax_scales().await?);
         let mut stream_sims: Vec<StreamSim> = Vec::new();
         let mut unmodelled_streams: Vec<String> = Vec::new();
         // Modelled monthly net per linked category, base-currency major units.
@@ -954,9 +1024,9 @@ impl ForecastService {
             let (start_level, steps, residual_from_month, monthly_increase) =
                 crate::income::level_schedule(st, today, horizon);
             let gross_total = person_gross.get(&st.person_id).copied().unwrap_or(0);
-            let take_home = crate::income::take_home(st, gross_total, today);
+            let take_home = crate::income::take_home(st, gross_total, today, &tax_scales);
             let (kiwisaver_fraction, student_loan_fraction) =
-                crate::income::contribution_rates(st, gross_total, today);
+                crate::income::contribution_rates(st, gross_total, today, &tax_scales);
 
             // The contribution is in the stream's currency and the balance is in the account's, so
             // the factor is one over the other — both are already native-minor-to-base-major.
@@ -1477,6 +1547,15 @@ impl ForecastService {
                         -contribution
                     };
                 }
+                // A flat fee is money leaving the account regardless of how it performed, so it is
+                // charged after growth rather than folded into the rate. Not allowed to push a
+                // balance below zero: a fund closes an emptied account, it does not invoice you.
+                for (i, sim) in account_sims.iter().enumerate() {
+                    if sim.monthly_fixed_fee > 0.0 && acc_values[i] > 0.0 {
+                        acc_values[i] = (acc_values[i] - sim.monthly_fixed_fee).max(0.0);
+                    }
+                }
+
                 // ---- income streams -----------------------------------------------------
                 //
                 // Base-currency major units, like `cash`. Ordered deliberately: the level moves
@@ -1672,6 +1751,11 @@ struct AccountSim {
     /// has no schedule to be deterministic *with* (see [`loan_terms`]), and a trend-projected
     /// account never debits the pool at all.
     repayment_debits_cash: bool,
+    /// A flat fee charged against this account every month, native minor units — an annual
+    /// membership fee spread evenly. The *percentage* fee is not here: it is folded into
+    /// `monthly_drift`, because a proportional fee is arithmetically a reduction in the growth rate
+    /// and modelling it twice over would be two places to get one number wrong.
+    monthly_fixed_fee: f64,
     /// Which account this is, so an event effect naming it can be matched to this slot.
     account_id: i64,
     /// Whether event effects apply here at all.
@@ -4054,6 +4138,8 @@ mod tests {
                             annual_growth_bps,
                             annual_volatility_bps,
                             long_run_growth_bps: None,
+                            annual_fee_bps: None,
+                            annual_fixed_fee_minor: None,
                             dividend_yield_bps: None,
                             notes: None,
                             created_at: "2026-08-01T00:00:00Z".to_string(),
@@ -4128,6 +4214,40 @@ mod tests {
             }
             async fn delete_income_stream(&self, _id: i64) -> AppResult<()> {
                 unreachable!()
+            }
+            // Empty: `TaxScales::new` then falls back to the built-in figures, which is what these
+            // tests were written against.
+            async fn list_tax_scales(&self) -> AppResult<Vec<sure_core::StoredTaxScale>> {
+                Ok(Vec::new())
+            }
+            async fn create_tax_scale(
+                &self,
+                _scale_id: sure_core::TaxScaleId,
+                _input: sure_core::SaveTaxScale,
+            ) -> AppResult<sure_core::StoredTaxScale> {
+                unreachable!()
+            }
+            async fn update_tax_scale(
+                &self,
+                _id: i64,
+                _input: sure_core::SaveTaxScale,
+            ) -> AppResult<sure_core::StoredTaxScale> {
+                unreachable!()
+            }
+            async fn delete_tax_scale(&self, _id: i64) -> AppResult<()> {
+                unreachable!()
+            }
+            async fn restore_tax_scales(&self) -> AppResult<Vec<sure_core::StoredTaxScale>> {
+                unreachable!()
+            }
+            // Detection has its own unit tests over `crate::detect`; an empty ledger here is honest
+            // rather than a panic waiting for whoever adds a sim test that touches it.
+            async fn income_transactions(
+                &self,
+                _from: &str,
+                _account_id: Option<i64>,
+            ) -> AppResult<Vec<sure_core::Transaction>> {
+                Ok(Vec::new())
             }
         }
 

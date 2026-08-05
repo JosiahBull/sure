@@ -71,14 +71,18 @@ impl FromStr for TaxScaleId {
 }
 
 /// A dated snapshot of one jurisdiction's deduction rules.
+///
+/// Borrowed rather than owned, so the built-in constants below cost nothing. `sure-dal` stores an
+/// editable copy and hands out `&'static`-free equivalents via [`OwnedTaxScale`]; both satisfy the
+/// same functions because everything here reads through slices.
 #[derive(Debug, Clone, Copy)]
-pub struct TaxScale {
+pub struct TaxScale<'a> {
     /// ISO-8601 date this scale takes effect. Scales are held in ascending order and the latest
     /// one not after the date being asked about wins.
     pub effective_from: &'static str,
     /// `(inclusive_upper_bound_annual_minor, rate_bps)`, ascending. The final bound is
     /// [`i64::MAX`], so there is no "and above" special case to forget.
-    pub brackets: &'static [(i64, i64)],
+    pub brackets: &'a [(i64, i64)],
     /// ACC earner levy, in basis points of liable earnings.
     pub acc_levy_bps: i64,
     /// Earnings above this attract no further earner levy.
@@ -96,7 +100,17 @@ pub struct TaxScale {
     ///
     /// Unlike PAYE this is a *flat* rate chosen by which bracket the employee's total lands in, not
     /// a progressive slice-by-slice calculation.
-    pub esct_brackets: &'static [(i64, i64)],
+    pub esct_brackets: &'a [(i64, i64)],
+    /// What the government adds per dollar the *member* contributes, in basis points.
+    ///
+    /// Employer contributions deliberately do not count toward it — easy to miss, and it would
+    /// otherwise overstate the credit for anyone whose employer matches them.
+    pub kiwisaver_govt_match_bps: i64,
+    /// The annual ceiling on that contribution.
+    pub kiwisaver_govt_max_minor: i64,
+    /// Taxable income above which no government contribution is paid at all. [`i64::MAX`] for the
+    /// years before an income test existed.
+    pub kiwisaver_govt_income_cap_minor: i64,
 }
 
 /// New Zealand, ascending by `effective_from`.
@@ -114,7 +128,7 @@ pub struct TaxScale {
 /// The 2025-26 scale is carried even though only the levy and cap differ from 2026-27: a
 /// projection reconciled against the trailing twelve months of history spans both, and a single
 /// scale would price last year's pay at this year's levy.
-pub const NZ_TAX_SCALES: &[TaxScale] = &[
+pub const NZ_TAX_SCALES: &[TaxScale<'static>] = &[
     TaxScale {
         effective_from: "2025-04-01",
         brackets: NZ_BRACKETS_2025,
@@ -124,6 +138,26 @@ pub const NZ_TAX_SCALES: &[TaxScale] = &[
         student_loan_threshold_minor: 24_128_00,
         student_loan_rate_bps: 1_200,
         esct_brackets: NZ_ESCT_2025,
+        // The pre-Budget-2025 government contribution: 50c per member dollar, capped at $521.43,
+        // with no income test.
+        kiwisaver_govt_match_bps: 5_000,
+        kiwisaver_govt_max_minor: 521_43,
+        kiwisaver_govt_income_cap_minor: i64::MAX,
+    },
+    // Budget 2025 halved the government contribution and added an income test, from 1 July 2025 —
+    // which lands mid-tax-year. A scale starting on that date is exactly what dated scales are for:
+    // the alternative is one entry that is wrong for a quarter of its own span.
+    TaxScale {
+        effective_from: "2025-07-01",
+        brackets: NZ_BRACKETS_2025,
+        acc_levy_bps: 167,
+        acc_income_cap_minor: 152_790_00,
+        student_loan_threshold_minor: 24_128_00,
+        student_loan_rate_bps: 1_200,
+        esct_brackets: NZ_ESCT_2025,
+        kiwisaver_govt_match_bps: 2_500,
+        kiwisaver_govt_max_minor: 260_72,
+        kiwisaver_govt_income_cap_minor: 180_000_00,
     },
     TaxScale {
         effective_from: "2026-04-01",
@@ -134,6 +168,9 @@ pub const NZ_TAX_SCALES: &[TaxScale] = &[
         student_loan_threshold_minor: 24_128_00,
         student_loan_rate_bps: 1_200,
         esct_brackets: NZ_ESCT_2025,
+        kiwisaver_govt_match_bps: 2_500,
+        kiwisaver_govt_max_minor: 260_72,
+        kiwisaver_govt_income_cap_minor: 180_000_00,
     },
 ];
 
@@ -161,6 +198,215 @@ const NZ_ESCT_2025: &[(i64, i64)] = &[
     (216_000_00, 3_300),
     (i64::MAX, 3_900),
 ];
+
+/// A tax scale that owns its brackets — what a stored, user-editable one deserialises into.
+///
+/// The same fields as [`TaxScale`], and [`OwnedTaxScale::as_scale`] hands back a borrowed view, so
+/// every function in this module works on either. That is the whole reason the built-in constants
+/// are not simply deleted once the table exists: they remain the seed, the fallback for an empty
+/// table, and the thing the tests are written against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OwnedTaxScale {
+    pub effective_from: String,
+    /// `(upper_bound_annual_minor, rate_bps)`. `None` on the bound means "and above".
+    pub brackets: Vec<(Option<i64>, i64)>,
+    pub acc_levy_bps: i64,
+    pub acc_income_cap_minor: i64,
+    pub student_loan_threshold_minor: i64,
+    pub student_loan_rate_bps: i64,
+    pub esct_brackets: Vec<(Option<i64>, i64)>,
+    pub kiwisaver_govt_match_bps: i64,
+    pub kiwisaver_govt_max_minor: i64,
+    /// `None` for "no income test", which is what [`i64::MAX`] means internally — nobody wants to
+    /// see 9223372036854775807 in a settings field.
+    pub kiwisaver_govt_income_cap_minor: Option<i64>,
+}
+
+impl OwnedTaxScale {
+    /// Flatten `None` bounds back to [`i64::MAX`] for the arithmetic.
+    fn bounded(brackets: &[(Option<i64>, i64)]) -> Vec<(i64, i64)> {
+        brackets
+            .iter()
+            .map(|&(upper, rate)| (upper.unwrap_or(i64::MAX), rate))
+            .collect()
+    }
+
+    /// Every way a stored scale can be nonsense, collected at once.
+    ///
+    /// Checked here rather than by the database because the interesting failures are *relationships*
+    /// — an unordered bracket list, a table with no open top — which a column CHECK cannot see.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut problems = Vec::new();
+        let check = |name: &str, b: &[(Option<i64>, i64)], problems: &mut Vec<String>| {
+            if b.is_empty() {
+                problems.push(format!("{name} must have at least one band"));
+                return;
+            }
+            // The last band has to be open, or income above it is taxed at nothing at all.
+            if b.last().is_some_and(|&(upper, _)| upper.is_some()) {
+                problems.push(format!(
+                    "{name}'s last band must be open-ended — income above it would otherwise be untaxed"
+                ));
+            }
+            let bounds = Self::bounded(b);
+            if bounds.windows(2).any(|w| w[0].0 >= w[1].0) {
+                problems.push(format!("{name}'s bands must be in ascending order"));
+            }
+            if bounds
+                .iter()
+                .any(|&(_, rate)| !(0..=10_000).contains(&rate))
+            {
+                problems.push(format!("{name}'s rates must be between 0 and 100%"));
+            }
+            if bounds.iter().any(|&(upper, _)| upper < 0) {
+                problems.push(format!("{name}'s bands cannot be negative"));
+            }
+        };
+        check("brackets", &self.brackets, &mut problems);
+        check("esct_brackets", &self.esct_brackets, &mut problems);
+        if !(0..=10_000).contains(&self.acc_levy_bps) {
+            problems.push("acc_levy_bps must be between 0 and 100%".into());
+        }
+        if !(0..=10_000).contains(&self.student_loan_rate_bps) {
+            problems.push("student_loan_rate_bps must be between 0 and 100%".into());
+        }
+        if !(0..=10_000).contains(&self.kiwisaver_govt_match_bps) {
+            problems.push("kiwisaver_govt_match_bps must be between 0 and 100%".into());
+        }
+        if self.kiwisaver_govt_max_minor < 0 {
+            problems.push("the government contribution cap cannot be negative".into());
+        }
+        if self.acc_income_cap_minor < 0 || self.student_loan_threshold_minor < 0 {
+            problems.push("caps and thresholds cannot be negative".into());
+        }
+        if crate::iso_date::IsoDate::parse(&self.effective_from).is_err() {
+            problems.push(format!(
+                "effective_from must be an ISO-8601 date, got {:?}",
+                self.effective_from
+            ));
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems)
+        }
+    }
+}
+
+impl From<&TaxScale<'_>> for OwnedTaxScale {
+    fn from(s: &TaxScale<'_>) -> Self {
+        let open = |b: &[(i64, i64)]| -> Vec<(Option<i64>, i64)> {
+            b.iter()
+                .map(|&(upper, rate)| ((upper != i64::MAX).then_some(upper), rate))
+                .collect()
+        };
+        OwnedTaxScale {
+            effective_from: s.effective_from.to_string(),
+            brackets: open(s.brackets),
+            acc_levy_bps: s.acc_levy_bps,
+            acc_income_cap_minor: s.acc_income_cap_minor,
+            student_loan_threshold_minor: s.student_loan_threshold_minor,
+            student_loan_rate_bps: s.student_loan_rate_bps,
+            esct_brackets: open(s.esct_brackets),
+            kiwisaver_govt_match_bps: s.kiwisaver_govt_match_bps,
+            kiwisaver_govt_max_minor: s.kiwisaver_govt_max_minor,
+            kiwisaver_govt_income_cap_minor: (s.kiwisaver_govt_income_cap_minor != i64::MAX)
+                .then_some(s.kiwisaver_govt_income_cap_minor),
+        }
+    }
+}
+
+/// A resolved scale the arithmetic can run against, owning its flattened bracket tables.
+///
+/// [`paye`] and friends take `&TaxScale`, which borrows `&'static [(i64, i64)]`. A stored scale's
+/// brackets are neither static nor pre-flattened, so this holds them alive for the borrow.
+pub struct ResolvedScale {
+    brackets: Vec<(i64, i64)>,
+    esct: Vec<(i64, i64)>,
+    effective_from: String,
+    acc_levy_bps: i64,
+    acc_income_cap_minor: i64,
+    student_loan_threshold_minor: i64,
+    student_loan_rate_bps: i64,
+    kiwisaver_govt_match_bps: i64,
+    kiwisaver_govt_max_minor: i64,
+    kiwisaver_govt_income_cap_minor: i64,
+}
+
+impl ResolvedScale {
+    pub fn new(owned: &OwnedTaxScale) -> Self {
+        ResolvedScale {
+            brackets: OwnedTaxScale::bounded(&owned.brackets),
+            esct: OwnedTaxScale::bounded(&owned.esct_brackets),
+            effective_from: owned.effective_from.clone(),
+            acc_levy_bps: owned.acc_levy_bps,
+            acc_income_cap_minor: owned.acc_income_cap_minor,
+            student_loan_threshold_minor: owned.student_loan_threshold_minor,
+            student_loan_rate_bps: owned.student_loan_rate_bps,
+            kiwisaver_govt_match_bps: owned.kiwisaver_govt_match_bps,
+            kiwisaver_govt_max_minor: owned.kiwisaver_govt_max_minor,
+            kiwisaver_govt_income_cap_minor: owned
+                .kiwisaver_govt_income_cap_minor
+                .unwrap_or(i64::MAX),
+        }
+    }
+
+    /// A borrowed view for the arithmetic. Lives as long as `self`.
+    pub fn as_scale(&self) -> TaxScale<'_> {
+        TaxScale {
+            // A leaked-free borrow is impossible through `&'static str`, so the date — which no
+            // calculation reads — is the one field that has to be static. It is only ever used for
+            // ordering, which `scale_for` does before this point.
+            effective_from: "",
+            brackets: &self.brackets,
+            acc_levy_bps: self.acc_levy_bps,
+            acc_income_cap_minor: self.acc_income_cap_minor,
+            student_loan_threshold_minor: self.student_loan_threshold_minor,
+            student_loan_rate_bps: self.student_loan_rate_bps,
+            esct_brackets: &self.esct,
+            kiwisaver_govt_match_bps: self.kiwisaver_govt_match_bps,
+            kiwisaver_govt_max_minor: self.kiwisaver_govt_max_minor,
+            kiwisaver_govt_income_cap_minor: self.kiwisaver_govt_income_cap_minor,
+        }
+    }
+
+    pub fn effective_from(&self) -> &str {
+        &self.effective_from
+    }
+}
+
+/// A stored scale on the wire: the rules, plus the row identity needed to edit them.
+///
+/// Here rather than in `sure-dal` because it is wire vocabulary — the DAL has no `utoipa`, and that
+/// missing dependency is the layering rule making itself felt rather than an oversight to paper over.
+#[derive(Debug, Serialize, ToSchema, PartialEq, Eq)]
+pub struct StoredTaxScale {
+    pub id: i64,
+    pub scale_id: TaxScaleId,
+    /// Where these figures came from, so a future reader can check them rather than trust them.
+    pub source_note: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(flatten)]
+    pub scale: OwnedTaxScale,
+}
+
+/// Write body for a tax scale.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SaveTaxScale {
+    #[serde(flatten)]
+    pub scale: OwnedTaxScale,
+    #[serde(default)]
+    pub source_note: Option<String>,
+}
+
+/// The built-in scales as editable values — what the DAL seeds an empty table with.
+pub fn builtin_scales(id: TaxScaleId) -> Vec<OwnedTaxScale> {
+    match id {
+        TaxScaleId::None => Vec::new(),
+        TaxScaleId::NzPaye => NZ_TAX_SCALES.iter().map(OwnedTaxScale::from).collect(),
+    }
+}
 
 /// KiwiSaver employee contribution rates an employee may elect, in basis points.
 ///
@@ -205,8 +451,10 @@ pub struct PayeBreakdown {
     pub employer_kiwisaver_minor: i64,
     /// ESCT taken off that contribution.
     pub esct_minor: i64,
-    /// What actually reaches the KiwiSaver account: the employee's contribution plus the employer's
-    /// net of ESCT. This is the figure a projection should credit, and the reason the three
+    /// The government's annual contribution, matched against the *member's* own contributions only.
+    pub govt_contribution_minor: i64,
+    /// What actually reaches the KiwiSaver account: the employee's contribution, the employer's net
+    /// of ESCT, and the government's. This is the figure a projection should credit, and the reason the three
     /// components above are itemised rather than collapsed into it.
     pub kiwisaver_credited_minor: i64,
 }
@@ -216,7 +464,7 @@ pub struct PayeBreakdown {
 /// `None` rather than the earliest scale, deliberately: a date before the first entry is a
 /// question this table cannot answer, and answering it with rules that had not been written yet
 /// would be a guess dressed as a fact.
-pub fn scale_for(id: TaxScaleId, on: NaiveDate) -> Option<&'static TaxScale> {
+pub fn scale_for(id: TaxScaleId, on: NaiveDate) -> Option<&'static TaxScale<'static>> {
     match id {
         TaxScaleId::None => None,
         TaxScaleId::NzPaye => NZ_TAX_SCALES.iter().rev().find(|s| {
@@ -226,7 +474,7 @@ pub fn scale_for(id: TaxScaleId, on: NaiveDate) -> Option<&'static TaxScale> {
 }
 
 /// The most recent scale on record, for a caller with no particular date in mind.
-pub fn latest_scale(id: TaxScaleId) -> Option<&'static TaxScale> {
+pub fn latest_scale(id: TaxScaleId) -> Option<&'static TaxScale<'static>> {
     match id {
         TaxScaleId::None => None,
         TaxScaleId::NzPaye => NZ_TAX_SCALES.last(),
@@ -252,7 +500,7 @@ fn bps_of(amount_minor: i64, bps: i64) -> i64 {
 ///
 /// Each bracket taxes only the slice of income inside it, which is what "progressive" means and
 /// what a single average rate cannot express.
-fn income_tax_minor(scale: &TaxScale, annual_gross_minor: i64) -> i64 {
+fn income_tax_minor(scale: &TaxScale<'_>, annual_gross_minor: i64) -> i64 {
     let mut tax = 0i64;
     let mut lower = 0i64;
     for &(upper, rate_bps) in scale.brackets {
@@ -271,7 +519,7 @@ fn income_tax_minor(scale: &TaxScale, annual_gross_minor: i64) -> i64 {
 /// Negative or zero gross yields an all-zero breakdown rather than negative tax: a stream cannot
 /// pay less than nothing, and the DB refuses a non-positive `gross_annual_minor` anyway, so this
 /// is the belt-and-braces branch for a value that arrived some other way.
-pub fn paye(scale: &TaxScale, input: PayeInput) -> PayeBreakdown {
+pub fn paye(scale: &TaxScale<'_>, input: PayeInput) -> PayeBreakdown {
     let gross = input.annual_gross_minor;
     if gross <= 0 {
         return PayeBreakdown::default();
@@ -289,6 +537,7 @@ pub fn paye(scale: &TaxScale, input: PayeInput) -> PayeBreakdown {
     // figures stand in for IR's "prior year plus expected contributions", which is the same number
     // for anyone whose pay is not changing and the closest available one for anyone whose is.
     let esct = bps_of(employer_ks, esct_rate_bps(scale, gross + employer_ks));
+    let govt = govt_contribution_minor(scale, gross, kiwisaver);
     let student_loan = if input.student_loan {
         bps_of(
             (gross - scale.student_loan_threshold_minor).max(0),
@@ -308,13 +557,38 @@ pub fn paye(scale: &TaxScale, input: PayeInput) -> PayeBreakdown {
         net_minor: gross - income_tax - acc - kiwisaver - student_loan,
         employer_kiwisaver_minor: employer_ks,
         esct_minor: esct,
-        kiwisaver_credited_minor: kiwisaver + employer_ks - esct,
+        govt_contribution_minor: govt,
+        kiwisaver_credited_minor: kiwisaver + employer_ks - esct + govt,
     }
+}
+
+/// The government's annual KiwiSaver contribution.
+///
+/// Matched against the **member's** contributions only — an employer's do not count toward it, which
+/// is easy to miss and would overstate the credit for anyone whose employer matches them. Capped
+/// twice over: at a flat annual maximum, and by an income test above which nothing is paid.
+///
+/// Not prorated for a partial membership year or for someone under 18 or over 65. A projection is
+/// about whole years ahead, and the eligibility rules that would need a birthday are the sort of
+/// thing this model does not carry.
+pub fn govt_contribution_minor(
+    scale: &TaxScale<'_>,
+    annual_gross_minor: i64,
+    member_contribution_minor: i64,
+) -> i64 {
+    if annual_gross_minor > scale.kiwisaver_govt_income_cap_minor {
+        return 0;
+    }
+    bps_of(
+        member_contribution_minor.max(0),
+        scale.kiwisaver_govt_match_bps,
+    )
+    .min(scale.kiwisaver_govt_max_minor)
 }
 
 /// The flat ESCT rate for an employee whose salary plus employer contributions total
 /// `esct_income_minor`.
-pub fn esct_rate_bps(scale: &TaxScale, esct_income_minor: i64) -> i64 {
+pub fn esct_rate_bps(scale: &TaxScale<'_>, esct_income_minor: i64) -> i64 {
     scale
         .esct_brackets
         .iter()
@@ -326,7 +600,7 @@ pub fn esct_rate_bps(scale: &TaxScale, esct_income_minor: i64) -> i64 {
 }
 
 /// Take-home as a fraction of gross, in basis points — the *average* rate at this salary.
-pub fn average_take_home_bps(scale: &TaxScale, input: PayeInput) -> i64 {
+pub fn average_take_home_bps(scale: &TaxScale<'_>, input: PayeInput) -> i64 {
     let b = paye(scale, input);
     if b.gross_minor <= 0 {
         return 10_000;
@@ -344,7 +618,7 @@ pub fn average_take_home_bps(scale: &TaxScale, input: PayeInput) -> i64 {
 /// A dollar step would round to nothing against integer bps arithmetic; $1 000 is small enough
 /// that it sits inside one bracket everywhere except exactly at a threshold, and large enough to
 /// difference cleanly.
-pub fn marginal_take_home_bps(scale: &TaxScale, input: PayeInput) -> i64 {
+pub fn marginal_take_home_bps(scale: &TaxScale<'_>, input: PayeInput) -> i64 {
     const STEP_MINOR: i64 = 1_000_00;
     let base = paye(scale, input);
     let stepped = paye(
@@ -361,7 +635,7 @@ pub fn marginal_take_home_bps(scale: &TaxScale, input: PayeInput) -> i64 {
 mod tests {
     use super::*;
 
-    fn scale() -> &'static TaxScale {
+    fn scale() -> &'static TaxScale<'static> {
         latest_scale(TaxScaleId::NzPaye).expect("NZ scale exists")
     }
 
@@ -604,8 +878,14 @@ mod tests {
         assert_eq!(b.employer_kiwisaver_minor, 3_500_00);
         // $103,500 total puts the ESCT rate at 33%.
         assert_eq!(b.esct_minor, 1_155_00);
-        // The account receives both contributions, less the tax on the employer's.
-        assert_eq!(b.kiwisaver_credited_minor, 3_500_00 + 3_500_00 - 1_155_00);
+        // The account receives both contributions, less the tax on the employer's, plus the
+        // government's — which is capped, and matched against the member's half alone.
+        assert_eq!(b.govt_contribution_minor, 260_72);
+        assert_eq!(
+            b.kiwisaver_credited_minor,
+            3_500_00 + 3_500_00 - 1_155_00 + 260_72
+        );
+        // ESCT still costs more than the government contributes back, at this income.
         assert!(b.kiwisaver_credited_minor < b.kiwisaver_minor + b.employer_kiwisaver_minor);
     }
 
@@ -626,7 +906,84 @@ mod tests {
             )
         };
         assert_eq!(mk(0).net_minor, mk(KIWISAVER_DEFAULT_BPS).net_minor);
-        assert_eq!(mk(0).kiwisaver_credited_minor, 90_000_00 * 300 / 10_000);
+        // With no employer contribution the account still gets the member's plus the government's.
+        let member = 90_000_00 * 300 / 10_000;
+        assert_eq!(
+            mk(0).kiwisaver_credited_minor,
+            member + mk(0).govt_contribution_minor
+        );
+    }
+
+    /// Matched against the member's own contributions only — an employer's do not count, which is
+    /// the detail most likely to be got wrong and would overstate the credit for anyone matched.
+    #[test]
+    fn the_government_matches_only_the_members_own_contributions() {
+        let s = scale();
+        let b = paye(
+            s,
+            PayeInput {
+                annual_gross_minor: 100_000_00,
+                kiwisaver_bps: 350,
+                employer_kiwisaver_bps: 350,
+                student_loan: false,
+            },
+        );
+        // $3,500 of member contributions is far past the $1,042.86 needed to max it out, so the
+        // credit is the cap — and the employer's $3,500 does not raise it.
+        assert_eq!(b.govt_contribution_minor, 260_72);
+
+        // A small contributor gets 25c per dollar rather than the cap.
+        assert_eq!(govt_contribution_minor(s, 30_000_00, 400_00), 100_00);
+        // …and $1,042.86 is exactly the point where the cap starts binding.
+        assert_eq!(govt_contribution_minor(s, 30_000_00, 1_042_86), 260_72);
+        assert!(govt_contribution_minor(s, 30_000_00, 1_042_00) < 260_72);
+    }
+
+    /// Above the income test nothing is paid at all — not a reduced amount.
+    #[test]
+    fn the_government_contribution_stops_above_the_income_cap() {
+        let s = scale();
+        assert_eq!(govt_contribution_minor(s, 180_000_00, 5_000_00), 260_72);
+        assert_eq!(govt_contribution_minor(s, 180_000_01, 5_000_00), 0);
+    }
+
+    /// Budget 2025 halved the rate and added the income test from 1 July 2025 — mid-tax-year. The
+    /// dated scales have to reflect that, or a projection prices a year at rules it never had.
+    #[test]
+    fn the_budget_2025_change_lands_on_its_own_date_not_the_tax_year_boundary() {
+        let before = scale_for(TaxScaleId::NzPaye, d("2025-05-01")).unwrap();
+        let after = scale_for(TaxScaleId::NzPaye, d("2025-08-01")).unwrap();
+        assert_eq!(before.kiwisaver_govt_match_bps, 5_000);
+        assert_eq!(before.kiwisaver_govt_max_minor, 521_43);
+        assert_eq!(before.kiwisaver_govt_income_cap_minor, i64::MAX);
+        assert_eq!(after.kiwisaver_govt_match_bps, 2_500);
+        assert_eq!(after.kiwisaver_govt_max_minor, 260_72);
+        assert_eq!(after.kiwisaver_govt_income_cap_minor, 180_000_00);
+    }
+
+    /// The government's contribution reaches the account, so it belongs in the credited figure —
+    /// but it is not income, so it must not touch take-home.
+    #[test]
+    fn the_government_contribution_is_credited_but_is_not_take_home() {
+        let s = scale();
+        let with = paye(
+            s,
+            PayeInput {
+                annual_gross_minor: 60_000_00,
+                kiwisaver_bps: 350,
+                employer_kiwisaver_bps: 0,
+                student_loan: false,
+            },
+        );
+        let member = 60_000_00 * 350 / 10_000;
+        assert_eq!(
+            with.kiwisaver_credited_minor,
+            member + with.govt_contribution_minor
+        );
+        assert_eq!(
+            with.net_minor,
+            60_000_00 - with.income_tax_minor - with.acc_levy_minor - member
+        );
     }
 
     #[test]

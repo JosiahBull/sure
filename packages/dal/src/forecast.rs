@@ -20,6 +20,8 @@ struct ForecastAssumptionRow {
     annual_volatility_bps: Option<i64>,
     dividend_yield_bps: Option<i64>,
     long_run_growth_bps: Option<i64>,
+    annual_fee_bps: Option<i64>,
+    annual_fixed_fee_minor: Option<i64>,
     notes: Option<String>,
     created_at: String,
     updated_at: String,
@@ -44,6 +46,8 @@ impl TryFrom<ForecastAssumptionRow> for ForecastAssumption {
             annual_volatility_bps: r.annual_volatility_bps,
             dividend_yield_bps: r.dividend_yield_bps,
             long_run_growth_bps: r.long_run_growth_bps,
+            annual_fee_bps: r.annual_fee_bps,
+            annual_fixed_fee_minor: r.annual_fixed_fee_minor,
             notes: r.notes,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -106,13 +110,15 @@ pub async fn upsert_assumption(
     sqlx::query_as::<_, ForecastAssumptionRow>(
         "INSERT INTO forecast_assumptions
             (target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps,
-             long_run_growth_bps, notes)
-         VALUES (?1,?2,?3,?4,?5,?6,?7)
+             long_run_growth_bps, notes, annual_fee_bps, annual_fixed_fee_minor)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
          ON CONFLICT(target_type, target_id) DO UPDATE SET
             annual_growth_bps=excluded.annual_growth_bps,
             annual_volatility_bps=excluded.annual_volatility_bps,
             dividend_yield_bps=excluded.dividend_yield_bps,
             long_run_growth_bps=excluded.long_run_growth_bps,
+            annual_fee_bps=excluded.annual_fee_bps,
+            annual_fixed_fee_minor=excluded.annual_fixed_fee_minor,
             notes=excluded.notes,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          RETURNING *",
@@ -124,6 +130,8 @@ pub async fn upsert_assumption(
     .bind(input.dividend_yield_bps)
     .bind(input.long_run_growth_bps)
     .bind(input.notes)
+    .bind(input.annual_fee_bps)
+    .bind(input.annual_fixed_fee_minor)
     .fetch_one(db)
     .await?
     .try_into()
@@ -574,6 +582,8 @@ mod tests {
             annual_volatility_bps,
             dividend_yield_bps: None,
             long_run_growth_bps: None,
+            annual_fee_bps: None,
+            annual_fixed_fee_minor: None,
             notes: None,
         }
     }

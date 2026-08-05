@@ -2807,6 +2807,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/income-streams/detect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Salaries already visible in the ledger, so recording one is a confirmation rather than a
+         *     transcription.
+         * @description Worth doing because the details people get wrong are exactly the ones the ledger already knows:
+         *     whether "fortnightly" means every fourteen days or twice a month, which day it lands on, and what
+         *     the net figure actually is after payroll has taken everything off.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Limit the search to one account. Omit to search every account. */
+                    account_id?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DetectedStream"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/income-streams/{id}": {
         parameters: {
             query?: never;
@@ -4562,6 +4606,225 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tax-scales": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The tax rules the projection uses.
+         * @description Editable because they are external facts with a shelf life: IRD changes a threshold and a
+         *     projection is quietly wrong until someone ships a binary. The built-in figures seed this on first
+         *     run and are what `restore` puts back.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["StoredTaxScale"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Add a scale — how you record next year's rates before they take effect. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveTaxScale"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["StoredTaxScale"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tax-scales/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Throw away every stored scale and put the built-in figures back — the way out of an edit that
+         *     went wrong.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["StoredTaxScale"][];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tax-scales/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveTaxScale"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["StoredTaxScale"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        /**
+         * Remove a scale. Refused when it is the last one — an empty table taxes every gross salary at
+         *     nothing, which reads as a windfall rather than a mistake.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/transactions": {
         parameters: {
             query?: never;
@@ -5593,6 +5856,42 @@ export interface components {
             url?: string | null;
             notes?: string | null;
         };
+        /** @description A salary the ledger appears to contain. */
+        DetectedStream: {
+            label: string;
+            /** Format: int64 */
+            account_id: number;
+            /** Format: int64 */
+            category_id?: number | null;
+            currency_code: string;
+            pay_frequency: components["schemas"]["PayFrequency"];
+            last_paid_on: string;
+            /**
+             * @description Where a stream recorded from this should start, so a payment already in the ledger is not
+             *     credited a second time as a projection.
+             */
+            next_payment_on: string;
+            /** Format: int64 */
+            per_payment_minor: number;
+            /**
+             * Format: int64
+             * @description The annual figure implied by the cadence. **Net** — it is what actually landed, so a stream
+             *     created from it should be recorded as take-home rather than before tax.
+             */
+            annual_net_minor: number;
+            payments_seen: number;
+            /**
+             * @description The days of the month payments land on. Two fixed days is the evidence for twice-monthly
+             *     rather than every-fourteen-days, which are 24 and 26 payments a year respectively.
+             */
+            days_of_month: number[];
+            /**
+             * Format: int64
+             * @description How much the amounts vary, in basis points of the typical one. Near zero is a salary;
+             *     anything wide is a payment a fixed annual figure would misrepresent.
+             */
+            variability_bps: number;
+        };
         Dividend: {
             /** Format: int64 */
             id: number;
@@ -5804,6 +6103,19 @@ export interface components {
              *     not decayed.
              */
             long_run_growth_bps?: number | null;
+            /**
+             * Format: int64
+             * @description Annual fund fee in basis points, deducted from this account's growth every month.
+             *
+             *     `None` means "not modelled" rather than zero — a fund that charges nothing is a claim worth
+             *     making on purpose, and assuming it is flattering.
+             */
+            annual_fee_bps?: number | null;
+            /**
+             * Format: int64
+             * @description A flat annual membership or administration fee, in the account's own minor units.
+             */
+            annual_fixed_fee_minor?: number | null;
             notes?: string | null;
             created_at: string;
             updated_at: string;
@@ -6358,6 +6670,44 @@ export interface components {
             note?: string | null;
         };
         /**
+         * @description A tax scale that owns its brackets — what a stored, user-editable one deserialises into.
+         *
+         *     The same fields as [`TaxScale`], and [`OwnedTaxScale::as_scale`] hands back a borrowed view, so
+         *     every function in this module works on either. That is the whole reason the built-in constants
+         *     are not simply deleted once the table exists: they remain the seed, the fallback for an empty
+         *     table, and the thing the tests are written against.
+         */
+        OwnedTaxScale: {
+            effective_from: string;
+            /** @description `(upper_bound_annual_minor, rate_bps)`. `None` on the bound means "and above". */
+            brackets: [
+                number | null,
+                number
+            ][];
+            /** Format: int64 */
+            acc_levy_bps: number;
+            /** Format: int64 */
+            acc_income_cap_minor: number;
+            /** Format: int64 */
+            student_loan_threshold_minor: number;
+            /** Format: int64 */
+            student_loan_rate_bps: number;
+            esct_brackets: [
+                number | null,
+                number
+            ][];
+            /** Format: int64 */
+            kiwisaver_govt_match_bps: number;
+            /** Format: int64 */
+            kiwisaver_govt_max_minor: number;
+            /**
+             * Format: int64
+             * @description `None` for "no income test", which is what [`i64::MAX`] means internally — nobody wants to
+             *     see 9223372036854775807 in a settings field.
+             */
+            kiwisaver_govt_income_cap_minor?: number | null;
+        };
+        /**
          * @description Who an account belongs to. Every account has one — there is no unattributed state.
          *
          *     Stored as the `(accounts.ownership, accounts.person_id)` column pair and parsed into
@@ -6387,7 +6737,7 @@ export interface components {
          *     really have three.
          * @enum {string}
          */
-        PayFrequency: "weekly" | "fortnightly" | "four_weekly" | "monthly" | "quarterly" | "annual";
+        PayFrequency: "weekly" | "fortnightly" | "four_weekly" | "semi_monthly" | "monthly" | "quarterly" | "annual";
         /** @description One member of the household. */
         Person: {
             /** Format: int64 */
@@ -6861,6 +7211,10 @@ export interface components {
             dividend_yield_bps?: number | null;
             /** Format: int64 */
             long_run_growth_bps?: number | null;
+            /** Format: int64 */
+            annual_fee_bps?: number | null;
+            /** Format: int64 */
+            annual_fixed_fee_minor?: number | null;
             notes?: string | null;
         };
         /**
@@ -7005,6 +7359,10 @@ export interface components {
             priority?: number;
             enabled?: boolean;
         };
+        /** @description Write body for a tax scale. */
+        SaveTaxScale: components["schemas"]["OwnedTaxScale"] & {
+            source_note?: string | null;
+        };
         SaveTransaction: {
             /** Format: int64 */
             account_id: number;
@@ -7102,6 +7460,21 @@ export interface components {
             currency_code: string;
             /** @description When this row was fetched (ISO-8601 timestamp, UTC). */
             fetched_at: string;
+        };
+        /**
+         * @description A stored scale on the wire: the rules, plus the row identity needed to edit them.
+         *
+         *     Here rather than in `sure-dal` because it is wire vocabulary — the DAL has no `utoipa`, and that
+         *     missing dependency is the layering rule making itself felt rather than an oversight to paper over.
+         */
+        StoredTaxScale: components["schemas"]["OwnedTaxScale"] & {
+            /** Format: int64 */
+            id: number;
+            scale_id: components["schemas"]["TaxScaleId"];
+            /** @description Where these figures came from, so a future reader can check them rather than trust them. */
+            source_note?: string | null;
+            created_at: string;
+            updated_at: string;
         };
         /**
          * @description What the income streams linked to one category claim, beside what that category's own history
@@ -7222,6 +7595,11 @@ export interface components {
          * @enum {string}
          */
         TakeHomeSource: "override" | "already_net" | "statutory";
+        /**
+         * @description Which deduction model applies to an income stream.
+         * @enum {string}
+         */
+        TaxScaleId: "nz_paye" | "none";
         /**
          * @description How gains on a holding are taxed. Not stored for share/brokerage accounts, where it
          *     is derived from the account's `subtype` instead.

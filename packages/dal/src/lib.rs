@@ -34,6 +34,7 @@ pub mod settings;
 pub mod snapshot;
 pub mod stock_prices;
 pub mod store;
+pub mod tax_scales;
 pub mod transactions;
 pub mod valuations;
 
@@ -236,6 +237,11 @@ fn is_in_memory(database_url: &str) -> bool {
 /// Run all pending migrations. Called on startup and by the test harness.
 pub async fn migrate(pool: &Db) -> anyhow::Result<()> {
     MIGRATOR.run(pool).await?;
+    // Seeding lives here rather than in an INSERT inside the migration so that
+    // `sure_core::tax`'s constants stay the only place those figures are written down — a second
+    // copy in SQL would be free to drift from the first, silently, forever. It fills an empty table
+    // and never overwrites, so an edited rate survives every future startup.
+    tax_scales::seed(pool).await?;
     Ok(())
 }
 
