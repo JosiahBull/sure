@@ -33,6 +33,23 @@
 //! stray space. [`rejoin_split_field`] documents the three signals that do prove it, and
 //! [`AsbTranType::memo_is_card_descriptor`] which transaction types they may be applied to
 //! at all.
+//!
+//! ASB offers **two shapes** of this export — plain, and "CSV with running balance" — and both
+//! are accepted, because which one you get is a checkbox at export time rather than a property
+//! of the account. The running-balance shape adds a trailing `Balance` column, brackets the
+//! rows with two synthetic `Opening Balance`/`Closing Balance` entries carrying no id and no
+//! amount, and writes its dates as `M/D/YY` instead of `YYYY/MM/DD`.
+//!
+//! That last part is what [`AsbDateOrder`] exists for. The order is decided **once per file**
+//! from the whole date column, never row by row, and a short-form date is accepted *only* in
+//! the running-balance shape: in a plain export it means a spreadsheet re-saved the file, which
+//! is the one way this parser could silently misdate seven years of history. Where the two
+//! shapes were compared over the same 2,851 rows of one account they agreed on every date,
+//! amount, type, payee and memo, so everything above this paragraph applies to both unchanged.
+//!
+//! The balance column then pays for itself as a check on the result: it *states* the opening
+//! balance [`AsbExport::implied_opening_minor`] otherwise has to work backwards for, and the
+//! two disagreeing means a row is missing from the file — reported, not silently preferred.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -103,6 +120,25 @@ pub enum AsbTranType {
     TransferOut,
     /// `ATM` — cash withdrawn or deposited at a machine.
     Atm,
+    /// `INT` — interest, which is **income on a savings account and a cost on a borrowing
+    /// one**. The payee is the fixed label `ASB BANK - INTEREST` either way, so the sign is
+    /// what separates them: over one household's seven-year history it was positive on all
+    /// five savings accounts (136 rows) and negative only on the revolving home-loan facility
+    /// (18 rows), with no account mixing the two. Hence [`AsbTranType::category`] takes the
+    /// amount.
+    Interest,
+    /// `BANK FEE` — **not** reliably a fee. ASB writes this label for a $2.00 `ACTIVITY FEE`
+    /// and for a $50,000 `Advance to Solicitor` (a mortgage drawn down to buy a house) alike,
+    /// both negative, so nothing in the row separates them. Recognised so it stops being
+    /// reported as an unknown type, but it carries no category — see
+    /// [`AsbTranType::category`].
+    BankFee,
+    /// `LOAN INT` — interest charged on a loan, posted from the facility it's drawn against.
+    LoanInterest,
+    /// `LOAN PRIN` — the principal part of a loan repayment, moved to the loan's own
+    /// sub-account (`…-92` beside a `…-00` facility). Money between the customer's own
+    /// accounts, not spending — see [`AsbTranType::category`].
+    LoanPrincipal,
 }
 
 impl AsbTranType {
@@ -120,6 +156,10 @@ impl AsbTranType {
             TransferIn => "TFR IN",
             TransferOut => "TFR OUT",
             Atm => "ATM",
+            Interest => "INT",
+            BankFee => "BANK FEE",
+            LoanInterest => "LOAN INT",
+            LoanPrincipal => "LOAN PRIN",
         }
     }
 
@@ -131,8 +171,12 @@ impl AsbTranType {
         use AsbTranType::*;
         match self {
             Debit => true,
+            // The four interest/fee types write the Particulars/Code/Reference triple, not a
+            // card descriptor — `12-3136-0000123-92 006 INTEREST` is three distinct subfields,
+            // so the stronger repair would weld real content together.
             Eftpos | Credit | DirectCredit | DirectDebit | AutomaticPayment | BillPay
-            | TransferIn | TransferOut | Atm => false,
+            | TransferIn | TransferOut | Atm | Interest | BankFee | LoanInterest
+            | LoanPrincipal => false,
         }
     }
 
@@ -165,25 +209,52 @@ impl AsbTranType {
             // A transfer names an account, a bill payment names an account number, an ATM
             // names a machine, and `CREDIT` puts nothing usable in either column.
             Credit | BillPay | TransferIn | TransferOut | Atm => None,
+            // These name no counterparty either: the payee is a fixed label restating the type
+            // (`ASB BANK - INTEREST`, `LOAN - PRINCIPAL`, `ACTIVITY FEE`), so carrying it
+            // through would mint a merchant called "ASB BANK - INTEREST". The text is still in
+            // the description, which is what rules match on, and the category carries the
+            // meaning.
+            Interest | BankFee | LoanInterest | LoanPrincipal => None,
         }
     }
 
     /// The category hint carried into the import, where the type is unambiguous about what
     /// kind of movement it is.
-    fn category(self) -> Option<ProviderCategory> {
+    ///
+    /// `amount_minor` is needed for exactly one type: `INT` is interest *earned* on a savings
+    /// account and interest *charged* on a borrowing one, and only the sign says which. The two
+    /// get distinct category **names** rather than one name with two kinds, because
+    /// `sure_dal::providers`' find-or-create keys on `(name, group)` and would otherwise hand
+    /// the second one whichever kind the first created.
+    fn category(self, amount_minor: i64) -> Option<ProviderCategory> {
         use AsbTranType::*;
+        let hint = |name: &str, kind: CategoryKind| {
+            Some(ProviderCategory {
+                name: name.to_string(),
+                group: None,
+                kind: Some(kind),
+            })
+        };
         match self {
             // Money between the customer's own accounts is a real movement but neither
             // spending nor income, so it must land in neither report.
-            TransferIn | TransferOut => Some(ProviderCategory {
-                name: "Transfer".to_string(),
-                group: None,
-                kind: Some(CategoryKind::Transfer),
-            }),
+            TransferIn | TransferOut => hint("Transfer", CategoryKind::Transfer),
+            // Paying down principal is the same kind of movement: one of the customer's
+            // balances falls and the loan's own sub-account rises by the same amount, so it is
+            // not spending. Only the interest beside it is a cost.
+            LoanPrincipal => hint("Loan principal", CategoryKind::Transfer),
+            Interest if amount_minor < 0 => hint("Interest charged", CategoryKind::Expense),
+            Interest => hint("Interest earned", CategoryKind::Income),
+            LoanInterest => hint("Loan interest", CategoryKind::Expense),
             // `BILLPAY` reaches third parties, so it is ordinary spending as often as it
-            // is a transfer. None of the rest carry a reliable hint either.
+            // is a transfer. `BANK FEE` looks like it should be safe and is not: ASB writes it
+            // for a $2.00 `ACTIVITY FEE` and for a $50,000 `Advance to Solicitor` — a mortgage
+            // drawn down to buy a house — with the same sign and no other distinguishing field.
+            // Calling that "Bank fees" would put a property purchase in the spending report, so
+            // this type is recognised but deliberately unclassified. None of the rest carry a
+            // reliable hint either.
             Debit | Eftpos | Credit | DirectCredit | DirectDebit | AutomaticPayment | BillPay
-            | Atm => None,
+            | Atm | BankFee => None,
         }
     }
 }
@@ -206,6 +277,10 @@ impl FromStr for AsbTranType {
             "TFR IN" => Ok(TransferIn),
             "TFR OUT" => Ok(TransferOut),
             "ATM" => Ok(Atm),
+            "INT" => Ok(Interest),
+            "BANK FEE" => Ok(BankFee),
+            "LOAN INT" => Ok(LoanInterest),
+            "LOAN PRIN" => Ok(LoanPrincipal),
             other => Err(format!("unrecognised transaction type '{other}'")),
         }
     }
@@ -464,6 +539,312 @@ fn describe(kind: Option<AsbTranType>, payee: &str, memo: &str) -> String {
 }
 
 // --------------------------------------------------------------------------------------
+// date order
+// --------------------------------------------------------------------------------------
+
+/// The order one file writes its dates in — a closed set, decided once by
+/// [`decide_date_order`] and then handed to [`parse_date_in`] for every row.
+///
+/// Per-file rather than per-row on purpose: a wrong date order is a property of the export,
+/// and deciding it row by row is how `1/2/20` becomes January in one row and February in the
+/// next. See the module docs for which shape of export may use which order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsbDateOrder {
+    /// `2020/01/20` — four-digit year first. The only order a *plain* export may use.
+    Iso,
+    /// `1/20/20` — month, day, two-digit year. What "CSV with running balance" writes.
+    MonthDay,
+    /// `20/01/20` — day, month, two-digit year. Not a shape ASB has been seen to emit, but a
+    /// file that *proves* this order is read in it rather than refused for no reason.
+    DayMonth,
+}
+
+impl AsbDateOrder {
+    /// How to describe this order to someone reading an error.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AsbDateOrder::Iso => "YYYY/MM/DD",
+            AsbDateOrder::MonthDay => "M/D/YY",
+            AsbDateOrder::DayMonth => "D/M/YY",
+        }
+    }
+}
+
+/// The synthetic rows ASB's running-balance export brackets the real ones with: an
+/// `Opening Balance` dated at the export's `From date`, and a `Closing Balance` at its
+/// `To date`. Neither is a transaction — no `Unique Id`, no `Tran Type`, no `Amount` — each
+/// stating a figure in the `Balance` column instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BalanceMarker {
+    Opening,
+    Closing,
+}
+
+/// One row's date as written, plus whether that row is a [`BalanceMarker`]. The marker
+/// matters because those two rows sit on the *declared* window's edges, which is what makes
+/// them usable as proof of the order — see [`order_from_markers`].
+struct DateSample<'a> {
+    text: &'a str,
+    marker: Option<BalanceMarker>,
+}
+
+/// A date's three numeric components, with the widths of the outer two. The widths are what
+/// separate `2020/01/20` (year first) from `1/20/20` (year last) without yet deciding which
+/// of month and day comes first.
+fn split_date(text: &str) -> Option<([u32; 3], usize, usize)> {
+    let mut parts = text.split('/');
+    let raw = [parts.next()?, parts.next()?, parts.next()?];
+    if parts.next().is_some() {
+        return None;
+    }
+    let mut values = [0u32; 3];
+    for (slot, part) in values.iter_mut().zip(raw) {
+        if part.is_empty() || part.len() > 4 || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        *slot = part.parse().ok()?;
+    }
+    Some((values, raw[0].len(), raw[2].len()))
+}
+
+/// Whether these components could be a date in `order`'s *shape* — the year in the right
+/// place and the right width. A row whose shape disagrees with the file's decided order is
+/// not the same kind of date as the rest of the file, so reading it would be a guess.
+fn fits_shape(order: AsbDateOrder, first_width: usize, last_width: usize) -> bool {
+    match order {
+        AsbDateOrder::Iso => first_width == 4,
+        AsbDateOrder::MonthDay | AsbDateOrder::DayMonth => {
+            first_width <= 2 && (last_width == 2 || last_width == 4)
+        }
+    }
+}
+
+/// The date these components spell under `order`, or `None` if they don't spell one.
+fn date_in(order: AsbDateOrder, values: [u32; 3]) -> Option<NaiveDate> {
+    let [a, b, c] = values;
+    let (year, month, day) = match order {
+        AsbDateOrder::Iso => (a, b, c),
+        AsbDateOrder::MonthDay => (c, a, b),
+        AsbDateOrder::DayMonth => (c, b, a),
+    };
+    NaiveDate::from_ymd_opt(expand_year(order, year)?, month, day)
+}
+
+/// A short-form `yy` as a full year. Always 20xx: ASB's running-balance export is a current
+/// feature and holds nothing from last century, so the alternative reading would only ever
+/// turn a legible date into a wrong one. A year that lands somewhere implausible is caught by
+/// [`parse_date_in`]'s range check, which says so by name instead of guessing again.
+fn expand_year(order: AsbDateOrder, year: u32) -> Option<i32> {
+    let year = i32::try_from(year).ok()?;
+    match order {
+        // Written in full. `0020` is a real four-digit year and stays wrong, for the range
+        // check to reject.
+        AsbDateOrder::Iso => Some(year),
+        AsbDateOrder::MonthDay | AsbDateOrder::DayMonth => {
+            Some(if year < 100 { 2000 + year } else { year })
+        }
+    }
+}
+
+/// Decides the order every date in one file is written in, and returns any warning that
+/// decision needs to carry.
+///
+/// `allow_short_form` is whether this file is the running-balance export — the only shape that
+/// legitimately writes `M/D/YY`. In a plain export a short date means a spreadsheet re-saved
+/// the file, so it stays fatal: those dates *parse*, which is exactly why accepting them would
+/// misdate an import silently rather than fail it.
+///
+/// Within a running-balance file the order is settled by the first of these that speaks, in
+/// order of how much it proves:
+/// 1. a component past 12 somewhere in the column — arithmetic, not inference;
+/// 2. a [`BalanceMarker`] matching the window the preamble declares ([`order_from_markers`]);
+/// 3. the column being sorted under exactly one order ([`order_from_monotonicity`]).
+///
+/// If none of them does, the file is read as `M/D/YY` — every ASB export seen is — and a
+/// warning names the window that produced, so a wrong reading is visible and can be undone
+/// rather than quietly becoming history.
+fn decide_date_order(
+    samples: &[DateSample<'_>],
+    allow_short_form: bool,
+    declared: Option<(NaiveDate, NaiveDate)>,
+    source: &str,
+) -> anyhow::Result<(AsbDateOrder, Option<String>)> {
+    // Not `iso`, which is the function that renders one.
+    let mut iso_rows = 0usize;
+    let mut short: Vec<(&DateSample<'_>, [u32; 3])> = Vec::new();
+    for sample in samples {
+        // A shape neither order can be read from is left out of the decision rather than
+        // deciding the whole file's format on it; the per-row parse rejects it by name.
+        let Some((values, first, last)) = split_date(sample.text) else {
+            continue;
+        };
+        if fits_shape(AsbDateOrder::Iso, first, last) {
+            iso_rows += 1;
+        } else if fits_shape(AsbDateOrder::MonthDay, first, last) {
+            short.push((sample, values));
+        }
+    }
+
+    if iso_rows > 0 && !short.is_empty() {
+        anyhow::bail!(
+            "{source} mixes date formats — {iso_rows} row(s) are YYYY/MM/DD and {} are not, so \
+             no one order fits the file; re-export it rather than editing it",
+            short.len()
+        );
+    }
+    let Some((first_short, _)) = short.first() else {
+        // Every date is ISO, or the file has no rows at all.
+        return Ok((AsbDateOrder::Iso, None));
+    };
+    if !allow_short_form {
+        anyhow::bail!(
+            "{source} has {} row(s) whose dates are not YYYY/MM/DD (the first reads \
+             '{}') — re-export with the YYYY/MM/DD date format, and don't re-save the export \
+             in a spreadsheet, which rewrites every date in the machine's own locale",
+            short.len(),
+            first_short.text
+        );
+    }
+
+    let day_first = short.iter().any(|(_, v)| v[0] > 12);
+    let month_first = short.iter().any(|(_, v)| v[1] > 12);
+    match (day_first, month_first) {
+        (true, true) => anyhow::bail!(
+            "{source} cannot be read: some rows put a number past 12 first and others put one \
+             second, so no single date order fits the file — re-export with the YYYY/MM/DD \
+             date format"
+        ),
+        (false, true) => return Ok((AsbDateOrder::MonthDay, None)),
+        (true, false) => return Ok((AsbDateOrder::DayMonth, None)),
+        // Every component is 12 or less, so the column itself proves nothing.
+        (false, false) => {}
+    }
+
+    if let Some(order) = order_from_markers(&short, declared) {
+        return Ok((order, None));
+    }
+    if let Some(order) = order_from_monotonicity(&short) {
+        return Ok((order, None));
+    }
+
+    let order = AsbDateOrder::MonthDay;
+    let window = |values: [u32; 3]| date_in(order, values).map(iso).unwrap_or_default();
+    let (from, to) = (
+        window(short.first().map(|(_, v)| *v).unwrap_or_default()),
+        window(short.last().map(|(_, v)| *v).unwrap_or_default()),
+    );
+    Ok((
+        order,
+        Some(format!(
+            "{source}: every date in it is short-form and none is past the 12th, so month/day \
+             order could not be proven — it was read as {}, covering {from} to {to}. Check that \
+             window: if it's wrong, remove the import and re-export with the YYYY/MM/DD date \
+             format",
+            order.as_str()
+        )),
+    ))
+}
+
+/// The order that makes ASB's own window markers land on the window the preamble declares.
+/// The `Closing Balance` row is dated the export's `To date`, so `8/4/26` against a declared
+/// `20260804` fits `M/D/YY` and not `D/M/YY` — an exact proof, from data every
+/// running-balance file carries, that does not depend on any day being past the 12th.
+fn order_from_markers(
+    short: &[(&DateSample<'_>, [u32; 3])],
+    declared: Option<(NaiveDate, NaiveDate)>,
+) -> Option<AsbDateOrder> {
+    let (from, to) = declared?;
+    let mut decided: Option<AsbDateOrder> = None;
+    for (sample, values) in short {
+        let Some(marker) = sample.marker else {
+            continue;
+        };
+        let want = match marker {
+            BalanceMarker::Opening => from,
+            BalanceMarker::Closing => to,
+        };
+        // Judged one marker at a time. `1/1/20` against a `From date` of 20200101 fits both
+        // readings, and folding that in as evidence *for* both would cancel out the closing
+        // marker that does discriminate — which is every real file's only proof.
+        let proves = match (
+            date_in(AsbDateOrder::MonthDay, *values) == Some(want),
+            date_in(AsbDateOrder::DayMonth, *values) == Some(want),
+        ) {
+            (true, false) => AsbDateOrder::MonthDay,
+            (false, true) => AsbDateOrder::DayMonth,
+            (true, true) | (false, false) => continue,
+        };
+        match decided {
+            None => decided = Some(proves),
+            // Two markers proving opposite orders is a contradiction, not a decision; leave it
+            // to the weaker signals and, failing those, to the warning.
+            Some(already) if already != proves => return None,
+            Some(_) => {}
+        }
+    }
+    decided
+}
+
+/// The order that leaves the column sorted, where only one of the two does. ASB writes its
+/// rows oldest-first, so a reading that goes backwards in time is the wrong reading. Weaker
+/// than the two proofs above — a one-row file is sorted under both — so it is asked last.
+fn order_from_monotonicity(short: &[(&DateSample<'_>, [u32; 3])]) -> Option<AsbDateOrder> {
+    let sorted = |order: AsbDateOrder| {
+        let mut prev: Option<NaiveDate> = None;
+        for (_, values) in short {
+            let Some(date) = date_in(order, *values) else {
+                return false;
+            };
+            if prev.is_some_and(|p| date < p) {
+                return false;
+            }
+            prev = Some(date);
+        }
+        true
+    };
+    match (
+        sorted(AsbDateOrder::MonthDay),
+        sorted(AsbDateOrder::DayMonth),
+    ) {
+        (true, false) => Some(AsbDateOrder::MonthDay),
+        (false, true) => Some(AsbDateOrder::DayMonth),
+        (true, true) | (false, false) => None,
+    }
+}
+
+/// Whether this row is one of ASB's synthetic window markers rather than a transaction.
+///
+/// Matched on the whole shape — no id, no amount, *and* the label ASB writes in `Payee` — not
+/// on the missing id alone: a real row that lost its id is a corrupt file and must still be
+/// refused, because `Unique Id` is what imported rows dedupe on. Only considered for the
+/// running-balance export, the only shape that emits these at all.
+fn balance_marker(
+    has_balance_column: bool,
+    unique_id: &str,
+    amount: &str,
+    payee: &str,
+) -> Option<BalanceMarker> {
+    if !has_balance_column || !unique_id.trim().is_empty() || !amount.trim().is_empty() {
+        return None;
+    }
+    // Over arbitrary text out of an uploaded file, not over a closed set: any other id-less
+    // row is not a marker ASB writes, so it falls through to the ordinary path.
+    match squeeze(payee).to_ascii_uppercase().as_str() {
+        "OPENING BALANCE" => Some(BalanceMarker::Opening),
+        "CLOSING BALANCE" => Some(BalanceMarker::Closing),
+        _ => None,
+    }
+}
+
+/// Minor units as a plain decimal, for a warning a human reads. No currency symbol: an export
+/// names no currency, and the target account's applies.
+fn money(minor: i64) -> String {
+    let sign = if minor < 0 { "-" } else { "" };
+    let abs = minor.unsigned_abs();
+    format!("{sign}{}.{:02}", abs / 100, abs % 100)
+}
+
+// --------------------------------------------------------------------------------------
 // the export
 // --------------------------------------------------------------------------------------
 
@@ -508,6 +889,12 @@ pub struct AsbExport {
     /// caller reconciles this against the account's own valuation.
     pub ledger_balance_minor: Option<i64>,
     pub ledger_balance_as_of: Option<String>,
+    /// The opening balance the export *states*, from the `Opening Balance` row only the
+    /// running-balance shape carries, and the day it is as of (that export's `From date`).
+    /// `None` for a plain export, which states no such thing — then
+    /// [`AsbExport::implied_opening_minor`] works it back from the closing balance instead.
+    pub stated_opening_minor: Option<i64>,
+    pub stated_opening_as_of: Option<String>,
     /// Every row in the file summed, so a caller can state the implied opening balance.
     pub sum_minor: i64,
     /// Non-fatal observations: an unfamiliar transaction type, rows held back, a row
@@ -516,14 +903,21 @@ pub struct AsbExport {
 }
 
 impl AsbExport {
-    /// The balance the account must have held immediately before this export's first row,
-    /// given the closing balance ASB states and every movement in between. `None` when the
-    /// export states no closing balance, since then there is nothing to work back from.
+    /// The balance the account held immediately before this export's first row.
     ///
-    /// Computed over *every* row in the file, including any the cutover held back — those
-    /// movements still happened, they are just already on the ledger from the live feed.
+    /// Taken from [`AsbExport::stated_opening_minor`] where the export states it — the
+    /// running-balance shape does — and otherwise worked back from the closing balance ASB
+    /// states less every movement in between. `None` when the export offers neither, since
+    /// then there is nothing to work from.
+    ///
+    /// The derivation runs over *every* row in the file, including any the cutover held back:
+    /// those movements still happened, they are just already on the ledger from the live feed.
+    /// Where both figures exist they must agree to the cent, and [`parse_csv`] warns when they
+    /// don't rather than quietly preferring one — a disagreement means the file is missing a
+    /// row, which is worth knowing about whichever figure is used.
     pub fn implied_opening_minor(&self) -> Option<i64> {
-        self.ledger_balance_minor.map(|b| b - self.sum_minor)
+        self.stated_opening_minor
+            .or_else(|| self.ledger_balance_minor.map(|b| b - self.sum_minor))
     }
 
     /// A transaction that puts [`Self::implied_opening_minor`] on the ledger, dated the day
@@ -606,9 +1000,20 @@ pub fn parse_upload(bytes: &[u8]) -> anyhow::Result<AsbUpload> {
         mut warnings,
     } = read_entries(bytes)?;
     let mut parsed = Vec::new();
+    let mut failed = Vec::new();
     let mut rows = 0usize;
     for entry in files {
-        let export = parse_csv(&entry.name, &entry.body)?;
+        // One unreadable file does not sink the upload. ASB exports one file per account and a
+        // zip carries the lot, so aborting on the first bad one costs every *good* account in
+        // it an import and reports a single filename as if it were the only problem. Collected
+        // and reported instead, and the rest goes through.
+        let export = match parse_csv(&entry.name, &entry.body) {
+            Ok(export) => export,
+            Err(e) => {
+                failed.push(format!("{e}"));
+                continue;
+            }
+        };
         rows += export.rows_total as usize;
         if rows > limits::ROWS {
             anyhow::bail!(
@@ -617,6 +1022,16 @@ pub fn parse_upload(bytes: &[u8]) -> anyhow::Result<AsbUpload> {
             );
         }
         parsed.push(export);
+    }
+    // Nothing readable at all is still an error, not a cheerful empty result — and for the
+    // single-CSV upload that is every failure, so a bare CSV behaves exactly as it used to.
+    if parsed.is_empty() {
+        anyhow::bail!("{}", failed.join("; "));
+    }
+    for failure in &failed {
+        warnings.push(format!(
+            "{failure} — that file was skipped; the rest of the upload was read"
+        ));
     }
     let exports = merge_by_account(parsed)?;
     if exports.len() > 1 {
@@ -734,6 +1149,17 @@ fn merge_by_account(parsed: Vec<AsbExport>) -> anyhow::Result<Vec<AsbExport>> {
             .collect();
         export.covered_from = dates.first().map(|d| d.to_string());
         export.covered_to = dates.last().map(|d| d.to_string());
+        // A stated opening balance only opens the *merged* history if it predates every row in
+        // it. Where the merge pulled in an earlier file than the one that stated it, it is a
+        // mid-history figure, and putting that on the ledger would invent a large movement.
+        // Dropped rather than adjusted: `implied_opening_minor` then works it back from the
+        // closing balance, which spans every row the merge holds.
+        if let (Some(at), Some(from)) = (&export.stated_opening_as_of, &export.covered_from) {
+            if at > from {
+                export.stated_opening_minor = None;
+                export.stated_opening_as_of = None;
+            }
+        }
     }
     by_account.sort_by(|a, b| a.account.cmp(&b.account));
     Ok(by_account)
@@ -741,6 +1167,19 @@ fn merge_by_account(parsed: Vec<AsbExport>) -> anyhow::Result<Vec<AsbExport>> {
 
 /// Fold `from` into `into`, both being exports of the same ASB account.
 fn absorb(into: &mut AsbExport, from: AsbExport) -> anyhow::Result<()> {
+    // The earlier window's opening balance is the one that opens the merged history; a later
+    // file states a figure from the middle of it, which would be wrong to put on the ledger.
+    // `merge_by_account` drops it entirely if it still doesn't predate every row.
+    let take_opening = match (&into.stated_opening_as_of, &from.stated_opening_as_of) {
+        (None, Some(_)) => true,
+        (Some(into_at), Some(from_at)) => from_at < into_at,
+        (Some(_), None) | (None, None) => false,
+    };
+    if take_opening {
+        into.stated_opening_minor = from.stated_opening_minor;
+        into.stated_opening_as_of = from.stated_opening_as_of.clone();
+    }
+
     let existing: HashMap<&str, (&str, i64)> = into
         .transactions
         .iter()
@@ -786,7 +1225,13 @@ fn absorb(into: &mut AsbExport, from: AsbExport) -> anyhow::Result<()> {
     into.transactions.append(&mut moved);
     into.sources.extend(from.sources);
     into.product = into.product.take().or(from.product);
-    into.warnings.extend(from.warnings);
+    // Deduplicated: two windows of one account each report the same unfamiliar transaction
+    // type, and the preview showing "9 row(s) have type 'INT'" twice reads as eighteen rows.
+    for warning in from.warnings {
+        if !into.warnings.contains(&warning) {
+            into.warnings.push(warning);
+        }
+    }
     // The later statement is the authoritative closing balance.
     if from.ledger_balance_as_of > into.ledger_balance_as_of {
         into.ledger_balance_minor = from.ledger_balance_minor;
@@ -798,8 +1243,8 @@ fn absorb(into: &mut AsbExport, from: AsbExport) -> anyhow::Result<()> {
 /// Parses one ASB export CSV. `source` names it in any error or warning.
 fn parse_csv(source: &str, bytes: &[u8]) -> anyhow::Result<AsbExport> {
     let text = decode(bytes);
-    let (preamble, body) = split_at_header(&text)?;
-    let preamble = parse_preamble(preamble)?;
+    let (preamble, body) = split_at_header(source, &text)?;
+    let preamble = parse_preamble(source, preamble)?;
 
     let mut reader = csv::ReaderBuilder::new()
         .trim(csv::Trim::All)
@@ -821,6 +1266,10 @@ fn parse_csv(source: &str, bytes: &[u8]) -> anyhow::Result<AsbExport> {
         need("Memo")?,
         need("Amount")?,
     );
+    // Only ASB's "CSV with running balance" shape has this, and its presence is what permits
+    // that shape's short-form dates — see [`decide_date_order`]. Absent from a plain export,
+    // where the extra column simply isn't there to read.
+    let i_balance = col("Balance");
 
     let mut out = AsbExport {
         account: preamble.account,
@@ -839,26 +1288,84 @@ fn parse_csv(source: &str, bytes: &[u8]) -> anyhow::Result<AsbExport> {
         );
     }
 
+    // Read the rows before parsing any of them: the date order is a property of the whole
+    // column and cannot be settled row by row (see [`decide_date_order`]). The bodies are
+    // already bounded by `limits::UPLOAD_BYTES`, and every row ends up held in `transactions`
+    // regardless, so this holds nothing that wasn't going to be held anyway. The blank line
+    // ASB writes between the header and the rows is dropped here.
+    let records: Vec<csv::StringRecord> = reader
+        .records()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|r| !r.iter().all(|f| f.trim().is_empty()))
+        .collect();
+
+    let marker = |record: &csv::StringRecord| {
+        balance_marker(
+            i_balance.is_some(),
+            record.get(i_id).unwrap_or_default(),
+            record.get(i_amount).unwrap_or_default(),
+            record.get(i_payee).unwrap_or_default(),
+        )
+    };
+    let samples: Vec<DateSample<'_>> = records
+        .iter()
+        .map(|r| DateSample {
+            text: r.get(i_date).unwrap_or_default().trim(),
+            marker: marker(r),
+        })
+        .collect();
+    let (order, order_warning) =
+        decide_date_order(&samples, i_balance.is_some(), preamble.declared, source)?;
+    out.warnings.extend(order_warning);
+
     let mut seen_ids: HashSet<String> = HashSet::new();
     let mut unknown_types: BTreeMap<String, i64> = BTreeMap::new();
     let mut outside_window = 0i64;
     let (mut first, mut last): (Option<NaiveDate>, Option<NaiveDate>) = (None, None);
+    // The running balance, walked forward from the `Opening Balance` row, so a row missing
+    // from the middle of the file shows up as an inconsistency rather than as an import that
+    // is quietly short. Stays `None` for a plain export, which states no balances.
+    let mut running: Option<i64> = None;
+    let mut chain_breaks = 0i64;
+    let mut stated_closing: Option<i64> = None;
 
-    for record in reader.records() {
-        let record = record?;
-        if record.iter().all(|f| f.trim().is_empty()) {
-            continue; // the blank line ASB writes between the header and the rows
-        }
+    for (index, record) in records.iter().enumerate() {
         // +1 for the header, +1 for 1-based. Named, because one zip can hold a dozen files
         // and "row 412" alone doesn't say which.
-        let at = format!("{source} row {}", out.rows_total as usize + 2);
+        let at = format!("{source} row {}", index + 2);
         let field = |i: usize, name: &str| -> anyhow::Result<&str> {
             record
                 .get(i)
                 .ok_or_else(|| anyhow::anyhow!("{at}: truncated, no '{name}' field"))
         };
+        let balance = match i_balance {
+            Some(i) => {
+                let text = field(i, "Balance")?;
+                (!text.trim().is_empty())
+                    .then(|| parse_minor(text, &at))
+                    .transpose()?
+            }
+            None => None,
+        };
 
-        let date = parse_date(field(i_date, "Date")?, &at)?;
+        // ASB's synthetic window markers. Not transactions — they carry no id and no amount —
+        // but the opening one *states* the balance that otherwise has to be worked backwards
+        // for, and both are needed to prove the date order, so they are read and then dropped.
+        if let Some(kind) = marker(record) {
+            let date = parse_date_in(order, field(i_date, "Date")?, &at)?;
+            match kind {
+                BalanceMarker::Opening => {
+                    out.stated_opening_minor = balance;
+                    out.stated_opening_as_of = Some(iso(date));
+                    running = balance;
+                }
+                BalanceMarker::Closing => stated_closing = balance,
+            }
+            continue;
+        }
+
+        let date = parse_date_in(order, field(i_date, "Date")?, &at)?;
         let amount_minor = parse_minor(field(i_amount, "Amount")?, &at)?;
         let unique_id = field(i_id, "Unique Id")?.to_string();
         if unique_id.is_empty() {
@@ -876,6 +1383,14 @@ fn parse_csv(source: &str, bytes: &[u8]) -> anyhow::Result<AsbExport> {
         last = Some(last.map_or(date, |d: NaiveDate| d.max(date)));
         if preamble.declared.is_some_and(|(f, t)| date < f || date > t) {
             outside_window += 1;
+        }
+        if let (Some(previous), Some(balance)) = (running, balance) {
+            if previous + amount_minor != balance {
+                chain_breaks += 1;
+            }
+        }
+        if balance.is_some() {
+            running = balance;
         }
 
         let kind = match AsbTranType::from_str(field(i_type, "Tran Type")?) {
@@ -900,12 +1415,47 @@ fn parse_csv(source: &str, bytes: &[u8]) -> anyhow::Result<AsbExport> {
             currency_code: None,
             description: describe(kind, payee, memo),
             merchant: kind.and_then(|k| k.merchant(payee, memo)),
-            category: kind.and_then(AsbTranType::category),
+            category: kind.and_then(|k| k.category(amount_minor)),
         });
     }
 
     out.covered_from = first.map(iso);
     out.covered_to = last.map(iso);
+
+    // What the running-balance shape buys: three checks a plain export cannot offer.
+    if chain_breaks > 0 {
+        out.warnings.push(format!(
+            "{chain_breaks} row(s) don't square with the running balance stated beside them, so \
+             the file is missing rows or restates some — the reconstructed history before today \
+             will be out by the difference"
+        ));
+    }
+    if let (Some(stated), Some(ledger)) = (stated_closing, out.ledger_balance_minor) {
+        if stated != ledger {
+            out.warnings.push(format!(
+                "the export's closing balance row says {} but its header says {} — one of the \
+                 two was misread",
+                money(stated),
+                money(ledger)
+            ));
+        }
+    }
+    // The strongest check in the file: what ASB says the account opened at, against what its
+    // own rows and closing balance imply. Reported rather than resolved — a difference means a
+    // row is missing, and which figure is nearer the truth isn't knowable from here.
+    if let (Some(stated), Some(ledger)) = (out.stated_opening_minor, out.ledger_balance_minor) {
+        let derived = ledger - out.sum_minor;
+        if stated != derived {
+            out.warnings.push(format!(
+                "the export states an opening balance of {} but its own rows and closing balance \
+                 imply {}, a difference of {} — the stated figure was used, and some row is \
+                 missing from the file",
+                money(stated),
+                money(derived),
+                money(derived - stated)
+            ));
+        }
+    }
 
     for (label, count) in unknown_types {
         out.warnings.push(format!(
@@ -938,7 +1488,7 @@ fn decode(bytes: &[u8]) -> Cow<'_, str> {
 /// Splits the preamble from the CSV proper. Found by scanning for the header row rather
 /// than skipping a fixed number of lines, so a change in how many facts ASB states above
 /// it doesn't break the parse.
-fn split_at_header(text: &str) -> anyhow::Result<(&str, &str)> {
+fn split_at_header<'a>(source: &str, text: &'a str) -> anyhow::Result<(&'a str, &'a str)> {
     let mut offset = 0usize;
     for line in text.split_inclusive('\n') {
         let cols: Vec<String> = line
@@ -951,7 +1501,7 @@ fn split_at_header(text: &str) -> anyhow::Result<(&str, &str)> {
         offset += line.len();
     }
     Err(anyhow::anyhow!(
-        "not an ASB export: no 'Date,Unique Id,Tran Type,…' header row"
+        "{source} is not an ASB export: no 'Date,Unique Id,Tran Type,…' header row"
     ))
 }
 
@@ -966,7 +1516,7 @@ struct Preamble {
     ledger: Option<(i64, NaiveDate)>,
 }
 
-fn parse_preamble(text: &str) -> anyhow::Result<Preamble> {
+fn parse_preamble(source: &str, text: &str) -> anyhow::Result<Preamble> {
     let mut out = Preamble::default();
     let (mut from, mut to) = (None, None);
     for line in text.lines() {
@@ -978,14 +1528,15 @@ fn parse_preamble(text: &str) -> anyhow::Result<Preamble> {
         } else if let Some(rest) = line.strip_prefix("Ledger Balance") {
             out.ledger = parse_balance(rest);
         } else if line.starts_with("Bank ") {
-            let (account, product) = parse_account_line(line)?;
+            let (account, product) = parse_account_line(source, line)?;
             out.account = account;
             out.product = product;
         }
     }
     if out.account.is_empty() {
         return Err(anyhow::anyhow!(
-            "not an ASB export: no 'Bank …; Branch …; Account …' line naming the account"
+            "{source} is not an ASB export: no 'Bank …; Branch …; Account …' line naming the \
+             account"
         ));
     }
     out.declared = from.zip(to);
@@ -994,8 +1545,8 @@ fn parse_preamble(text: &str) -> anyhow::Result<Preamble> {
 
 /// `Bank 12; Branch 3136; Account 0000123-50 (Streamline)` → `12-3136-0000123-50`,
 /// `Streamline`.
-fn parse_account_line(line: &str) -> anyhow::Result<(String, Option<String>)> {
-    let malformed = || anyhow::anyhow!("cannot read the account from '{line}'");
+fn parse_account_line(source: &str, line: &str) -> anyhow::Result<(String, Option<String>)> {
+    let malformed = || anyhow::anyhow!("{source}: cannot read the account from '{line}'");
     let mut bank = None;
     let mut branch = None;
     let mut number = None;
@@ -1052,34 +1603,38 @@ const EARLIEST_ROW: NaiveDate = match NaiveDate::from_ymd_opt(1970, 1, 1) {
     None => unreachable!(),
 };
 
-/// ASB's export offers a choice of date format; this parser wants the ISO-ordered one, and a
-/// file in any other order is rejected outright rather than silently misread — a wrong date
-/// order is a property of the export, not of one row.
+/// One row's date, in the order [`decide_date_order`] settled for the whole file.
 ///
-/// `%Y/%m/%d` alone does **not** achieve that, which is the trap this function exists to
-/// close: chrono's `%Y` accepts *one to four* digits, so `20/01/2020` fails only because
-/// `2020` is not a day, while `20/01/20` parses happily as `0020-01-20`. That is exactly what
-/// arrives when someone opens the export in Excel to look at it and saves: Excel rewrites
-/// every date in the machine's short-date locale, which on an NZ or UK system is `d/mm/yy`.
-/// Those dates are *parseable*, so nothing downstream drops them the way it drops garbage —
-/// they flow into `covered_from` and the report loaders' `earliest_transaction_date` and drag
-/// the net-worth series back two thousand years. So the year's shape is checked on the bytes
-/// first, and the parsed date is then range-checked at both ends: `0020/01/20` is four digits
-/// and just as wrong, and a row dated a decade out is bad data whichever way it got there.
-fn parse_date(text: &str, at: &str) -> anyhow::Result<NaiveDate> {
+/// The order is a parameter rather than a guess, which is the trap this function exists to
+/// close. `%Y/%m/%d` on its own does not close it: chrono's `%Y` accepts *one to four* digits,
+/// so `20/01/2020` fails only because `2020` is not a day, while `20/01/20` parses happily as
+/// `0020-01-20`. That second one is exactly what arrives when someone opens a plain export in
+/// Excel and saves it — Excel rewrites every date in the machine's short-date locale, `d/mm/yy`
+/// on an NZ or UK system. Those dates are *parseable*, so nothing downstream drops them the way
+/// it drops garbage: they flow into `covered_from` and the report loaders'
+/// `earliest_transaction_date` and drag the net-worth series back two thousand years.
+///
+/// So a row's shape must match the order its file was decided to be in (a plain export's must
+/// be ISO, and short-form dates never reach here from one), the date is built from the
+/// components directly rather than through a lenient format string, and it is then
+/// range-checked at both ends: `0020/01/20` is four digits and just as wrong, and a row dated a
+/// decade out is bad data whichever way it got there.
+fn parse_date_in(order: AsbDateOrder, text: &str, at: &str) -> anyhow::Result<NaiveDate> {
     let text = text.trim();
     let unreadable = || {
         anyhow::anyhow!(
-            "{at}: cannot read '{text}' as a date — re-export with the YYYY/MM/DD date format"
+            "{at}: cannot read '{text}' as a date — the rest of the file reads as {}; re-export \
+             with the YYYY/MM/DD date format",
+            order.as_str()
         )
     };
-    let four_digit_year = text
-        .split_once('/')
-        .is_some_and(|(y, _)| y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()));
-    if !four_digit_year {
+    let Some((values, first_width, last_width)) = split_date(text) else {
+        return Err(unreadable());
+    };
+    if !fits_shape(order, first_width, last_width) {
         return Err(unreadable());
     }
-    let date = NaiveDate::parse_from_str(text, "%Y/%m/%d").map_err(|_| unreadable())?;
+    let date = date_in(order, values).ok_or_else(unreadable)?;
 
     // Tomorrow, not today: the export is written in NZ local time and compared here in UTC,
     // so the last row of a statement pulled late in the evening is legitimately dated ahead
@@ -1157,6 +1712,31 @@ mod tests {
              Date,Unique Id,Tran Type,Cheque Number,Payee,Memo,Amount\r\n\r\n"
         );
         format!("{preamble}{}\r\n", rows.join("\r\n"))
+    }
+
+    /// ASB's "CSV with running balance" shape: the extra column, the two synthetic markers,
+    /// and `M/D/YY` dates. `rows` are the real ones, given without their `Balance` cell —
+    /// `balances` supplies those in step, so a test can state a consistent chain or break it
+    /// deliberately.
+    ///
+    /// The declared window is 2020/01/01 → 2026/08/04, so the `Closing Balance` marker's
+    /// `8/4/26` is what proves `M/D/YY` in a file whose own rows never pass the 12th.
+    fn balance_file(opening: &str, rows: &[(&str, &str)], closing: &str) -> String {
+        let mut out = String::from(
+            "Created date / time : 04 August 2026 / 12:36:28\r\n\
+             Bank 12; Branch 3136; Account 0000123-50 (Streamline)\r\n\
+             From date 20200101\r\n\
+             To date 20260804\r\n\
+             Avail Bal : 100.00 as of 20260804\r\n\
+             Ledger Balance : 100.00 as of 20260804\r\n\
+             Date,Unique Id,Tran Type,Cheque Number,Payee,Memo,Amount,Balance\r\n\r\n",
+        );
+        out.push_str(&format!("1/1/20,,,,Opening Balance,,,{opening}\r\n"));
+        for (row, balance) in rows {
+            out.push_str(&format!("{row},{balance}\r\n"));
+        }
+        out.push_str(&format!("8/4/26,,,,Closing Balance,,,{closing}\r\n"));
+        out
     }
 
     /// A minimal stored (uncompressed) zip — enough for the parser, and dependency-free.
@@ -1549,6 +2129,487 @@ mod tests {
         assert!(out.opening_balance_row().is_none());
     }
 
+    // ------------------------------------------------- the running-balance export shape
+
+    #[test]
+    fn reads_the_running_balance_shape_and_the_short_dates_in_it() {
+        let text = balance_file(
+            "18694.18",
+            &[(
+                r#"1/2/20,2020010201,EFTPOS,,"SHOP","EFTPOS",-18594.18"#,
+                "100.00",
+            )],
+            "100.00",
+        );
+        let out = only(parse_upload(text.as_bytes()).expect("parses"));
+        assert_eq!(out.account, "12-3136-0000123-50");
+        // The two markers are not transactions, so only the real row counts.
+        assert_eq!(out.rows_total, 1);
+        assert_eq!(out.transactions.len(), 1);
+        // 2 January, not 1 February: the closing marker's `8/4/26` against the declared
+        // `To date 20260804` is what proves the order in a file whose rows never pass the 12th.
+        assert_eq!(out.transactions[0].posted_at, "2020-01-02T12:00:00+00:00");
+        assert_eq!(out.covered_from.as_deref(), Some("2020-01-02"));
+        // Stated outright, rather than worked back from the closing balance.
+        assert_eq!(out.stated_opening_minor, Some(18_694_18));
+        assert_eq!(out.stated_opening_as_of.as_deref(), Some("2020-01-01"));
+        assert_eq!(out.implied_opening_minor(), Some(18_694_18));
+        assert_eq!(
+            out.opening_balance_row().expect("a row").amount_minor,
+            18_694_18
+        );
+        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+    }
+
+    /// The text repair is the substantive part of this parser, and it must not care which shape
+    /// the row arrived in — the two exports were compared over one account's whole history and
+    /// agreed on every payee and memo.
+    #[test]
+    fn repairs_text_the_same_way_in_either_shape() {
+        let row = r#"2020010201,DEBIT,,"DEBIT","CARD 1111 Chemist Ware house Albany",-23.83"#;
+        let plain = one(&format!("2020/01/02,{row}"));
+        let with_balance = only(
+            parse_upload(
+                balance_file("100.00", &[(&format!("1/2/20,{row}"), "76.17")], "76.17").as_bytes(),
+            )
+            .expect("parses"),
+        )
+        .transactions
+        .pop()
+        .expect("one row");
+        assert_eq!(
+            with_balance.description,
+            "CARD 1111 Chemist Warehouse Albany"
+        );
+        assert_eq!(with_balance.description, plain.description);
+        assert_eq!(with_balance.merchant, plain.merchant);
+        assert_eq!(with_balance.amount_minor, plain.amount_minor);
+    }
+
+    /// The cheapest proof, and the one the real exports mostly rely on: a day past the 12th
+    /// can only be a day.
+    #[test]
+    fn proves_the_date_order_from_a_component_past_the_twelfth() {
+        let text = balance_file(
+            "0.00",
+            &[
+                (r#"9/18/20,2020091801,EFTPOS,,"S","EFTPOS",-5.00"#, "-5.00"),
+                (
+                    r#"10/2/20,2020100201,EFTPOS,,"S","EFTPOS",105.00"#,
+                    "100.00",
+                ),
+            ],
+            "100.00",
+        );
+        let out = only(parse_upload(text.as_bytes()).expect("parses"));
+        assert_eq!(out.transactions[0].posted_at, "2020-09-18T12:00:00+00:00");
+        assert_eq!(out.transactions[1].posted_at, "2020-10-02T12:00:00+00:00");
+        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+    }
+
+    /// Not a shape ASB has been seen to emit — but the proof is exact, so a file carrying it is
+    /// read rather than refused.
+    #[test]
+    fn reads_a_day_month_export_where_the_file_proves_that_order() {
+        let text = balance_file(
+            "0.00",
+            &[
+                (r#"18/9/20,2020091801,EFTPOS,,"S","EFTPOS",-5.00"#, "-5.00"),
+                (
+                    r#"2/10/20,2020100201,EFTPOS,,"S","EFTPOS",105.00"#,
+                    "100.00",
+                ),
+            ],
+            "100.00",
+        );
+        let out = only(parse_upload(text.as_bytes()).expect("parses"));
+        assert_eq!(out.transactions[0].posted_at, "2020-09-18T12:00:00+00:00");
+        assert_eq!(out.transactions[1].posted_at, "2020-10-02T12:00:00+00:00");
+    }
+
+    /// Nothing decides it: no component past the 12th, no declared window for the markers to be
+    /// checked against, and one row is in order either way. Read as `M/D/YY` because every ASB
+    /// export seen is — and said out loud, so a wrong window is visible rather than becoming
+    /// history quietly.
+    #[test]
+    fn assumes_month_day_and_says_so_when_nothing_can_prove_the_order() {
+        let text = balance_file(
+            "0.00",
+            &[(
+                r#"1/2/20,2020010201,D/C,,"D/C FROM X","Y",100.00"#,
+                "100.00",
+            )],
+            "100.00",
+        )
+        .replace("From date 20200101\r\n", "")
+        .replace("To date 20260804\r\n", "");
+        let out = only(parse_upload(text.as_bytes()).expect("parses"));
+        assert_eq!(out.transactions[0].posted_at, "2020-01-02T12:00:00+00:00");
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("could not be proven") && w.contains("M/D/YY")),
+            "{:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
+    fn refuses_a_file_no_single_date_order_fits() {
+        let text = balance_file(
+            "0.00",
+            &[
+                (r#"18/9/20,2020091801,EFTPOS,,"S","EFTPOS",-5.00"#, "-5.00"),
+                (
+                    r#"9/18/20,2020091802,EFTPOS,,"S","EFTPOS",105.00"#,
+                    "100.00",
+                ),
+            ],
+            "100.00",
+        );
+        let err = parse_upload(text.as_bytes())
+            .expect_err("refused")
+            .to_string();
+        assert!(err.contains("no single date order fits"), "{err:?}");
+    }
+
+    /// The discriminator the whole design rests on: short dates are ASB's in the
+    /// running-balance shape, and spreadsheet damage in a plain one. Accepting them there would
+    /// misdate an import silently, which is worse than refusing the file.
+    #[test]
+    fn a_plain_export_with_short_dates_is_refused_as_spreadsheet_damage() {
+        let text = file(&[r#"20/01/20,2020012001,EFTPOS,,"S","EFTPOS",-5.00"#]);
+        let err = parse_upload(text.as_bytes())
+            .expect_err("refused")
+            .to_string();
+        assert!(err.contains("YYYY/MM/DD"), "{err:?}");
+        assert!(err.contains("spreadsheet"), "{err:?}");
+    }
+
+    #[test]
+    fn a_file_mixing_date_formats_is_refused() {
+        let text = balance_file(
+            "0.00",
+            &[
+                (
+                    r#"2020/09/18,2020091801,EFTPOS,,"S","EFTPOS",-5.00"#,
+                    "-5.00",
+                ),
+                (
+                    r#"9/19/20,2020091901,EFTPOS,,"S","EFTPOS",105.00"#,
+                    "100.00",
+                ),
+            ],
+            "100.00",
+        );
+        let err = parse_upload(text.as_bytes())
+            .expect_err("refused")
+            .to_string();
+        assert!(err.contains("mixes date formats"), "{err:?}");
+    }
+
+    /// A marker is recognised by its whole shape, not by the missing id: `Unique Id` is what
+    /// imported rows dedupe on, so a real row that lost one is a corrupt file either way.
+    #[test]
+    fn an_id_less_row_that_is_not_a_balance_marker_is_still_refused() {
+        for row in [
+            // No id, but a real amount — a transaction, not a marker.
+            r#"1/2/20,,EFTPOS,,"SHOP","EFTPOS",100.00"#,
+            // Wears the marker's label and still carries an amount, so it is not one.
+            r#"1/2/20,,,,Opening Balance,,100.00"#,
+        ] {
+            let text = balance_file("0.00", &[(row, "100.00")], "100.00");
+            let err = parse_upload(text.as_bytes())
+                .expect_err("refused")
+                .to_string();
+            assert!(err.contains("empty 'Unique Id'"), "{row}: {err:?}");
+        }
+    }
+
+    /// What the balance column buys: a row missing from the middle of the file is otherwise
+    /// invisible — every remaining row is well-formed and the totals simply come out short.
+    #[test]
+    fn warns_when_a_row_does_not_square_with_the_running_balance() {
+        let text = balance_file(
+            "0.00",
+            &[
+                (r#"1/2/20,2020010201,EFTPOS,,"S","EFTPOS",-5.00"#, "-5.00"),
+                // The balance moves 200.00 on a 105.00 credit: something is missing.
+                (
+                    r#"1/3/20,2020010301,D/C,,"D/C FROM X","Y",105.00"#,
+                    "195.00",
+                ),
+            ],
+            "100.00",
+        );
+        let out = only(parse_upload(text.as_bytes()).expect("parses"));
+        assert!(
+            out.warnings.iter().any(|w| w.contains("running balance")),
+            "{:?}",
+            out.warnings
+        );
+    }
+
+    /// The chain is self-consistent here, so only the header is out of step — and that is worth
+    /// saying, because the *derived* opening balance is worked back from the header figure while
+    /// the stated one comes from the rows.
+    #[test]
+    fn warns_when_the_header_and_the_closing_row_disagree() {
+        let text = balance_file(
+            "500.00",
+            &[(
+                r#"1/2/20,2020010201,D/C,,"D/C FROM X","Y",100.00"#,
+                "600.00",
+            )],
+            "600.00",
+        );
+        let out = only(parse_upload(text.as_bytes()).expect("parses"));
+        assert_eq!(out.stated_opening_minor, Some(500_00));
+        // The stated figure is what lands on the ledger, not the 0.00 the header implies.
+        assert_eq!(out.implied_opening_minor(), Some(500_00));
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("closing balance row says")),
+            "{:?}",
+            out.warnings
+        );
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("states an opening balance")),
+            "{:?}",
+            out.warnings
+        );
+    }
+
+    // ------------------------------------------------- merging the two shapes together
+
+    /// The real case: one account exported twice, once in each shape. They agree row for row,
+    /// so the overlap collapses and the stated opening balance survives.
+    #[test]
+    fn merges_a_plain_and_a_running_balance_export_of_one_account() {
+        let plain = file(&[r#"2020/01/02,2020010201,EFTPOS,,"SHOP","EFTPOS",-18594.18"#]);
+        let with_balance = balance_file(
+            "18694.18",
+            &[(
+                r#"1/2/20,2020010201,EFTPOS,,"SHOP","EFTPOS",-18594.18"#,
+                "100.00",
+            )],
+            "100.00",
+        );
+        let out = only(
+            parse_upload(&zip(&[
+                ("plain.csv", &plain),
+                ("balance.csv", &with_balance),
+            ]))
+            .expect("parses"),
+        );
+        assert_eq!(out.rows_total, 1, "the shared row is counted once");
+        assert_eq!(out.transactions.len(), 1);
+        assert_eq!(out.sources.len(), 2);
+        assert_eq!(out.stated_opening_minor, Some(18_694_18));
+        assert_eq!(out.implied_opening_minor(), Some(18_694_18));
+    }
+
+    /// A stated opening balance is only an *opening* balance for the history it opens. Where the
+    /// merge pulled in a file that starts earlier, it is a figure from the middle, and putting
+    /// that on the ledger would invent a large movement in the middle of it.
+    #[test]
+    fn a_stated_opening_from_the_middle_of_a_merged_history_is_dropped() {
+        let row = |id: &str, at: &str| ProviderTransaction {
+            external_id: format!("asb:12-3136-0000123-50:{id}"),
+            posted_at: format!("{at}T12:00:00+00:00"),
+            amount_minor: -100,
+            currency_code: None,
+            description: "X".to_string(),
+            merchant: None,
+            category: None,
+        };
+        let part = |id, at| AsbExport {
+            account: "12-3136-0000123-50".to_string(),
+            transactions: vec![row(id, at)],
+            rows_total: 1,
+            sum_minor: -100,
+            sources: vec![format!("{id}.csv")],
+            ..AsbExport::default()
+        };
+        let earlier = part("1", "2019-05-05");
+        let later = AsbExport {
+            ledger_balance_minor: Some(0),
+            ledger_balance_as_of: Some("2026-08-04".to_string()),
+            stated_opening_minor: Some(500_00),
+            stated_opening_as_of: Some("2020-01-01".to_string()),
+            ..part("2", "2021-05-05")
+        };
+
+        let merged = merge_by_account(vec![earlier, later]).expect("merges");
+        let out = &merged[0];
+        assert_eq!(out.covered_from.as_deref(), Some("2019-05-05"));
+        assert_eq!(out.stated_opening_minor, None, "it opens nothing");
+        // Worked back from the closing balance over both files instead: 0.00 less -2.00.
+        assert_eq!(out.implied_opening_minor(), Some(200));
+    }
+
+    /// Two windows of one account each report the same unfamiliar type, and the preview showing
+    /// it twice reads as twice as many rows.
+    #[test]
+    fn a_warning_both_files_raise_is_reported_once() {
+        let odd = |id: &str| format!(r#"2020/01/0{id},202001010{id},KOHA,,"SHOP","EFTPOS",-5.00"#);
+        let out = only(
+            parse_upload(&zip(&[
+                ("a.csv", &file(&[&odd("1")])),
+                ("b.csv", &file(&[&odd("2")])),
+            ]))
+            .expect("parses"),
+        );
+        let about_type: Vec<&String> = out
+            .warnings
+            .iter()
+            .filter(|w| w.contains("'KOHA'"))
+            .collect();
+        assert_eq!(about_type.len(), 1, "{:?}", out.warnings);
+    }
+
+    // ------------------------------------------------- interest, fees and loan repayments
+
+    /// The four types a savings or loan account uses, which a chequing-only export never shows.
+    /// Rows shaped as ASB writes them, with the fixed labels it puts in `Payee`.
+    #[test]
+    fn reads_the_interest_fee_and_loan_types() {
+        for (label, want) in [
+            ("INT", AsbTranType::Interest),
+            ("BANK FEE", AsbTranType::BankFee),
+            ("LOAN INT", AsbTranType::LoanInterest),
+            ("LOAN PRIN", AsbTranType::LoanPrincipal),
+        ] {
+            assert_eq!(AsbTranType::from_str(label), Ok(want), "{label}");
+            assert_eq!(want.as_str(), label, "round trip");
+        }
+    }
+
+    /// The one type whose meaning the sign decides: credited on a savings account, charged on a
+    /// borrowing one, with the same `ASB BANK - INTEREST` payee either way. Distinct *names*, so
+    /// the DAL's find-or-create on `(name, group)` can't hand the second one the first's kind.
+    #[test]
+    fn interest_is_income_when_credited_and_a_cost_when_charged() {
+        let earned =
+            one(r#"2020/01/01,2020010101,INT,,"ASB BANK - INTEREST","CR.INT TO 01/01/2020",1.23"#);
+        let charged = one(r#"2020/01/01,2020010101,INT,,"ASB BANK - INTEREST","",-45.67"#);
+
+        let earned = earned.category.expect("a hint");
+        assert_eq!(earned.name, "Interest earned");
+        assert_eq!(earned.kind, Some(CategoryKind::Income));
+
+        let charged = charged.category.expect("a hint");
+        assert_eq!(charged.name, "Interest charged");
+        assert_eq!(charged.kind, Some(CategoryKind::Expense));
+    }
+
+    /// Interest is a cost; the principal beside it is the customer's own money moving to the
+    /// loan's sub-account, so it must land in neither report — the same call the transfer types
+    /// get, and the reason `LOAN PRIN` is not simply "spending".
+    #[test]
+    fn loan_interest_is_a_cost_and_loan_principal_is_a_transfer() {
+        let interest = one(
+            r#"2023/06/01,2023060101,LOAN INT,,"LOAN - INTEREST","12-3136-0000123-92 006 INTEREST",-512.34"#,
+        );
+        let principal = one(
+            r#"2023/06/01,2023060101,LOAN PRIN,,"LOAN - PRINCIPAL","12-3136-0000123-92 006 PRINCIPAL",-311.11"#,
+        );
+
+        let interest = interest.category.expect("a hint");
+        assert_eq!(interest.name, "Loan interest");
+        assert_eq!(interest.kind, Some(CategoryKind::Expense));
+
+        let principal = principal.category.expect("a hint");
+        assert_eq!(principal.name, "Loan principal");
+        assert_eq!(
+            principal.kind,
+            Some(CategoryKind::Transfer),
+            "principal is not spending"
+        );
+    }
+
+    /// `BANK FEE` is recognised but deliberately left unclassified, because ASB uses the one
+    /// label for a $2.00 account fee and for a $50,000 mortgage drawdown to a solicitor. Both
+    /// are negative and nothing else in the row separates them, so a "Bank fees" expense would
+    /// put a house purchase in the spending report.
+    #[test]
+    fn a_bank_fee_is_recognised_but_left_uncategorised() {
+        for row in [
+            r#"2021/03/01,2021030101,BANK FEE,,"ACTIVITY FEE","",-2.00"#,
+            r#"2025/09/04,2025090401,BANK FEE,,"","Advance to Solicitor",-50000.00"#,
+        ] {
+            let out = one(row);
+            assert!(out.category.is_none(), "{row}");
+            // Still imported, still described, and no longer reported as an unknown type.
+            assert!(!out.description.is_empty(), "{row}");
+        }
+        let out = export(&[r#"2021/03/01,2021030101,BANK FEE,,"ACTIVITY FEE","",-2.00"#]);
+        assert!(
+            !out.warnings.iter().any(|w| w.contains("unfamiliar")),
+            "{:?}",
+            out.warnings
+        );
+    }
+
+    /// Their payees are fixed labels restating the type, so none of them may mint a merchant —
+    /// the description still carries the text for rules to match on.
+    #[test]
+    fn interest_fee_and_loan_rows_name_no_merchant() {
+        for row in [
+            r#"2020/01/01,2020010101,INT,,"ASB BANK - INTEREST","CR.INT TO 01/01/2020",1.23"#,
+            r#"2021/03/01,2021030101,BANK FEE,,"ACTIVITY FEE","",-5.00"#,
+            r#"2023/06/01,2023060101,LOAN INT,,"LOAN - INTEREST","12-3136-0000123-92 006 INTEREST",-1.00"#,
+            r#"2023/06/01,2023060101,LOAN PRIN,,"LOAN - PRINCIPAL","12-3136-0000123-92 006 PRINCIPAL",-2.00"#,
+        ] {
+            let out = one(row);
+            assert_eq!(out.merchant, None, "{row}");
+            // …and the label is still in the description.
+            assert!(!out.description.is_empty(), "{row}");
+        }
+    }
+
+    /// Their memo is the Particulars/Code/Reference triple, not a card descriptor: the split
+    /// account number is rejoined, and the space before `006` — a separate subfield — is kept.
+    #[test]
+    fn a_loan_memos_subfields_are_not_welded_together() {
+        let out = one(
+            r#"2023/06/01,2023060101,LOAN INT,,"LOAN - INTEREST","12-3136- 0000123-92 006 INTEREST",-1.00"#,
+        );
+        assert_eq!(
+            out.description,
+            "LOAN - INTEREST 12-3136-0000123-92 006 INTEREST"
+        );
+    }
+
+    /// The point of the whole exercise: these four no longer warn, so a savings or loan export
+    /// imports categorised instead of as a wall of uncategorised rows.
+    #[test]
+    fn the_interest_and_loan_types_no_longer_warn() {
+        let out = export(&[
+            r#"2020/01/01,2020010101,INT,,"ASB BANK - INTEREST","CR.INT TO 01/01/2020",1.23"#,
+            r#"2021/03/01,2021030101,BANK FEE,,"ACTIVITY FEE","",-5.00"#,
+            r#"2023/06/01,2023060102,LOAN INT,,"LOAN - INTEREST","12-3136-0000123-92 006 INTEREST",-1.00"#,
+            r#"2023/06/01,2023060103,LOAN PRIN,,"LOAN - PRINCIPAL","12-3136-0000123-92 006 PRINCIPAL",-2.00"#,
+        ]);
+        assert_eq!(out.transactions.len(), 4);
+        assert!(
+            !out.warnings.iter().any(|w| w.contains("unfamiliar")),
+            "{:?}",
+            out.warnings
+        );
+        // Every one but `BANK FEE`, which is recognised and deliberately unclassified.
+        assert_eq!(
+            out.transactions
+                .iter()
+                .filter(|t| t.category.is_some())
+                .count(),
+            3
+        );
+    }
+
     // ---------------------------------------------------------------- the cutover
 
     #[test]
@@ -1584,17 +2645,21 @@ mod tests {
 
     // ---------------------------------------------------------------- tolerated
 
+    /// A label this parser doesn't know must not block a seven-year import — and that this
+    /// happens is not hypothetical: `INT`, `BANK FEE`, `LOAN INT` and `LOAN PRIN` all arrived
+    /// here first, from the savings and loan accounts a chequing-only export never shows. So the
+    /// example is a label ASB does not currently emit, not one of those.
     #[test]
     fn an_unfamiliar_transaction_type_warns_but_still_imports() {
-        let out = export(&[r#"2024/06/01,2024060101,INT,,"INTEREST","CREDIT INTEREST",1.23"#]);
+        let out = export(&[r#"2024/06/01,2024060101,CHQ,,"CHEQUE","DEPOSIT 001",1.23"#]);
         assert_eq!(out.transactions.len(), 1);
         let row = &out.transactions[0];
         assert_eq!(row.amount_minor, 1_23);
-        assert_eq!(row.description, "INTEREST CREDIT INTEREST");
-        assert_eq!(row.merchant, None);
-        assert!(row.category.is_none());
+        assert_eq!(row.description, "CHEQUE DEPOSIT 001");
+        assert_eq!(row.merchant, None, "an unknown type names no merchant");
+        assert!(row.category.is_none(), "and carries no category hint");
         assert!(
-            out.warnings.iter().any(|w| w.contains("'INT'")),
+            out.warnings.iter().any(|w| w.contains("'CHQ'")),
             "{:?}",
             out.warnings
         );
@@ -1922,8 +2987,11 @@ mod tests {
         assert!(err.contains("no .csv files"), "{err:?}");
     }
 
+    /// ASB exports one file per account and a zip carries the lot, so aborting on the first bad
+    /// one costs every *good* account in it an import — and reports a single filename as if it
+    /// were the only problem. The bad file is named and skipped; the rest goes through.
     #[test]
-    fn a_bad_file_inside_a_zip_names_which_one() {
+    fn a_bad_file_inside_a_zip_is_named_and_skipped_not_fatal() {
         let bytes = zip(&[
             ("good.csv", &file(&[A])),
             (
@@ -1931,9 +2999,69 @@ mod tests {
                 &file(&[r#"2020/01/20,2020012002,EFTPOS,,"X","EFTPOS",twelve"#]),
             ),
         ]);
-        let err = parse_upload(&bytes).expect_err("refused").to_string();
-        assert!(err.contains("broken.csv"), "{err:?}");
+        let out = parse_upload(&bytes).expect("the good file still parses");
+        assert_eq!(out.exports.len(), 1);
+        assert_eq!(out.exports[0].sources, ["good.csv"]);
+        assert_eq!(out.exports[0].rows_total, 1);
+        let named: Vec<&String> = out
+            .warnings
+            .iter()
+            .filter(|w| w.contains("broken.csv"))
+            .collect();
+        assert_eq!(named.len(), 1, "{:?}", out.warnings);
+        assert!(named[0].contains("as an amount"), "{named:?}");
+        assert!(named[0].contains("skipped"), "{named:?}");
+    }
+
+    /// …but a zip in which *nothing* can be read is still an error, not a cheerful empty
+    /// result — and that is the same path a single unreadable CSV takes, so a bare upload
+    /// behaves exactly as it did before.
+    #[test]
+    fn a_zip_where_no_file_can_be_read_is_refused() {
+        let broken = file(&[r#"2020/01/20,2020012002,EFTPOS,,"X","EFTPOS",twelve"#]);
+        let err = parse_upload(&zip(&[("a.csv", &broken), ("b.csv", &broken)]))
+            .expect_err("refused")
+            .to_string();
+        assert!(err.contains("a.csv"), "{err:?}");
+        assert!(err.contains("b.csv"), "{err:?}");
         assert!(err.contains("as an amount"), "{err:?}");
+    }
+
+    /// The mixed real-world zip: eight running-balance exports, a plain one, and one file that
+    /// cannot be read at all. Everything readable imports.
+    #[test]
+    fn a_zip_mixing_both_shapes_reads_every_account_it_can() {
+        let bytes = zip(&[
+            (
+                "plain.csv",
+                &file_for("0000123-50", "100.00", "20260803", &[A]),
+            ),
+            (
+                "balance.csv",
+                &balance_file(
+                    "0.00",
+                    &[(
+                        r#"9/18/20,2020091801,EFTPOS,,"S","EFTPOS",100.00"#,
+                        "100.00",
+                    )],
+                    "100.00",
+                )
+                .replace("0000123-50", "0000123-51"),
+            ),
+            ("junk.csv", "not an export at all"),
+        ]);
+        let out = parse_upload(&bytes).expect("parses");
+        assert_eq!(out.exports.len(), 2);
+        assert_eq!(out.exports[0].account, "12-3136-0000123-50");
+        assert_eq!(out.exports[1].account, "12-3136-0000123-51");
+        // The plain one states no opening balance; the running-balance one does.
+        assert_eq!(out.exports[0].stated_opening_minor, None);
+        assert_eq!(out.exports[1].stated_opening_minor, Some(0));
+        assert!(
+            out.warnings.iter().any(|w| w.contains("junk.csv")),
+            "{:?}",
+            out.warnings
+        );
     }
 
     #[test]

@@ -106,6 +106,9 @@ const ALLOWED = new Set([
   "12-3456-0000456-00",
   "12-3136-0000123-50",
   "12-3136-0000123-51",
+  // The `-92` sibling a loan facility posts its interest and principal to, in the
+  // `LOAN INT`/`LOAN PRIN` fixtures. Same invented account digits, new suffix.
+  "12-3136-0000123-92",
   "012-345-678",
   "FC02-1234-0000001-00",
   "FC12-3456-0000002-00",
