@@ -22,6 +22,7 @@ pub mod providers;
 pub mod rules;
 pub mod settings;
 pub mod stock_prices;
+pub mod tax;
 pub mod transactions;
 pub mod types;
 pub mod valuations;
@@ -58,6 +59,11 @@ pub use rules::{
 };
 pub use settings::{Settings, UpdateSettings};
 pub use stock_prices::StockPrice;
+pub use tax::{
+    average_take_home_bps, latest_scale, marginal_take_home_bps, paye, scale_for, PayeBreakdown,
+    PayeInput, TaxScale, TaxScaleId, KIWISAVER_DEFAULT_BPS, KIWISAVER_EMPLOYEE_RATES_BPS,
+    NZ_TAX_SCALES,
+};
 pub use transactions::{
     BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,
     TxQuery,
