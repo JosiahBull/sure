@@ -26,13 +26,13 @@ use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate};
 use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
 
 use sure_core::{
-    AccountClass, AccountKind, AccountMetadata, AppResult, CategoryKind, CronKind,
-    ForecastAssumption, ForecastEvent, ForecastEventKind, ForecastTargetType, Interval, RateType,
-    RepaymentFrequency,
+    AccountClass, AccountKind, AccountMetadata, AppResult, CategoryKind, CronKind, EffectTarget,
+    ForecastAssumption, ForecastEvent, ForecastTargetType, Interval, LifeEffectSpec, LifeEventKind,
+    RateType, RelationKind, RepaymentFrequency, StepAmount,
 };
 
 use crate::fx::Fx;
@@ -264,6 +264,7 @@ pub struct SimulationInputs {
     account_sims: Vec<AccountSim>,
     category_sims: Vec<CategorySim>,
     stream_sims: Vec<StreamSim>,
+    event_sims: Vec<EventSim>,
     reconciliations: Vec<StreamReconciliation>,
     unmodelled_streams: Vec<String>,
 }
@@ -316,6 +317,9 @@ pub struct ForecastResult {
     /// Reported rather than folded into the projection: a diagnostic that silently changes the
     /// thing it is diagnosing stops being one. This is the check that catches a salary entered
     /// before tax and modelled as take-home.
+    /// How each event actually landed across the paths. The chart draws this, not the configured
+    /// window — relations move timing, so the two genuinely differ.
+    pub events: Vec<EventOutcome>,
     pub reconciliations: Vec<StreamReconciliation>,
     /// Streams left out of the projection, and why — `Fx::unconverted`'s contract. A figure the
     /// user can see is incomplete beats one they cannot.
@@ -660,11 +664,23 @@ impl ForecastService {
         self.forecast.list_events().await
     }
 
+    pub async fn get_event(&self, id: i64) -> AppResult<ForecastEvent> {
+        self.forecast.get_event(id).await
+    }
+
     pub async fn create_event(
         &self,
         input: sure_core::SaveForecastEvent,
     ) -> AppResult<ForecastEvent> {
         self.forecast.create_event(input).await
+    }
+
+    pub async fn update_event(
+        &self,
+        id: i64,
+        input: sure_core::SaveForecastEvent,
+    ) -> AppResult<ForecastEvent> {
+        self.forecast.update_event(id, input).await
     }
 
     pub async fn delete_event(&self, id: i64) -> AppResult<()> {
@@ -811,14 +827,10 @@ impl ForecastService {
                 }
             };
 
-            // Events only apply to non-deterministic accounts for now — a fully
-            // amortising mortgage/loan projects from its own terms alone.
-            let (step_changes, one_offs) =
-                if matches!(projection, AccountProjection::Deterministic(_)) {
-                    (Vec::new(), Vec::new())
-                } else {
-                    account_events(&events, a.id, today, horizon)
-                };
+            // Event effects reach an account through the per-path overlay, not through the sim —
+            // they are per-path now. A deterministic mortgage/loan still takes none: it projects
+            // from its own terms alone.
+            let takes_events = !matches!(projection, AccountProjection::Deterministic(_));
 
             account_sims.push(AccountSim {
                 base_scale,
@@ -835,8 +847,8 @@ impl ForecastService {
                 // the intent where the reader is looking.
                 repayment_debits_cash: reports::is_excluded_from_spend(a.kind)
                     && a.kind != AccountKind::StudentLoan,
-                step_changes,
-                one_offs,
+                account_id: a.id,
+                takes_events,
             });
         }
 
@@ -901,6 +913,8 @@ impl ForecastService {
             }
 
             stream_sims.push(StreamSim {
+                person_id: st.person_id,
+                stream_id: st.id,
                 base_scale,
                 payments: crate::income::payment_counts(st.pay_frequency, anchor, today, horizon),
                 periods_per_year: st.pay_frequency.periods_per_year(),
@@ -956,17 +970,22 @@ impl ForecastService {
             let Some(baseline) = fx.try_to_base_major(baseline_minor, &base) else {
                 continue;
             };
-            let (step_changes, one_offs) =
-                category_events(&events, a.target_id, today, horizon, &fx, &base);
             category_sims.push(CategorySim {
                 is_income: source_kind_is_income(self, a.target_id).await?,
                 baseline,
                 monthly_log_return: drift_series(a.annual_growth_bps, long_run_anchor(a), horizon),
                 monthly_vol_fraction: annual_vol_to_monthly_sd(a.annual_volatility_bps),
-                step_changes,
-                one_offs,
+                category_id: a.target_id,
             });
         }
+
+        // ---- events, in topological order -----------------------------------------------
+        //
+        // Sorted so a per-path `after` clamp can read its parent's already-sampled month by index.
+        // A cycle surviving to here means the write-time check was bypassed (a hand-edited
+        // database), so the members are logged and processed unconstrained rather than failing the
+        // whole forecast — `metadata_from_stored` sets the precedent: coerce, do not panic.
+        let event_sims = resolve_events(&events, today, horizon);
 
         // Drawn here, on the async side, and carried into the compute half by value. It must
         // *not* move inside `simulate_from`: a caller that passes an explicit seed is asking
@@ -988,6 +1007,7 @@ impl ForecastService {
             account_sims,
             category_sims,
             stream_sims,
+            event_sims,
             reconciliations,
             unmodelled_streams,
         })
@@ -1024,6 +1044,7 @@ impl ForecastService {
             account_sims,
             category_sims,
             stream_sims,
+            event_sims,
             reconciliations,
             unmodelled_streams,
         } = inputs;
@@ -1073,15 +1094,26 @@ impl ForecastService {
         // is a single fraction, so there is nothing to take percentiles of.
         let mut negative_cash: Vec<u32> = vec![0; horizon as usize];
 
-        for _ in 0..n_paths {
+        // Sampled before the path loop, from RNGs seeded independently of `rng`. That independence
+        // is the acceptance criterion for this whole feature: with no events configured, not one
+        // value is taken from the shared stream, so every figure is byte-identical to a run from
+        // before events existed.
+        let event_outcomes = sample_event_outcomes(seed, n_paths, horizon, &event_sims);
+        let mut overlay = Overlay::new(account_sims.len(), category_sims.len());
+        // Scratch, reused across paths: the promotions this path drew, and the published scale
+        // merged with them in month order.
+        let mut path_steps: Vec<Vec<(i64, f64)>> = vec![Vec::new(); stream_sims.len()];
+        let mut path_levels: Vec<Vec<(i64, f64)>> = vec![Vec::new(); stream_sims.len()];
+
+        for outcomes in &event_outcomes {
             let mut acc_values: Vec<f64> = account_sims.iter().map(|s| s.current).collect();
             let mut cat_baselines: Vec<f64> = category_sims.iter().map(|s| s.baseline).collect();
             let mut cash = cash_start;
 
-            apply_due(&mut acc_values, &account_sims, 0);
-            for (i, sim) in category_sims.iter().enumerate() {
-                if let Some(&(_, val)) = sim.step_changes.iter().find(|&&(idx, _)| idx == 0) {
-                    cat_baselines[i] = val;
+            apply_due(&mut acc_values, &overlay, 0);
+            for (i, base) in cat_baselines.iter_mut().enumerate() {
+                if let Some(&(_, val)) = overlay.cat_step[i].iter().find(|&&(idx, _)| idx == 0) {
+                    *base = val;
                 }
             }
 
@@ -1091,6 +1123,149 @@ impl ForecastService {
             // its neighbour.
             let mut stream_levels: Vec<f64> = stream_sims.iter().map(|s| s.start_level).collect();
             let mut stream_next_step: Vec<usize> = vec![0; stream_sims.len()];
+            let mut stream_from: Vec<i64> = stream_sims.iter().map(|s| s.active_from).collect();
+            let mut stream_to: Vec<i64> = stream_sims.iter().map(|s| s.active_to).collect();
+            let mut stream_pauses: Vec<Vec<(i64, i64, i64)>> = vec![Vec::new(); stream_sims.len()];
+
+            // ---- flatten this path's events -----------------------------------------------
+            //
+            // The order is load-bearing. Windows move first, so everything below is decided against
+            // the window this path actually has; then levels, so a promotion on a not-yet-started
+            // job still raises the salary it will pay; then pauses; then costs. Doing levels before
+            // windows would make "promotion, then a new job" stop composing.
+            overlay.clear();
+            for v in path_steps.iter_mut() {
+                v.clear();
+            }
+            for (ei, ev) in event_sims.iter().enumerate() {
+                let Some(month) = outcomes[ei].month else {
+                    continue;
+                };
+                if month > horizon {
+                    // Occurred, but after the projection ends. Reported as such; applied to nothing.
+                    continue;
+                }
+                for effect in &ev.effects {
+                    match *effect {
+                        LifeEffectSpec::IncomeStart { income_stream_id } => {
+                            if let Some(i) = stream_index(&stream_sims, income_stream_id) {
+                                stream_from[i] = month;
+                                stream_to[i] = stream_to[i].max(horizon);
+                            }
+                        }
+                        LifeEffectSpec::IncomeEnd { income_stream_id } => {
+                            if let Some(i) = stream_index(&stream_sims, income_stream_id) {
+                                stream_to[i] = stream_to[i].min(month - 1);
+                            }
+                        }
+                        LifeEffectSpec::IncomeStep {
+                            income_stream_id,
+                            amount,
+                        } => {
+                            if let Some(i) = stream_index(&stream_sims, income_stream_id) {
+                                // Merged into the dated scale rather than applied here, so the two
+                                // resolve in month order together and a published step and a
+                                // promotion in the same month cannot both win.
+                                let at = |base: f64| match amount {
+                                    StepAmount::Absolute {
+                                        annual_amount_minor,
+                                    } => annual_amount_minor as f64,
+                                    StepAmount::Percent { rate_bps } => {
+                                        base * (1.0 + rate_bps as f64 / 10_000.0)
+                                    }
+                                };
+                                let base = stream_sims[i]
+                                    .steps
+                                    .iter()
+                                    .rev()
+                                    .find(|&&(sm, _)| sm <= month)
+                                    .map(|&(_, v)| v)
+                                    .unwrap_or(stream_sims[i].start_level);
+                                path_steps[i].push((month, at(base)));
+                            }
+                        }
+                        LifeEffectSpec::IncomePause {
+                            person_id,
+                            months,
+                            replacement_rate_bps,
+                        } => {
+                            // Every stream this person has — nobody takes parental leave from one of
+                            // their two jobs. Overlapping pauses take the *lower* replacement rate:
+                            // adding them could pay more than 100% of a salary nobody is earning.
+                            for (i, sim) in stream_sims.iter().enumerate() {
+                                if sim.person_id == person_id {
+                                    stream_pauses[i].push((
+                                        month,
+                                        month + months - 1,
+                                        replacement_rate_bps,
+                                    ));
+                                }
+                            }
+                        }
+                        LifeEffectSpec::RecurringDelta {
+                            category_id,
+                            amount_minor,
+                            delay_months,
+                            ramp_months,
+                            duration_months,
+                        } => {
+                            if let Some(c) = category_index(&category_sims, category_id) {
+                                let from = month + delay_months;
+                                overlay.deltas.push(ActiveDelta {
+                                    category: c,
+                                    from,
+                                    to: duration_months.map(|d| from + d - 1),
+                                    amount: amount_minor as f64 / 10f64.powi(fx.dp(&base)),
+                                    ramp: ramp_months,
+                                });
+                            }
+                        }
+                        LifeEffectSpec::SetBaseline {
+                            target,
+                            amount_minor,
+                        } => match target {
+                            EffectTarget::Account { account_id } => {
+                                if let Some(i) = account_index(&account_sims, account_id) {
+                                    overlay.acc_step[i].push((month, amount_minor as f64));
+                                }
+                            }
+                            EffectTarget::Category { category_id } => {
+                                if let Some(c) = category_index(&category_sims, category_id) {
+                                    overlay.cat_step[c].push((
+                                        month,
+                                        amount_minor as f64 / 10f64.powi(fx.dp(&base)),
+                                    ));
+                                }
+                            }
+                        },
+                        LifeEffectSpec::OneOffAmount {
+                            target,
+                            amount_minor,
+                        } => match target {
+                            EffectTarget::Account { account_id } => {
+                                if let Some(i) = account_index(&account_sims, account_id) {
+                                    overlay.acc_one[i].push((month, amount_minor as f64));
+                                }
+                            }
+                            EffectTarget::Category { category_id } => {
+                                if let Some(c) = category_index(&category_sims, category_id) {
+                                    overlay.cat_one[c].push((
+                                        month,
+                                        amount_minor as f64 / 10f64.powi(fx.dp(&base)),
+                                    ));
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+            // Promotions merged with the published scale, in month order.
+            for (i, extra) in path_steps.iter_mut().enumerate() {
+                path_levels[i].clear();
+                path_levels[i].extend_from_slice(&stream_sims[i].steps);
+                path_levels[i].append(extra);
+                path_levels[i].sort_by_key(|&(m, _)| m);
+            }
 
             // Per-path repayment state, parallel to `acc_values` (`None` for every
             // non-amortising account). Opening a schedule draws this path's post-refix
@@ -1124,7 +1299,7 @@ impl ForecastService {
                         }
                         AccountProjection::Stochastic { monthly_vol } => {
                             if let Some(&(_, val)) =
-                                sim.step_changes.iter().find(|&&(idx, _)| idx == m)
+                                overlay.acc_step[i].iter().find(|&&(idx, _)| idx == m)
                             {
                                 acc_values[i] = val;
                             } else {
@@ -1135,17 +1310,15 @@ impl ForecastService {
                                 };
                                 acc_values[i] *= (sim.monthly_drift[m as usize] + noise).exp();
                             }
-                            let one_off: f64 = sim
-                                .one_offs
+                            acc_values[i] += overlay.acc_one[i]
                                 .iter()
                                 .filter(|&&(idx, _)| idx == m)
                                 .map(|&(_, d)| d)
-                                .sum();
-                            acc_values[i] += one_off;
+                                .sum::<f64>();
                         }
                         AccountProjection::LinearPaydown { monthly_vol_abs } => {
                             if let Some(&(_, val)) =
-                                sim.step_changes.iter().find(|&&(idx, _)| idx == m)
+                                overlay.acc_step[i].iter().find(|&&(idx, _)| idx == m)
                             {
                                 acc_values[i] = val;
                             } else {
@@ -1156,13 +1329,11 @@ impl ForecastService {
                                 };
                                 acc_values[i] += sim.monthly_drift[m as usize] + noise;
                             }
-                            let one_off: f64 = sim
-                                .one_offs
+                            acc_values[i] += overlay.acc_one[i]
                                 .iter()
                                 .filter(|&&(idx, _)| idx == m)
                                 .map(|&(_, d)| d)
-                                .sum();
-                            acc_values[i] += one_off;
+                                .sum::<f64>();
                             // Cleared. A debt paid off is paid off — it must not run past
                             // zero into being an asset, since the assets/liabilities split
                             // is by sign and noise alone would otherwise push it across.
@@ -1176,7 +1347,7 @@ impl ForecastService {
                 let mut net_flow = 0.0;
                 for (i, sim) in category_sims.iter().enumerate() {
                     if let Some(&(_, new_baseline)) =
-                        sim.step_changes.iter().find(|&&(idx, _)| idx == m)
+                        overlay.cat_step[i].iter().find(|&&(idx, _)| idx == m)
                     {
                         cat_baselines[i] = new_baseline;
                     } else {
@@ -1190,12 +1361,17 @@ impl ForecastService {
                         // belongs on the month, not on the estimate.
                         cat_baselines[i] *= sim.monthly_log_return[m as usize].exp();
                     }
-                    let one_off: f64 = sim
-                        .one_offs
+                    // A one-off due this month, plus any recurring cost an event switched on. Both
+                    // land on the *realised* month rather than on the baseline: a daycare invoice is
+                    // a known amount, and folding it into the run-rate would put the category's
+                    // lognormal lumpiness on top of a fee that is not lumpy, then compound it through
+                    // the drift — the exact mistake the comment above exists to prevent.
+                    let one_off: f64 = overlay.cat_one[i]
                         .iter()
                         .filter(|&&(idx, _)| idx == m)
                         .map(|&(_, d)| d)
-                        .sum();
+                        .sum::<f64>()
+                        + overlay.delta_at(i, m);
                     // What this month actually happens to cost. Lognormal, scaled so its
                     // *mean* is exactly the run-rate: spending can't go negative, and the
                     // old `max(0.0)` clip on a symmetric draw silently inflated every lumpy
@@ -1222,16 +1398,16 @@ impl ForecastService {
                 // month), then the residual increase, then the window gate, then the calendar.
                 let mut stream_net = 0.0;
                 for (i, sim) in stream_sims.iter().enumerate() {
-                    while stream_next_step[i] < sim.steps.len()
-                        && sim.steps[stream_next_step[i]].0 <= m
+                    while stream_next_step[i] < path_levels[i].len()
+                        && path_levels[i][stream_next_step[i]].0 <= m
                     {
-                        stream_levels[i] = sim.steps[stream_next_step[i]].1;
+                        stream_levels[i] = path_levels[i][stream_next_step[i]].1;
                         stream_next_step[i] += 1;
                     }
                     if m > sim.residual_from_month {
                         stream_levels[i] *= sim.monthly_increase;
                     }
-                    if m < sim.active_from || m > sim.active_to {
+                    if m < stream_from[i] || m > stream_to[i] {
                         continue;
                     }
                     let paydays = f64::from(sim.payments[m as usize]);
@@ -1239,7 +1415,17 @@ impl ForecastService {
                         continue;
                     }
                     let level = stream_levels[i];
-                    let gross = paydays * level / sim.periods_per_year;
+                    let mut gross = paydays * level / sim.periods_per_year;
+                    // A pause scales the *payout*, not the level: a promotion landing during parental
+                    // leave still raises the salary you go back to.
+                    if let Some(bps) = stream_pauses[i]
+                        .iter()
+                        .filter(|&&(a, b, _)| m >= a && m <= b)
+                        .map(|&(_, _, bps)| bps)
+                        .min()
+                    {
+                        gross *= bps as f64 / 10_000.0;
+                    }
                     // The take-home *ratio* comes from the annual level and the month's amount from
                     // the calendar. Annualising the month instead would push a quarterly bonus into
                     // the top bracket for that month alone, which is not how PAYE works.
@@ -1306,6 +1492,7 @@ impl ForecastService {
                 .iter_mut()
                 .map(|s| band_from_samples(s, &fx))
                 .collect(),
+            events: summarise_events(&event_sims, &event_outcomes, today, horizon),
             reconciliations,
             unmodelled_streams,
             negative_cash_rate_bps: negative_cash
@@ -1380,10 +1567,10 @@ struct AccountSim {
     /// has no schedule to be deterministic *with* (see [`loan_terms`]), and a trend-projected
     /// account never debits the pool at all.
     repayment_debits_cash: bool,
-    /// `(month_index, new_value)`, native currency — a known future revaluation.
-    step_changes: Vec<(i64, f64)>,
-    /// `(month_index, delta)`, native currency — a one-time contribution/withdrawal.
-    one_offs: Vec<(i64, f64)>,
+    /// Which account this is, so an event effect naming it can be matched to this slot.
+    account_id: i64,
+    /// Whether event effects apply here at all.
+    takes_events: bool,
 }
 
 struct CategorySim {
@@ -1396,15 +1583,18 @@ struct CategorySim {
     /// Fraction of the (then-current) baseline, not yet scaled to an absolute $ stdev —
     /// scaled per-month so noise grows with the baseline over the horizon.
     monthly_vol_fraction: f64,
-    /// `(month_index, new_baseline)`, base-currency dollars — a promotion/pay change.
-    step_changes: Vec<(i64, f64)>,
-    /// `(month_index, delta)`, base-currency dollars — a one-time bonus/expense.
-    one_offs: Vec<(i64, f64)>,
+    /// Which category this is, so an event effect naming it can be matched to this slot.
+    category_id: i64,
 }
 
 /// One income stream, resolved. Everything here is path-invariant; the *level* is not — a promotion
 /// moves it — so that lives in the path loop beside `acc_values`.
 struct StreamSim {
+    /// Whose income this is. A career break pauses every stream one person has, so the effect has to
+    /// be able to find them.
+    person_id: i64,
+    /// Which stream this is, so an effect naming it can be matched to this slot.
+    stream_id: i64,
     /// Native minor units -> base-currency major units, resolved once. A stream whose currency has
     /// no rate never becomes a `StreamSim` at all; it is named in `unmodelled_streams`.
     base_scale: f64,
@@ -1429,83 +1619,418 @@ struct StreamSim {
     take_home: sure_core::TakeHome,
 }
 
-/// `(month_index, value)` pairs an event contributes: a step-change's new value, or a
-/// one-off's delta.
-type MonthlyDeltas = Vec<(i64, f64)>;
-
 struct MonthSamples {
     assets: Vec<f64>,
     liabilities: Vec<f64>,
     net_worth: Vec<f64>,
 }
 
-fn apply_due(values: &mut [f64], sims: &[AccountSim], month: i64) {
-    for (i, sim) in sims.iter().enumerate() {
-        if let Some(&(_, val)) = sim.step_changes.iter().find(|&&(idx, _)| idx == month) {
-            values[i] = val;
+/// Apply this path's account-level event effects due in `month`.
+///
+/// Takes the per-path overlay rather than reading the sims, because event effects are per-path now:
+/// two paths can disagree about whether a revaluation happened at all.
+fn apply_due(values: &mut [f64], overlay: &Overlay, month: i64) {
+    for (i, value) in values.iter_mut().enumerate() {
+        if let Some(&(_, val)) = overlay.acc_step[i].iter().find(|&&(idx, _)| idx == month) {
+            *value = val;
         }
-        let one_off: f64 = sim
-            .one_offs
+        *value += overlay.acc_one[i]
             .iter()
             .filter(|&&(idx, _)| idx == month)
             .map(|&(_, d)| d)
-            .sum();
-        values[i] += one_off;
+            .sum::<f64>();
     }
 }
 
-/// This account's forecast_events, split into step-changes/one-offs due within the
-/// simulation window, converted to `(month_index, value/delta)` in native minor units.
-fn account_events(
-    events: &[ForecastEvent],
-    account_id: i64,
-    today: NaiveDate,
-    horizon: i64,
-) -> (MonthlyDeltas, MonthlyDeltas) {
-    let mut step_changes = Vec::new();
-    let mut one_offs = Vec::new();
-    for e in events {
-        if e.target_type != ForecastTargetType::Account || e.target_id != account_id {
-            continue;
-        }
-        let Some(idx) = month_index(today, &e.effective_date, horizon) else {
-            continue;
-        };
-        match e.kind {
-            ForecastEventKind::StepChange => step_changes.push((idx, e.amount_minor as f64)),
-            ForecastEventKind::OneOffAmount => one_offs.push((idx, e.amount_minor as f64)),
-        }
-    }
-    (step_changes, one_offs)
+/// One path's event effects, flattened into the shape the month loop indexes.
+///
+/// Reused across paths — cleared rather than reallocated, because a fresh set of vectors per path is
+/// thousands of allocations per request for nothing.
+struct Overlay {
+    acc_step: Vec<Vec<(i64, f64)>>,
+    acc_one: Vec<Vec<(i64, f64)>>,
+    cat_step: Vec<Vec<(i64, f64)>>,
+    cat_one: Vec<Vec<(i64, f64)>>,
+    deltas: Vec<ActiveDelta>,
 }
 
-/// As [`account_events`], but for a category — `amount_minor` is interpreted in the
-/// household's base reporting currency (a category has no intrinsic currency of its
-/// own), converted here to base-currency major units.
-fn category_events(
-    events: &[ForecastEvent],
-    category_id: i64,
-    today: NaiveDate,
-    horizon: i64,
-    fx: &Fx,
-    base: &str,
-) -> (MonthlyDeltas, MonthlyDeltas) {
-    let mut step_changes = Vec::new();
-    let mut one_offs = Vec::new();
-    for e in events {
-        if e.target_type != ForecastTargetType::Category || e.target_id != category_id {
-            continue;
-        }
-        let Some(idx) = month_index(today, &e.effective_date, horizon) else {
-            continue;
-        };
-        let major = e.amount_minor as f64 / 10f64.powi(fx.dp(base));
-        match e.kind {
-            ForecastEventKind::StepChange => step_changes.push((idx, major)),
-            ForecastEventKind::OneOffAmount => one_offs.push((idx, major)),
+impl Overlay {
+    fn new(accounts: usize, categories: usize) -> Self {
+        Overlay {
+            acc_step: vec![Vec::new(); accounts],
+            acc_one: vec![Vec::new(); accounts],
+            cat_step: vec![Vec::new(); categories],
+            cat_one: vec![Vec::new(); categories],
+            deltas: Vec::new(),
         }
     }
-    (step_changes, one_offs)
+
+    fn clear(&mut self) {
+        for v in self
+            .acc_step
+            .iter_mut()
+            .chain(self.acc_one.iter_mut())
+            .chain(self.cat_step.iter_mut())
+            .chain(self.cat_one.iter_mut())
+        {
+            v.clear();
+        }
+        self.deltas.clear();
+    }
+
+    /// The sum of every recurring cost active in `month`, base-currency major units. Signed as a
+    /// cost, so the caller adds it to spending.
+    fn delta_at(&self, category: usize, month: i64) -> f64 {
+        self.deltas
+            .iter()
+            .filter(|d| d.category == category)
+            .map(|d| d.at(month))
+            .sum()
+    }
+}
+
+/// Slot of the account/category/stream an effect names, or `None` when it is not in this
+/// simulation at all.
+///
+/// `None` is a real answer, not a failure: a cash account is deliberately pooled rather than
+/// simulated, a transfer category has no assumption, and a stream in an unconvertible currency was
+/// left out and named. An effect pointing at one of those is dropped here — the alternative, a
+/// panic or a fabricated slot, would take down a live GET over a target the projection was never
+/// going to model.
+fn account_index(sims: &[AccountSim], account_id: i64) -> Option<usize> {
+    sims.iter()
+        .position(|s| s.account_id == account_id && s.takes_events)
+}
+
+fn category_index(sims: &[CategorySim], category_id: i64) -> Option<usize> {
+    sims.iter().position(|s| s.category_id == category_id)
+}
+
+fn stream_index(sims: &[StreamSim], stream_id: i64) -> Option<usize> {
+    sims.iter().position(|s| s.stream_id == stream_id)
+}
+
+/// Salt for the events RNG, so its stream cannot collide with the projection's own.
+const EVENTS_RNG_SALT: u64 = 0x4C49_4645_5645_4E54; // "LIFEVENT"
+
+/// One forecast event, resolved. Held in **topological order**, so applying an `after` constraint
+/// can read its parent's already-sampled month by index without a second pass.
+struct EventSim {
+    event_id: i64,
+    label: String,
+    kind: LifeEventKind,
+    probability: f64,
+    /// Month offset of `expected_on` from today. Signed and unclamped — a date already past is a
+    /// real case, handled by the window clamp rather than by dropping the event.
+    expected_month: f64,
+    spread: f64,
+    effects: Vec<LifeEffectSpec>,
+    /// `(parent index into the sims, min gap in months)`.
+    after: Vec<(usize, i64)>,
+    only_if: Vec<usize>,
+}
+
+/// What one path decided about one event.
+#[derive(Clone, Copy, Default)]
+struct PathEvent {
+    occurred: bool,
+    /// `None` when it did not occur. May exceed the horizon — kept rather than dropped, so the
+    /// realised timing can honestly report "beyond this chart".
+    month: Option<i64>,
+    /// An `after` bound actually moved the sampled month. The honesty signal the UI reports.
+    constrained: bool,
+    /// The sample landed at or before today and was clamped into the first projected month.
+    clamped_early: bool,
+}
+
+/// A 64-bit mix of three values, for deriving an independent RNG stream per (event, path).
+///
+/// SplitMix64's finaliser. One stream per pair means adding, deleting or reordering an event cannot
+/// move any *other* event's realisation on any path, so the reported occurrence rates stay stable
+/// across edits — which they would not if every event drew from one shared stream in list order.
+fn mix64(a: u64, b: u64, c: u64) -> u64 {
+    let mut z = a ^ b.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Inverse CDF of a uniform hard window on `[-spread, +spread]`.
+///
+/// One uniform in, one value out, so RNG consumption is fixed whatever the spread — the property a
+/// seeded run needs, and the reason this is not a reject-and-retry. A spread of 0 short-circuits, so
+/// a certain-timing event costs the same draws as an uncertain one.
+fn uniform_offset(u: f64, spread: f64) -> f64 {
+    if spread <= 0.0 {
+        return 0.0;
+    }
+    (2.0 * u - 1.0) * spread
+}
+
+/// Every event's outcome on every path.
+///
+/// Drawn from RNGs seeded independently of the projection's, which is the acceptance criterion for
+/// this whole feature: with no events configured, every figure is byte-identical to a run before
+/// events existed, because not one value is taken from the shared stream.
+fn sample_event_outcomes(
+    seed: u64,
+    n_paths: usize,
+    horizon: i64,
+    sims: &[EventSim],
+) -> Vec<Vec<PathEvent>> {
+    let mut out = Vec::with_capacity(n_paths);
+    for path in 0..n_paths {
+        let mut path_events: Vec<PathEvent> = vec![PathEvent::default(); sims.len()];
+        // Topological order, so a parent is always decided before its child reads it.
+        for (i, ev) in sims.iter().enumerate() {
+            let mut rng = StdRng::seed_from_u64(mix64(
+                seed ^ EVENTS_RNG_SALT,
+                ev.event_id as u64,
+                path as u64,
+            ));
+            let occurred = rng.gen::<f64>() < ev.probability
+                && ev.only_if.iter().all(|&p| path_events[p].occurred);
+            // Drawn unconditionally, and separately from the occurrence draw, so changing an event's
+            // probability cannot shift its timing distribution. One question, one draw.
+            let u = rng.gen::<f64>();
+            let mut month = (ev.expected_month + uniform_offset(u, ev.spread)).round() as i64;
+
+            // Relations, by clamping — never by resampling, which would make RNG consumption depend
+            // on the draws (`AmortSchedule::open`'s rule).
+            let mut constrained = false;
+            for &(parent, gap) in &ev.after {
+                // A parent that did not occur imposes nothing: `after` is ordering, not
+                // conditionality. If conditionality was meant, that is `only_if`.
+                if let Some(pm) = path_events[parent].month {
+                    if pm + gap > month {
+                        month = pm + gap;
+                        constrained = true;
+                    }
+                }
+            }
+            let clamped_early = month < 1;
+            // Clamped to 1, never 0 and never dropped: month 0 is today, which is already inside the
+            // history every baseline was fitted from, so firing there would double-apply. The same
+            // rule `Refix.month` uses.
+            let month = month.max(1);
+            path_events[i] = PathEvent {
+                occurred,
+                month: occurred.then_some(month),
+                constrained,
+                clamped_early,
+            };
+            let _ = horizon;
+        }
+        out.push(path_events);
+    }
+    out
+}
+
+/// Events sorted into dependency order, with their relations turned into indices.
+fn resolve_events(events: &[ForecastEvent], today: NaiveDate, horizon: i64) -> Vec<EventSim> {
+    // Kahn's algorithm over the `depends_on` edges.
+    let ids: Vec<i64> = events.iter().map(|e| e.id).collect();
+    let mut indegree: HashMap<i64, usize> = ids.iter().map(|&i| (i, 0)).collect();
+    let mut children: HashMap<i64, Vec<i64>> = HashMap::new();
+    for e in events {
+        for r in &e.relations {
+            if !indegree.contains_key(&r.depends_on_event_id) {
+                continue; // dangling parent: no constraint to apply
+            }
+            *indegree.entry(e.id).or_default() += 1;
+            children
+                .entry(r.depends_on_event_id)
+                .or_default()
+                .push(e.id);
+        }
+    }
+    let mut ready: Vec<i64> = ids
+        .iter()
+        .copied()
+        .filter(|i| indegree.get(i).copied().unwrap_or(0) == 0)
+        .collect();
+    let mut order: Vec<i64> = Vec::with_capacity(ids.len());
+    while let Some(id) = ready.pop() {
+        order.push(id);
+        for child in children.get(&id).cloned().unwrap_or_default() {
+            let d = indegree.entry(child).or_default();
+            *d = d.saturating_sub(1);
+            if *d == 0 {
+                ready.push(child);
+            }
+        }
+    }
+    if order.len() < ids.len() {
+        let stuck: Vec<i64> = ids.iter().copied().filter(|i| !order.contains(i)).collect();
+        tracing::warn!(
+            ?stuck,
+            "forecast events form a dependency cycle; their ordering constraints are ignored for \
+             this run. The write path refuses a cycle, so this means the rows were edited around it."
+        );
+        order.extend(stuck);
+    }
+
+    let position: HashMap<i64, usize> = order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let by_id: HashMap<i64, &ForecastEvent> = events.iter().map(|e| (e.id, e)).collect();
+    let mut sims: Vec<EventSim> = Vec::with_capacity(order.len());
+    for id in &order {
+        let Some(e) = by_id.get(id) else { continue };
+        let expected_month = reports::parse_date(&e.expected_on)
+            .map(|d| months_between(today, d) as f64)
+            .unwrap_or(0.0);
+        let mut after = Vec::new();
+        let mut only_if = Vec::new();
+        for r in &e.relations {
+            let Some(&parent) = position.get(&r.depends_on_event_id) else {
+                continue;
+            };
+            // Only a parent already placed can be read; a back-edge is part of the cycle logged
+            // above and is dropped rather than read from uninitialised state.
+            if parent >= sims.len() {
+                continue;
+            }
+            match r.kind {
+                RelationKind::After => after.push((parent, r.min_gap_months)),
+                RelationKind::OnlyIf => only_if.push(parent),
+            }
+        }
+        sims.push(EventSim {
+            event_id: e.id,
+            label: e.label.clone(),
+            kind: e.kind,
+            probability: e.probability_bps as f64 / 10_000.0,
+            expected_month,
+            spread: e.timing_spread_months as f64,
+            effects: e.effects.iter().map(|x| x.spec).collect(),
+            after,
+            only_if,
+        });
+    }
+    let _ = horizon;
+    sims
+}
+
+/// How an event actually landed across the simulated paths — not what the user typed.
+///
+/// Relations move timing, so the configured window and the realised distribution genuinely differ.
+/// The chart draws *this*; the editor shows the input. Drawing the input would be a lie about
+/// precisely the thing the chart exists to show.
+#[derive(Debug, Clone)]
+pub struct EventOutcome {
+    pub event_id: i64,
+    pub label: String,
+    pub kind: LifeEventKind,
+    pub probability_bps: i64,
+    /// Paths it occurred on at all, in basis points. Differs from `probability_bps` exactly when an
+    /// `only_if` bound.
+    pub occurrence_rate_bps: i64,
+    /// …of which also landed inside the horizon.
+    pub in_window_rate_bps: i64,
+    /// Realised timing across occurring paths; `None` if it never occurred.
+    pub month_p10: Option<i64>,
+    pub month_median: Option<i64>,
+    pub month_p90: Option<i64>,
+    pub date_p10: Option<String>,
+    pub date_median: Option<String>,
+    pub date_p90: Option<String>,
+    /// Of occurring paths, how many had the date moved by an ordering constraint.
+    pub constrained_rate_bps: i64,
+    /// Of occurring paths, how many sampled a month at or before today.
+    pub clamped_early_rate_bps: i64,
+    /// Whether the p90 ran past the horizon, so the chart can draw an open end rather than assert a
+    /// date the model never committed to.
+    pub truncated: bool,
+}
+
+/// Reduce every path's decisions about every event into the per-event summary the UI draws.
+fn summarise_events(
+    sims: &[EventSim],
+    outcomes: &[Vec<PathEvent>],
+    today: NaiveDate,
+    horizon: i64,
+) -> Vec<EventOutcome> {
+    let paths = outcomes.len().max(1) as i64;
+    let rate = |n: usize| (n as i64) * 10_000 / paths;
+    sims.iter()
+        .enumerate()
+        .map(|(i, ev)| {
+            let mut months: Vec<f64> = Vec::new();
+            let (mut occurred, mut in_window, mut constrained, mut early) = (0, 0, 0, 0);
+            for path in outcomes {
+                let pe = path[i];
+                if !pe.occurred {
+                    continue;
+                }
+                occurred += 1;
+                if pe.constrained {
+                    constrained += 1;
+                }
+                if pe.clamped_early {
+                    early += 1;
+                }
+                if let Some(m) = pe.month {
+                    if m <= horizon {
+                        in_window += 1;
+                    }
+                    months.push(m as f64);
+                }
+            }
+            months.sort_by(f64::total_cmp);
+            let at = |p: f64| (!months.is_empty()).then(|| percentile(&months, p).round() as i64);
+            let (p10, median, p90) = (at(0.10), at(0.50), at(0.90));
+            // Percentiles over *all* occurring paths, not just the ones inside the horizon — so a
+            // p90 beyond the chart says so instead of being quietly pulled back to the edge.
+            let date = |m: Option<i64>| m.map(|m| add_months(today, m).to_string());
+            EventOutcome {
+                event_id: ev.event_id,
+                label: ev.label.clone(),
+                kind: ev.kind,
+                probability_bps: (ev.probability * 10_000.0).round() as i64,
+                occurrence_rate_bps: rate(occurred),
+                in_window_rate_bps: rate(in_window),
+                month_p10: p10,
+                month_median: median,
+                month_p90: p90,
+                date_p10: date(p10),
+                date_median: date(median),
+                date_p90: date(p90),
+                constrained_rate_bps: if occurred > 0 {
+                    (constrained as i64) * 10_000 / occurred as i64
+                } else {
+                    0
+                },
+                clamped_early_rate_bps: if occurred > 0 {
+                    (early as i64) * 10_000 / occurred as i64
+                } else {
+                    0
+                },
+                truncated: p90.is_some_and(|m| m > horizon),
+            }
+        })
+        .collect()
+}
+
+/// A recurring cost an event switched on, on one path.
+struct ActiveDelta {
+    category: usize,
+    from: i64,
+    to: Option<i64>,
+    amount: f64,
+    ramp: i64,
+}
+
+impl ActiveDelta {
+    /// This month's share, ramped linearly in over `ramp` months.
+    fn at(&self, m: i64) -> f64 {
+        if m < self.from || self.to.is_some_and(|t| m > t) {
+            return 0.0;
+        }
+        if self.ramp <= 0 {
+            return self.amount;
+        }
+        let elapsed = (m - self.from + 1).min(self.ramp);
+        self.amount * elapsed as f64 / self.ramp as f64
+    }
 }
 
 /// An annual relative rate (in bps) to the monthly log-return a lognormal-style
@@ -1676,20 +2201,6 @@ fn add_months(d: NaiveDate, n: i64) -> NaiveDate {
     let month = total.rem_euclid(12) as u32 + 1;
     let day = d.day().min(reports::last_day_of_month(year, month).day());
     NaiveDate::from_ymd_opt(year, month, day).unwrap()
-}
-
-/// `effective`'s month index relative to `today` (0 = this month or earlier, clamped to
-/// "apply immediately"), or `None` if it falls beyond `horizon` months out (not "not yet
-/// due" — genuinely outside the requested projection window, so it should be ignored
-/// rather than smeared into the last month).
-fn month_index(today: NaiveDate, effective: &str, horizon: i64) -> Option<i64> {
-    let effective = reports::parse_date(effective)?;
-    let idx = months_between(today, effective);
-    if idx > horizon {
-        None
-    } else {
-        Some(idx.max(0))
-    }
 }
 
 /// A rate roll-off: when the current fixed period ends, and what to assume after it.
@@ -2886,12 +3397,158 @@ mod tests {
         );
     }
 
+    /// The rule that replaced `month_index`, and the reason it had to.
+    ///
+    /// `month_index` clamped a past date to month 0 — which is right for a certainty applied to
+    /// today's balances, and wrong for a sampled event: month 0 is today, already inside the history
+    /// every baseline was fitted from, so firing there double-applies. Events clamp to month 1
+    /// instead, the same rule `Refix.month` uses, and say so via `clamped_early_rate_bps`.
     #[test]
-    fn month_index_clamps_the_past_and_excludes_beyond_horizon() {
-        let today = d("2026-07-01");
-        assert_eq!(month_index(today, "2026-01-01", 12), Some(0));
-        assert_eq!(month_index(today, "2026-10-01", 12), Some(3));
-        assert_eq!(month_index(today, "2028-01-01", 12), None);
+    fn a_sampled_month_in_the_past_is_clamped_into_the_projection_and_flagged() {
+        let sims = vec![EventSim {
+            event_id: 1,
+            label: "Already happened".into(),
+            kind: sure_core::LifeEventKind::Custom,
+            probability: 1.0,
+            expected_month: -18.0,
+            spread: 0.0,
+            effects: Vec::new(),
+            after: Vec::new(),
+            only_if: Vec::new(),
+        }];
+        let outcomes = sample_event_outcomes(7, 32, 12, &sims);
+        assert!(outcomes.iter().all(|p| p[0].month == Some(1)));
+        assert!(outcomes.iter().all(|p| p[0].clamped_early));
+    }
+
+    /// A month past the horizon is *kept*, not dropped, so the realised p90 can honestly report
+    /// "beyond this chart" rather than being pulled back to the edge.
+    #[test]
+    fn a_sampled_month_beyond_the_horizon_is_kept_rather_than_dropped() {
+        let sims = vec![EventSim {
+            event_id: 1,
+            label: "Far off".into(),
+            kind: sure_core::LifeEventKind::Custom,
+            probability: 1.0,
+            expected_month: 400.0,
+            spread: 0.0,
+            effects: Vec::new(),
+            after: Vec::new(),
+            only_if: Vec::new(),
+        }];
+        let outcomes = sample_event_outcomes(7, 8, 12, &sims);
+        assert!(outcomes.iter().all(|p| p[0].month == Some(400)));
+        let summary = summarise_events(&sims, &outcomes, d("2026-07-01"), 12);
+        assert_eq!(summary[0].occurrence_rate_bps, 10_000);
+        // It happens, but never inside the window — two different facts, reported separately.
+        assert_eq!(summary[0].in_window_rate_bps, 0);
+        assert!(summary[0].truncated);
+    }
+
+    /// A uniform hard window means what it says: nothing lands outside it, and every month inside is
+    /// reachable. A normal distribution would put ~5% of paths past the stated bound.
+    #[test]
+    fn the_timing_window_is_uniform_and_hard() {
+        let sims = vec![EventSim {
+            event_id: 1,
+            label: "Child".into(),
+            kind: sure_core::LifeEventKind::Child,
+            probability: 1.0,
+            expected_month: 36.0,
+            spread: 12.0,
+            effects: Vec::new(),
+            after: Vec::new(),
+            only_if: Vec::new(),
+        }];
+        let outcomes = sample_event_outcomes(11, 3_000, 120, &sims);
+        let months: Vec<i64> = outcomes.iter().filter_map(|p| p[0].month).collect();
+        assert_eq!(months.len(), 3_000);
+        assert!(
+            months.iter().all(|&m| (24..=48).contains(&m)),
+            "a hard window must not leak: {:?}..{:?}",
+            months.iter().min(),
+            months.iter().max()
+        );
+        // …and the mass is spread across it rather than piled in the middle.
+        let lower = months.iter().filter(|&&m| m < 30).count();
+        let upper = months.iter().filter(|&&m| m > 42).count();
+        assert!(lower > 500 && upper > 500, "lower {lower}, upper {upper}");
+    }
+
+    /// `after` moves a child event and says that it did; `only_if` propagates non-occurrence.
+    #[test]
+    fn relations_clamp_the_child_and_report_that_they_bound() {
+        let parent = EventSim {
+            event_id: 1,
+            label: "Promotion".into(),
+            kind: sure_core::LifeEventKind::Promotion,
+            probability: 1.0,
+            expected_month: 24.0,
+            spread: 0.0,
+            effects: Vec::new(),
+            after: Vec::new(),
+            only_if: Vec::new(),
+        };
+        let child = EventSim {
+            event_id: 2,
+            label: "Child".into(),
+            kind: sure_core::LifeEventKind::Child,
+            probability: 1.0,
+            // Would land at month 6 unconstrained — well before the promotion.
+            expected_month: 6.0,
+            spread: 0.0,
+            effects: Vec::new(),
+            after: vec![(0, 3)],
+            only_if: Vec::new(),
+        };
+        let sims = vec![parent, child];
+        let outcomes = sample_event_outcomes(3, 16, 120, &sims);
+        assert!(outcomes.iter().all(|p| p[1].month == Some(27)));
+        let summary = summarise_events(&sims, &outcomes, d("2026-07-01"), 120);
+        assert_eq!(summary[1].constrained_rate_bps, 10_000);
+        // The realised median is later than what was configured — which is why the chart is fed
+        // this and not the input.
+        assert_eq!(summary[1].month_median, Some(27));
+
+        // A parent that never happens takes its `only_if` child with it…
+        let mut sims = sims;
+        sims[0].probability = 0.0;
+        sims[1].after = Vec::new();
+        sims[1].only_if = vec![0];
+        let outcomes = sample_event_outcomes(3, 16, 120, &sims);
+        assert!(outcomes.iter().all(|p| !p[1].occurred));
+        // …but a *timing* edge on a parent that did not occur is vacuous, not blocking.
+        sims[1].only_if = Vec::new();
+        sims[1].after = vec![(0, 3)];
+        let outcomes = sample_event_outcomes(3, 16, 120, &sims);
+        assert!(outcomes
+            .iter()
+            .all(|p| p[1].occurred && p[1].month == Some(6)));
+    }
+
+    /// A 50% event happens on about half the paths, and the same seed gives the same answer twice.
+    #[test]
+    fn occurrence_is_reproducible_and_matches_the_configured_probability() {
+        let sims = vec![EventSim {
+            event_id: 42,
+            label: "Maybe".into(),
+            kind: sure_core::LifeEventKind::Custom,
+            probability: 0.5,
+            expected_month: 12.0,
+            spread: 0.0,
+            effects: Vec::new(),
+            after: Vec::new(),
+            only_if: Vec::new(),
+        }];
+        let a = sample_event_outcomes(99, 4_000, 60, &sims);
+        let b = sample_event_outcomes(99, 4_000, 60, &sims);
+        let rate = |o: &Vec<Vec<PathEvent>>| o.iter().filter(|p| p[0].occurred).count();
+        assert_eq!(rate(&a), rate(&b), "same seed, same answer");
+        let n = rate(&a);
+        assert!(
+            (1_800..=2_200).contains(&n),
+            "expected about half of 4000, got {n}"
+        );
     }
 
     #[test]
@@ -3297,7 +3954,17 @@ mod tests {
             async fn list_events(&self) -> AppResult<Vec<ForecastEvent>> {
                 Ok(self.events.clone())
             }
+            async fn get_event(&self, _id: i64) -> AppResult<ForecastEvent> {
+                unreachable!()
+            }
             async fn create_event(&self, _input: SaveForecastEvent) -> AppResult<ForecastEvent> {
+                unreachable!()
+            }
+            async fn update_event(
+                &self,
+                _id: i64,
+                _input: SaveForecastEvent,
+            ) -> AppResult<ForecastEvent> {
                 unreachable!()
             }
             async fn delete_event(&self, _id: i64) -> AppResult<()> {
@@ -3617,13 +4284,28 @@ mod tests {
                 spend,
                 vec![ForecastEvent {
                     id: 1,
-                    target_type: ForecastTargetType::Category,
-                    target_id: 10,
-                    kind: ForecastEventKind::StepChange,
-                    effective_date: today.to_string(),
-                    amount_minor: 1_000_000, // double the ~$5,000/mo baseline
                     label: "Promotion".into(),
+                    kind: sure_core::LifeEventKind::Promotion,
+                    person_id: None,
+                    expected_on: today.to_string(),
+                    // A certainty — 100% likely, no timing spread — which is exactly what every
+                    // event meant before probability existed. That is what keeps this test the
+                    // right assertion about a step change under the unified model.
+                    timing_spread_months: 0,
+                    probability_bps: 10_000,
+                    notes: None,
+                    effects: vec![sure_core::ForecastEventEffect {
+                        id: 1,
+                        event_id: 1,
+                        sort_order: 0,
+                        spec: LifeEffectSpec::SetBaseline {
+                            target: EffectTarget::Category { category_id: 10 },
+                            amount_minor: 1_000_000, // double the ~$5,000/mo baseline
+                        },
+                    }],
+                    relations: Vec::new(),
                     created_at: "2026-07-01T00:00:00Z".into(),
+                    updated_at: "2026-07-01T00:00:00Z".into(),
                 }],
                 today,
             );

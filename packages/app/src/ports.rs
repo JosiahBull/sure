@@ -853,9 +853,15 @@ pub trait ForecastRepo: Send + Sync {
     ) -> AppResult<()>;
     /// Sum of dividend cash paid to `account_id` on or after `since` (ISO-8601 date).
     async fn trailing_dividends_minor(&self, account_id: i64, since: &str) -> AppResult<i64>;
-    /// Every known future step-change/one-off, soonest first.
+    /// Every event with its effects and relations attached, soonest first.
     async fn list_events(&self) -> AppResult<Vec<ForecastEvent>>;
+    async fn get_event(&self, id: i64) -> AppResult<ForecastEvent>;
+    /// Create the event, its effects and its relations in one transaction, refusing a relation set
+    /// that would close a cycle.
     async fn create_event(&self, input: SaveForecastEvent) -> AppResult<ForecastEvent>;
+    /// Full replace, effects and relations included.
+    async fn update_event(&self, id: i64, input: SaveForecastEvent) -> AppResult<ForecastEvent>;
+    /// Refused with a conflict when something only happens *if* this does.
     async fn delete_event(&self, id: i64) -> AppResult<()>;
 
     // ---- per-person income streams -------------------------------------------------

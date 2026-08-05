@@ -16,8 +16,12 @@ use crate::error::{AppError, AppResult};
 use crate::extract::Json;
 use crate::state::AppState;
 
+pub use sure_core::{
+    EffectTarget, ForecastEvent, ForecastEventEffect, ForecastEventRelation, LifeEffectKind,
+    LifeEffectSpec, LifeEventKind, RelationKind, SaveForecastAssumption, SaveForecastEvent,
+    SaveForecastEventRelation, StepAmount,
+};
 use sure_core::{ForecastAssumption, ForecastTargetType};
-pub use sure_core::{ForecastEvent, SaveForecastAssumption, SaveForecastEvent};
 
 const FORECAST_ASSUMPTIONS: &str = "forecast.assumptions";
 const FORECAST_SIMULATE: &str = "forecast.simulate";
@@ -26,6 +30,8 @@ const FORECAST_CLEAR_ASSUMPTION: &str = "forecast.clear_assumption";
 const FORECAST_LIST_EVENTS: &str = "forecast.list_events";
 const FORECAST_CREATE_EVENT: &str = "forecast.create_event";
 const FORECAST_DELETE_EVENT: &str = "forecast.delete_event";
+const FORECAST_GET_EVENT: &str = "forecast.get_event";
+const FORECAST_UPDATE_EVENT: &str = "forecast.update_event";
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -238,6 +244,62 @@ impl From<sure_app::forecast::StreamReconciliation> for StreamReconciliation {
     }
 }
 
+/// How an event actually landed across the simulated paths — not what was typed.
+///
+/// Relations move timing, so the configured `expected_on ± spread` and the realised distribution
+/// genuinely differ. The chart draws this; the editor shows the input. Drawing the input would be a
+/// lie about precisely the thing the chart exists to show.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EventOutcome {
+    pub event_id: i64,
+    pub label: String,
+    pub kind: LifeEventKind,
+    /// What was configured, for comparison with `occurrence_rate_bps` below.
+    pub probability_bps: i64,
+    /// Paths it occurred on. Differs from `probability_bps` exactly when an `only_if` bound.
+    pub occurrence_rate_bps: i64,
+    /// …of which also landed inside the horizon.
+    pub in_window_rate_bps: i64,
+    /// Realised timing as month offsets from today; `null` if it never occurred. Taken over *all*
+    /// occurring paths, so a p90 beyond the chart says so rather than being pulled back to the edge.
+    pub month_p10: Option<i64>,
+    pub month_median: Option<i64>,
+    pub month_p90: Option<i64>,
+    pub date_p10: Option<String>,
+    pub date_median: Option<String>,
+    pub date_p90: Option<String>,
+    /// Of occurring paths, how many had the date moved by an ordering constraint. The honesty
+    /// signal: "your ±2y window was pushed by 'after the promotion' in 34% of runs."
+    pub constrained_rate_bps: i64,
+    /// Of occurring paths, how many sampled a month at or before today — so "your expected date is
+    /// in the past" is visible rather than inferred.
+    pub clamped_early_rate_bps: i64,
+    /// The p90 ran past the horizon, so the chart should draw an open end.
+    pub truncated: bool,
+}
+
+impl From<sure_app::forecast::EventOutcome> for EventOutcome {
+    fn from(o: sure_app::forecast::EventOutcome) -> Self {
+        EventOutcome {
+            event_id: o.event_id,
+            label: o.label,
+            kind: o.kind,
+            probability_bps: o.probability_bps,
+            occurrence_rate_bps: o.occurrence_rate_bps,
+            in_window_rate_bps: o.in_window_rate_bps,
+            month_p10: o.month_p10,
+            month_median: o.month_median,
+            month_p90: o.month_p90,
+            date_p10: o.date_p10,
+            date_median: o.date_median,
+            date_p90: o.date_p90,
+            constrained_rate_bps: o.constrained_rate_bps,
+            clamped_early_rate_bps: o.clamped_early_rate_bps,
+            truncated: o.truncated,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ForecastResult {
     pub currency: String,
@@ -263,6 +325,8 @@ pub struct ForecastResult {
     /// Per linked income category, what the streams claim against what history recorded. Reported
     /// beside the projection rather than folded into it — a diagnostic that silently changes the
     /// thing it diagnoses stops being one.
+    /// How each event landed across the paths. What the chart draws.
+    pub events: Vec<EventOutcome>,
     pub reconciliations: Vec<StreamReconciliation>,
     /// Income streams left out of the projection, and why. A figure the user can see is incomplete
     /// beats one they cannot.
@@ -287,6 +351,7 @@ impl From<sure_app::forecast::ForecastResult> for ForecastResult {
             horizon_months: r.horizon_months,
             simulations: r.simulations,
             income_net: r.income_net.into_iter().map(Into::into).collect(),
+            events: r.events.into_iter().map(Into::into).collect(),
             reconciliations: r.reconciliations.into_iter().map(Into::into).collect(),
             unmodelled_streams: r.unmodelled_streams,
             negative_cash_rate_bps: r.negative_cash_rate_bps,
@@ -448,11 +513,17 @@ pub async fn list_events(State(st): State<AppState>) -> AppResult<Json<Vec<Forec
     Ok(Json(st.forecast.list_events().await?))
 }
 
-/// Record a known future step-change (a promotion, a fixed appreciation rate) or
-/// one-off (a planned bonus, a lump-sum contribution).
+/// Record a change to the future: a promotion, a child, a career break, a job starting or ending,
+/// or a dated adjustment you are certain about.
+///
+/// Effects and relations travel in the same body and are saved in one transaction. A partial save
+/// would leave a state the user cannot see and did not ask for, every problem across every effect
+/// can then be collected into one 422, and the cycle check needs the complete proposed graph rather
+/// than one edge at a time.
 #[utoipa::path(post, path = "/api/forecast/events", tag = "forecast",
     request_body = SaveForecastEvent,
-    responses((status = 201, body = ForecastEvent), (status = 422, body = crate::error::ErrorBody)))]
+    responses((status = 201, body = ForecastEvent), (status = 409, body = crate::error::ErrorBody),
+              (status = 422, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = FORECAST_CREATE_EVENT,
     level = "debug",
@@ -470,9 +541,55 @@ pub async fn create_event(
     ))
 }
 
+/// One event, with its effects and relations.
+#[utoipa::path(get, path = "/api/forecast/events/{id}", tag = "forecast",
+    params(("id" = i64, Path,)),
+    responses((status = 200, body = ForecastEvent), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = FORECAST_GET_EVENT,
+    level = "debug",
+    skip_all,
+    fields(event_id = %id),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn get_event(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<ForecastEvent>> {
+    Ok(Json(st.forecast.get_event(id).await?))
+}
+
+/// Replace an event, its effects and relations included — so removing one is omitting it.
+#[utoipa::path(put, path = "/api/forecast/events/{id}", tag = "forecast",
+    params(("id" = i64, Path,)), request_body = SaveForecastEvent,
+    responses((status = 200, body = ForecastEvent), (status = 404, body = crate::error::ErrorBody),
+              (status = 409, body = crate::error::ErrorBody),
+              (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = FORECAST_UPDATE_EVENT,
+    level = "debug",
+    skip_all,
+    fields(event_id = %id),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn update_event(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<SaveForecastEvent>,
+) -> AppResult<Json<ForecastEvent>> {
+    Ok(Json(st.forecast.update_event(id, input).await?))
+}
+
+/// Remove an event.
+///
+/// Ordering rules pointing at it are dropped — an ordering is meaningless without the thing it
+/// orders against, and refusing would trap you in a graph you could only escape by editing every
+/// dependent first. But a 409 when something happens *only if* this does: that event would quietly
+/// become certain, which is a change of meaning with no trace.
 #[utoipa::path(delete, path = "/api/forecast/events/{id}", tag = "forecast",
     params(("id" = i64, Path,)),
-    responses((status = 204), (status = 404, body = crate::error::ErrorBody)))]
+    responses((status = 204), (status = 404, body = crate::error::ErrorBody),
+              (status = 409, body = crate::error::ErrorBody)))]
 #[tracing::instrument(
     name = FORECAST_DELETE_EVENT,
     level = "debug",
@@ -501,5 +618,8 @@ pub fn router() -> Router<AppState> {
         )
         .route("/forecast", get(simulate))
         .route("/forecast/events", get(list_events).post(create_event))
-        .route("/forecast/events/{id}", axum::routing::delete(delete_event))
+        .route(
+            "/forecast/events/{id}",
+            get(get_event).put(update_event).delete(delete_event),
+        )
 }

@@ -16,6 +16,7 @@ pub mod error;
 pub mod forecast;
 pub mod income;
 pub mod iso_date;
+pub mod life_events;
 pub mod merchants;
 pub mod money;
 pub mod people;
@@ -39,15 +40,17 @@ pub use equity::{
     AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
 };
 pub use error::{AppError, AppResult, ErrorBody, ErrorDetail};
-pub use forecast::{
-    ForecastAssumption, ForecastEvent, ForecastEventKind, ForecastTargetType,
-    SaveForecastAssumption, SaveForecastEvent,
-};
+pub use forecast::{ForecastAssumption, ForecastTargetType, SaveForecastAssumption};
 pub use income::{
     IncomeBasis, IncomeStream, IncomeStreamStep, PayFrequency, PayStep, SaveIncomeStream,
     SaveIncomeStreamStep, TakeHome, TakeHomeSource,
 };
 pub use iso_date::IsoDate;
+pub use life_events::{
+    effect_amounts_in_range, EffectColumns, EffectTarget, ForecastEvent, ForecastEventEffect,
+    ForecastEventRelation, LifeEffectKind, LifeEffectSpec, LifeEventKind, RelationKind,
+    SaveForecastEvent, SaveForecastEventRelation, StepAmount,
+};
 pub use merchants::{Merchant, SaveMerchant};
 pub use money::{Money, MAX_MONEY_MINOR};
 pub use people::{

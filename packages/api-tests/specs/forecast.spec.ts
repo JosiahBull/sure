@@ -212,17 +212,26 @@ test("an unknown ?currency= on the forecast is a 400", async ({ api }) => {
 
 test("forecast events CRUD, and deleting a nonexistent one 404s", async ({ api }) => {
   const cat = await createCategory(api, "Salary", "income");
+  // The unified shape: identity and timing on the event, what it does in its effects. A dated,
+  // exact change is this model with probability 100% and no spread — which is all it ever was.
   const created = await api.POST("/api/forecast/events", {
     body: {
-      target_type: "category",
-      target_id: cat.id,
-      kind: "step_change",
-      effective_date: "2027-01-01",
-      amount_minor: 750_000,
       label: "Promotion",
+      kind: "adjustment",
+      expected_on: "2027-01-01",
+      effects: [
+        {
+          kind: "set_baseline",
+          target: { kind: "category", category_id: cat.id },
+          amount_minor: 750_000,
+        },
+      ],
     },
   });
-  expect(created.response.status).toBe(201);
+  expect(created.response.status, JSON.stringify(created.error)).toBe(201);
+  expect(created.data!.probability_bps).toBe(10_000);
+  expect(created.data!.timing_spread_months).toBe(0);
+  expect(created.data!.effects).toHaveLength(1);
 
   const list = await api.GET("/api/forecast/events", {});
   expect(list.data?.some((e) => e.id === created.data!.id)).toBe(true);
@@ -279,12 +288,16 @@ test("a promotion step-change event raises the projected net worth from its mont
 
   await api.POST("/api/forecast/events", {
     body: {
-      target_type: "category",
-      target_id: salary.id,
-      kind: "step_change",
-      effective_date: new Date().toISOString().slice(0, 10),
-      amount_minor: 1_000_000, // double the ~$5,000/mo baseline
       label: "Promotion",
+      kind: "promotion",
+      expected_on: new Date().toISOString().slice(0, 10),
+      effects: [
+        {
+          kind: "set_baseline",
+          target: { kind: "category", category_id: salary.id },
+          amount_minor: 1_000_000, // double the ~$5,000/mo baseline
+        },
+      ],
     },
   });
   const after = await api.GET("/api/forecast", { params: { query: params } });

@@ -7,9 +7,6 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::iso_date::IsoDate;
-use crate::money::Money;
-
 /// What kind of thing a `forecast_assumptions` row tunes.
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -78,63 +75,4 @@ pub struct SaveForecastAssumption {
     pub long_run_growth_bps: Option<i64>,
     #[serde(default)]
     pub notes: Option<String>,
-}
-
-/// A known future change, applied identically across every simulated path (it's a
-/// certainty the user is asserting, not a statistical estimate).
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ForecastEventKind {
-    /// From `effective_date` on, replaces the ongoing baseline — a category's recurring
-    /// monthly amount (a promotion), or an account's value (a known revaluation) —
-    /// rather than a single month's delta.
-    StepChange,
-    /// A one-time delta applied only in the month containing `effective_date` (a planned
-    /// bonus, a lump-sum contribution, an extra loan repayment).
-    OneOffAmount,
-}
-
-impl ForecastEventKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ForecastEventKind::StepChange => "step_change",
-            ForecastEventKind::OneOffAmount => "one_off_amount",
-        }
-    }
-}
-
-impl std::str::FromStr for ForecastEventKind {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "step_change" => Ok(ForecastEventKind::StepChange),
-            "one_off_amount" => Ok(ForecastEventKind::OneOffAmount),
-            other => Err(format!("unknown forecast event kind '{other}'")),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct ForecastEvent {
-    pub id: i64,
-    pub target_type: ForecastTargetType,
-    pub target_id: i64,
-    pub kind: ForecastEventKind,
-    pub effective_date: String,
-    pub amount_minor: i64,
-    pub label: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct SaveForecastEvent {
-    pub target_type: ForecastTargetType,
-    pub target_id: i64,
-    pub kind: ForecastEventKind,
-    #[schema(value_type = String)]
-    pub effective_date: IsoDate,
-    #[schema(value_type = i64)]
-    pub amount_minor: Money,
-    pub label: String,
 }

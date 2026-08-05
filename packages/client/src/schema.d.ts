@@ -2545,8 +2545,12 @@ export interface paths {
         };
         put?: never;
         /**
-         * Record a known future step-change (a promotion, a fixed appreciation rate) or
-         *     one-off (a planned bonus, a lump-sum contribution).
+         * Record a change to the future: a promotion, a child, a career break, a job starting or ending,
+         *     or a dated adjustment you are certain about.
+         * @description Effects and relations travel in the same body and are saved in one transaction. A partial save
+         *     would leave a state the user cannot see and did not ask for, every problem across every effect
+         *     can then be collected into one 422, and the cycle check needs the complete proposed graph rather
+         *     than one edge at a time.
          */
         post: {
             parameters: {
@@ -2567,6 +2571,14 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["ForecastEvent"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
                 422: {
@@ -2592,9 +2604,94 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
+        /** One event, with its effects and relations. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ForecastEvent"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        /** Replace an event, its effects and relations included — so removing one is omitting it. */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveForecastEvent"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ForecastEvent"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
         post?: never;
+        /**
+         * Remove an event.
+         * @description Ordering rules pointing at it are dropped — an ordering is meaningless without the thing it
+         *     orders against, and refusing would trap you in a graph you could only escape by editing every
+         *     dependent first. But a 409 when something happens *only if* this does: that event would quietly
+         *     become certain, which is a change of meaning with no trace.
+         */
         delete: {
             parameters: {
                 query?: never;
@@ -2613,6 +2710,14 @@ export interface paths {
                     content?: never;
                 };
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -5524,6 +5629,25 @@ export interface components {
             tax_credit_minor?: number | null;
             currency_code: string;
         };
+        /**
+         * @description What a baseline change or a one-off lands on.
+         *
+         *     An account amount is in that account's own currency; a category amount is in the base reporting
+         *     currency, because a category has no currency of its own. That asymmetry is inherited from how
+         *     the projection already treats the two and is why this is a tagged union rather than a pair of
+         *     nullable ids.
+         */
+        EffectTarget: {
+            /** Format: int64 */
+            account_id: number;
+            /** @enum {string} */
+            kind: "account";
+        } | {
+            /** Format: int64 */
+            category_id: number;
+            /** @enum {string} */
+            kind: "category";
+        };
         EquityExercise: {
             /** Format: int64 */
             id: number;
@@ -5597,6 +5721,61 @@ export interface components {
             /** @description Human-readable description. */
             message: string;
         };
+        /**
+         * @description How an event actually landed across the simulated paths — not what was typed.
+         *
+         *     Relations move timing, so the configured `expected_on ± spread` and the realised distribution
+         *     genuinely differ. The chart draws this; the editor shows the input. Drawing the input would be a
+         *     lie about precisely the thing the chart exists to show.
+         */
+        EventOutcome: {
+            /** Format: int64 */
+            event_id: number;
+            label: string;
+            kind: components["schemas"]["LifeEventKind"];
+            /**
+             * Format: int64
+             * @description What was configured, for comparison with `occurrence_rate_bps` below.
+             */
+            probability_bps: number;
+            /**
+             * Format: int64
+             * @description Paths it occurred on. Differs from `probability_bps` exactly when an `only_if` bound.
+             */
+            occurrence_rate_bps: number;
+            /**
+             * Format: int64
+             * @description …of which also landed inside the horizon.
+             */
+            in_window_rate_bps: number;
+            /**
+             * Format: int64
+             * @description Realised timing as month offsets from today; `null` if it never occurred. Taken over *all*
+             *     occurring paths, so a p90 beyond the chart says so rather than being pulled back to the edge.
+             */
+            month_p10?: number | null;
+            /** Format: int64 */
+            month_median?: number | null;
+            /** Format: int64 */
+            month_p90?: number | null;
+            date_p10?: string | null;
+            date_median?: string | null;
+            date_p90?: string | null;
+            /**
+             * Format: int64
+             * @description Of occurring paths, how many had the date moved by an ordering constraint. The honesty
+             *     signal: "your ±2y window was pushed by 'after the promotion' in 34% of runs."
+             */
+            constrained_rate_bps: number;
+            /**
+             * Format: int64
+             * @description Of occurring paths, how many sampled a month at or before today — so "your expected date is
+             *     in the past" is visible rather than inferred.
+             */
+            clamped_early_rate_bps: number;
+            /** @description The p90 ran past the horizon, so the chart should draw an open end. */
+            truncated: boolean;
+        };
         ForecastAssumption: {
             /** Format: int64 */
             id: number;
@@ -5626,22 +5805,43 @@ export interface components {
         ForecastEvent: {
             /** Format: int64 */
             id: number;
-            target_type: components["schemas"]["ForecastTargetType"];
-            /** Format: int64 */
-            target_id: number;
-            kind: components["schemas"]["ForecastEventKind"];
-            effective_date: string;
-            /** Format: int64 */
-            amount_minor: number;
             label: string;
+            kind: components["schemas"]["LifeEventKind"];
+            /** Format: int64 */
+            person_id?: number | null;
+            expected_on: string;
+            /**
+             * Format: int64
+             * @description Half-width of a uniform hard window, in months. 0 = the date is certain.
+             */
+            timing_spread_months: number;
+            /** Format: int64 */
+            probability_bps: number;
+            notes?: string | null;
+            effects: components["schemas"]["ForecastEventEffect"][];
+            relations: components["schemas"]["ForecastEventRelation"][];
             created_at: string;
+            updated_at: string;
         };
-        /**
-         * @description A known future change, applied identically across every simulated path (it's a
-         *     certainty the user is asserting, not a statistical estimate).
-         * @enum {string}
-         */
-        ForecastEventKind: "step_change" | "one_off_amount";
+        ForecastEventEffect: components["schemas"]["LifeEffectSpec"] & {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            event_id: number;
+            /** Format: int64 */
+            sort_order: number;
+        };
+        ForecastEventRelation: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            event_id: number;
+            /** Format: int64 */
+            depends_on_event_id: number;
+            kind: components["schemas"]["RelationKind"];
+            /** Format: int64 */
+            min_gap_months: number;
+        };
         ForecastMonth: {
             as_of: string;
             net_worth: components["schemas"]["Band"];
@@ -5683,7 +5883,9 @@ export interface components {
              * @description Per linked income category, what the streams claim against what history recorded. Reported
              *     beside the projection rather than folded into it — a diagnostic that silently changes the
              *     thing it diagnoses stops being one.
+             *     How each event landed across the paths. What the chart draws.
              */
+            events: components["schemas"]["EventOutcome"][];
             reconciliations: components["schemas"]["StreamReconciliation"][];
             /**
              * @description Income streams left out of the projection, and why. A figure the user can see is incomplete
@@ -5794,6 +5996,75 @@ export interface components {
             annual_amount_minor: number;
             label?: string | null;
         };
+        /**
+         * @description The discriminant of a `forecast_event_effects` row. Text only at the column edge.
+         * @enum {string}
+         */
+        LifeEffectKind: "income_step" | "income_start" | "income_end" | "income_pause" | "recurring_delta" | "set_baseline" | "one_off_amount";
+        /**
+         * @description One thing an event does. An event has N of them, which is what lets "a child" mean daycare *and*
+         *     a paused salary *and* a pram in one place.
+         */
+        LifeEffectSpec: {
+            /** Format: int64 */
+            income_stream_id: number;
+            amount: components["schemas"]["StepAmount"];
+            /** @enum {string} */
+            kind: "income_step";
+        } | {
+            /** Format: int64 */
+            income_stream_id: number;
+            /** @enum {string} */
+            kind: "income_start";
+        } | {
+            /** Format: int64 */
+            income_stream_id: number;
+            /** @enum {string} */
+            kind: "income_end";
+        } | {
+            /** Format: int64 */
+            person_id: number;
+            /** Format: int64 */
+            months: number;
+            /** Format: int64 */
+            replacement_rate_bps: number;
+            /** @enum {string} */
+            kind: "income_pause";
+        } | {
+            /** Format: int64 */
+            category_id: number;
+            /** Format: int64 */
+            amount_minor: number;
+            /** Format: int64 */
+            delay_months: number;
+            /** Format: int64 */
+            ramp_months: number;
+            /** Format: int64 */
+            duration_months?: number | null;
+            /** @enum {string} */
+            kind: "recurring_delta";
+        } | {
+            target: components["schemas"]["EffectTarget"];
+            /** Format: int64 */
+            amount_minor: number;
+            /** @enum {string} */
+            kind: "set_baseline";
+        } | {
+            target: components["schemas"]["EffectTarget"];
+            /** Format: int64 */
+            amount_minor: number;
+            /** @enum {string} */
+            kind: "one_off_amount";
+        };
+        /**
+         * @description What sort of event this is, for presentation and for choosing a form template.
+         *
+         *     **The simulation never branches on this.** It branches on the event's *effects*, which is what
+         *     makes adding a variant here a UI change rather than a change to the projection. A career break
+         *     that pauses pay and a job ending that stops it are the same arithmetic; only the words differ.
+         * @enum {string}
+         */
+        LifeEventKind: "promotion" | "child" | "career_break" | "job_start" | "job_end" | "adjustment" | "custom";
         LinkGroupMember: {
             /** @description The upstream's stable identifier (`ProviderAccount::external_id`). */
             external_id: string;
@@ -6299,6 +6570,11 @@ export interface components {
          */
         RateType: "fixed" | "floating" | "split";
         /**
+         * @description How one event constrains another.
+         * @enum {string}
+         */
+        RelationKind: "after" | "only_if";
+        /**
          * @description How often a loan's contractual repayment is actually made. Weekly and fortnightly are
          *     the NZ norm; the forecast annualises them (×52/12, ×26/12) rather than treating them as
          *     ×4/×2 — the extra payments a year are exactly why paying weekly clears a loan sooner.
@@ -6560,15 +6836,35 @@ export interface components {
             long_run_growth_bps?: number | null;
             notes?: string | null;
         };
+        /**
+         * @description Write body: a **full replace**, effects and relations included.
+         *
+         *     One body and one transaction, for three reasons. A partial save (event stored, effect rejected)
+         *     leaves a state the user cannot see and did not ask for; every problem across every effect can be
+         *     collected into one 422, which is the `AccountMetadata::validate_for` contract; and the cycle check
+         *     needs the *complete proposed graph*, which a per-relation endpoint could only ever validate
+         *     mid-edit.
+         */
         SaveForecastEvent: {
-            target_type: components["schemas"]["ForecastTargetType"];
-            /** Format: int64 */
-            target_id: number;
-            kind: components["schemas"]["ForecastEventKind"];
-            effective_date: string;
-            /** Format: int64 */
-            amount_minor: number;
             label: string;
+            kind: components["schemas"]["LifeEventKind"];
+            /** Format: int64 */
+            person_id?: number | null;
+            expected_on: string;
+            /** Format: int64 */
+            timing_spread_months?: number;
+            /** Format: int64 */
+            probability_bps?: number;
+            notes?: string | null;
+            effects?: components["schemas"]["LifeEffectSpec"][];
+            relations?: components["schemas"]["SaveForecastEventRelation"][];
+        };
+        SaveForecastEventRelation: {
+            /** Format: int64 */
+            depends_on_event_id: number;
+            kind: components["schemas"]["RelationKind"];
+            /** Format: int64 */
+            min_gap_months?: number;
         };
         SaveGrant: {
             company: string;
@@ -6740,6 +7036,23 @@ export interface components {
             exchange?: string | null;
             url?: string | null;
             notes?: string | null;
+        };
+        /**
+         * @description How a promotion moves a stream's level.
+         *
+         *     Absolute versus relative matters: "+12%" composes with an earlier promotion and with the dated
+         *     pay scale underneath it, and an absolute figure does not.
+         */
+        StepAmount: {
+            /** Format: int64 */
+            annual_amount_minor: number;
+            /** @enum {string} */
+            basis: "absolute";
+        } | {
+            /** Format: int64 */
+            rate_bps: number;
+            /** @enum {string} */
+            basis: "percent";
         };
         /**
          * @description A single day's cached closing price for a ticker (see

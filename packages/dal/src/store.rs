@@ -1001,6 +1001,14 @@ impl ForecastRepo for SqliteStore {
         crate::forecast::create_event(&self.db, input).await
     }
 
+    async fn get_event(&self, id: i64) -> AppResult<ForecastEvent> {
+        crate::forecast::get_event(&self.db, id).await
+    }
+
+    async fn update_event(&self, id: i64, input: SaveForecastEvent) -> AppResult<ForecastEvent> {
+        crate::forecast::update_event(&self.db, id, input).await
+    }
+
     async fn delete_event(&self, id: i64) -> AppResult<()> {
         crate::forecast::delete_event(&self.db, id).await
     }
