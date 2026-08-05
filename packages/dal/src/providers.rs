@@ -958,11 +958,19 @@ mod tests {
         let txn = imported_row(&db, "trans_2").await;
         assert_eq!(txn.category_id, Some(existing.id));
         // No duplicate was created for the differently-cased name.
+        //
+        // Counted among *top-level* categories only, which is what the contract above actually says:
+        // a category is identified by (name, parent), so a same-named one nested under a group is a
+        // different category and not a duplicate of this one. The default-rules migration seeds
+        // exactly that — "Cafes and restaurants" under "Lifestyle" — and a name-only count started
+        // finding two, reporting a duplicate that was never created.
         let matches = crate::categories::list(&db)
             .await
             .unwrap()
             .into_iter()
-            .filter(|c| c.name.eq_ignore_ascii_case("cafes and restaurants"))
+            .filter(|c| {
+                c.parent_id.is_none() && c.name.eq_ignore_ascii_case("cafes and restaurants")
+            })
             .count();
         assert_eq!(matches, 1);
     }
