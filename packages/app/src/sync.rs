@@ -3,7 +3,7 @@
 //! sync route (`sure-api`'s `routes::providers::sync`) and the background
 //! [`crate::tasks::provider_poll::ProviderPollTask`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use sure_core::{AppError, AppResult, Provider, ProviderSync, SyncOutcome};
@@ -115,6 +115,70 @@ impl SyncService {
             clock,
             in_flight: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Copy the account number every linked account of `kind` reports upstream into that
+    /// account's own metadata, where it isn't already set. Returns how many were filled in.
+    ///
+    /// The number is the only identifier two accounts at one bank don't share, and it is what
+    /// the ASB import routes an export to an account by. The feed already reports it — Akahu
+    /// sends `formatted_account`, which reaches here as [`ProviderAccount::account_number`] —
+    /// and until this existed it was read once to group the connect dialog and then dropped, so
+    /// the import's account-number match could never fire and a household with two "Emergency
+    /// Fund"s had nothing to route by but a hand-typed hint.
+    ///
+    /// One upstream call for the whole kind, so linking one account fills in every sibling that
+    /// is still blank — which is the point: the accounts that need this most were linked before
+    /// anything stored it. Never overwrites a number already recorded (see
+    /// [`AccountRepo::set_account_number_if_unset`]): a hand-typed one is the user's statement
+    /// of what the account is, and this runs unattended.
+    ///
+    /// Best-effort by contract, not by accident — a provider that can't enumerate accounts, or
+    /// an upstream that is down, must not fail the link that triggered it. The caller logs and
+    /// carries on.
+    pub async fn adopt_account_numbers(&self, kind: &str) -> AppResult<u64> {
+        let Some(provider) = self.registry.get(kind) else {
+            return Ok(0);
+        };
+        if !provider.supports_account_discovery() {
+            return Ok(0);
+        }
+        let upstream = provider
+            .list_accounts()
+            .await
+            .map_err(|e| AppError::validation(format!("could not list {kind} accounts: {e}")))?;
+        // Only those that actually report one; `external_id` is what a `providers` row stores.
+        let numbers: HashMap<&str, &str> = upstream
+            .iter()
+            .filter_map(|a| Some((a.external_id.as_str(), a.account_number.as_deref()?)))
+            .collect();
+        if numbers.is_empty() {
+            return Ok(0);
+        }
+
+        let mut filled = 0u64;
+        for row in self.providers.list().await? {
+            if row.kind != kind {
+                continue;
+            }
+            let external_id = row
+                .config
+                .get("external_account_id")
+                .and_then(|v| v.as_str());
+            let Some(number) = external_id.and_then(|id| numbers.get(id)) else {
+                continue;
+            };
+            self.accounts
+                .set_account_number_if_unset(row.account_id, number)
+                .await?;
+            filled += 1;
+        }
+        tracing::debug!(
+            kind,
+            considered = filled,
+            "adopted upstream account numbers"
+        );
+        Ok(filled)
     }
 
     /// Fetch upstream transactions for one provider, import the new ones (dedupe on
@@ -397,8 +461,8 @@ mod tests {
     use crate::test_clock::FixedClock;
     use sure_core::{
         Account, AccountClass, AccountKind, AccountMetadata, DepositoryMeta, LinkProviderAccount,
-        LinkProviderGroup, NewValuation, Ownership, ProviderKind, SaveAccount, SaveProvider,
-        Valuation,
+        LinkProviderGroup, NewValuation, Ownership, ProviderAccount, ProviderKind, SaveAccount,
+        SaveProvider, Valuation,
     };
 
     const TODAY: &str = "2026-07-01";
@@ -432,12 +496,14 @@ mod tests {
     struct FakeProviders {
         account_currency: String,
         recorded: Mutex<Vec<RecordedSync>>,
+        /// The `providers` rows `adopt_account_numbers` walks. Empty for every sync test.
+        rows: Vec<Provider>,
     }
 
     #[async_trait]
     impl ProviderRepo for FakeProviders {
         async fn list(&self) -> AppResult<Vec<Provider>> {
-            unreachable!("SyncService never lists providers")
+            Ok(self.rows.clone())
         }
         async fn get(&self, _id: i64) -> AppResult<Provider> {
             unreachable!("SyncService never re-reads a provider")
@@ -509,6 +575,7 @@ mod tests {
         credit_limits: Mutex<Vec<(i64, i64)>>,
         original_amounts: Mutex<Vec<(i64, i64)>>,
         institutions: Mutex<Vec<(i64, String)>>,
+        account_numbers: Mutex<Vec<(i64, String)>>,
     }
 
     #[async_trait]
@@ -590,6 +657,17 @@ mod tests {
                 .push((account_id, institution.to_string()));
             Ok(())
         }
+        async fn set_account_number_if_unset(
+            &self,
+            account_id: i64,
+            account_number: &str,
+        ) -> AppResult<()> {
+            self.account_numbers
+                .lock()
+                .expect("test mutex")
+                .push((account_id, account_number.to_string()));
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -660,6 +738,9 @@ mod tests {
         fetches: Arc<AtomicUsize>,
         balance: Option<ProviderBalance>,
         gate: Gate,
+        /// Upstream accounts this provider can enumerate. Empty means it can't discover any,
+        /// which is what every sync test wants.
+        discoverable: Vec<ProviderAccount>,
     }
 
     #[async_trait]
@@ -669,6 +750,12 @@ mod tests {
         }
         fn description(&self) -> &'static str {
             "Synthetic provider for SyncService tests"
+        }
+        fn supports_account_discovery(&self) -> bool {
+            !self.discoverable.is_empty()
+        }
+        async fn list_accounts(&self) -> anyhow::Result<Vec<ProviderAccount>> {
+            Ok(self.discoverable.clone())
         }
         async fn fetch(&self, _ctx: SyncContext<'_>) -> anyhow::Result<Vec<ProviderTransaction>> {
             self.fetches.fetch_add(1, Ordering::SeqCst);
@@ -724,6 +811,7 @@ mod tests {
             let providers = Arc::new(FakeProviders {
                 account_currency: account_ccy.to_string(),
                 recorded: Mutex::new(Vec::new()),
+                rows: Vec::new(),
             });
             let accounts = Arc::new(FakeAccounts::default());
             let valuations = Arc::new(FakeValuations::default());
@@ -732,6 +820,7 @@ mod tests {
                     fetches: fetches.clone(),
                     balance,
                     gate,
+                    discoverable: Vec::new(),
                 },
             });
             let service = Arc::new(SyncService::new(
@@ -769,6 +858,124 @@ mod tests {
             institution: Some("Fake Bank".to_string()),
             initial_principal_minor: Some(400_000_00),
         }
+    }
+
+    // ------------------------------------------------- adopting upstream account numbers
+
+    /// An upstream account, with or without the number the feed reports for it.
+    fn upstream(external_id: &str, number: Option<&str>) -> ProviderAccount {
+        ProviderAccount {
+            external_id: external_id.to_string(),
+            name: "Everyday".to_string(),
+            currency_code: "NZD".to_string(),
+            institution: Some("Fake Bank".to_string()),
+            authorisation_id: None,
+            account_number: number.map(str::to_string),
+            kind_hint: AccountKind::Bank,
+            balance_minor: 0,
+            supports_transactions: true,
+        }
+    }
+
+    /// A `providers` row pointing at `account_id`, configured with the upstream id a link writes.
+    fn linked(id: i64, account_id: i64, external_id: &str) -> Provider {
+        Provider {
+            account_id,
+            config: serde_json::json!({ "external_account_id": external_id }),
+            ..provider_row(id)
+        }
+    }
+
+    /// Build a service whose registry can discover `upstream` and whose repo holds `rows`.
+    fn discovery_service(
+        rows: Vec<Provider>,
+        upstream: Vec<ProviderAccount>,
+    ) -> (Arc<SyncService>, Arc<FakeAccounts>) {
+        let providers = Arc::new(FakeProviders {
+            account_currency: "NZD".to_string(),
+            recorded: Mutex::new(Vec::new()),
+            rows,
+        });
+        let accounts = Arc::new(FakeAccounts::default());
+        let registry = Arc::new(FakeRegistry {
+            provider: FakeProvider {
+                fetches: Arc::new(AtomicUsize::new(0)),
+                balance: None,
+                gate: Gate::Open,
+                discoverable: upstream,
+            },
+        });
+        let service = Arc::new(SyncService::new(
+            providers,
+            accounts.clone(),
+            Arc::new(FakeValuations::default()),
+            registry,
+            Arc::new(FixedClock(today())),
+        ));
+        (service, accounts)
+    }
+
+    /// The number the feed reports is the only identifier two accounts at one bank don't share,
+    /// and it is what a bank export is routed by. One upstream call fills in every linked
+    /// account, not just the one that triggered it — the ones that need it most were linked
+    /// before anything stored it.
+    #[tokio::test]
+    async fn adopts_the_account_number_every_linked_account_reports() {
+        let (service, accounts) = discovery_service(
+            vec![linked(1, 501, "acc_a"), linked(2, 502, "acc_b")],
+            vec![
+                upstream("acc_a", Some("12-3456-0000001-51")),
+                upstream("acc_b", Some("12-3456-0000002-51")),
+            ],
+        );
+        assert_eq!(
+            service.adopt_account_numbers("fake").await.expect("adopts"),
+            2
+        );
+        let written = accounts.account_numbers.lock().expect("test mutex").clone();
+        assert_eq!(
+            written,
+            vec![
+                (501, "12-3456-0000001-51".to_string()),
+                (502, "12-3456-0000002-51".to_string())
+            ]
+        );
+    }
+
+    /// An upstream account nothing is linked to, and a linked account the upstream reports no
+    /// number for, are both simply skipped — neither is an error.
+    #[tokio::test]
+    async fn skips_accounts_the_upstream_reports_no_number_for() {
+        let (service, accounts) = discovery_service(
+            vec![linked(1, 501, "acc_a"), linked(2, 502, "acc_nonumber")],
+            vec![
+                upstream("acc_a", Some("12-3456-0000001-51")),
+                upstream("acc_nonumber", None),
+                upstream("acc_unlinked", Some("12-3456-0000456-00")),
+            ],
+        );
+        assert_eq!(
+            service.adopt_account_numbers("fake").await.expect("adopts"),
+            1
+        );
+        let written = accounts.account_numbers.lock().expect("test mutex").clone();
+        assert_eq!(written, vec![(501, "12-3456-0000001-51".to_string())]);
+    }
+
+    /// A provider that can't enumerate accounts costs nothing and reaches no upstream — this
+    /// runs on every link, including CSV ones.
+    #[tokio::test]
+    async fn a_provider_without_discovery_adopts_nothing() {
+        let (service, accounts) = discovery_service(vec![linked(1, 501, "acc_a")], Vec::new());
+        assert_eq!(
+            service.adopt_account_numbers("fake").await.expect("adopts"),
+            0
+        );
+        assert!(accounts
+            .account_numbers
+            .lock()
+            .expect("test mutex")
+            .is_empty());
     }
 
     /// W-22: a provider balance quoted in another currency is wrong by an exchange rate the

@@ -151,7 +151,15 @@ pub async fn link(
             input.kind
         )));
     }
+    let kind = input.kind.clone();
     let provider = st.providers.link(input).await?;
+
+    // Best-effort, and before the sync so a sync failure doesn't skip it: the account number
+    // the feed reports is what lets a bank export route itself to this account later, and
+    // nothing else records it. Fills in every still-blank sibling of the same kind too.
+    if let Err(e) = st.sync.adopt_account_numbers(&kind).await {
+        tracing::warn!(kind = %kind, error = %e, "could not adopt upstream account numbers");
+    }
 
     // Best-effort: a failed initial sync (e.g. not-yet-configured credentials) is already
     // durably recorded as an "error" sync row and doesn't undo the link — the user can
@@ -188,7 +196,14 @@ pub async fn link_group(
             input.kind
         )));
     }
+    let kind = input.kind.clone();
     let providers = st.providers.link_group(input).await?;
+
+    // Same rationale as `link` — a group's members are wallets of one account, and it is still
+    // that account's number a bank export would be routed by.
+    if let Err(e) = st.sync.adopt_account_numbers(&kind).await {
+        tracing::warn!(kind = %kind, error = %e, "could not adopt upstream account numbers");
+    }
 
     // Best-effort initial sync per member, same rationale as `link`.
     let ids: Vec<i64> = providers.iter().map(|p| p.id).collect();

@@ -34,6 +34,7 @@
     previous_import: "imported here before",
     account_number: "matches the stored account number",
     account_name: "the number appears in the account name",
+    transaction_history: "its transactions match this account's",
   };
 
   async function loadAccounts() {

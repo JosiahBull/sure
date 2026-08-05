@@ -2575,6 +2575,13 @@ mod tests {
             async fn set_institution_if_unset(&self, _account_id: i64, _v: &str) -> AppResult<()> {
                 unreachable!()
             }
+            async fn set_account_number_if_unset(
+                &self,
+                _account_id: i64,
+                _v: &str,
+            ) -> AppResult<()> {
+                unreachable!()
+            }
         }
 
         #[derive(Default)]

@@ -504,6 +504,14 @@ pub trait AccountRepo: Send + Sync {
         original_amount_minor: i64,
     ) -> AppResult<()>;
     async fn set_institution_if_unset(&self, account_id: i64, institution: &str) -> AppResult<()>;
+    /// Record the account number a feed reports, leaving an existing one alone. It is the only
+    /// identifier two accounts at one bank don't share, and what the ASB import routes an
+    /// export by — see [`crate::sync::SyncService::adopt_account_numbers`].
+    async fn set_account_number_if_unset(
+        &self,
+        account_id: i64,
+        account_number: &str,
+    ) -> AppResult<()>;
 }
 
 #[async_trait]
@@ -750,6 +758,16 @@ pub trait TransactionRepo: Send + Sync {
     /// with `provider_prefix`. Lets a manual importer recover which upstream account it
     /// previously imported into which local one, from the ids it wrote.
     async fn sample_external_ids(&self, provider_prefix: &str) -> AppResult<Vec<(i64, String)>>;
+    /// `(account_id, date, amount_minor)` for every transaction on these accounts, dates as
+    /// `YYYY-MM-DD`. The raw material for matching an uploaded bank export to the account it
+    /// belongs to when nothing recorded that account's number: over the window both cover, a
+    /// run of dated amounts is close to a fingerprint. Capped at `limit` rows in total, oldest
+    /// first, so one enormous account can't make the comparison unbounded.
+    async fn amounts_for_matching(
+        &self,
+        account_ids: &[i64],
+        limit: i64,
+    ) -> AppResult<Vec<(i64, String, i64)>>;
     async fn link(&self, id: i64, req: LinkRequest) -> AppResult<Transaction>;
     async fn unlink(&self, id: i64) -> AppResult<Transaction>;
     async fn create_transfer(&self, req: TransferRequest) -> AppResult<Vec<Transaction>>;

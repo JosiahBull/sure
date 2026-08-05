@@ -523,6 +523,13 @@ mod tests {
         ) -> AppResult<()> {
             unreachable!("StockPriceTask never mutates an account")
         }
+        async fn set_account_number_if_unset(
+            &self,
+            _account_id: i64,
+            _account_number: &str,
+        ) -> AppResult<()> {
+            unreachable!("StockPriceTask never mutates an account")
+        }
     }
 
     #[tokio::test]

@@ -423,6 +423,39 @@ pub async fn sample_external_ids(db: &Db, provider_prefix: &str) -> AppResult<Ve
     .await?)
 }
 
+/// `(account_id, date, amount_minor)` for these accounts, for matching an uploaded bank export
+/// to the account it belongs to. Dates are the first ten characters of `posted_at`, which is
+/// what the comparison works in — a day's tolerance either side, because a feed and the bank's
+/// own export routinely disagree by one about when a transaction landed.
+///
+/// The id list is interpolated rather than bound: sqlx has no array binding for SQLite, and
+/// these are `i64`s the caller just read out of this same database, so there is no string to
+/// escape. `limit` bounds the whole result, oldest first.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn amounts_for_matching(
+    db: &Db,
+    account_ids: &[i64],
+    limit: i64,
+) -> AppResult<Vec<(i64, String, i64)>> {
+    if account_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids = account_ids
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(sqlx::query_as::<_, (i64, String, i64)>(&format!(
+        "SELECT account_id, substr(posted_at, 1, 10), amount_minor FROM transactions
+         WHERE account_id IN ({ids})
+         ORDER BY posted_at
+         LIMIT ?1"
+    ))
+    .bind(limit)
+    .fetch_all(db)
+    .await?)
+}
+
 /// Delete every transaction on this account that `provider_tag` imported — undo for a bulk
 /// upload. Scoped to the account as well as the tag so a mistyped tag can't reach further
 /// than the account it was invoked for. Returns the number of rows deleted.
