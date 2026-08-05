@@ -296,10 +296,30 @@ test("a bad date is refused on every write that carries one", async ({ api }) =>
   });
   expect(cron.response.status).toBe(422);
 
+  // `expected_on`, on the event itself: the date an effect is applied on is the event's, so this
+  // is the only date this write carries. The body is the current `SaveForecastEvent` shape — it
+  // used to be a flat `{target_type, target_id, kind, effective_date, amount_minor}`, which the
+  // life-events rework replaced wholesale, and a body serde cannot deserialise is *also* a 422.
+  // So this assertion went on passing while testing nothing about dates at all, and `tsc` was the
+  // only thing that could still see the difference (`pnpm test:api:check`).
   const event = await api.POST("/api/forecast/events", {
-    body: { target_type: "account", target_id: house.id, kind: "one_off_amount", effective_date: "31/07/2026", amount_minor: -5_000_00, label: "Roof" },
+    body: {
+      label: "Roof",
+      kind: "adjustment",
+      expected_on: "31/07/2026",
+      effects: [
+        {
+          kind: "one_off_amount",
+          target: { kind: "account", account_id: house.id },
+          amount_minor: -5_000_00,
+        },
+      ],
+    },
   });
   expect(event.response.status).toBe(422);
+  expect(event.error?.error.message, "the refusal has to name the date field").toContain(
+    "expected_on",
+  );
 });
 
 // The actual defect was never "a bad date exists" — it was that the ledger and the balance
@@ -466,14 +486,21 @@ test("an absurd amount is refused on every write that carries one", async ({ api
   });
   expect(cron.response.status).toBe(422);
 
+  // The amount is on the *effect* now, not the event, so this is the bound `effect_amounts_in_range`
+  // enforces across every effect in the body. (Same stale-shape story as the date test above: the
+  // old flat body made this a 422 for failing to deserialise at all.)
   const event = await api.POST("/api/forecast/events", {
     body: {
-      target_type: "account",
-      target_id: house.id,
-      kind: "one_off_amount",
-      effective_date: "2026-07-31",
-      amount_minor: -over,
       label: "Roof",
+      kind: "adjustment",
+      expected_on: "2026-07-31",
+      effects: [
+        {
+          kind: "one_off_amount",
+          target: { kind: "account", account_id: house.id },
+          amount_minor: -over,
+        },
+      ],
     },
   });
   expect(event.response.status).toBe(422);

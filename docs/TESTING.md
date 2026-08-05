@@ -134,6 +134,44 @@ feed, because how many charts that backfill fetches is a *different* test's prop
 would tie the two together. Neither form can see a **paused** request — one is not recorded until it
 is answered, so both block to timeout on the case `pause` sets up. Wait on the effect there instead.
 
+### A call nobody stubbed fails the test that made it
+
+`packages/api-tests` checks, in `proxyIsolation`'s teardown, that nothing the test just did was
+answered by the replay miss (`failOnUnstubbedRequests` in `fixtures.ts`: `queryTraffic` for the
+`503 {}` the miss handler produces, and a failure naming the method, upstream and URI of each). It
+runs only when the test would otherwise have passed — a test that already failed keeps its own error
+as the headline, and the proxy's WARN lines are in the output either way.
+
+The WARN alone was not enough, for the reason any always-present warning stops being read: a green
+run printed six of them, so nobody could tell the deliberate ones from a fixture that had gone
+missing. And a miss is not a harmless log line. The adapter got a 503 it did not expect, so the code
+under test ran down an error path while the assertions that still passed passed for the wrong
+reason; the miss is *recorded*, so it counts towards an `assertCount` on the same path; and an
+unstubbed call from a background task can land in the next test's traffic.
+
+A test that wants the miss says so, and says why:
+
+```ts
+allowUnstubbed({
+  upstream: "yahoo_finance",
+  path_pattern: "^/v8/finance/chart/MEL\\.NZ$",   // same matcher shape as `stub`
+  why: "the unanswered call is the assertion: it is what makes the route answer 502",
+});
+```
+
+Three tests declare one today, and each is a case where the unanswered call *is* the test:
+`specs/stock-prices.spec.ts`'s 502, and `specs/http.spec.ts`'s two `pause` tests, where what is
+needed is a handler suspended at an await and the answer after the resume is somebody else's
+property. It is permission, not an expectation — nothing checks the call happened, because some of
+these come from fire-and-forget work that may not reach the proxy before the server is killed. Use
+`assertCount`/`assertSeen` (which see a miss like any other exchange) when the stronger statement is
+the point.
+
+The other way out is to answer the call. `specs/brokerage.spec.ts` stubs the import backfill's chart
+request with a body carrying no `timestamp` — the feed's own "nothing for this window" — because a
+price is irrelevant to everything that file asserts but an unanswered fetch still left a WARN per
+import and a 502 inside the backfill.
+
 Four things catch people:
 
 * **A matcher never sees the query string.** `path_pattern` is matched against `uri.path()`, so

@@ -345,15 +345,15 @@
   {:else}
     {#each rules as r (r.id)}
       <div class="rule" class:off={!r.enabled}>
-        <div class="row spread" style="gap:8px">
-          <div style="min-width:0">
+        <div class="rule-head">
+          <div class="rule-name">
             <strong>{r.name}</strong>
             {#if r.set_category_id}<span class="badge" style="margin-left:6px">→ {catLabel(r.set_category_id)}</span>{/if}
             {#if r.set_merchant_id}<span class="badge" style="margin-left:6px">merchant: {merchName.get(r.set_merchant_id) ?? "?"}</span>{/if}
             {#if r.set_one_off != null}<span class="badge" style="margin-left:6px">{r.set_one_off ? "mark one-off" : "clear one-off"}</span>{/if}
             {#if !r.enabled}<span class="badge" style="margin-left:6px">disabled</span>{/if}
           </div>
-          <div class="row" style="gap:6px">
+          <div class="row rule-actions" style="gap:6px">
             <label class="switch" title="Enabled"><input type="checkbox" checked={r.enabled} onchange={() => toggleEnabled(r)} /><span class="track"></span></label>
             <button class="btn btn-sm" onclick={() => openEdit(r)}>Edit</button>
             <button class="btn btn-sm" onclick={() => runRule(r.id)}>Run</button>
@@ -499,6 +499,34 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+  /* A rule's name and its four controls, side by side until they don't fit.
+     Was `.row.spread`, which put both in one non-wrapping line: the four controls need ~175px
+     and shrank rather than dropping, leaving the name ~70px of a phone's card — so a name like
+     "Loan repayment interest → Interest charged" (the shape the 72 rules shipped in migration
+     0026 all have) wrapped to four lines and then ran *under* the toggle. */
+  .rule-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  /* The basis is the width below which a name and the controls stop being worth putting on one
+     line, not a measurement of either: over it the name grows to fill whatever is left (desktop,
+     one line, as before), under it the controls wrap beneath the name (a phone). */
+  .rule-name {
+    flex: 1 1 16rem;
+    min-width: 0;
+    /* A single unbroken token — a rule named after a payee reference, say — has no space to wrap
+       at, and would otherwise widen the row until the whole card scrolled sideways. */
+    overflow-wrap: anywhere;
+  }
+  /* Never shrunk: a compressed button row is what pushed the controls back over the text. And
+     right-aligned on the line it wraps onto, since `justify-content` no longer reaches it there. */
+  .rule-actions {
+    flex: 0 0 auto;
+    margin-left: auto;
   }
   .rule:last-child {
     border-bottom: none;

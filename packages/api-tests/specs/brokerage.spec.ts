@@ -9,12 +9,8 @@ import { createAccount, makeZip, postOversized } from "../helpers";
 // uptime; the proxy retired that constraint and specs/brokerage-pricing.spec.ts now pins both to
 // the cent.
 
-// A fake ticker, left deliberately unstubbed: a price is irrelevant to everything asserted in this
-// file, and every test here would go on passing if the feed answered anything at all. So the
-// background backfill each import starts finds no stub, takes the proxy's replay miss, and logs a
-// `replay miss` WARN — which is the containment guarantee working, not a missing fixture. (Reaching
-// a real Yahoo symbol is no longer a hazard the name has to prevent: nothing in this suite can
-// leave the machine.)
+// A fake ticker. (Reaching a real Yahoo symbol is no longer a hazard the name has to prevent:
+// nothing in this suite can leave the machine.)
 const LOOKUP = JSON.stringify({
   "fund-zz": { symbol: "ZZTEST", name: "Test Instrument", exchange: "NZX", currency: "NZD" },
 });
@@ -92,6 +88,44 @@ async function importZip(baseURL: string, accountId: number, zip: ArrayBuffer) {
     body: zip,
   });
 }
+
+/**
+ * Answer the backfill's price lookup with "no data for this range", for every test in the file.
+ *
+ * The import hands its history walk to `spawn_backfill` and answers immediately, so each of the
+ * three imports below starts an outbound chart request nobody in this file cares about. It used to
+ * go unstubbed on the reasoning that a price is irrelevant to everything asserted here — true, and
+ * still true, but it left a `replay miss` WARN in every run and a 503 the backfill reported as an
+ * upstream failure, which is indistinguishable from the same WARN meaning a fixture really is
+ * missing (see `failOnUnstubbedRequests` in ../fixtures.ts, which now fails a test over one).
+ *
+ * A chart with no `timestamp` array is the feed's own way of saying it has nothing for the window
+ * — `parse_quotes` reads it as zero closes — so the backfill runs its normal path, stores nothing,
+ * and this file goes on asserting only the ledgers it is about. `times` unlimited, because how
+ * many charts a backfill fetches is `specs/brokerage-pricing.spec.ts`'s property, not this file's.
+ */
+test.beforeEach(async ({ testproxy }) => {
+  await testproxy.stub({
+    upstream: "yahoo_finance",
+    method: "GET",
+    path_pattern: "^/v8/finance/chart/ZZTEST\\.NZ$",
+    status: 200,
+    response_headers: { "content-type": "application/json" },
+    // No `timestamp` key, which is what "nothing in this window" looks like on the wire.
+    // `indicators.quote` is not optional in `ChartResult`, so an empty one still has to be
+    // there — drop it and the body fails to deserialise and the backfill takes a 502 instead.
+    body: JSON.stringify({
+      chart: {
+        result: [
+          {
+            meta: { currency: "NZD", gmtoffset: 12 * 3600 },
+            indicators: { quote: [{ close: [] }] },
+          },
+        ],
+      },
+    }),
+  });
+});
 
 test("imports a zip into holdings, dividends, and wallet transactions", async ({ api, server }) => {
   const acc = await createAccount(api, "Sharesies", "brokerage");

@@ -14,7 +14,7 @@
  */
 import http2 from "node:http2";
 
-import { test, expect, startServer, createSureClient } from "../fixtures";
+import { test, expect, allowUnstubbed, startServer, createSureClient } from "../fixtures";
 import { createAccount, postOversized } from "../helpers";
 
 /** Case-insensitive header read that fails loudly rather than returning null. */
@@ -404,6 +404,15 @@ test("a handler stuck on an upstream is cut loose at the request deadline", asyn
 const AKAHU_TOKENS = { AKAHU_APP_TOKEN: "app_token_test", AKAHU_USER_TOKEN: "user_token_test" };
 
 test("a long route is not held to the normal deadline", async ({ testproxy }) => {
+  // Stubbing nothing is the point: what this test needs is a handler suspended at an await,
+  // which `pause` provides, and what happens *after* the resume is somebody else's property.
+  // So the sync's fetch lands on no stub and takes the replay miss — declared, because an
+  // undeclared one fails its test (`failOnUnstubbedRequests` in ../fixtures.ts).
+  allowUnstubbed({
+    upstream: "akahu",
+    path_pattern: "^/v1/accounts/acc_spend01/transactions$",
+    why: "the sync is only here to hold a request open; what a failed one answers belongs to specs/provider-sync-behaviour.spec.ts",
+  });
   // `LONG_ROUTES` exists because `POST /api/providers/{id}/sync` waits on somebody else's API.
   // Its unit test proves the *table*; it cannot prove a request was given the table's answer,
   // and the ways that wiring breaks are all silent — a `Deadlines` built from one field twice,
@@ -473,6 +482,15 @@ test("a long route is not held to the normal deadline", async ({ testproxy }) =>
 test("an in-flight permit is held for the whole request and handed back afterwards", async ({
   testproxy,
 }) => {
+  // Same as the deadline test above: `pause` is what holds the permit, and the price lookup's
+  // own answer is irrelevant — it takes the replay miss once resumed, which is also what makes
+  // the last assertion's reasoning work (a miss reaches the client as 502, so a 503 there could
+  // only have come from the shedder).
+  allowUnstubbed({
+    upstream: "yahoo_finance",
+    path_pattern: "^/v8/finance/chart/VOO$",
+    why: "the lookup is only here to hold the single in-flight permit while paused",
+  });
   // `RateLimiter` and the shape of `overloaded_response` both have unit tests; the layer
   // between them has none, and the property it owns is the permit's *lifetime*. Released
   // early, the ceiling is decorative and a burst walks through it. Never released, the first

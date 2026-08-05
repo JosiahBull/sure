@@ -63,6 +63,62 @@ function proxyPidFile(): string {
 }
 
 /**
+ * The replay-miss WARN, as `sure_testproxy::start`'s `on_replay_miss` writes it.
+ *
+ * Scraped from stderr rather than read off the control plane, which is the honest trade: this
+ * suite has no control-plane client (see {@link ProxyHandshake}) and vendoring one to count
+ * something the log already names would be a lot of machinery for one number. The cost is that
+ * this pattern has to stay in step with that `tracing::warn!`; a rename shows up as a check that
+ * silently passes, which is why {@link assertNothingUnstubbed}'s message names the file.
+ */
+const REPLAY_MISS = /replay miss: .*?method=(\S+) uri=(\S+)/;
+
+/** Every unstubbed request this run made: `"GET /v1/accounts/acc_x/transactions"`. */
+const unstubbed: string[] = [];
+
+/**
+ * Stderr arrives in chunks, not lines, so the tail of one is buffered until the newline that
+ * completes it — a `data` boundary landing mid-line would otherwise drop a miss silently, which
+ * is the one failure mode a check like this must not have.
+ */
+let stderrTail = "";
+
+function collectReplayMisses(chunk: string): void {
+  const lines = (stderrTail + chunk).split("\n");
+  stderrTail = lines.pop() ?? "";
+  for (const line of lines) {
+    const match = REPLAY_MISS.exec(line);
+    if (match) unstubbed.push(`${match[1]} ${match[2]}`);
+  }
+}
+
+/**
+ * Fail the run if the app reached an upstream nothing answered.
+ *
+ * Unlike `packages/api-tests`, this suite registers no stubs at all — so there is no such thing
+ * as a *deliberate* miss here and no allowance mechanism to go with it. Every entry means the
+ * browser drove the backend into dialling a third party: the Providers page's Sync/Connect, or an
+ * expanded brokerage account's Revalue/Backfill (see {@link startProxy} for the full list). The
+ * proxy is what stopped the call leaving the machine; this is what stops it being merely a WARN
+ * nobody reads, since the adapter answered the SPA with an error either way and whatever the spec
+ * then asserted, it asserted about a failure path it did not mean to be on.
+ *
+ * Run from global-teardown, after the backend is stopped, so nothing can still be calling out.
+ */
+export function assertNothingUnstubbed(): void {
+  if (unstubbed.length === 0) return;
+  const seen = [...new Set(unstubbed)].map((call) => `  ${call}`).join("\n");
+  throw new Error(
+    `the app reached ${unstubbed.length} upstream request(s) no stub answered, so each was ` +
+      `served the proxy's replay miss (503) and whichever spec caused it drove an error path:\n` +
+      `${seen}\n` +
+      `This suite stubs nothing by design, so the fix is in the spec: don't click Sync/Connect/` +
+      `Revalue/Backfill, or assert on the failure deliberately. (Counted by scraping the proxy's ` +
+      `replay-miss WARN — tests/global-setup.ts's REPLAY_MISS.)`,
+  );
+}
+
+/**
  * Build the app, boot the real backend serving the built SPA against a fresh
  * throwaway SQLite database, and seed it. The backend PID is written to a file so
  * global-teardown can stop it.
@@ -244,6 +300,7 @@ async function startProxy(binary: string): Promise<Record<string, string>> {
     // blame it on — so the URI in the line is what identifies the caller.
     process.stderr.write(chunk);
     if (diagnostics.length < PROXY_DIAGNOSTICS_LIMIT) diagnostics += chunk;
+    collectReplayMisses(chunk);
   });
 
   proxy = proc;

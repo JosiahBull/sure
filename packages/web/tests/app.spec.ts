@@ -43,7 +43,15 @@ test("rules lists the seeded rule and its audit run", async ({ page }) => {
   await page
     .locator("table tbody .run-when")
     .evaluateAll((els, when) => els.forEach((el) => (el.textContent = when)), DEMO_WHEN);
-  await expect(page).toHaveScreenshot("rules.png", { fullPage: true });
+  // Two scoped shots rather than one `fullPage: true`, since Sure started shipping 72 rules of
+  // its own (migration 0026): the whole page is now ~22,000px, nine tenths of it near-identical
+  // default rows. That is not merely a 1.3MB baseline to review — `maxDiffPixelRatio: 0.03`
+  // over an image that tall is ~660px of height free to change without failing, so the check
+  // that was meant to catch a layout regression could no longer see one. The viewport covers
+  // the rules list's own layout at the top of the page; the audit log, which is what the
+  // `.run-when` rewriting above exists for, gets its own element shot.
+  await expect(page).toHaveScreenshot("rules.png");
+  await expect(page.locator(".card", { hasText: "Audit log" })).toHaveScreenshot("rules-audit.png");
 });
 
 test("accounts show share vesting and property paid-off %", async ({ page }) => {

@@ -53,7 +53,26 @@ async function main() {
   // deliberately ragged so the demo exercises every case the layout has to cope with: a
   // three-deep branch, a two-deep sibling beside it, flat top-level categories with no
   // children at all, and a parent that keeps some spend of its own.
-  const cat = (name, kind, parent_id) => post("/api/categories", { name, kind, parent_id });
+  //
+  // Adopted rather than created, when the name is already taken. Sure ships 72 categories of
+  // its own (migration 0026, so the default rules have somewhere to file things), named as
+  // Akahu's enrichment names them — and five of the names below are among them: Food, Housing,
+  // Lifestyle, Transport, Utilities. A bare POST is happy to make a *second* row with the same
+  // name and parent, and that is worse than untidy: everything that resolves a category by
+  // name — the app's own pickers, `find_or_create` on the next import, every spec in
+  // packages/web/tests — takes the first row, while the demo's whole history hangs off the
+  // second one. So reuse the shipped row, and PUT it where the demo's tree wants it if that
+  // differs (the shipped Utilities is top-level; the demo files it under Housing, which is
+  // exactly the edit a real user makes in the app).
+  const shipped = await api("GET", "/api/categories");
+  const cat = async (name, kind, parent_id = null) => {
+    const existing = shipped.find((c) => c.name === name);
+    if (!existing) return await post("/api/categories", { name, kind, parent_id });
+    if (existing.parent_id === parent_id && existing.kind === kind) return existing;
+    // PUT is a replace, and these rows carry nothing else to preserve: the migration inserts
+    // name, parent_id and kind only.
+    return await put(`/api/categories/${existing.id}`, { name, kind, parent_id });
+  };
 
   const income = (await cat("Income", "income")).id;
   const employment = (await cat("Employment", "income", income)).id;

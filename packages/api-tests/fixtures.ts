@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { createSureClient, type SureClient } from "../client/src/index";
 import { startProxy, type StartedProxy } from "./proxy";
-import type { ProxyClient } from "./proxy-client";
+import { decodeBody, type ProxyClient, type RecordedExchange, type Upstream } from "./proxy-client";
 
 const here = path.dirname(fileURLToPath(import.meta.url)); // packages/api-tests
 const REPO_ROOT = path.resolve(here, "..", "..");
@@ -54,6 +54,115 @@ function proxyEnvironment(): Record<string, string> {
     );
   }
   return workerProxy.env;
+}
+
+/**
+ * The status the replay-miss handler answers with, and the body it answers with.
+ *
+ * `sure_testproxy::start`'s `on_replay_miss` builds exactly this — `503` with `{}` and
+ * `application/json` — and `packages/providers/tests/proxy_contract.rs` asserts the shape, so
+ * this is a mirror of a pinned contract rather than a guess. Both halves are matched below
+ * because the status alone is ambiguous: a spec is free to *stub* a 503 (none does today), and
+ * mistaking that for a miss would fail a test for asserting exactly what it meant to assert.
+ */
+const MISS_STATUS = 503;
+const MISS_BODY = "{}";
+
+/**
+ * A replay miss the running test is content to produce.
+ *
+ * The matcher is the same shape as {@link ProxyClient.stub}'s, deliberately: an allowance is the
+ * negative of a stub, and a reader comparing the two should not have to translate between two
+ * spellings of "which request".
+ */
+export type UnstubbedAllowance = {
+  upstream: Upstream;
+  /** Regex against the request **path**, exactly as `stub`'s `path_pattern` — never the query. */
+  path_pattern: string;
+  /** Why this call is deliberately unanswered. Quoted in the failure message. */
+  why: string;
+};
+
+/**
+ * Allowances declared by the test currently running, cleared by `proxyIsolation` on the way in.
+ *
+ * Module-level for the same reason `workerProxy` is: a Playwright worker is its own process and
+ * runs one test at a time, so "the current test" is a well-defined thing to hold here — and a
+ * spec declaring one should not have to thread a fixture through to do it.
+ */
+let allowedUnstubbed: UnstubbedAllowance[] = [];
+
+/**
+ * Declare that this test expects a request nobody stubbed, and why.
+ *
+ * Without this, any outbound call the proxy answered with its replay miss fails the test — see
+ * {@link failOnUnstubbedRequests}. A handful of tests genuinely want the miss: it is how they
+ * assert that an unanswered upstream surfaces as a 502 rather than reaching the internet, or that
+ * a retired `times: 1` stub makes an unwanted second call fail. Those say so here.
+ *
+ * Permission, not an expectation: nothing checks that the call actually happened. Several of the
+ * misses this covers come from fire-and-forget background work whose request may or may not reach
+ * the proxy before the test's server is killed, and a test that wants the stronger statement has
+ * `assertCount`/`assertSeen` — which see a miss like any other exchange — to make it with.
+ */
+export function allowUnstubbed(allowance: UnstubbedAllowance): void {
+  allowedUnstubbed.push(allowance);
+}
+
+/** The path half of a recorded `uri` (origin form: path + query). */
+function pathOf(uri: string): string {
+  const query = uri.indexOf("?");
+  return query < 0 ? uri : uri.slice(0, query);
+}
+
+function isAllowed(exchange: RecordedExchange): boolean {
+  return allowedUnstubbed.some(
+    (allowance) =>
+      allowance.upstream === exchange.upstream &&
+      new RegExp(allowance.path_pattern).test(pathOf(exchange.request.uri)),
+  );
+}
+
+/**
+ * Fail the test if anything it did reached an upstream that no stub answered.
+ *
+ * The proxy already logs a WARN naming the method and URI of every such call, and a green run
+ * used to print several — which made the line worthless as a signal, because a reader had to know
+ * which of them were deliberate. A miss is not a harmless log line: the adapter got a 503 it did
+ * not expect, so whatever the test thought it was exercising ran down an error path instead, and
+ * the assertions that still passed passed for the wrong reason. It is also latent flakiness in two
+ * directions — a miss is *recorded*, so it counts towards an `assertCount` filtered on the same
+ * path, and an unstubbed call from a background task can arrive late enough to land in the next
+ * test's traffic instead.
+ *
+ * So the default is that a miss fails the test that caused it, and a test that wants one says so
+ * with {@link allowUnstubbed}. Run from `proxyIsolation`'s teardown, which is after the `server`
+ * fixture's — that fixture depends on `proxyIsolation`, so the backend is already gone and
+ * nothing can still be calling out.
+ */
+async function failOnUnstubbedRequests(client: ProxyClient): Promise<void> {
+  const misses = (await client.queryTraffic({ status: MISS_STATUS })).filter(
+    (exchange) =>
+      exchange.outcome.kind === "response" && decodeBody(exchange.outcome.body) === MISS_BODY,
+  );
+  const unexpected = misses.filter((exchange) => !isAllowed(exchange));
+  if (unexpected.length === 0) return;
+
+  const listed = unexpected
+    .map((e) => `  ${e.request.method} ${e.upstream ?? "?"} ${e.request.uri}`)
+    .join("\n");
+  const declared = allowedUnstubbed.length
+    ? `\nThis test allows ${allowedUnstubbed
+        .map((a) => `${a.upstream} ${a.path_pattern} (${a.why})`)
+        .join(", ")}, which is not what arrived.`
+    : "";
+  throw new Error(
+    `${unexpected.length} request(s) reached an upstream that no stub answered, so the proxy ` +
+      `replied with its replay miss (${MISS_STATUS} ${MISS_BODY}) and the code under test took ` +
+      `an error path:\n${listed}${declared}\n` +
+      `Register a stub for each, or — if the unanswered call is the point of the test — declare ` +
+      `it with allowUnstubbed({ upstream, path_pattern, why }) from the test body.`,
+  );
 }
 
 function freePort(): Promise<number> {
@@ -290,13 +399,23 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
    *
    * Reset on the way *in* rather than the way out, so it covers the first test in a worker and
    * cannot turn a failing test into a confusing teardown error.
+   *
+   * The one thing that *does* happen on the way out is the unstubbed-request check
+   * ({@link failOnUnstubbedRequests}), which has to: it is a statement about what this test did,
+   * and the recordings are cleared by the next test's reset. Skipped when the test has already
+   * failed — the real failure is the headline, the proxy's WARN lines are in the output either
+   * way, and a missing stub is usually *why* such a test failed rather than a second finding.
    */
   proxyIsolation: [
-    async ({ proxyHost }, use) => {
+    async ({ proxyHost }, use, testInfo) => {
+      allowedUnstubbed = [];
       await proxyHost.client.resume();
       await proxyHost.client.clearStubs();
       await proxyHost.client.clearRecordings();
       await use();
+      if (testInfo.status === testInfo.expectedStatus) {
+        await failOnUnstubbedRequests(proxyHost.client);
+      }
     },
     { auto: true },
   ],

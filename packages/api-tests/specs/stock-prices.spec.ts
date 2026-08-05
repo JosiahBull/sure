@@ -1,4 +1,4 @@
-import { test, expect, startServer, createSureClient } from "../fixtures";
+import { test, expect, allowUnstubbed, startServer, createSureClient } from "../fixtures";
 import { createAccount } from "../helpers";
 
 // `GET /api/accounts/{id}/stock-price` backfills the price cache from Yahoo on a miss, so
@@ -201,13 +201,19 @@ test("a Sunday as_of resolves to the preceding Friday's close", async ({ testpro
  *
  * And it is the one test here that deliberately stubs *nothing*, so the 502 below is also
  * this suite's no-internet guarantee asserted rather than assumed: the call went to a proxy
- * that dials no upstream in replay mode, was answered `503 {}`, and failed. So one of the
- * `replay miss` WARNs a green run prints is this test's and means nothing is missing —
- * `brokerage.spec.ts` and `shutdown.spec.ts` account for the others.
+ * that dials no upstream in replay mode, was answered `503 {}`, and failed. Which is why it
+ * declares the miss with `allowUnstubbed` — an undeclared one fails its test (see
+ * `failOnUnstubbedRequests` in ../fixtures.ts), because for every other test here a miss means
+ * the app asked for something the author did not expect.
  */
 test("the backfill window spans the weekend and holiday cluster before as_of", async ({
   testproxy,
 }) => {
+  allowUnstubbed({
+    upstream: "yahoo_finance",
+    path_pattern: "^/v8/finance/chart/MEL\\.NZ$",
+    why: "the unanswered call is the assertion: it is what makes the route answer 502",
+  });
   // Its own backend, for the two epochs alone: the `server` fixture discards the logs, and only a
   // handler that fails logs at all (`err(level = WARN)` on the route).
   const server = await startServer({ RUST_LOG: "sure_api=warn" }, { capture: true });

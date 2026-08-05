@@ -174,7 +174,11 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   needs an upstream registers a stub on the `sure-testproxy` cluster (`packages/testproxy`) it
   is pointed at: every backend both Playwright suites spawn is, in replay mode with no
   snapshots, so a call nobody stubbed is a `503 {}` that never leaves the machine rather than a
-  dependency on someone else's uptime. **Akahu traffic is never recorded into this repo** —
+  dependency on someone else's uptime — and, since that 503 sends the adapter down an error path
+  the test author did not mean to exercise, it now **fails the test that made it**
+  (`failOnUnstubbedRequests` in `packages/api-tests/fixtures.ts`, and the run-level equivalent in
+  `packages/web/tests/global-teardown.ts`). A test that means to provoke one declares it with
+  `allowUnstubbed({ upstream, path_pattern, why })`. **Akahu traffic is never recorded into this repo** —
   `scripts/pii-scan.mjs` refuses one by path *and* by content, and decodes base64 bodies so an
   `.ndjson` cannot smuggle an account number past it. Frankfurter and Yahoo are public market
   data and *are* recorded, in `packages/providers/tests/snapshots/`: those captures are what prove
