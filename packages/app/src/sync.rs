@@ -267,6 +267,30 @@ impl SyncService {
         // `status`/`imported`/`skipped` below describe.
         match p.current_balance(ctx).await {
             Ok(Some(bal)) => {
+                // A brokerage account's value is computed from its own holdings + wallet
+                // ledger (source='brokerage'); a provider's balance-only figure must not
+                // compete with it on the net-worth line — Akahu can't sync Sharesies
+                // transactions and often reports the balance as $0, which would otherwise
+                // clobber the real computed value on a same-day tie. Skip the provider
+                // valuation for that kind (the limit/principal/institution backfills are
+                // no-ops for a brokerage account anyway).
+                //
+                // Resolved *before* the currency comparison below, and skipping it entirely,
+                // because for a brokerage account not one amount-carrying write happens: the
+                // valuation is skipped here, and `set_credit_limit`/`set_original_amount` are
+                // no-ops for any metadata profile that isn't Depository/Mortgage/Loan. There
+                // is nothing left for a currency mismatch to refuse, so warning about one
+                // reports a refusal that never happened. A Sharesies account is the ordinary
+                // case: Akahu exposes each of its per-currency wallets as its own upstream
+                // account, all four linked to the one `accounts` row, so every sync cycle
+                // logged a WARN per foreign wallet about writes it was never going to make.
+                let is_brokerage = self
+                    .accounts
+                    .get(provider.account_id)
+                    .await
+                    .map(|a| a.kind == sure_core::AccountKind::Brokerage)
+                    .unwrap_or(false);
+
                 // Every minor-unit figure on a `ProviderBalance` is denominated in the
                 // upstream's currency, and nothing downstream re-checks: `valuations` rows
                 // are read as being in the account's currency, and `credit_limit_minor` /
@@ -277,43 +301,36 @@ impl SyncService {
                 // amount-carrying writes instead, the same way `brokerage::revalue` refuses
                 // to persist a total it could not convert: a day left unvalued is
                 // recoverable, a silently wrong stored figure is not. Converting here is
-                // deliberately *not* the fix — the account's currency is the account's, and a
-                // feed that changed currency is a link to re-point, not a rate to apply.
+                // deliberately *not* the fix — a stored figure converted at today's rate is
+                // wrong the moment the rate moves and has thrown away the original, whereas
+                // the reports convert at *read* time from whatever currency the row is in
+                // (`crate::reports::account_value_at`). A feed that changed currency is a link
+                // to re-point, not a rate to apply.
                 let currency_matches = bal.currency_code.eq_ignore_ascii_case(&account_ccy);
-                if !currency_matches {
-                    tracing::warn!(
-                        provider_id = id,
-                        account_id = provider.account_id,
-                        provider_currency = %bal.currency_code,
-                        account_currency = %account_ccy,
-                        "provider reported a balance in a different currency; refused to record it"
-                    );
-                    refused = Some(format!(
-                        "provider reported a balance in {} but the account is {} — refused to \
-                         record the balance, credit limit and original amount, which would \
-                         otherwise be stored as if they were {}",
-                        bal.currency_code, account_ccy, account_ccy,
-                    ));
-                }
 
-                // Only the currency-free backfill (institution, below) survives a mismatch;
-                // every write in here carries a minor-unit amount.
-                if currency_matches {
-                    // A brokerage account's value is computed from its own holdings + wallet
-                    // ledger (source='brokerage'); a provider's balance-only figure must not
-                    // compete with it on the net-worth line — Akahu can't sync Sharesies
-                    // transactions and often reports the balance as $0, which would otherwise
-                    // clobber the real computed value on a same-day tie. Skip the provider
-                    // valuation for that kind (the limit/principal/institution backfills are
-                    // no-ops for a brokerage account anyway).
-                    let is_brokerage = self
-                        .accounts
-                        .get(provider.account_id)
-                        .await
-                        .map(|a| a.kind == sure_core::AccountKind::Brokerage)
-                        .unwrap_or(false);
-                    let today = self.clock.today().to_string();
-                    if !is_brokerage {
+                // Nothing in here runs for a brokerage account, so neither the refusal above
+                // nor the writes below have anything to say about one.
+                if !is_brokerage {
+                    if !currency_matches {
+                        tracing::warn!(
+                            provider_id = id,
+                            account_id = provider.account_id,
+                            provider_currency = %bal.currency_code,
+                            account_currency = %account_ccy,
+                            "provider reported a balance in a different currency; refused to record it"
+                        );
+                        refused = Some(format!(
+                            "provider reported a balance in {} but the account is {} — refused to \
+                             record the balance, credit limit and original amount, which would \
+                             otherwise be stored as if they were {}",
+                            bal.currency_code, account_ccy, account_ccy,
+                        ));
+                    }
+
+                    // Only the currency-free backfill (institution, below) survives a mismatch;
+                    // every write in here carries a minor-unit amount.
+                    if currency_matches {
+                        let today = self.clock.today().to_string();
                         if let Err(e) = self
                             .valuations
                             .upsert_from_provider(
@@ -326,28 +343,28 @@ impl SyncService {
                         {
                             tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider balance valuation");
                         }
-                    }
-                    // Also best-effort: lets a credit_card/revolving_credit account show
-                    // "remaining borrowing" (the web UI computes limit minus what's owed). A
-                    // no-op for any account kind with no such concept.
-                    if let Some(limit_minor) = bal.limit_minor {
-                        if let Err(e) = self
-                            .accounts
-                            .set_credit_limit(provider.account_id, limit_minor)
-                            .await
-                        {
-                            tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider credit limit");
+                        // Also best-effort: lets a credit_card/revolving_credit account show
+                        // "remaining borrowing" (the web UI computes limit minus what's owed). A
+                        // no-op for any account kind with no such concept.
+                        if let Some(limit_minor) = bal.limit_minor {
+                            if let Err(e) = self
+                                .accounts
+                                .set_credit_limit(provider.account_id, limit_minor)
+                                .await
+                            {
+                                tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider credit limit");
+                            }
                         }
-                    }
-                    // Same idea for a mortgage/loan's original borrowed amount, so the web UI
-                    // can show how much of it has been paid down. A no-op for any other kind.
-                    if let Some(initial_principal_minor) = bal.initial_principal_minor {
-                        if let Err(e) = self
-                            .accounts
-                            .set_original_amount(provider.account_id, initial_principal_minor)
-                            .await
-                        {
-                            tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider original loan amount");
+                        // Same idea for a mortgage/loan's original borrowed amount, so the web UI
+                        // can show how much of it has been paid down. A no-op for any other kind.
+                        if let Some(initial_principal_minor) = bal.initial_principal_minor {
+                            if let Err(e) = self
+                                .accounts
+                                .set_original_amount(provider.account_id, initial_principal_minor)
+                                .await
+                            {
+                                tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider original loan amount");
+                            }
                         }
                     }
                 }
@@ -460,9 +477,9 @@ mod tests {
     };
     use crate::test_clock::FixedClock;
     use sure_core::{
-        Account, AccountClass, AccountKind, AccountMetadata, DepositoryMeta, LinkProviderAccount,
-        LinkProviderGroup, NewValuation, Ownership, ProviderAccount, ProviderKind, SaveAccount,
-        SaveProvider, Valuation,
+        Account, AccountKind, AccountMetadata, LinkProviderAccount, LinkProviderGroup,
+        NewValuation, Ownership, ProviderAccount, ProviderKind, SaveAccount, SaveProvider,
+        Valuation,
     };
 
     const TODAY: &str = "2026-07-01";
@@ -572,6 +589,10 @@ mod tests {
 
     #[derive(Default)]
     struct FakeAccounts {
+        /// What `get` reports this account's kind as. `None` is the ordinary `bank`; only the
+        /// brokerage carve-out cares, and it is an override rather than a required field so
+        /// every other test keeps constructing this with `default()`.
+        kind: Option<AccountKind>,
         credit_limits: Mutex<Vec<(i64, i64)>>,
         original_amounts: Mutex<Vec<(i64, i64)>>,
         institutions: Mutex<Vec<(i64, String)>>,
@@ -584,14 +605,15 @@ mod tests {
             unreachable!("SyncService never lists accounts")
         }
         async fn get(&self, id: i64) -> AppResult<Account> {
+            let kind = self.kind.unwrap_or(AccountKind::Bank);
             Ok(Account {
                 id,
                 name: "Everyday".to_string(),
-                kind: AccountKind::Bank,
-                class: AccountClass::Cash,
+                kind,
+                class: kind.class(),
                 currency_code: "NZD".to_string(),
                 institution: None,
-                metadata: AccountMetadata::Depository(DepositoryMeta::default()),
+                metadata: AccountMetadata::default_for(kind),
                 archived: false,
                 sort_order: 0,
                 secured_by_account_id: None,
@@ -807,13 +829,25 @@ mod tests {
 
     impl Harness {
         fn new(account_ccy: &str, balance: Option<ProviderBalance>, gate: Gate) -> Self {
+            Self::of_kind(None, account_ccy, balance, gate)
+        }
+
+        fn of_kind(
+            kind: Option<AccountKind>,
+            account_ccy: &str,
+            balance: Option<ProviderBalance>,
+            gate: Gate,
+        ) -> Self {
             let fetches = Arc::new(AtomicUsize::new(0));
             let providers = Arc::new(FakeProviders {
                 account_currency: account_ccy.to_string(),
                 recorded: Mutex::new(Vec::new()),
                 rows: Vec::new(),
             });
-            let accounts = Arc::new(FakeAccounts::default());
+            let accounts = Arc::new(FakeAccounts {
+                kind,
+                ..Default::default()
+            });
             let valuations = Arc::new(FakeValuations::default());
             let registry = Arc::new(FakeRegistry {
                 provider: FakeProvider {
@@ -1034,6 +1068,59 @@ mod tests {
         let recorded = h.recorded();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].detail, Some(detail));
+    }
+
+    /// A brokerage account writes none of the three amounts whatever the currency — its value
+    /// comes from its own holdings + wallet ledger — so a foreign-currency balance has nothing
+    /// to refuse and must say nothing.
+    ///
+    /// This is the ordinary Sharesies shape, not an edge case: Akahu exposes each per-currency
+    /// wallet as its own upstream account and all of them link to the one `accounts` row, so
+    /// the currency check (which used to run before the brokerage one) logged a WARN and wrote
+    /// a `detail` on every sync of every foreign wallet — describing writes that were never
+    /// going to happen. A `detail` here would surface in the UI as a problem to go and fix.
+    #[tokio::test]
+    async fn a_brokerage_account_reports_no_refusal_for_a_foreign_balance() {
+        let h = Harness::of_kind(
+            Some(AccountKind::Brokerage),
+            "NZD",
+            Some(balance("AUD")),
+            Gate::Open,
+        );
+
+        let sync = h
+            .service
+            .sync_provider(provider_row(1), None)
+            .await
+            .expect("sync succeeds");
+
+        assert_eq!(
+            sync.detail, None,
+            "nothing was refused, because nothing was going to be written"
+        );
+        assert_eq!(sync.status, SyncOutcome::Ok);
+        assert_eq!(h.recorded()[0].detail, None);
+
+        // And the writes really are all skipped — the brokerage valuation is computed
+        // elsewhere, and the other two are no-ops for this metadata profile anyway.
+        assert!(h.valuations.rows.lock().expect("test mutex").is_empty());
+        assert!(h
+            .accounts
+            .credit_limits
+            .lock()
+            .expect("test mutex")
+            .is_empty());
+        assert!(h
+            .accounts
+            .original_amounts
+            .lock()
+            .expect("test mutex")
+            .is_empty());
+        // The currency-free institution backfill still happens, as it does on a mismatch.
+        assert_eq!(
+            *h.accounts.institutions.lock().expect("test mutex"),
+            vec![(101, "Fake Bank".to_string())]
+        );
     }
 
     /// The other half of W-22: a matching currency is still written, with no refusal noise.
