@@ -3,5 +3,8 @@ packages:
   - packages/client
   - packages/api-tests
 
+allowBuilds:
+  esbuild: true
+
 onlyBuiltDependencies:
   - esbuild
