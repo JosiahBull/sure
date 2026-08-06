@@ -193,11 +193,18 @@ impl TryFrom<SecuredLiabilityAccountRow> for SecuredLiabilityAccount {
 }
 
 /// A transaction reduced to what a running balance needs.
+///
+/// `currency_code` is part of "what a running balance needs" because an account is not
+/// necessarily single-currency: a Sharesies-style brokerage holds an NZD, an AUD and a USD
+/// wallet against one `accounts` row, and Akahu exposes each as its own upstream account
+/// feeding the same one here. Summing those amounts without their currency is adding USD
+/// cents to NZD cents.
 #[derive(Debug)]
 pub struct LedgerTx {
     pub account_id: i64,
     pub posted_at: String,
     pub amount_minor: i64,
+    pub currency_code: String,
 }
 
 /// A point-in-time valuation reduced to what a running balance needs.
@@ -381,16 +388,21 @@ pub async fn secured_liabilities(
     .collect()
 }
 
-/// The raw row shape of the transaction *seed*: one per account, collapsing every readable
-/// row before the window into a single (latest date, running total) pair.
+/// The raw row shape of the transaction *seed*: one per (account, currency), collapsing every
+/// readable row before the window into a single (latest date, running total) pair.
+///
+/// Per *currency*, not per account: the sum is a plain SQL `SUM(amount_minor)`, which is only
+/// a balance if every row it adds is denominated the same way. See [`LedgerTx`].
 #[derive(Debug)]
 struct LedgerSeedRow {
     account_id: i64,
     /// The latest readable `posted_at` before the window — `None` when every pre-window row
     /// of this account carries an unreadable one, in which case there is nothing to seed.
     posted_at: Option<String>,
-    /// The sum of those rows' amounts: the account's opening balance for this window.
+    /// The sum of those rows' amounts: the account's opening balance for this window, in
+    /// `currency_code`.
     amount_minor: i64,
+    currency_code: String,
     /// How many pre-window rows were left out because their date is unreadable. Non-zero
     /// means legacy data — same posture as `parse_stored_date`: excluded, but never silently.
     unreadable: i64,
@@ -452,7 +464,7 @@ fn is_integer_overflow(e: &sqlx::Error) -> bool {
 async fn pre_window_rows(db: &Db, from: &str) -> AppResult<Vec<LedgerTx>> {
     Ok(sqlx::query_as!(
         LedgerTx,
-        "SELECT account_id, posted_at, amount_minor FROM transactions
+        "SELECT account_id, posted_at, amount_minor, currency_code FROM transactions
           WHERE posted_at < ?1
             AND posted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
                     AND date(posted_at) = substr(posted_at, 1, 10)",
@@ -469,6 +481,7 @@ fn seed_rows(rows: Vec<LedgerSeedRow>) -> AppResult<Vec<LedgerTx>> {
         if r.unreadable > 0 {
             tracing::warn!(
                 account_id = r.account_id,
+                currency = %r.currency_code,
                 rows = r.unreadable,
                 "transactions with an unreadable posted_at are not in this account's opening \
                  balance — legacy rows written before the date was a validated type; repair \
@@ -480,19 +493,27 @@ fn seed_rows(rows: Vec<LedgerSeedRow>) -> AppResult<Vec<LedgerTx>> {
                 account_id: r.account_id,
                 posted_at,
                 amount_minor: r.amount_minor,
+                currency_code: r.currency_code,
             });
         }
     }
     Ok(out)
 }
 
-/// One row per account with pre-window history: its latest readable date, the exact sum of those
-/// rows' amounts, and how many were left out as unreadable. `sqlx::Error` rather than `AppError`
-/// so [`transaction_seed`] can recognise SQLite's `integer overflow` before it is wrapped.
+/// One row per (account, currency) with pre-window history: its latest readable date, the exact
+/// sum of those rows' amounts, and how many were left out as unreadable. `sqlx::Error` rather
+/// than `AppError` so [`transaction_seed`] can recognise SQLite's `integer overflow` before it
+/// is wrapped.
+///
+/// The `currency_code` in the `GROUP BY` is load-bearing, not cosmetic: without it this returns
+/// one opening balance per account that has added every currency's minor units together, and
+/// the whole windowed ledger inherits that number. An account with a single currency — every
+/// account but a multi-currency brokerage — still collapses to exactly one row, so the memory
+/// win the seed exists for is unchanged.
 async fn seed_aggregate(db: &Db, from: &str) -> Result<Vec<LedgerSeedRow>, sqlx::Error> {
     sqlx::query_as!(
         LedgerSeedRow,
-        r#"SELECT account_id AS "account_id!",
+        r#"SELECT account_id AS "account_id!", currency_code AS "currency_code!",
                   MAX(CASE WHEN posted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
                           AND date(posted_at) = substr(posted_at, 1, 10)
                            THEN posted_at END) AS "posted_at: String",
@@ -504,7 +525,7 @@ async fn seed_aggregate(db: &Db, from: &str) -> Result<Vec<LedgerSeedRow>, sqlx:
                            THEN 0 ELSE 1 END) AS "unreadable!: i64"
              FROM transactions
             WHERE posted_at < ?1
-            GROUP BY account_id"#,
+            GROUP BY account_id, currency_code"#,
         from
     )
     .fetch_all(db)
@@ -530,7 +551,8 @@ pub async fn transactions(db: &Db, from: Option<NaiveDate>) -> AppResult<Vec<Led
     rows.extend(
         sqlx::query_as!(
             LedgerTx,
-            "SELECT account_id, posted_at, amount_minor FROM transactions WHERE posted_at >= ?1",
+            "SELECT account_id, posted_at, amount_minor, currency_code FROM transactions
+              WHERE posted_at >= ?1",
             from
         )
         .fetch_all(db)
@@ -713,12 +735,23 @@ mod tests {
     }
 
     async fn insert_tx(db: &Db, account_id: i64, posted_at: &str, amount_minor: i64) {
+        insert_tx_in(db, account_id, posted_at, amount_minor, "NZD").await;
+    }
+
+    async fn insert_tx_in(
+        db: &Db,
+        account_id: i64,
+        posted_at: &str,
+        amount_minor: i64,
+        currency_code: &str,
+    ) {
         sqlx::query!(
             "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code)
-             VALUES (?1, ?2, ?3, 'NZD')",
+             VALUES (?1, ?2, ?3, ?4)",
             account_id,
             posted_at,
-            amount_minor
+            amount_minor,
+            currency_code
         )
         .execute(db)
         .await
@@ -777,6 +810,55 @@ mod tests {
             3,
             "two seeds plus the one in-window row: {rows:?}"
         );
+    }
+
+    /// A multi-currency account gets one seed **per currency**, not one seed holding a
+    /// meaningless sum of all of them.
+    ///
+    /// The seed is a plain SQL `SUM(amount_minor)`, so grouping by account alone would add
+    /// US and Australian cents onto New Zealand ones and hand the whole windowed ledger a
+    /// single wrong opening balance — with no currency left on the row for
+    /// `sure_app::reports::account_value_at` to convert back out of. This is the ordinary
+    /// Sharesies shape: one account, an NZD/AUD/USD wallet each.
+    #[tokio::test]
+    async fn a_multi_currency_account_is_seeded_once_per_currency() {
+        let db = db_with_accounts(&[1]).await;
+        insert_tx_in(&db, 1, "2020-01-01", 100_00, "NZD").await;
+        insert_tx_in(&db, 1, "2020-02-01", 25_00, "NZD").await;
+        insert_tx_in(&db, 1, "2020-03-01", 50_00, "USD").await;
+        insert_tx_in(&db, 1, "2020-04-01", 40_00, "AUD").await;
+
+        let rows = transactions(&db, Some(d("2026-01-01"))).await.unwrap();
+
+        let by_ccy = |c: &str| {
+            rows.iter()
+                .find(|t| t.currency_code == c)
+                .unwrap_or_else(|| panic!("a {c} seed: {rows:?}"))
+        };
+        assert_eq!(rows.len(), 3, "one seed per currency held: {rows:?}");
+        assert_eq!(by_ccy("NZD").amount_minor, 125_00);
+        assert_eq!(by_ccy("USD").amount_minor, 50_00);
+        assert_eq!(by_ccy("AUD").amount_minor, 40_00);
+        // Each seed is dated at that currency's own latest pre-window posting, which is still
+        // before the window — all case 2 asks of it.
+        assert_eq!(by_ccy("NZD").posted_at, "2020-02-01");
+        assert_eq!(by_ccy("USD").posted_at, "2020-03-01");
+    }
+
+    /// The ordinary account is unaffected: one currency still collapses to exactly one row, so
+    /// the memory the seed exists to save is still saved.
+    #[tokio::test]
+    async fn a_single_currency_account_still_collapses_to_one_seed() {
+        let db = db_with_accounts(&[1]).await;
+        for day in ["2020-01-01", "2020-02-01", "2020-03-01", "2020-04-01"] {
+            insert_tx(&db, 1, day, 10_00).await;
+        }
+
+        let rows = transactions(&db, Some(d("2026-01-01"))).await.unwrap();
+
+        assert_eq!(rows.len(), 1, "four rows, one seed: {rows:?}");
+        assert_eq!(rows[0].amount_minor, 40_00);
+        assert_eq!(rows[0].currency_code, "NZD");
     }
 
     /// A legacy date no report can read stays out of the seed *and* is counted in a WARN. Folding

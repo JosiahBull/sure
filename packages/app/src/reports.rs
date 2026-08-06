@@ -7,7 +7,7 @@
 //! and the query structs here mirror their fields so a handler is a single call plus a
 //! field-copy.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate};
@@ -340,7 +340,57 @@ pub(crate) fn last_day_of_month(y: i32, m: u32) -> NaiveDate {
         .unwrap()
 }
 
-/// An account's value as of a date.
+/// Total the movements this account made while `keep` holds, expressed in `target`.
+///
+/// Each currency present is subtotalled in `i128` and converted **once**, not per row: a
+/// brokerage's few hundred USD wallet movements would otherwise carry a few hundred separate
+/// roundings into a balance that should have one. A currency equal to `target` is added
+/// untouched, so a single-currency account — every account but a multi-currency brokerage —
+/// never reaches [`Fx`] at all and reads exactly as it did before currencies were tracked here.
+///
+/// `None` when some currency present has no rate to `target`. Every such currency is named in
+/// [`Fx::unconverted`] before returning (the loop does not stop at the first), because the
+/// reports surface that list to explain what they left out — and a `BTreeMap` keeps both the
+/// list and the accumulated rounding identical from run to run.
+fn sum_movements_in(
+    what: &str,
+    id: i64,
+    fx: &Fx,
+    target: &str,
+    txs: &[(NaiveDate, i64, String)],
+    keep: impl Fn(NaiveDate) -> bool,
+) -> Option<i128> {
+    let mut by_ccy: BTreeMap<&str, i128> = BTreeMap::new();
+    for (d, amount, ccy) in txs {
+        if keep(*d) {
+            *by_ccy.entry(ccy.as_str()).or_default() += i128::from(*amount);
+        }
+    }
+    let mut total: i128 = 0;
+    let mut unconvertible = false;
+    for (ccy, subtotal) in by_ccy {
+        if ccy == target {
+            total += subtotal;
+            continue;
+        }
+        // The subtotal has to become an `i64` to be converted; a legacy amount past
+        // `MAX_MONEY_MINOR` saturates loudly here exactly as it does at the end of the walk.
+        let subtotal = narrow_minor(what, Some(id), subtotal);
+        match fx.try_convert_minor(subtotal, ccy, target) {
+            Some(converted) => total += i128::from(converted),
+            None => unconvertible = true,
+        }
+    }
+    (!unconvertible).then_some(total)
+}
+
+/// An account's value as of a date, and the currency it is expressed in — the account's own,
+/// or the valuation's in the cases that read one.
+///
+/// `None` means some currency this account holds has no rate reaching the currency the answer
+/// would be in, so there is no honest single figure: the amount is named in
+/// [`Fx::unconverted`] and the caller must leave the account out and say so, never substitute
+/// the unconverted total. See [`crate::fx`] for why that rule exists.
 ///
 /// Three cases, in order:
 /// 1. A valuation on/before `date` — use the most recent one directly. Covers a brokerage
@@ -355,13 +405,19 @@ pub(crate) fn last_day_of_month(y: i32, m: u32) -> NaiveDate {
 ///    would show a spurious positive "asset". Before the account's first transaction it
 ///    hadn't been opened/drawn down yet, so it's 0.
 /// 3. No valuations at all — the running transaction balance (a plain cash account).
+///
+/// Cases 2 and 3 add transactions up, so both go through [`sum_movements_in`] rather than
+/// summing `amount_minor` directly: an account can hold more than one currency (see
+/// [`crate::ports::LedgerTx`]), and case 2 in particular must reach the *anchor valuation's*
+/// currency, which need not be the account's either.
 pub(crate) fn account_value_at(
     id: i64,
     currency: &str,
     date: NaiveDate,
-    tx_by_acct: &HashMap<i64, Vec<(NaiveDate, i64)>>,
+    fx: &Fx,
+    tx_by_acct: &HashMap<i64, Vec<(NaiveDate, i64, String)>>,
     val_by_acct: &HashMap<i64, Vec<(NaiveDate, i64, String)>>,
-) -> (i64, String) {
+) -> Option<(i64, String)> {
     if let Some(vals) = val_by_acct.get(&id) {
         // Case 1.
         if let Some((_, value, ccy)) = vals
@@ -369,56 +425,42 @@ pub(crate) fn account_value_at(
             .filter(|(d, _, _)| *d <= date)
             .max_by_key(|(d, _, _)| *d)
         {
-            return (*value, ccy.clone());
+            return Some((*value, ccy.clone()));
         }
         // Case 2: anchor to the earliest known valuation and walk backwards.
         if let Some((anchor_date, anchor_value, ccy)) = vals.iter().min_by_key(|(d, _, _)| *d) {
             let first_txn = tx_by_acct
                 .get(&id)
-                .and_then(|txs| txs.iter().map(|(d, _)| *d).min());
+                .and_then(|txs| txs.iter().map(|(d, _, _)| *d).min());
             return match first_txn {
                 Some(first) if date >= first => {
                     // `i128` throughout: both the sum of the movements and the subtraction from
                     // the anchor are unbounded in principle, and a stored amount past
                     // `MAX_MONEY_MINOR` must not be able to panic (debug) or wrap (release)
                     // this walk. Narrowed once, at the end, with a WARN if it had to clamp.
-                    let after_date: i128 = tx_by_acct
-                        .get(&id)
-                        .map(|txs| {
-                            txs.iter()
-                                .filter(|(d, _)| *d > date && *d <= *anchor_date)
-                                .map(|(_, a)| i128::from(*a))
-                                .sum()
-                        })
-                        .unwrap_or(0);
+                    const WHAT: &str = "account_value_at: valuation anchor minus later movements";
+                    let after_date: i128 = match tx_by_acct.get(&id) {
+                        Some(txs) => sum_movements_in(WHAT, id, fx, ccy, txs, |d| {
+                            d > date && d <= *anchor_date
+                        })?,
+                        None => 0,
+                    };
                     let reconstructed = i128::from(*anchor_value) - after_date;
-                    (
-                        narrow_minor(
-                            "account_value_at: valuation anchor minus later movements",
-                            Some(id),
-                            reconstructed,
-                        ),
-                        ccy.clone(),
-                    )
+                    Some((narrow_minor(WHAT, Some(id), reconstructed), ccy.clone()))
                 }
                 // Before the account's first transaction (or it has none) → not yet opened.
-                _ => (0, ccy.clone()),
+                _ => Some((0, ccy.clone())),
             };
         }
     }
     // Case 3. The running balance of a plain cash account: the one aggregation the whole
     // balance sheet rests on, and the one that used to be a bare `.sum()` over `i64`.
-    let balance = tx_by_acct
-        .get(&id)
-        .map(|txs| {
-            sum_minor(
-                "account_value_at: running transaction balance",
-                Some(id),
-                txs.iter().filter(|(d, _)| *d <= date).map(|(_, a)| *a),
-            )
-        })
-        .unwrap_or(0);
-    (balance, currency.to_string())
+    const WHAT: &str = "account_value_at: running transaction balance";
+    let balance = match tx_by_acct.get(&id) {
+        Some(txs) => sum_movements_in(WHAT, id, fx, currency, txs, |d| d <= date)?,
+        None => 0,
+    };
+    Some((narrow_minor(WHAT, Some(id), balance), currency.to_string()))
 }
 
 pub(crate) fn sample_dates(from: NaiveDate, to: NaiveDate, interval: Interval) -> Vec<NaiveDate> {
@@ -614,9 +656,11 @@ impl Categories {
     }
 }
 
-/// Load transactions + valuations indexed per account, for point-in-time balances.
+/// Load transactions + valuations indexed per account, for point-in-time balances. Both sides
+/// carry `(date, minor units, currency)` — see [`crate::ports::LedgerTx`] for why the
+/// transaction side needs the currency too.
 pub(crate) type Ledger = (
-    HashMap<i64, Vec<(NaiveDate, i64)>>,
+    HashMap<i64, Vec<(NaiveDate, i64, String)>>,
     HashMap<i64, Vec<(NaiveDate, i64, String)>>,
 );
 
@@ -653,15 +697,16 @@ async fn load_ledger_window(
 ) -> AppResult<Ledger> {
     let txns = reports.transactions(from).await?;
     let vals = reports.valuations(from).await?;
-    let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>> = HashMap::new();
+    let mut tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>> = HashMap::new();
     for t in &txns {
         if let Some(d) =
             parse_stored_date("transactions.posted_at", Some(t.account_id), &t.posted_at)
         {
-            tx_by_acct
-                .entry(t.account_id)
-                .or_default()
-                .push((d, t.amount_minor));
+            tx_by_acct.entry(t.account_id).or_default().push((
+                d,
+                t.amount_minor,
+                t.currency_code.clone(),
+            ));
         }
     }
     let mut val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>> = HashMap::new();
@@ -959,7 +1004,7 @@ pub struct NetWorthInputs {
     base: String,
     fx: Fx,
     accounts: Vec<AccountCurrency>,
-    tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>>,
+    tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>>,
     val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>>,
     /// Already resolved from the window and interval, so the compute half is a pure function
     /// of this struct — the defaulted `from` costs two `MIN` queries to find.
@@ -1164,12 +1209,17 @@ impl ReportService {
             let mut assets = 0.0f64;
             let mut liabilities = 0.0f64;
             for a in &accounts {
-                let (value_minor, ccy) =
-                    account_value_at(a.id, &a.currency_code, date, &tx_by_acct, &val_by_acct);
+                // Two ways to have no rate, one outcome: a currency the account *holds* that
+                // nothing converts (`None` here), or the account's own currency having no rate
+                // to the base one. Either way it is outside the series entirely and the
+                // currency is reported below — counting it at parity is what made a $600 US
+                // holding read as $600 of net worth for years.
+                let Some((value_minor, ccy)) =
+                    account_value_at(a.id, &a.currency_code, date, &fx, &tx_by_acct, &val_by_acct)
+                else {
+                    continue;
+                };
                 let Some(base_major) = fx.try_to_base_major(value_minor, &ccy) else {
-                    // No rate: this account is outside the series entirely, and `ccy` is
-                    // reported below. Counting it at parity is what made a $600 US holding
-                    // read as $600 of net worth for years.
                     continue;
                 };
                 if base_major >= 0.0 {
@@ -1468,8 +1518,19 @@ impl ReportService {
         let mut out = Vec::new();
         let mut total = 0.0;
         for a in &accounts {
-            let (value_minor, ccy) =
-                account_value_at(a.id, &a.currency_code, as_of, &tx_by_acct, &val_by_acct);
+            // `None` only for an account holding a currency that nothing converts into the one
+            // its balance would be quoted in — there is no own-currency figure to list, unlike
+            // the single-currency no-rate case below. It is named in `unconverted`.
+            let Some((value_minor, ccy)) = account_value_at(
+                a.id,
+                &a.currency_code,
+                as_of,
+                &fx,
+                &tx_by_acct,
+                &val_by_acct,
+            ) else {
+                continue;
+            };
             // The row is listed either way — its own-currency balance is a true figure. Only
             // the base-currency roll-up has to leave it out when no rate reaches it.
             if let Some(base_major) = fx.try_to_base_major(value_minor, &ccy) {
@@ -1515,17 +1576,21 @@ impl ReportService {
         // As in `balances`: a single day, so the window is that day plus its seed.
         let (tx_by_acct, val_by_acct) = load_ledger_from(self.reports.as_ref(), as_of).await?;
 
-        let (v_minor, v_ccy) = account_value_at(
-            asset.id,
-            &asset.currency_code,
-            as_of,
-            &tx_by_acct,
-            &val_by_acct,
-        );
         // Equity is a subtraction, so it cannot survive a dropped term: an asset counted and
         // a secured debt silently omitted reads as a house owned outright. Either every leg
         // converts or this report refuses — unlike net worth, there is no partial answer here
-        // worth showing.
+        // worth showing. That covers both a currency the account holds that nothing converts
+        // (`None` from the walk) and its own currency not reaching the base one.
+        let Some((v_minor, v_ccy)) = account_value_at(
+            asset.id,
+            &asset.currency_code,
+            as_of,
+            &fx,
+            &tx_by_acct,
+            &val_by_acct,
+        ) else {
+            return Err(fx.missing_rate_error());
+        };
         let Some(value_base) = fx.try_to_base_major(v_minor, &v_ccy) else {
             return Err(fx.missing_rate_error());
         };
@@ -1534,8 +1599,16 @@ impl ReportService {
         let mut total_debt = 0.0;
         let mut liabilities = Vec::new();
         for l in &liabs {
-            let (lm, lccy) =
-                account_value_at(l.id, &l.currency_code, as_of, &tx_by_acct, &val_by_acct);
+            let Some((lm, lccy)) = account_value_at(
+                l.id,
+                &l.currency_code,
+                as_of,
+                &fx,
+                &tx_by_acct,
+                &val_by_acct,
+            ) else {
+                return Err(fx.missing_rate_error());
+            };
             // Liabilities carry a negative balance; the debt is its magnitude.
             let Some(lm_base) = fx.try_to_base_major(lm, &lccy) else {
                 return Err(fx.missing_rate_error());
@@ -1579,6 +1652,34 @@ mod tests {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
     }
 
+    /// Movements in one currency, in the shape the ledger carries them.
+    fn in_ccy(ccy: &str, rows: &[(NaiveDate, i64)]) -> Vec<(NaiveDate, i64, String)> {
+        rows.iter()
+            .map(|(d, a)| (*d, *a, ccy.to_string()))
+            .collect()
+    }
+
+    fn nzd(rows: &[(NaiveDate, i64)]) -> Vec<(NaiveDate, i64, String)> {
+        in_ccy("NZD", rows)
+    }
+
+    /// [`account_value_at`]'s minor-unit answer for a ledger that needs no conversion.
+    ///
+    /// Every case below this line is single-currency, so the `Fx` is never consulted and a
+    /// `None` would mean the walk started converting something it shouldn't have — which is
+    /// worth failing on rather than papering over, hence `expect` and not `unwrap_or`.
+    fn value_at(
+        id: i64,
+        ccy: &str,
+        date: NaiveDate,
+        tx: &HashMap<i64, Vec<(NaiveDate, i64, String)>>,
+        val: &HashMap<i64, Vec<(NaiveDate, i64, String)>>,
+    ) -> i64 {
+        account_value_at(id, ccy, date, &Fx::parity(ccy), tx, val)
+            .expect("a single-currency ledger needs no exchange rate")
+            .0
+    }
+
     /// A provider-synced mortgage: only *today's* balance is known as a valuation, and its
     /// own transactions (a large drawdown that alone sums to the wrong sign, plus small
     /// repayments) don't reconcile to that balance from zero. Historically it must still
@@ -1589,11 +1690,11 @@ mod tests {
         let mut tx = HashMap::new();
         tx.insert(
             7i64,
-            vec![
+            nzd(&[
                 (d("2025-12-11"), 485_000_00), // drawdown (Akahu signs it +, unlike the balance)
                 (d("2026-01-12"), 313_81),     // principal repayment (reduces the debt)
                 (d("2026-02-09"), 434_70),
-            ],
+            ]),
         );
         // Provider reports today's balance: -$484,251.49 (= -485000 + 313.81 + 434.70).
         let mut val = HashMap::new();
@@ -1603,22 +1704,13 @@ mod tests {
         );
 
         // Before the drawdown: the mortgage doesn't exist yet.
-        assert_eq!(account_value_at(7, "NZD", d("2025-12-01"), &tx, &val).0, 0);
+        assert_eq!(value_at(7, "NZD", d("2025-12-01"), &tx, &val), 0);
         // Right after the drawdown, before any repayments: the full -$485,000.
-        assert_eq!(
-            account_value_at(7, "NZD", d("2025-12-15"), &tx, &val).0,
-            -485_000_00
-        );
+        assert_eq!(value_at(7, "NZD", d("2025-12-15"), &tx, &val), -485_000_00);
         // After the first repayment: -$484,686.19.
-        assert_eq!(
-            account_value_at(7, "NZD", d("2026-01-20"), &tx, &val).0,
-            -484_686_19
-        );
+        assert_eq!(value_at(7, "NZD", d("2026-01-20"), &tx, &val), -484_686_19);
         // On/after the valuation date: exactly the provider's figure.
-        assert_eq!(
-            account_value_at(7, "NZD", d("2026-07-19"), &tx, &val).0,
-            -484_251_49
-        );
+        assert_eq!(value_at(7, "NZD", d("2026-07-19"), &tx, &val), -484_251_49);
     }
 
     /// A property carries its manual valuation forward from the purchase date, and reads 0
@@ -1629,15 +1721,94 @@ mod tests {
         let mut val = HashMap::new();
         val.insert(9i64, vec![(d("2025-12-12"), 770_000_00, "NZD".to_string())]);
 
-        assert_eq!(account_value_at(9, "NZD", d("2025-12-01"), &tx, &val).0, 0);
+        assert_eq!(value_at(9, "NZD", d("2025-12-01"), &tx, &val), 0);
+        assert_eq!(value_at(9, "NZD", d("2025-12-12"), &tx, &val), 770_000_00);
+        assert_eq!(value_at(9, "NZD", d("2026-06-01"), &tx, &val), 770_000_00);
+    }
+
+    /// One `accounts` row holding three currencies — the Sharesies shape, where the upstream
+    /// exposes a wallet per currency and every one of them is linked to the same account here.
+    ///
+    /// Case 3 has no valuation to read, so it adds the movements up, and each currency's
+    /// subtotal has to be converted before that sum means anything. The ledger used to drop
+    /// `currency_code` on the floor, so this added US and Australian cents straight onto New
+    /// Zealand ones and labelled the result NZD: $190 where the true figure is $250.
+    #[test]
+    fn a_multi_currency_account_converts_each_currency_before_summing() {
+        // 1 NZD = 0.50 USD and 1 NZD = 0.80 AUD, picked so the arithmetic is exact and the
+        // assertion below is a figure rather than a tolerance.
+        let fx = Fx::with_rates("NZD", &[("NZD", "USD", 0.5), ("NZD", "AUD", 0.8)]);
+        let mut rows = nzd(&[(d("2026-01-05"), 100_00)]);
+        rows.extend(in_ccy("USD", &[(d("2026-01-06"), 50_00)]));
+        rows.extend(in_ccy("AUD", &[(d("2026-01-07"), 40_00)]));
+        let tx = HashMap::from([(16i64, rows)]);
+        let val = HashMap::new();
+
+        // $100 NZD + US$50 (= $100 NZD) + A$40 (= $50 NZD).
+        let (value, ccy) = account_value_at(16, "NZD", d("2026-02-01"), &fx, &tx, &val).unwrap();
+        assert_eq!(value, 250_00, "raw minor units would have read 190_00");
+        assert_eq!(ccy, "NZD");
+        assert!(fx.unconverted().is_empty());
+    }
+
+    /// Case 2 reconstructs a balance by subtracting later movements from an anchor valuation,
+    /// so those movements have to reach the **anchor's** currency — which is the valuation's,
+    /// not necessarily the account's.
+    #[test]
+    fn the_valuation_anchor_walk_converts_the_movements_it_subtracts() {
+        let fx = Fx::with_rates("NZD", &[("NZD", "USD", 0.5)]);
+        let mut rows = nzd(&[(d("2026-01-05"), 30_00)]);
+        rows.extend(in_ccy("USD", &[(d("2026-01-06"), 25_00)]));
+        let tx = HashMap::from([(16i64, rows)]);
+        let val = HashMap::from([(16i64, vec![(d("2026-02-01"), 500_00, "NZD".to_string())])]);
+
+        // As of the 5th, the US$25 (= $50 NZD) posted on the 6th is still to come, so the
+        // anchor minus it is $450. Subtracting the raw 25_00 would have read $475.
+        let (value, ccy) = account_value_at(16, "NZD", d("2026-01-05"), &fx, &tx, &val).unwrap();
+        assert_eq!(value, 450_00, "raw minor units would have read 475_00");
+        assert_eq!(ccy, "NZD");
+    }
+
+    /// A currency the account holds that no rate reaches: there is no honest single figure for
+    /// the account at all, so the walk refuses and names the currency. Totalling only the part
+    /// it could convert would be a balance that looks right and is short by a wallet — the
+    /// failure `crate::fx`'s whole posture exists to prevent.
+    #[test]
+    fn a_held_currency_with_no_rate_refuses_the_whole_account_value() {
+        let fx = Fx::with_rates("NZD", &[("NZD", "USD", 0.5)]);
+        let mut rows = nzd(&[(d("2026-01-05"), 100_00)]);
+        rows.extend(in_ccy("USD", &[(d("2026-01-06"), 50_00)]));
+        rows.extend(in_ccy("JPY", &[(d("2026-01-07"), 10_000)]));
+        let tx = HashMap::from([(16i64, rows)]);
+        let val = HashMap::new();
+
         assert_eq!(
-            account_value_at(9, "NZD", d("2025-12-12"), &tx, &val).0,
-            770_000_00
+            account_value_at(16, "NZD", d("2026-02-01"), &fx, &tx, &val),
+            None
         );
-        assert_eq!(
-            account_value_at(9, "NZD", d("2026-06-01"), &tx, &val).0,
-            770_000_00
-        );
+        assert_eq!(fx.unconverted(), vec!["JPY".to_string()]);
+    }
+
+    /// The other half of that contract: a *single*-currency account must not reach `Fx` at
+    /// all, so one in a currency the rate table has never heard of still reports its own
+    /// balance — which is what keeps it listed on the balance sheet at its own-currency figure
+    /// when no rate reaches the base one. Only a mix needs a rate.
+    #[test]
+    fn a_single_currency_account_needs_no_rate_at_all() {
+        let fx = Fx::with_rates("NZD", &[]);
+        let tx = HashMap::from([(
+            21i64,
+            in_ccy(
+                "JPY",
+                &[(d("2026-01-05"), 500_000), (d("2026-01-06"), -100_000)],
+            ),
+        )]);
+        let val = HashMap::new();
+
+        let (value, ccy) = account_value_at(21, "JPY", d("2026-02-01"), &fx, &tx, &val).unwrap();
+        assert_eq!(value, 400_000);
+        assert_eq!(ccy, "JPY");
+        assert!(fx.unconverted().is_empty());
     }
 
     /// A plain cash account with no valuations still uses the running transaction balance.
@@ -1646,19 +1817,13 @@ mod tests {
         let mut tx = HashMap::new();
         tx.insert(
             3i64,
-            vec![(d("2026-01-05"), 500_00), (d("2026-01-10"), -120_00)],
+            nzd(&[(d("2026-01-05"), 500_00), (d("2026-01-10"), -120_00)]),
         );
         let val = HashMap::new();
 
-        assert_eq!(account_value_at(3, "NZD", d("2026-01-01"), &tx, &val).0, 0);
-        assert_eq!(
-            account_value_at(3, "NZD", d("2026-01-07"), &tx, &val).0,
-            500_00
-        );
-        assert_eq!(
-            account_value_at(3, "NZD", d("2026-01-31"), &tx, &val).0,
-            380_00
-        );
+        assert_eq!(value_at(3, "NZD", d("2026-01-01"), &tx, &val), 0);
+        assert_eq!(value_at(3, "NZD", d("2026-01-07"), &tx, &val), 500_00);
+        assert_eq!(value_at(3, "NZD", d("2026-01-31"), &tx, &val), 380_00);
     }
 
     /// Two rows at the wire ceiling — the largest amount `sure_core::Money` will accept — must
@@ -1674,12 +1839,12 @@ mod tests {
         let mut tx = HashMap::new();
         tx.insert(
             11i64,
-            vec![(d("2026-01-05"), ceiling), (d("2026-01-06"), ceiling)],
+            nzd(&[(d("2026-01-05"), ceiling), (d("2026-01-06"), ceiling)]),
         );
         let val = HashMap::new();
 
         assert_eq!(
-            account_value_at(11, "NZD", d("2026-02-01"), &tx, &val).0,
+            value_at(11, "NZD", d("2026-02-01"), &tx, &val),
             2 * ceiling,
             "the ceiling is chosen so this fits in an i64 with room to spare"
         );
@@ -1699,12 +1864,12 @@ mod tests {
         let mut tx = HashMap::new();
         tx.insert(
             12i64,
-            vec![(d("2026-01-05"), i64::MAX), (d("2026-01-06"), i64::MAX)],
+            nzd(&[(d("2026-01-05"), i64::MAX), (d("2026-01-06"), i64::MAX)]),
         );
         let val = HashMap::new();
 
         assert_eq!(
-            account_value_at(12, "NZD", d("2026-02-01"), &tx, &val).0,
+            value_at(12, "NZD", d("2026-02-01"), &tx, &val),
             i64::MAX,
             "must clamp at the ceiling of the type, not wrap negative"
         );
@@ -1714,12 +1879,9 @@ mod tests {
         let mut tx = HashMap::new();
         tx.insert(
             13i64,
-            vec![(d("2026-01-05"), i64::MIN), (d("2026-01-06"), i64::MIN)],
+            nzd(&[(d("2026-01-05"), i64::MIN), (d("2026-01-06"), i64::MIN)]),
         );
-        assert_eq!(
-            account_value_at(13, "NZD", d("2026-02-01"), &tx, &val).0,
-            i64::MIN
-        );
+        assert_eq!(value_at(13, "NZD", d("2026-02-01"), &tx, &val), i64::MIN);
     }
 
     /// Case 2 — the valuation-anchor reconstruction — subtracts, so it overflows on *opposite*
@@ -1730,7 +1892,7 @@ mod tests {
         let mut tx = HashMap::new();
         tx.insert(
             14i64,
-            vec![(d("2026-01-05"), i64::MAX), (d("2026-01-06"), i64::MAX)],
+            nzd(&[(d("2026-01-05"), i64::MAX), (d("2026-01-06"), i64::MAX)]),
         );
         let mut val = HashMap::new();
         // The anchor is later than both movements, so `date` sits between the first
@@ -1738,7 +1900,7 @@ mod tests {
         val.insert(14i64, vec![(d("2026-03-01"), i64::MIN, "NZD".to_string())]);
 
         assert_eq!(
-            account_value_at(14, "NZD", d("2026-01-05"), &tx, &val).0,
+            value_at(14, "NZD", d("2026-01-05"), &tx, &val),
             i64::MIN,
             "anchor − later movements must clamp, not wrap"
         );
@@ -1781,11 +1943,11 @@ mod tests {
     fn an_imported_history_reads_zero_before_its_earliest_transaction() {
         // The ASB export's rows: $17,694.18 out on day one, $900 spent later. They sum to
         // -$18,594.18, and the account is recorded at $100 today.
-        let movements = vec![
+        let movements = nzd(&[
             (d("2020-01-01"), -15_694_18),
             (d("2020-01-01"), -2_000_00),
             (d("2021-05-05"), -900_00),
-        ];
+        ]);
         let mut val = HashMap::new();
         val.insert(8i64, vec![(d("2026-08-03"), 100_00, "NZD".to_string())]);
 
@@ -1793,42 +1955,24 @@ mod tests {
         tx.insert(8i64, movements.clone());
 
         // From the first row on, every figure is already right.
-        assert_eq!(
-            account_value_at(8, "NZD", d("2020-01-01"), &tx, &val).0,
-            1_000_00
-        );
-        assert_eq!(
-            account_value_at(8, "NZD", d("2021-05-05"), &tx, &val).0,
-            100_00
-        );
-        assert_eq!(
-            account_value_at(8, "NZD", d("2026-08-03"), &tx, &val).0,
-            100_00
-        );
+        assert_eq!(value_at(8, "NZD", d("2020-01-01"), &tx, &val), 1_000_00);
+        assert_eq!(value_at(8, "NZD", d("2021-05-05"), &tx, &val), 100_00);
+        assert_eq!(value_at(8, "NZD", d("2026-08-03"), &tx, &val), 100_00);
         // But the day before the import starts reads 0, not the $18,694.18 held then.
-        assert_eq!(account_value_at(8, "NZD", d("2019-12-31"), &tx, &val).0, 0);
+        assert_eq!(value_at(8, "NZD", d("2019-12-31"), &tx, &val), 0);
 
         // With an opening-balance transaction dated the day before, the whole series is
         // right — and the ledger reconciles: -18,594.18 + 18,694.18 == the $100 recorded.
         let mut with_opening = movements;
-        with_opening.push((d("2019-12-31"), 18_694_18));
+        with_opening.push((d("2019-12-31"), 18_694_18, "NZD".to_string()));
         let mut tx = HashMap::new();
         tx.insert(8i64, with_opening);
 
-        assert_eq!(account_value_at(8, "NZD", d("2019-12-30"), &tx, &val).0, 0);
-        assert_eq!(
-            account_value_at(8, "NZD", d("2019-12-31"), &tx, &val).0,
-            18_694_18
-        );
+        assert_eq!(value_at(8, "NZD", d("2019-12-30"), &tx, &val), 0);
+        assert_eq!(value_at(8, "NZD", d("2019-12-31"), &tx, &val), 18_694_18);
         // The dates that were already correct stay correct.
-        assert_eq!(
-            account_value_at(8, "NZD", d("2020-01-01"), &tx, &val).0,
-            1_000_00
-        );
-        assert_eq!(
-            account_value_at(8, "NZD", d("2026-08-03"), &tx, &val).0,
-            100_00
-        );
+        assert_eq!(value_at(8, "NZD", d("2020-01-01"), &tx, &val), 1_000_00);
+        assert_eq!(value_at(8, "NZD", d("2026-08-03"), &tx, &val), 100_00);
     }
 
     /// Why an opening balance must be a *transaction* and never a valuation: case 1 wins over
@@ -1841,11 +1985,11 @@ mod tests {
         let mut tx = HashMap::new();
         tx.insert(
             8i64,
-            vec![
+            nzd(&[
                 (d("2020-01-01"), -15_694_18),
                 (d("2020-01-01"), -2_000_00),
                 (d("2021-05-05"), -900_00),
-            ],
+            ]),
         );
         let mut val = HashMap::new();
         val.insert(
@@ -1859,19 +2003,10 @@ mod tests {
 
         // … and now 2021 reports the opening figure rather than the $1,000 actually held:
         // the two transfers out have vanished from the history.
-        assert_eq!(
-            account_value_at(8, "NZD", d("2021-01-01"), &tx, &val).0,
-            18_694_18
-        );
-        assert_eq!(
-            account_value_at(8, "NZD", d("2025-01-01"), &tx, &val).0,
-            18_694_18
-        );
+        assert_eq!(value_at(8, "NZD", d("2021-01-01"), &tx, &val), 18_694_18);
+        assert_eq!(value_at(8, "NZD", d("2025-01-01"), &tx, &val), 18_694_18);
         // Only from the later valuation does it come right again.
-        assert_eq!(
-            account_value_at(8, "NZD", d("2026-08-03"), &tx, &val).0,
-            100_00
-        );
+        assert_eq!(value_at(8, "NZD", d("2026-08-03"), &tx, &val), 100_00);
     }
 
     /// The instrument-bookkeeping kinds stay out of the income/expense reports, while the
@@ -2115,6 +2250,7 @@ mod tests {
                 account_id,
                 posted_at: posted_at.to_string(),
                 amount_minor,
+                currency_code: "NZD".to_string(),
             };
             let val = |account_id, as_of: &str, value_minor| LedgerValuation {
                 account_id,
@@ -2202,6 +2338,7 @@ mod tests {
                     account_id,
                     posted_at,
                     amount_minor,
+                    currency_code: "NZD".to_string(),
                 })
                 .collect();
             all.append(&mut out);

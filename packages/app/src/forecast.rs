@@ -263,7 +263,7 @@ impl Default for SimulationParams {
 pub struct SimulationInputs {
     accounts: Vec<sure_core::Account>,
     today: NaiveDate,
-    tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64)>>,
+    tx_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>>,
     val_by_acct: HashMap<i64, Vec<(NaiveDate, i64, String)>>,
     fx: Fx,
     /// The projection currency's code.
@@ -445,7 +445,9 @@ impl ForecastService {
         }
 
         let today = self.clock.today();
-        let mut out = self.resolve_account_assumptions(today, &by_target).await?;
+        let mut out = self
+            .resolve_account_assumptions(today, &by_target, fx)
+            .await?;
         out.extend(
             self.resolve_category_assumptions(today, &by_target, fx)
                 .await?,
@@ -457,6 +459,7 @@ impl ForecastService {
         &self,
         today: NaiveDate,
         overrides: &HashMap<(ForecastTargetType, i64), ForecastAssumption>,
+        fx: &Fx,
     ) -> AppResult<Vec<ResolvedAssumption>> {
         let accounts = self.accounts.list(false).await?;
         let crons = self.crons.list().await?;
@@ -479,13 +482,19 @@ impl ForecastService {
             }
 
             if let Some(terms) = loan_terms(&a.metadata, today) {
-                let (current_minor, _) = reports::account_value_at(
+                // No rate reaching a currency this account holds: it has no single current
+                // balance to amortise, so it is left out here exactly as it is left out of the
+                // simulation in `account_sims`, and its currency is named in `unconverted`.
+                let Some((current_minor, _)) = reports::account_value_at(
                     a.id,
                     &a.currency_code,
                     today,
+                    fx,
                     &tx_by_acct,
                     &val_by_acct,
-                );
+                ) else {
+                    continue;
+                };
                 // The same constructor the simulation uses, at the stated refix rate — so
                 // the figure shown and the figure projected cannot drift apart.
                 let schedule = AmortSchedule::expected(&terms, current_minor as f64, today);
@@ -533,7 +542,7 @@ impl ForecastService {
             });
 
             let series =
-                monthly_value_series(a.id, &a.currency_code, today, &tx_by_acct, &val_by_acct);
+                monthly_value_series(a.id, &a.currency_code, today, fx, &tx_by_acct, &val_by_acct);
             let derived = derive_account_rate(class, &series);
 
             let (growth, vol, source) = resolve_growth(
@@ -885,8 +894,19 @@ impl ForecastService {
                 continue;
             }
 
-            let (current_minor, _) =
-                reports::account_value_at(a.id, &a.currency_code, today, &tx_by_acct, &val_by_acct);
+            // `None` for the same reason `try_base_scale` returns it below — a currency with no
+            // rate, here one the account *holds* rather than the one it is quoted in. Same
+            // outcome: out of the simulation, named in `unconverted`.
+            let Some((current_minor, _)) = reports::account_value_at(
+                a.id,
+                &a.currency_code,
+                today,
+                &fx,
+                &tx_by_acct,
+                &val_by_acct,
+            ) else {
+                continue;
+            };
             let current = current_minor as f64;
 
             // Resolved once per account, not once per (path × month × account): the whole
@@ -1223,14 +1243,15 @@ impl ForecastService {
             // An unconvertible cash account is left out of the pool (and named in
             // `unconverted`) on the same argument as `account_sims` above.
             .filter_map(|a| {
-                let (v, _) = reports::account_value_at(
+                let (v, ccy) = reports::account_value_at(
                     a.id,
                     &a.currency_code,
                     today,
+                    &fx,
                     &tx_by_acct,
                     &val_by_acct,
-                );
-                fx.try_to_base_major(v, &a.currency_code)
+                )?;
+                fx.try_to_base_major(v, &ccy)
             })
             .sum();
 
@@ -2765,12 +2786,13 @@ fn monthly_value_series(
     account_id: i64,
     currency: &str,
     today: NaiveDate,
-    tx_by_acct: &HashMap<i64, Vec<(NaiveDate, i64)>>,
+    fx: &Fx,
+    tx_by_acct: &HashMap<i64, Vec<(NaiveDate, i64, String)>>,
     val_by_acct: &HashMap<i64, Vec<(NaiveDate, i64, String)>>,
 ) -> Vec<(NaiveDate, f64)> {
     let earliest = tx_by_acct
         .get(&account_id)
-        .and_then(|v| v.iter().map(|(d, _)| *d).min())
+        .and_then(|v| v.iter().map(|(d, _, _)| *d).min())
         .into_iter()
         .chain(
             val_by_acct
@@ -2790,10 +2812,13 @@ fn monthly_value_series(
     let earliest = earliest.max(add_months(today, -ACCOUNT_TREND_MONTHS));
     reports::sample_dates(earliest, today, Interval::Month)
         .into_iter()
-        .map(|d| {
+        // A month whose value cannot be expressed in one currency is dropped rather than
+        // guessed at: `derive_account_rate` fits a trend through whatever points survive, and
+        // refuses outright below a minimum span, so a short series is already handled.
+        .filter_map(|d| {
             let (value_minor, _) =
-                reports::account_value_at(account_id, currency, d, tx_by_acct, val_by_acct);
-            (d, value_minor as f64)
+                reports::account_value_at(account_id, currency, d, fx, tx_by_acct, val_by_acct)?;
+            Some((d, value_minor as f64))
         })
         .collect()
 }
@@ -4366,6 +4391,7 @@ mod tests {
                     account_id: 2,
                     posted_at: date.to_string(),
                     amount_minor: 400_000 + i * 1_000,
+                    currency_code: "NZD".to_string(),
                 });
                 spend.push(SpendTransaction {
                     posted_at: date.to_string(),
@@ -4494,6 +4520,7 @@ mod tests {
                     account_id: 1,
                     posted_at: date.to_string(),
                     amount_minor: 500_000,
+                    currency_code: "NZD".to_string(),
                 });
                 spend.push(SpendTransaction {
                     posted_at: date.to_string(),
@@ -4950,6 +4977,7 @@ mod tests {
                     account_id: 1,
                     posted_at: date.to_string(),
                     amount_minor: amount,
+                    currency_code: "NZD".to_string(),
                 });
                 spend.push(SpendTransaction {
                     posted_at: date.to_string(),

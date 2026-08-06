@@ -141,7 +141,9 @@
         >
       </div>
       <!-- An account whose currency has no rate is still listed below at its own-currency
-           balance — it is only this roll-up it cannot join. -->
+           balance — it is only this roll-up it cannot join. The one exception is an account
+           holding *several* currencies where one of them has no rate: it has no own-currency
+           balance to show either, so it is absent from the list and named here instead. -->
       <FxNotice
         unconverted={balances.data.unconverted}
         ratesAsOf={balances.data.rates_as_of}

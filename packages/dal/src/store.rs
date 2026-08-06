@@ -536,6 +536,7 @@ impl ReportRepo for SqliteStore {
                 account_id: t.account_id,
                 posted_at: t.posted_at,
                 amount_minor: t.amount_minor,
+                currency_code: t.currency_code,
             })
             .collect())
     }

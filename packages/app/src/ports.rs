@@ -381,11 +381,18 @@ pub struct SecuredLiabilityAccount {
 }
 
 /// A transaction reduced to what a running balance needs.
+///
+/// `currency_code` is part of that: one `accounts` row can hold several currencies (a
+/// brokerage with an NZD, an AUD and a USD wallet, each exposed by the upstream as its own
+/// account), and adding those amounts without their currency is adding USD cents to NZD cents.
+/// `sure_app::reports::account_value_at` totals each currency separately and converts the
+/// subtotals.
 #[derive(Debug, Clone)]
 pub struct LedgerTx {
     pub account_id: i64,
     pub posted_at: String,
     pub amount_minor: i64,
+    pub currency_code: String,
 }
 
 /// A point-in-time valuation reduced to what a running balance needs.
@@ -779,9 +786,11 @@ pub trait ReportRepo: Send + Sync {
     /// `d >= from`, both "what is the running total of everything posted on or before `d`" and
     /// "had this account been posted to before `d`". Returning every row (as an in-memory fake
     /// does) satisfies that; so does returning the rows on/after `from` plus **one seed row per
-    /// account** whose amount is the sum of everything before it and whose date is the latest of
-    /// them — which is what `SqliteStore` does, and is the difference between a report touching
-    /// its window and a report materialising a 500k-row ledger 64 times over.
+    /// account and currency** whose amount is the sum of everything before it in that currency
+    /// and whose date is the latest of them — which is what `SqliteStore` does, and is the
+    /// difference between a report touching its window and a report materialising a 500k-row
+    /// ledger 64 times over. Seeding per account alone would collapse a multi-currency
+    /// account's history into one meaningless sum; see [`LedgerTx`].
     ///
     /// There is no upper bound by design: the valuation-anchor reconstruction reads *forward*
     /// from the date being reported on to the account's earliest valuation, which is routinely
