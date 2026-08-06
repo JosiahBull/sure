@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", event_id, depends_on_event_id, kind, min_gap_months, created_at\n                 FROM forecast_event_relations ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "event_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "depends_on_event_id",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kind",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "min_gap_months",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7832795c433655efa2d5f5462fa9422bf332110dd8badb42c9ad6cb1b3b318c3"
+}
