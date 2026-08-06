@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", event_id, kind, sort_order, income_stream_id, person_id,\n                  category_id, account_id, amount_minor, rate_bps, delay_months, ramp_months,\n                  duration_months, created_at\n             FROM forecast_event_effects ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "event_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kind",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "sort_order",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "income_stream_id",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "person_id",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "category_id",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "rate_bps",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "delay_months",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "ramp_months",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "duration_months",
+        "ordinal": 12,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 13,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "e0a0a8e8944442440437de746cfefc45d47df179298ebed90b67575f901a2720"
+}

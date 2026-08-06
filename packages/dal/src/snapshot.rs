@@ -45,6 +45,14 @@ pub struct Snapshot {
     pub forecast_assumptions: Vec<ForecastAssumptionRow>,
     #[serde(default)]
     pub forecast_events: Vec<ForecastEventRow>,
+    /// An event's effects and its ordering/conditional links. Restored with the events rather
+    /// than left behind: the simulation branches on an event's *effects*, never on its kind
+    /// (see `0022_forecast_events_unified.sql`), so an event restored without them is a row the
+    /// UI shows and the projection ignores — which reads as a successful restore and is not one.
+    #[serde(default)]
+    pub forecast_event_effects: Vec<ForecastEventEffectRow>,
+    #[serde(default)]
+    pub forecast_event_relations: Vec<ForecastEventRelationRow>,
     // Per-person income streams and their dated pay-scale steps — `#[serde(default)]` so a
     // snapshot taken before 0021 still imports, as a household with no modelled income.
     #[serde(default)]
@@ -390,6 +398,34 @@ pub struct ForecastEventRow {
     pub updated_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ForecastEventEffectRow {
+    pub id: i64,
+    pub event_id: i64,
+    pub kind: String,
+    pub sort_order: i64,
+    pub income_stream_id: Option<i64>,
+    pub person_id: Option<i64>,
+    pub category_id: Option<i64>,
+    pub account_id: Option<i64>,
+    pub amount_minor: Option<i64>,
+    pub rate_bps: Option<i64>,
+    pub delay_months: Option<i64>,
+    pub ramp_months: Option<i64>,
+    pub duration_months: Option<i64>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ForecastEventRelationRow {
+    pub id: i64,
+    pub event_id: i64,
+    pub depends_on_event_id: i64,
+    pub kind: String,
+    pub min_gap_months: i64,
+    pub created_at: String,
+}
+
 /// Serialising the snapshot cannot fail on the data (every field is a plain scalar), so an
 /// error here is a bug or a full disk on the way out to a `Vec`, not bad user input.
 fn ser_failed(e: serde_json::Error) -> AppError {
@@ -591,6 +627,20 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
                   probability_bps, notes, created_at, updated_at
              FROM forecast_events ORDER BY id"#
     );
+    table!(
+        "forecast_event_effects",
+        ForecastEventEffectRow,
+        r#"SELECT id AS "id!", event_id, kind, sort_order, income_stream_id, person_id,
+                  category_id, account_id, amount_minor, rate_bps, delay_months, ramp_months,
+                  duration_months, created_at
+             FROM forecast_event_effects ORDER BY id"#
+    );
+    table!(
+        "forecast_event_relations",
+        ForecastEventRelationRow,
+        r#"SELECT id AS "id!", event_id, depends_on_event_id, kind, min_gap_months, created_at
+             FROM forecast_event_relations ORDER BY id"#
+    );
 
     map.end().map_err(ser_failed)?;
     Ok(out)
@@ -784,6 +834,22 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         )
         .fetch_all(db)
         .await?,
+        forecast_event_effects: sqlx::query_as!(
+            ForecastEventEffectRow,
+            r#"SELECT id AS "id!", event_id, kind, sort_order, income_stream_id, person_id,
+                      category_id, account_id, amount_minor, rate_bps, delay_months, ramp_months,
+                      duration_months, created_at
+                 FROM forecast_event_effects ORDER BY id"#
+        )
+        .fetch_all(db)
+        .await?,
+        forecast_event_relations: sqlx::query_as!(
+            ForecastEventRelationRow,
+            r#"SELECT id AS "id!", event_id, depends_on_event_id, kind, min_gap_months, created_at
+                 FROM forecast_event_relations ORDER BY id"#
+        )
+        .fetch_all(db)
+        .await?,
     })
 }
 
@@ -815,7 +881,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         // cleared and not restored. Re-inserting another database's log would be a false history.
         "DELETE FROM imports",
         // `forecast_event_effects` and `forecast_event_relations` are not listed: both are
-        // `ON DELETE CASCADE` on `event_id`, so they go with the events.
+        // `ON DELETE CASCADE` on `event_id`, so clearing the events clears them too. They are
+        // re-inserted below with the events, not dropped.
         "DELETE FROM forecast_events",
         "DELETE FROM forecast_assumptions",
         "DELETE FROM income_stream_steps",
@@ -1279,6 +1346,46 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         .execute(&mut *txn)
         .await?;
     }
+    for f in &snap.forecast_event_effects {
+        sqlx::query!(
+            "INSERT INTO forecast_event_effects
+                (id, event_id, kind, sort_order, income_stream_id, person_id, category_id,
+                 account_id, amount_minor, rate_bps, delay_months, ramp_months, duration_months,
+                 created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            f.id,
+            f.event_id,
+            f.kind,
+            f.sort_order,
+            f.income_stream_id,
+            f.person_id,
+            f.category_id,
+            f.account_id,
+            f.amount_minor,
+            f.rate_bps,
+            f.delay_months,
+            f.ramp_months,
+            f.duration_months,
+            f.created_at
+        )
+        .execute(&mut *txn)
+        .await?;
+    }
+    for r in &snap.forecast_event_relations {
+        sqlx::query!(
+            "INSERT INTO forecast_event_relations
+                (id, event_id, depends_on_event_id, kind, min_gap_months, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            r.id,
+            r.event_id,
+            r.depends_on_event_id,
+            r.kind,
+            r.min_gap_months,
+            r.created_at
+        )
+        .execute(&mut *txn)
+        .await?;
+    }
     for r in &snap.exchange_rates {
         sqlx::query!(
             "INSERT INTO exchange_rates (base_code, quote_code, as_of, rate) VALUES (?1,?2,?3,?4)",
@@ -1315,6 +1422,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             "income_streams": snap.income_streams.len(),
             "income_stream_steps": snap.income_stream_steps.len(),
             "forecast_events": snap.forecast_events.len(),
+            "forecast_event_effects": snap.forecast_event_effects.len(),
+            "forecast_event_relations": snap.forecast_event_relations.len(),
         }
     }))
 }
@@ -1367,17 +1476,53 @@ mod tests {
         .fetch_one(&db)
         .await
         .unwrap();
-        // A forecast event, so the round trip below actually covers `forecast_events`. Without
-        // one, every export read an empty table and never decoded a row — which is how the
-        // export came to reference four columns that migration 0022 had removed, and still
-        // passed its tests. `sqlx::query!` would now catch that at build time; this keeps the
-        // behavioural half honest too.
-        sqlx::query!(
-            "INSERT INTO forecast_events (label, kind, person_id, expected_on, probability_bps)
-             VALUES ('Promotion', 'promotion', ?1, '2027-04-01', 5000)",
-            person
+        // Two forecast events, so the round trip covers `forecast_events` and both its child
+        // tables. Without any event at all, every export read an empty table and never decoded a
+        // row — which is how the export came to reference four columns migration 0022 had
+        // removed and still passed its tests. Written through `create_event` rather than raw
+        // SQL so the effect and the relation are built the way the app builds them.
+        let child = crate::forecast::create_event(
+            &db,
+            sure_core::SaveForecastEvent {
+                label: "Child".into(),
+                kind: sure_core::LifeEventKind::Child,
+                person_id: Some(person),
+                expected_on: sure_core::IsoDate::parse("2027-04-01").unwrap(),
+                timing_spread_months: 6,
+                probability_bps: 5000,
+                notes: Some("daycare from six months".into()),
+                effects: vec![sure_core::LifeEffectSpec::RecurringDelta {
+                    category_id: category,
+                    amount_minor: -450_00,
+                    delay_months: 6,
+                    ramp_months: 3,
+                    duration_months: Some(60),
+                }],
+                relations: Vec::new(),
+            },
         )
-        .execute(&db)
+        .await
+        .unwrap();
+        crate::forecast::create_event(
+            &db,
+            sure_core::SaveForecastEvent {
+                label: "Somewhere bigger".into(),
+                kind: sure_core::LifeEventKind::Custom,
+                person_id: None,
+                expected_on: sure_core::IsoDate::parse("2028-01-01").unwrap(),
+                timing_spread_months: 0,
+                probability_bps: 10_000,
+                notes: None,
+                effects: Vec::new(),
+                // Only on the paths where the child happens — the relation kind whose loss
+                // changes what the projection means rather than merely reordering it.
+                relations: vec![sure_core::SaveForecastEventRelation {
+                    depends_on_event_id: child.id,
+                    kind: sure_core::RelationKind::OnlyIf,
+                    min_gap_months: 0,
+                }],
+            },
+        )
         .await
         .unwrap();
         for (posted_at, amount) in [("2026-01-05", 5_000_00i64), ("2026-01-20", -1_200_00)] {
@@ -1443,14 +1588,77 @@ mod tests {
         let summary = import(&restored, snap).await.unwrap();
         assert_eq!(summary["counts"]["transactions"], 2);
         assert_eq!(summary["counts"]["accounts"], 1);
-        // The table whose export was broken for its whole life: restored, not silently dropped.
-        assert_eq!(summary["counts"]["forecast_events"], 1);
+        // The table whose export was broken for its whole life, and the two child tables that
+        // were never in the snapshot at all: restored, not silently dropped.
+        assert_eq!(summary["counts"]["forecast_events"], 2);
+        assert_eq!(summary["counts"]["forecast_event_effects"], 1);
+        assert_eq!(summary["counts"]["forecast_event_relations"], 1);
 
         let round_tripped = export_bytes(&restored).await.unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&round_tripped).unwrap(),
             serde_json::from_slice::<Value>(&bytes).unwrap(),
             "a snapshot must restore to a database that exports the same snapshot"
+        );
+    }
+
+    /// The regression test for the gap this snapshot had until the tables above were added: an
+    /// event used to come back from a restore as a bare row, because `forecast_event_effects` and
+    /// `forecast_event_relations` were in neither half of the format.
+    ///
+    /// It asserts through `forecast::list_events` — the read path the projection itself uses —
+    /// rather than on row counts, because counts were never the problem. `import` reported the
+    /// events restored and they were; what was missing is the only part of an event the
+    /// simulation actually reads. `forecast_events.kind` is presentation and a form template
+    /// (see `0022_forecast_events_unified.sql`), so an event whose effects did not survive is a
+    /// row the UI draws and every projection ignores — a restore that looks clean and is not.
+    ///
+    /// Restoring *into a populated database* rather than an empty one is deliberate: that is the
+    /// path where the wipe has to clear existing events whose relations point at each other
+    /// before the incoming ones land.
+    #[tokio::test]
+    async fn a_restored_forecast_event_keeps_the_effects_the_simulation_reads() {
+        let source = populated_db().await;
+        let before = crate::forecast::list_events(&source).await.unwrap();
+
+        let bytes = export_bytes(&source).await.unwrap();
+        let restored = populated_db().await;
+        import(&restored, serde_json::from_slice(&bytes).unwrap())
+            .await
+            .unwrap();
+
+        let after = crate::forecast::list_events(&restored).await.unwrap();
+        assert_eq!(after.len(), before.len(), "one event per event, not more");
+
+        let named = |set: &[sure_core::ForecastEvent], label: &str| {
+            set.iter()
+                .find(|e| e.label == label)
+                .unwrap_or_else(|| panic!("{label} came back"))
+                .clone()
+        };
+        let (was, child) = (named(&before, "Child"), named(&after, "Child"));
+        assert_eq!(
+            child.effects.len(),
+            1,
+            "the effect is what the projection reads — an event without it is inert"
+        );
+        // Against what the source actually held rather than a restated literal: the category id
+        // is whatever the fixture was handed, and an assertion that rebuilds the expected value
+        // out of the actual one proves nothing.
+        assert_eq!(
+            child.effects[0].spec, was.effects[0].spec,
+            "and it came back with the same numbers, not merely present"
+        );
+
+        let bigger = after
+            .iter()
+            .find(|e| e.label == "Somewhere bigger")
+            .expect("the second event came back");
+        assert_eq!(bigger.relations.len(), 1, "its dependency survived");
+        assert_eq!(bigger.relations[0].kind, sure_core::RelationKind::OnlyIf);
+        assert_eq!(
+            bigger.relations[0].depends_on_event_id, child.id,
+            "and still points at the event it is conditional on"
         );
     }
 
