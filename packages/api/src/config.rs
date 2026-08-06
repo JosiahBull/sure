@@ -31,7 +31,13 @@ pub struct Limits {
     /// Ceiling for `POST /api/config/import`. Larger than the global one because the
     /// matching export is a full database dump — a 2 MB cap makes the round trip fail.
     pub max_snapshot_body_bytes: usize,
-    /// Ceiling for `POST /api/accounts/{id}/brokerage/import` (a Sharesies export zip).
+    /// Ceiling for `POST /api/import` — every file upload, whatever the file is.
+    ///
+    /// Defaults to [`sure_core::MAX_UPLOAD_BYTES`], the same figure the pipeline pre-checks
+    /// before handing bytes to a parser, and deliberately so: while the two differed, an upload
+    /// between them was accepted by the transport and then refused further in, which reads to the
+    /// person uploading as the server changing its mind. Raise this and the pipeline's own bound
+    /// still applies, which is the safe direction.
     pub max_import_body_bytes: usize,
     /// Deadline for an ordinary request.
     pub request_timeout: Duration,
@@ -58,7 +64,7 @@ impl Default for Limits {
         Self {
             max_body_bytes: 2 * 1024 * 1024,
             max_snapshot_body_bytes: 32 * 1024 * 1024,
-            max_import_body_bytes: 50 * 1024 * 1024,
+            max_import_body_bytes: sure_core::MAX_UPLOAD_BYTES,
             request_timeout: Duration::from_secs(30),
             long_request_timeout: Duration::from_secs(300),
             max_in_flight: 64,

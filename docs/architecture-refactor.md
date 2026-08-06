@@ -414,9 +414,13 @@ exactly.
 > `ProviderRegistry` port lets `sure-providers`' `Registry` be injected, so
 > `SyncService`, `ProviderPollTask`, and every `routes::providers` handler stop calling
 > `Registry::new()`; the stock-price feed is injected into `AppState` too, so the
-> brokerage/stock-price handlers no longer name `YahooFinanceProvider`. The only concrete
-> adapter `sure-api` still names directly is the Sharesies export *parser* (a pure
-> function, not a port), in `routes::brokerage`.
+> brokerage/stock-price handlers no longer name `YahooFinanceProvider`.
+>
+> The remainder at the time — three upload *parsers* `sure-api` still named directly, as
+> plain functions rather than through a port — went the same way when the four import
+> endpoints became one: they implement `ImportAdapter` and arrive through an
+> `ImportRegistry` the composition root builds. `sure-api` now names no concrete adapter at
+> all. See [IMPORT.md](IMPORT.md).
 
 ### 3d. (Optional) extract the composition root
 

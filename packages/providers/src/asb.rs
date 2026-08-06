@@ -13,11 +13,16 @@
 //!
 //! Akahu serves about two years of history; ASB's own export reaches seven. The two
 //! therefore overlap, and because dedupe is `(provider, external_id)` and the two sources
-//! tag their rows differently, nothing downstream can spot a row that arrives twice. So the
-//! caller calls [`AsbExport::hold_back_from`] with the first date the live feed owns, leaving
-//! that feed authoritative for its own window — the same seam [`crate::myir`] uses against
-//! the balance-delta task. It's a separate step from parsing because the cutover belongs to
-//! the target account, and one upload can be routed to a dozen of them.
+//! tag their rows differently, nothing downstream can spot a row that arrives twice. So rows
+//! from the date the live feed owns are held back, leaving that feed authoritative for its own
+//! window — the same seam [`crate::myir`] needs against the balance-delta task, which is why
+//! neither parser does it: `sure_app::import` holds back for every source at once, because the
+//! cutover belongs to the *target account* and one upload can be routed to a dozen of them.
+//!
+//! What this parser does own is [`AsbExport::opening_balance_row`], which has to be worked out
+//! here: it runs backwards from the stated closing balance over **every** row in the file,
+//! including the ones a cutover will later withhold, and by the time anything has been held
+//! back those movements are gone.
 //!
 //! The substantive transformation is **text repair**. ASB renders each description from
 //! fixed-width subfields, trimmed and joined with a space, so a bank account number comes
@@ -864,8 +869,9 @@ pub struct AsbUpload {
 /// import will do before it commits to one.
 #[derive(Debug, Default)]
 pub struct AsbExport {
-    /// Rows to import. Every parsed row until [`AsbExport::hold_back_from`] withholds the
-    /// ones a live feed already owns.
+    /// Every row the file describes. Withholding the ones a live feed already owns is
+    /// `sure_app::import`'s job, not this parser's: the cutover belongs to the *target
+    /// account*, and one upload can be routed to a dozen of them.
     pub transactions: Vec<ProviderTransaction>,
     /// The account the export is for, as ASB formats it (`12-3136-0000123-50`). Echoed
     /// back so a wrong upload is obvious, and namespaced into every `external_id` so a
@@ -881,10 +887,10 @@ pub struct AsbExport {
     /// the day it was taken, past the last transaction.
     pub covered_from: Option<String>,
     pub covered_to: Option<String>,
-    /// Rows in the file, before the cutover was applied.
+    /// Rows in the file. Equal to `transactions.len()`, and carried separately because the
+    /// merge that reconciles several windows of one account counts a row shared by two files
+    /// once (see `absorb`).
     pub rows_total: i64,
-    /// Rows the cutover held back, because a live feed already owns their window.
-    pub held_back: i64,
     /// The closing balance ASB states in the preamble, and the day it is as of. The
     /// caller reconciles this against the account's own valuation.
     pub ledger_balance_minor: Option<i64>,
@@ -949,31 +955,6 @@ impl AsbExport {
             category: None,
         })
     }
-
-    /// Withhold every row dated on or after `until`, counting them in
-    /// [`AsbExport::held_back`]. `until` is the first date a live feed already posts this
-    /// account's movements for; see the module docs for why importing over it is not an
-    /// option. Separate from parsing because the cutover belongs to the *target account*,
-    /// and one upload can be routed to a dozen of them.
-    pub fn hold_back_from(&mut self, until: Option<NaiveDate>) {
-        let Some(until) = until else {
-            return;
-        };
-        let cutover = iso(until);
-        let before = self.transactions.len();
-        // `posted_at` is `YYYY-MM-DDT…`, so a lexical compare on the first ten characters is
-        // the date compare, without re-parsing every row.
-        self.transactions
-            .retain(|t| t.posted_at.get(..10).unwrap_or(&t.posted_at) < cutover.as_str());
-        self.held_back = (before - self.transactions.len()) as i64;
-        if self.held_back > 0 {
-            self.warnings.push(format!(
-                "{} row(s) from {cutover} onward were held back: a connected feed already \
-                 covers that period, and importing them again would count the same money twice",
-                self.held_back
-            ));
-        }
-    }
 }
 
 /// Parses an ASB transaction upload: one export CSV, or a zip of them. Told apart by
@@ -1033,14 +1014,14 @@ pub fn parse_upload(bytes: &[u8]) -> anyhow::Result<AsbUpload> {
             "{failure} — that file was skipped; the rest of the upload was read"
         ));
     }
-    let exports = merge_by_account(parsed)?;
-    if exports.len() > 1 {
-        warnings.push(format!(
-            "the upload holds exports for {} different ASB accounts",
-            exports.len()
-        ));
-    }
-    Ok(AsbUpload { exports, warnings })
+    // No warning for a multi-account upload: it used to be one because the per-account endpoint
+    // *refused* those, and the warning was how the refusal explained itself. One endpoint handles
+    // them now and reports a row per account, so saying "this holds 2 accounts" above a table of
+    // 2 accounts is noise sitting in the same banner as the warnings that matter.
+    Ok(AsbUpload {
+        exports: merge_by_account(parsed)?,
+        warnings,
+    })
 }
 
 /// One named CSV body out of an upload.
@@ -2097,21 +2078,27 @@ mod tests {
         );
     }
 
-    /// It has to be worked out over the whole file, not just the rows being imported — the
-    /// held-back ones happened too, they are simply already on the ledger from the feed.
+    /// It has to be worked out over the whole file, not just the rows that will be imported —
+    /// a row a live feed's cutover later holds back still happened, it is simply already on
+    /// the ledger from that feed. This is why the figure is derived *here*, at parse time,
+    /// rather than by `sure_app::import` after it has thinned the rows out: by then the
+    /// movements needed to work backwards from the closing balance are gone.
     #[test]
-    fn the_opening_balance_counts_held_back_rows_too() {
+    fn the_opening_balance_counts_every_row_in_the_file() {
         let rows = [
             r#"2020/01/01,2020010101,EFTPOS,,"EARLY","EFTPOS",-40.00"#,
             r#"2025/09/09,2025090901,EFTPOS,,"LATE","EFTPOS",-60.00"#,
         ];
-        let mut out = export(&rows);
-        out.hold_back_from(Some(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()));
-        assert_eq!(out.transactions.len(), 1);
-        assert_eq!(out.held_back, 1);
+        let out = export(&rows);
+        assert_eq!(out.transactions.len(), 2);
         // 100.00 closing + 100.00 spent = 200.00 opening, both rows counted.
         assert_eq!(out.implied_opening_minor(), Some(200_00));
         assert_eq!(out.opening_balance_row().unwrap().amount_minor, 200_00);
+        // …and it is dated ahead of the first row, not the first *imported* row.
+        assert_eq!(
+            out.opening_balance_row().unwrap().posted_at,
+            "2019-12-31T12:00:00+00:00"
+        );
     }
 
     #[test]
@@ -2612,35 +2599,24 @@ mod tests {
 
     // ---------------------------------------------------------------- the cutover
 
+    /// The parser hands over every row and describes the whole file. Which of them a live feed
+    /// already owns is decided one layer up, against the *target account* — see
+    /// `sure_app::import`, whose `hold_back` and `decide_cutover` tests cover the seam. What
+    /// belongs here is that nothing is quietly dropped on the way, so the figures a preview
+    /// shows describe the file rather than a subset of it.
     #[test]
-    fn holds_back_rows_the_cutover_covers_and_says_so() {
+    fn every_row_and_the_whole_window_survive_parsing() {
         let rows = [
             r#"2025/08/01,2025080101,EFTPOS,,"BEFORE","EFTPOS",-1.00"#,
             r#"2025/08/03,2025080301,EFTPOS,,"ON","EFTPOS",-2.00"#,
             r#"2025/08/04,2025080401,EFTPOS,,"AFTER","EFTPOS",-3.00"#,
         ];
-        let mut out = export(&rows);
-        out.hold_back_from(Some(NaiveDate::from_ymd_opt(2025, 8, 3).unwrap()));
-
-        assert_eq!(out.transactions.len(), 1);
-        assert_eq!(out.transactions[0].description, "BEFORE");
-        assert_eq!(out.held_back, 2);
-        // The whole file is still described, so a preview can show what was left out.
+        let out = export(&rows);
+        assert_eq!(out.transactions.len(), 3);
         assert_eq!(out.rows_total, 3);
         assert_eq!(out.sum_minor, -6_00);
+        assert_eq!(out.covered_from.as_deref(), Some("2025-08-01"));
         assert_eq!(out.covered_to.as_deref(), Some("2025-08-04"));
-        assert!(
-            out.warnings.iter().any(|w| w.contains("held back")),
-            "{:?}",
-            out.warnings
-        );
-    }
-
-    #[test]
-    fn imports_everything_when_no_feed_owns_a_window() {
-        let out = export(&[r#"2026/07/27,2026072701,TFR IN,,"ATM DEPOSIT","palms",7.80"#]);
-        assert_eq!(out.transactions.len(), 1);
-        assert_eq!(out.held_back, 0);
     }
 
     // ---------------------------------------------------------------- tolerated
@@ -2890,13 +2866,9 @@ mod tests {
         assert!(out.exports[1].transactions[0]
             .external_id
             .starts_with("asb:12-3136-0000123-51:"));
-        assert!(
-            out.warnings
-                .iter()
-                .any(|w| w.contains("2 different ASB accounts")),
-            "{:?}",
-            out.warnings
-        );
+        // Several accounts is the ordinary case, not a caveat: the result describes each one, so
+        // there is nothing left for an upload-level warning to add.
+        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
     }
 
     /// Two windows of one account reconcile, the way a myIR upload's do — so a user can zip
@@ -3103,8 +3075,13 @@ mod tests {
         );
     }
 
+    /// One zip, one export per ASB account, each carrying its own rows and its own stated
+    /// balance. That separation is what lets the cutover be applied per account rather than per
+    /// upload — two accounts in one zip have two different feeds behind them — and it is the
+    /// half of that property a parser can own. Applying the cutovers is
+    /// `sure_app::import`'s, and reaching the right accounts at all is `asb.spec.ts`'s.
     #[test]
-    fn the_cutover_applies_per_account_not_per_upload() {
+    fn a_zip_keeps_each_accounts_rows_and_balance_separate() {
         let bytes = zip(&[
             (
                 "chequing.csv",
@@ -3115,14 +3092,14 @@ mod tests {
                 &file_for("0000123-51", "2.00", "20260803", &[A, B]),
             ),
         ]);
-        let mut out = parse_upload(&bytes).expect("parses");
-        // The chequing account's feed reaches back to 2021; the savings one has none.
-        out.exports[0].hold_back_from(Some(NaiveDate::from_ymd_opt(2021, 1, 1).unwrap()));
-        out.exports[1].hold_back_from(None);
-
-        assert_eq!(out.exports[0].transactions.len(), 1);
-        assert_eq!(out.exports[0].held_back, 1);
-        assert_eq!(out.exports[1].transactions.len(), 2);
-        assert_eq!(out.exports[1].held_back, 0);
+        let out = parse_upload(&bytes).expect("parses");
+        assert_eq!(out.exports.len(), 2);
+        assert_eq!(out.exports[0].account, "12-3136-0000123-50");
+        assert_eq!(out.exports[1].account, "12-3136-0000123-51");
+        for export in &out.exports {
+            assert_eq!(export.transactions.len(), 2);
+        }
+        assert_eq!(out.exports[0].ledger_balance_minor, Some(1_00));
+        assert_eq!(out.exports[1].ledger_balance_minor, Some(2_00));
     }
 }

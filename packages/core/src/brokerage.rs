@@ -195,17 +195,3 @@ pub struct DividendDetail {
     pub dividend: Dividend,
     pub withholdings: Vec<DividendWithholding>,
 }
-
-/// The outcome of a bulk zip import: counts for each of the three things it can write,
-/// plus any per-record parse issues that were skipped rather than failing the whole
-/// import.
-#[derive(Debug, Serialize, ToSchema, Default)]
-pub struct BrokerageImportResult {
-    pub transactions_imported: i64,
-    pub transactions_skipped: i64,
-    pub holdings_imported: i64,
-    pub holdings_skipped: i64,
-    pub dividends_imported: i64,
-    pub dividends_skipped: i64,
-    pub warnings: Vec<String>,
-}

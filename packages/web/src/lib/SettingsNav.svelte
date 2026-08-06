@@ -6,6 +6,7 @@
       label: "General",
       items: [
         { path: "/settings/accounts", label: "Accounts" },
+        { path: "/settings/import", label: "Import" },
         { path: "/settings/household", label: "Household" },
         { path: "/settings/providers", label: "Bank sync" },
         { path: "/settings/tax", label: "Tax rates" },

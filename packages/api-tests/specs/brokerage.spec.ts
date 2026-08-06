@@ -81,12 +81,49 @@ function exportZip(): ArrayBuffer {
   });
 }
 
+/**
+ * One brokerage import, through the one import endpoint. `assign` names the account outright —
+ * the top routing tier — which is how "the account is the path" is expressed now that there is no
+ * per-account route. `sharesies` is the key the adapter reports, since a Sharesies export names
+ * no account of its own.
+ */
 async function importZip(baseURL: string, accountId: number, zip: ArrayBuffer) {
-  return fetch(`${baseURL}/api/accounts/${accountId}/brokerage/import`, {
+  // `source` is stated rather than sniffed, because half this file uploads a *broken* Sharesies
+  // export — and a broken file is exactly what detection cannot be trusted to place. Saying which
+  // source it is gets each malformed case to the parser whose refusal is under test, the same way
+  // the UI's source picker does. Detection itself is covered by `import.spec.ts` and by
+  // `sure_providers::import`'s own tests.
+  const q = new URLSearchParams({
+    source: "sharesies_zip",
+    assign: `sharesies:${accountId}`,
+  });
+  return fetch(`${baseURL}/api/import?${q}`, {
     method: "POST",
     headers: { "Content-Type": "application/zip" },
     body: zip,
   });
+}
+
+/**
+ * One brokerage import's counts, in the shape the old per-source result had: transactions on the
+ * item itself, holdings and dividends in `extras`. Flattened here so each assertion below stays
+ * about the number it is asserting.
+ */
+async function counts(res: Promise<Response> | Response) {
+  const body = await (await res).json();
+  const item = body.items?.[0] ?? {};
+  const extra = (kind: string) =>
+    (item.extras ?? []).find((x: { kind: string }) => x.kind === kind) ?? {};
+  return {
+    ...body,
+    transactions_imported: item.imported,
+    transactions_skipped: item.skipped,
+    holdings_imported: extra("holdings").imported,
+    holdings_skipped: extra("holdings").skipped,
+    dividends_imported: extra("dividends").imported,
+    dividends_skipped: extra("dividends").skipped,
+    warnings: item.warnings ?? [],
+  };
 }
 
 /**
@@ -132,7 +169,7 @@ test("imports a zip into holdings, dividends, and wallet transactions", async ({
 
   const res = await importZip(server.baseURL, acc.id, exportZip());
   expect(res.status).toBe(200);
-  const result = await res.json();
+  const result = await counts(res);
   expect(result.transactions_imported).toBe(2);
   expect(result.holdings_imported).toBe(1);
   expect(result.dividends_imported).toBe(1);
@@ -162,7 +199,7 @@ test("re-importing the same zip is idempotent", async ({ api, server }) => {
 
   await importZip(server.baseURL, acc.id, zip);
   const res = await importZip(server.baseURL, acc.id, zip);
-  const result = await res.json();
+  const result = await counts(res);
   expect(result.transactions_imported).toBe(0);
   expect(result.transactions_skipped).toBe(2);
   expect(result.holdings_imported).toBe(0);
@@ -308,7 +345,7 @@ test("a body over the size limit is rejected by the server, not the parser", asy
   const acc = await createAccount(api, "Sharesies", "brokerage");
   // Over a raw socket, not `fetch` — the cap trips mid-upload and the RST loses the 413.
   const res = await postOversized(server.baseURL, 51 * 1024 * 1024, {
-    path: `/api/accounts/${acc.id}/brokerage/import`,
+    path: "/api/import",
     contentType: "application/zip",
   });
   expect(res.status).toBe(413);
@@ -332,6 +369,6 @@ test("a large but honest export imports, and stays fast", async ({ api, server }
     makeZip({ "lookup.json": LOOKUP, "wallet-transactions.json": wallet, "activity.json": "[]" })
   );
   expect(res.status).toBe(200);
-  expect((await res.json()).transactions_imported).toBe(4000);
+  expect((await counts(res)).transactions_imported).toBe(4000);
   expect(Date.now() - started).toBeLessThan(30_000);
 });

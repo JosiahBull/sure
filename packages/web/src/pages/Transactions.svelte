@@ -605,7 +605,7 @@
         </div>
       {/if}
     </div>
-    <a class="btn btn-sm import-btn" href="#/settings/rules" title="Import">
+    <a class="btn btn-sm import-btn" href="#/settings/import" title="Import">
       <Icon name="download" size={16} />
       Import
     </a>

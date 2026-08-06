@@ -1,11 +1,11 @@
 //! Concrete external-provider adapters. Each implements a port trait defined in
 //! `sure_app::ports` — [`TransactionProvider`] (CSV, Akahu), `StockPriceProvider`
-//! (Yahoo Finance), `ExchangeRateProvider` (Frankfurter) — plus the manual-upload export
-//! parsers, which implement no port because there is one implementation of each ever:
-//! [`sharesies::parse_export`], [`myir::parse_export`], [`asb::parse_export`].
-//! The [`Registry`] implements
-//! [`sure_app::ports::ProviderRegistry`], enumerating the transaction providers for the
-//! sync service; the composition root (`sure-server`) builds it and injects it.
+//! (Yahoo Finance), `ExchangeRateProvider` (Frankfurter), and `ImportAdapter` over each
+//! manual-upload export parser ([`sharesies::parse_export`], [`myir::parse_export`],
+//! [`asb::parse_upload`], [`csv::parse_rows`]). Two registries implement the two lookup ports:
+//! [`Registry`] enumerates the transaction providers for the sync service, and
+//! [`import::ImportRegistry`] decides which adapter an uploaded blob belongs to. The
+//! composition root (`sure-server`) builds both and injects them.
 //!
 //! **Nothing here reads configuration, and no adapter can construct its own endpoint.** Each
 //! network-facing adapter takes an [`Endpoint`] — its base URL, already checked to be
@@ -37,6 +37,7 @@ pub mod asb;
 pub mod csv;
 pub mod frankfurter;
 mod http;
+pub mod import;
 pub mod myir;
 pub mod sharesies;
 pub mod yahoo_finance;

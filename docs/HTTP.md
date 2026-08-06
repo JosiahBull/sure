@@ -166,13 +166,26 @@ will be abandoned silently.
 | --- | --- | --- |
 | Request body | 2 MiB | `MAX_BODY_BYTES` |
 | ↳ `POST /api/config/import` | 32 MiB | `MAX_SNAPSHOT_BODY_BYTES` |
-| ↳ `POST /api/accounts/{id}/brokerage/import` | 50 MiB | `MAX_IMPORT_BODY_BYTES` |
+| ↳ `POST /api/import` (any file upload) | 16 MiB | `MAX_IMPORT_BODY_BYTES` |
 | Request deadline | 30s | `REQUEST_TIMEOUT_SECS` |
 | ↳ syncs, imports, backfills, whole-ledger rule and cron runs | 300s | `LONG_REQUEST_TIMEOUT_SECS` |
 | Requests in flight before shedding | 64 | `MAX_IN_FLIGHT` |
 | Per-client rate | 50/s, burst 200 | `RATE_LIMIT_RPS`, `RATE_LIMIT_BURST` |
 | Loopback exempt from the rate limit | yes | `RATE_LIMIT_EXEMPT_LOOPBACK` |
 | Largest response given an `ETag` | 8 MiB | `MAX_ETAG_BODY_BYTES` |
+
+`MAX_IMPORT_BODY_BYTES` is raised on exactly one route, `POST /api/import` — every file upload
+goes through it, whatever the file is (see [IMPORT.md](IMPORT.md)). Its default is
+`sure_core::MAX_UPLOAD_BYTES`, the same figure the import pipeline pre-checks before handing bytes
+to a parser: two different ceilings meant an upload between them was accepted here and refused
+further in, which reads as the server changing its mind. It used to be four routes, which is
+how one of them (`/api/accounts/{id}/student-loan/import`) came to be missing from `LONG_ROUTES`
+in `api/src/cache.rs`: a myIR zip had 30 seconds where the same-sized ASB zip beside it had 300.
+
+It is layered on the method rather than the route, so a cheap `DELETE` sharing a template with a
+bulk `POST` can't inherit either the raised cap or the long deadline. Import no longer needs that
+protection — undo lives at its own template, `/api/import/{account_id}/{source}` — but the
+mechanism stays for the next route that pairs the two.
 
 The in-flight ceiling is the one that matters in practice: the realistic failure is a
 handful of concurrent `/api/forecast` or `/api/reports/*` calls saturating the CPU, not a

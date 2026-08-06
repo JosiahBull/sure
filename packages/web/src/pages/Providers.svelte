@@ -22,8 +22,6 @@
   let connectKind = $state<Schemas["ProviderKind"] | null>(null);
 
   // Existing-connection actions.
-  let openImport = $state<number | null>(null);
-  let csvText = $state<Record<number, string>>({});
   let syncing = $state<number | null>(null);
   let syncingAll = $state(false);
   let confirmDelete = $state<number | null>(null);
@@ -57,25 +55,16 @@
     connectKind = k;
   }
 
-  async function runSync(id: number, payload?: string) {
+  async function runSync(id: number) {
     syncing = id;
     error = null;
     const { data, error: e } = await api.POST("/api/providers/{id}/sync", {
       params: { path: { id } },
-      body: payload === undefined ? {} : { payload },
+      body: {},
     });
-    if (e) {
-      error = apiErrorMessage(
-        e,
-        payload === undefined
-          ? "Sync failed."
-          : "Import failed — check the columns (date, amount, description, …).",
-      );
-    } else if (data) {
-      notice = `Imported ${data.imported}, skipped ${data.skipped}.`;
-    }
+    if (e) error = apiErrorMessage(e, "Sync failed.");
+    else if (data) notice = `Imported ${data.imported}, skipped ${data.skipped}.`;
     syncing = null;
-    openImport = null;
     load();
   }
 
@@ -116,7 +105,8 @@
 </div>
 <p class="muted small" style="margin:0 0 16px;max-width:64ch">
   Connect external data sources so transactions, balances and holdings flow into Sure. Feeds with
-  account discovery sync on a schedule and on demand; manual sources import when you paste rows.
+  account discovery sync on a schedule and on demand; a manual source has nothing to poll, so its
+  rows come in through <a href="#/settings/import">Import</a> as a file.
 </p>
 
 {#if error}<div class="error-banner" style="margin-bottom:12px">{error}</div>{/if}
@@ -151,9 +141,10 @@
             <div class="row" style="gap:8px;margin-left:auto;flex:0 0 auto">
               <span class="badge ok">Connected</span>
               {#if k?.accepts_payload}
-                <button class="btn btn-sm" onclick={() => (openImport = openImport === p.id ? null : p.id)}>
-                  {openImport === p.id ? "Close" : "Import"}
-                </button>
+                <!-- A manual source has nothing to poll, so its rows arrive as a file — which is
+                     the Import page's job, for every source at once. This link carries the
+                     connection's account so the upload lands where the connection points. -->
+                <a class="btn btn-sm" href={`#/settings/import?account=${p.account_id}`}>Import</a>
               {:else}
                 <button class="btn btn-sm" onclick={() => runSync(p.id)} disabled={syncing === p.id}>
                   {syncing === p.id ? "Syncing…" : "Sync now"}
@@ -162,20 +153,6 @@
               <button class="btn btn-sm btn-danger" aria-label="Remove {p.name}" onclick={() => (confirmDelete = confirmDelete === p.id ? null : p.id)}>✕</button>
             </div>
           </div>
-          {#if openImport === p.id}
-            <textarea
-              class="mono"
-              rows="4"
-              style="margin-top:10px"
-              placeholder={"date,amount,description,external_id\n2026-01-05,-12.50,Coffee,c1"}
-              bind:value={csvText[p.id]}
-            ></textarea>
-            <div class="row" style="justify-content:flex-end;margin-top:8px">
-              <button class="btn btn-primary btn-sm" onclick={() => runSync(p.id, csvText[p.id] ?? "")} disabled={syncing === p.id}>
-                {syncing === p.id ? "Importing…" : "Run import"}
-              </button>
-            </div>
-          {/if}
           {#if confirmDelete === p.id}
             <div class="confirm">
               <div class="small">Remove the <strong>{p.name}</strong> connection?</div>

@@ -14,8 +14,7 @@
   import PropertyPanel from "../lib/PropertyPanel.svelte";
   import BrokeragePanel from "../lib/BrokeragePanel.svelte";
   import StudentLoanPanel from "../lib/StudentLoanPanel.svelte";
-  import AsbImportPanel from "../lib/AsbImportPanel.svelte";
-  import AsbUploadPanel from "../lib/AsbUploadPanel.svelte";
+  import ImportPanel from "../lib/ImportPanel.svelte";
   import FxNotice from "../lib/FxNotice.svelte";
   import { navigate } from "../lib/router.svelte";
   import { balances, refresh as refreshBalances } from "../lib/balances.svelte";
@@ -34,9 +33,6 @@
   let error = $state<string | null>(null);
   let loading = $state(true);
   let showAdd = $state(false);
-  // A zip of ASB exports spans accounts, so it belongs to the page rather than to any one
-  // account's row — unlike AsbImportPanel, which lives inside a row.
-  let showImport = $state(false);
   let editing = $state<number | null>(null);
   let expanded = $state<number | null>(null);
   let confirmDelete = $state<number | null>(null);
@@ -154,10 +150,8 @@
     {/if}
   </div>
   <div class="row wrap" style="gap:6px">
-    <button class="btn btn-sm" onclick={() => ((showImport = !showImport), (showAdd = false), (editing = null))}>
-      {showImport ? "Close" : "Import bank exports"}
-    </button>
-    <button class="btn btn-primary btn-sm" onclick={() => ((showAdd = !showAdd), (showImport = false), (editing = null))}>
+    <a class="btn btn-sm" href="#/settings/import">Import</a>
+    <button class="btn btn-primary btn-sm" onclick={() => ((showAdd = !showAdd), (editing = null))}>
       {showAdd ? "Close" : "+ Add account"}
     </button>
   </div>
@@ -198,10 +192,6 @@
     </div>
     {#if bulkError}<div class="error-banner" style="flex-basis:100%">{bulkError}</div>{/if}
   </div>
-{/if}
-
-{#if showImport}
-  <AsbUploadPanel onchange={load} />
 {/if}
 
 {#if showAdd}
@@ -303,7 +293,7 @@
               {:else if a.kind === "student_loan"}
                 <StudentLoanPanel accountId={a.account_id} onchange={load} />
               {:else if takesBankCsv(a.kind)}
-                <AsbImportPanel accountId={a.account_id} currency={a.currency_code} onchange={load} />
+                <ImportPanel accountId={a.account_id} currency={a.currency_code} onchange={load} />
               {:else}
                 <PropertyPanel accountId={a.account_id} onchange={load} />
               {/if}

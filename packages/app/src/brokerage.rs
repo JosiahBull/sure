@@ -573,6 +573,20 @@ mod tests {
         ) -> AppResult<crate::ports::ImportCounts> {
             unreachable!("BrokerageService never imports a bulk export")
         }
+        async fn delete_holdings_by_provider(
+            &self,
+            _account_id: i64,
+            _provider_tag: &str,
+        ) -> AppResult<i64> {
+            unreachable!("BrokerageService never undoes an import")
+        }
+        async fn delete_dividends_by_provider(
+            &self,
+            _account_id: i64,
+            _provider_tag: &str,
+        ) -> AppResult<i64> {
+            unreachable!("BrokerageService never undoes an import")
+        }
     }
 
     #[derive(Default)]

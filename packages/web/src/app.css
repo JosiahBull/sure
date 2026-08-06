@@ -229,6 +229,10 @@ button {
   align-items: center;
   gap: 8px;
   padding: 8px 14px;
+  /* A `<button>` computes `line-height: normal` from the UA sheet, but an `<a class="btn">`
+     inherits the body's 1.5 and comes out two pixels taller. Three navigation controls are
+     anchors wearing this class, so state it rather than letting the element type decide. */
+  line-height: normal;
   border-radius: var(--r);
   border: 1px solid var(--border-strong);
   background: var(--surface-2);

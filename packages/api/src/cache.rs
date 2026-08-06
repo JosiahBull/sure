@@ -105,14 +105,17 @@ pub struct RoutePolicy {
 
 /// One route template *and verb* whose handler can legitimately run for minutes.
 ///
-/// The verb is not decoration. Several of these templates carry a cheap method alongside the
-/// expensive one, because axum mounts them on a single `MethodRouter`: the clearest case is
-/// `/api/accounts/{id}/asb/import`, where `POST` unzips a bank export and inserts a few
-/// thousand rows but `DELETE` (undo) is a single `DELETE ... WHERE provider = ?` plus an
-/// existence check. Keying the deadline on the path alone handed the undo the 300s long
-/// deadline too, so a wedged one-statement request held an in-flight slot for five minutes
-/// instead of being cut loose at the ordinary timeout — exactly the mismatch the raised body
-/// limit already avoids by being layered onto `post(import)` and not onto the route.
+/// The verb is not decoration. A template can carry a cheap method alongside an expensive one,
+/// because axum mounts them on a single `MethodRouter`, and keying the deadline on the path
+/// alone would hand the cheap one the 300s allowance too — so a wedged one-statement request
+/// holds an in-flight slot for five minutes instead of being cut loose at the ordinary timeout.
+/// That is the same mismatch the raised body limit avoids by being layered onto `post(..)`
+/// rather than onto the route.
+///
+/// Import is the case that taught this, and it no longer needs the protection: undo now lives at
+/// its own template (`/api/import/{account_id}/{source}`) rather than sharing the upload's, so
+/// it cannot inherit anything. The verb key stays because the next route to pair a bulk `POST`
+/// with a cheap `DELETE` will get it for free.
 ///
 /// Each entry's method is the one in `crate::routes`' `.route(..)` call for that template; a
 /// method not listed here gets [`Deadline::Normal`], which is the safe direction to fail.
@@ -146,25 +149,19 @@ const LONG_ROUTES: &[LongRoute] = &[
     },
     LongRoute {
         method: Method::POST,
-        template: "/api/accounts/{id}/brokerage/import",
-    },
-    LongRoute {
-        method: Method::POST,
         template: "/api/accounts/{id}/brokerage/backfill",
     },
     LongRoute {
         method: Method::POST,
         template: "/api/accounts/{id}/brokerage/revalue",
     },
-    // Seven years of an everyday account is a few thousand rows, each its own insert. The
-    // `DELETE` on this same template is deliberately *not* listed: see `LongRoute`.
+    // Every file upload, whatever it holds. Seven years of an everyday account is a few
+    // thousand rows, each its own insert; a myIR zip is several workbooks read in full before a
+    // row is written. The `DELETE` that undoes an import is a separate template on purpose, so
+    // it cannot inherit this — see `LongRoute`.
     LongRoute {
         method: Method::POST,
-        template: "/api/accounts/{id}/asb/import",
-    },
-    LongRoute {
-        method: Method::POST,
-        template: "/api/asb/import",
+        template: "/api/import",
     },
     LongRoute {
         method: Method::POST,
@@ -535,20 +532,35 @@ mod tests {
         }
     }
 
-    /// The W-36 remainder: the undo shares `/api/accounts/{id}/asb/import` with the upload,
-    /// and is one statement. It must not inherit the upload's five-minute allowance.
+    /// Every file upload gets the long deadline — which is now one entry rather than four that
+    /// had to agree with each other. They didn't: `/api/accounts/{id}/student-loan/import` was
+    /// never added, so a myIR zip had 30 seconds where the same-sized ASB zip beside it had 300,
+    /// and `every_long_route_resolves_for_its_own_method` could not catch it because it only
+    /// checks the entries that *are* in the table. One route, one entry, and the disagreement has
+    /// nowhere left to live.
     #[test]
-    fn asb_undo_keeps_the_normal_deadline_while_its_upload_stays_long() {
-        let template = "/api/accounts/{id}/asb/import";
+    fn the_file_upload_import_gets_the_long_deadline() {
         assert_eq!(
-            policy_for(&Method::POST, Some(template), "/api/accounts/4/asb/import").deadline,
+            policy_for(&Method::POST, Some("/api/import"), "/api/import").deadline,
+            Deadline::Long
+        );
+    }
+
+    /// The W-36 remainder, restated for the shape it has now: undoing an import is one
+    /// statement, and must not get the upload's five-minute allowance. It is a separate
+    /// template, so this holds structurally — but the assertion is what would catch someone
+    /// folding the two back onto one route.
+    #[test]
+    fn import_undo_keeps_the_normal_deadline_while_the_upload_stays_long() {
+        assert_eq!(
+            policy_for(&Method::POST, Some("/api/import"), "/api/import").deadline,
             Deadline::Long
         );
         assert_eq!(
             policy_for(
                 &Method::DELETE,
-                Some(template),
-                "/api/accounts/4/asb/import"
+                Some("/api/import/{account_id}/{source}"),
+                "/api/import/4/asb_csv"
             )
             .deadline,
             Deadline::Normal

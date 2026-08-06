@@ -13,15 +13,15 @@ use sure_app::ports::{
     AccountCurrency, AccountRepo, ActiveAccount, Activity30dRow, AssetAccount, BrokerageRepo,
     CategoryRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo, DividendImport, EquityRepo,
     ExchangeRateRepo, ExchangeRateRow, ForecastRepo, FxRatesRepo, HoldingImport, HoldingRow,
-    ImportCounts, ImportRow, LedgerTx, LedgerValuation, MerchantRepo, PersonRepo,
-    PlannedApplication, ProviderRepo, ReportCategory, ReportRepo, RuleRepo,
+    ImportCounts, ImportHistoryRepo, ImportRow, LedgerTx, LedgerValuation, MerchantRepo,
+    PersonRepo, PlannedApplication, ProviderRepo, ReportCategory, ReportRepo, RuleRepo,
     SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo, StockPriceCacheRepo,
     TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
     CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, ForecastAssumption,
-    ForecastEvent, ForecastTargetType, HoldingLot, IncomeStream, LinkProviderAccount,
+    ForecastEvent, ForecastTargetType, HoldingLot, ImportRecord, IncomeStream, LinkProviderAccount,
     LinkProviderGroup, LinkRequest, Merchant, NewCurrency, NewValuation, Ownership, Person,
     Provider, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult,
     SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent,
@@ -312,6 +312,22 @@ impl BrokerageRepo for SqliteStore {
             dividends_imported: counts.dividends_imported,
             dividends_skipped: counts.dividends_skipped,
         })
+    }
+
+    async fn delete_holdings_by_provider(
+        &self,
+        account_id: i64,
+        provider_tag: &str,
+    ) -> AppResult<i64> {
+        crate::brokerage::delete_holdings_by_provider(&self.db, account_id, provider_tag).await
+    }
+
+    async fn delete_dividends_by_provider(
+        &self,
+        account_id: i64,
+        provider_tag: &str,
+    ) -> AppResult<i64> {
+        crate::brokerage::delete_dividends_by_provider(&self.db, account_id, provider_tag).await
     }
 }
 
@@ -1079,6 +1095,33 @@ impl ForecastRepo for SqliteStore {
             },
         )
         .await
+    }
+}
+
+#[async_trait]
+impl ImportHistoryRepo for SqliteStore {
+    async fn record(&self, entry: sure_app::ports::NewImport) -> AppResult<()> {
+        crate::imports::record(
+            &self.db,
+            crate::imports::NewImport {
+                account_id: entry.account_id,
+                source: entry.source,
+                provider_tag: entry.provider_tag,
+                source_account: entry.source_account,
+                filenames: entry.filenames,
+                imported: entry.imported,
+                skipped: entry.skipped,
+                held_back: entry.held_back,
+                covered_from: entry.covered_from,
+                covered_to: entry.covered_to,
+                cutover: entry.cutover,
+            },
+        )
+        .await
+    }
+
+    async fn list(&self, account_id: Option<i64>) -> AppResult<Vec<ImportRecord>> {
+        crate::imports::list(&self.db, account_id).await
     }
 }
 

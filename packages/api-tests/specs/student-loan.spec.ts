@@ -66,12 +66,33 @@ function xlsx(accountId: string, from: string, to: string, rows: Row[]): ArrayBu
 
 const SLS = "012-345-678-SLS004";
 
-async function upload(baseURL: string, accountId: number, body: ArrayBuffer) {
-  return fetch(`${baseURL}/api/accounts/${accountId}/student-loan/import`, {
+/**
+ * One loan's import, through the one import endpoint. `assign` names the account outright — the
+ * top routing tier — which is how "the account is the path" is expressed now that there is no
+ * per-account route.
+ */
+async function upload(baseURL: string, accountId: number, body: ArrayBuffer, dryRun = false) {
+  // `source` is stated rather than sniffed, because much of this file uploads a *malformed* myIR
+  // export — and a malformed file is exactly what detection cannot be trusted to place. Saying
+  // which source it is gets each case to the parser whose refusal is under test, the same way the
+  // UI's source picker does. Detection itself is covered by `import.spec.ts` and by
+  // `sure_providers::import`'s own tests.
+  const q = new URLSearchParams({
+    dry_run: String(dryRun),
+    source: "myir_sls",
+    assign: `${SLS}:${accountId}`,
+  });
+  return fetch(`${baseURL}/api/import?${q}`, {
     method: "POST",
     headers: { "Content-Type": "application/zip" },
     body,
   });
+}
+
+/** The one item out of a single-loan upload — see `asb.spec.ts`'s `only` for why it's flattened. */
+async function only(res: Promise<Response> | Response) {
+  const body = await (await res).json();
+  return { ...body, ...(body.items?.[0] ?? {}) };
 }
 
 test("imports a myIR export, flipping IR's sign for a liability", async ({ api, server }) => {
@@ -87,10 +108,10 @@ test("imports a myIR export, flipping IR's sign for a liability", async ({ api, 
     ])
   );
   expect(res.status).toBe(200);
-  const result = await res.json();
+  const result = await only(res);
   expect(result.imported).toBe(3);
   expect(result.skipped).toBe(0);
-  expect(result.account_id).toBe(SLS);
+  expect(result.source_account).toBe(SLS);
   expect(result.covered_from).toBe("2024-07-31");
   expect(result.covered_to).toBe("2026-07-31");
   expect(result.warnings).toEqual([]);
@@ -111,9 +132,9 @@ test("re-uploading the same export imports nothing new", async ({ api, server })
   const bytes = () =>
     xlsx(SLS, "2024-07-31", "2026-07-31", [["2025-04-14", "Repayment deduction", "-400.00"]]);
 
-  expect((await (await upload(server.baseURL, acc.id, bytes())).json()).imported).toBe(1);
+  expect((await only(upload(server.baseURL, acc.id, bytes()))).imported).toBe(1);
 
-  const again = await (await upload(server.baseURL, acc.id, bytes())).json();
+  const again = await only(upload(server.baseURL, acc.id, bytes()));
   expect(again.imported).toBe(0);
   expect(again.skipped).toBe(1);
 });
@@ -133,7 +154,7 @@ test("a zip of overlapping exports reconciles into one ledger", async ({ api, se
     ),
   });
 
-  const result = await (await upload(server.baseURL, acc.id, bundle)).json();
+  const result = await only(upload(server.baseURL, acc.id, bundle));
   expect(result.imported).toBe(3);
   expect(result.covered_from).toBe("2022-07-31");
   expect(result.covered_to).toBe("2026-07-31");
@@ -171,7 +192,7 @@ test("an unfamiliar transaction type is imported, with a warning", async ({ api,
       ["2025-04-14", "Voluntary repayment bonus", "-100.00"],
     ])
   );
-  const result = await res.json();
+  const result = await only(res);
   expect(result.imported).toBe(1);
   expect(result.warnings.join(" ")).toContain("Voluntary repayment bonus");
 });
@@ -203,7 +224,11 @@ test("uploading to a non-student-loan account is refused", async ({ api, server 
     xlsx(SLS, "2024-07-31", "2026-07-31", [["2025-04-14", "Repayment deduction", "-400.00"]])
   );
   expect(res.status).toBe(422);
-  expect((await res.json()).error.message).toContain("not a student loan");
+  // Refused on the *assignment*, before a byte is read, and it names both the file's kind and the
+  // account's — which is more than "not a student loan" said.
+  const message = (await res.json()).error.message;
+  expect(message).toContain("can't be imported into Everyday");
+  expect(message).toContain("bank");
 });
 
 // ---- malformed input --------------------------------------------------------------------
@@ -216,7 +241,7 @@ test("a non-spreadsheet upload fails cleanly", async ({ api, server }) => {
   const acc = await createAccount(api, "Student loan", "student_loan");
   const res = await upload(server.baseURL, acc.id, new TextEncoder().encode("nope").buffer);
   expect(res.status).toBe(422);
-  expect((await res.json()).error.message).toContain("could not read export");
+  expect((await res.json()).error.message).toContain("could not be understood");
 });
 
 test("an empty upload fails cleanly", async ({ api, server }) => {
@@ -233,7 +258,7 @@ test("a truncated zip fails cleanly", async ({ api, server }) => {
   // Half a file — the central directory the reader needs is simply not there.
   const res = await upload(server.baseURL, acc.id, whole.slice(0, Math.floor(whole.byteLength / 2)));
   expect(res.status).toBe(422);
-  expect((await res.json()).error.message).toContain("could not read export");
+  expect((await res.json()).error.message).toContain("could not be understood");
 });
 
 test("a zip that is not a workbook fails cleanly", async ({ api, server }) => {
@@ -398,7 +423,7 @@ test("a body over the size limit is rejected by the server, not the parser", asy
   // enforced part-way through the upload, so the close is an RST and `undici` discards the
   // 413 it was already sent — see `postOversized`, and `http.spec.ts` for the long version.
   const res = await postOversized(server.baseURL, 51 * 1024 * 1024, {
-    path: `/api/accounts/${acc.id}/student-loan/import`,
+    path: "/api/import",
     contentType: "application/zip",
   });
   expect(res.status).toBe(413);
@@ -418,12 +443,12 @@ test("a large but honest export imports, and stays fast", async ({ api, server }
   const started = Date.now();
   const res = await upload(server.baseURL, acc.id, xlsx(SLS, "2009-01-01", "2020-01-01", rows));
   expect(res.status).toBe(200);
-  const result = await res.json();
+  const result = await only(res);
   expect(result.imported).toBe(3_000);
   expect(Date.now() - started).toBeLessThan(30_000);
 
   // And the whole thing still dedupes on a re-upload.
-  expect((await (await upload(server.baseURL, acc.id, xlsx(SLS, "2009-01-01", "2020-01-01", rows))).json()).imported).toBe(0);
+  expect((await only(upload(server.baseURL, acc.id, xlsx(SLS, "2009-01-01", "2020-01-01", rows)))).imported).toBe(0);
 });
 
 test("a one-row export imports", async ({ api, server }) => {
@@ -434,14 +459,14 @@ test("a one-row export imports", async ({ api, server }) => {
     xlsx(SLS, "2024-07-31", "2026-07-31", [["2025-04-14", "Payment", "-11.11"]])
   );
   expect(res.status).toBe(200);
-  expect((await res.json()).imported).toBe(1);
+  expect((await only(res)).imported).toBe(1);
 });
 
 test("an export with no transactions at all is accepted as empty", async ({ api, server }) => {
   const acc = await createAccount(api, "Student loan", "student_loan");
   const res = await upload(server.baseURL, acc.id, xlsx(SLS, "2024-07-31", "2026-07-31", []));
   expect(res.status).toBe(200);
-  const result = await res.json();
+  const result = await only(res);
   expect(result.imported).toBe(0);
   expect(result.covered_from).toBe("2024-07-31");
 });

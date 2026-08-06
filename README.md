@@ -43,16 +43,18 @@ on old devices.
   (dedupes on re-sync). Providers that expose credentialed APIs can also discover
   upstream accounts and link them to a new or existing local account — see the Akahu
   (NZ open banking) implementation, which additionally auto-syncs on a schedule.
-- **Bulk file imports** for sources with no usable API: a Sharesies export zip
-  (holdings, dividends, wallet ledger) and myIR student-loan exports (reconciling
-  several overlapping download windows into one ledger). Both are idempotent, so
-  re-uploading costs nothing — see [docs/STUDENT-LOAN.md](docs/STUDENT-LOAN.md).
-- **History past the bank feed**: an ASB transaction-export CSV reaches back about
-  seven years where open banking serves two, so a cash/card account's history can be
-  extended behind its feed. Previewed before it writes, and rows the feed already
-  covers are held back automatically, so nothing is counted twice. Upload one CSV, or a
-  zip spanning every account at once — each export is routed to its account (from a
-  previous import, a stored account number, or by hand) and reported account by account.
+- **One import for every file**, for sources with no usable API: an ASB transaction
+  export, myIR student-loan workbooks, a Sharesies export zip, or a plain CSV. Drop the
+  files in one place and Sure works out what each one is — no picking an importer, no
+  hunting for the right button. Everything is previewed before it writes, routed to the
+  account it belongs to (from a previous import, a stored account number, or by hand),
+  reported account by account, idempotent on re-upload, and reversible afterwards. See
+  [docs/IMPORT.md](docs/IMPORT.md).
+- **History past the bank feed**: a bank's own export reaches about seven years where
+  open banking serves two, so a cash/card account's history can be extended behind its
+  feed — and rows the feed already covers are held back automatically, so nothing is
+  counted twice. Select every account's export at once; each is routed and reported
+  separately.
 - **Balance-only accounts get a ledger anyway**: where an upstream reports a balance
   but no transactions (an IR student loan), a daily task differences the balance
   series into transactions, so week-to-week movement is visible.

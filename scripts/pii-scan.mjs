@@ -106,6 +106,13 @@ const ALLOWED = new Set([
   "12-3456-0000456-00",
   "12-3136-0000123-50",
   "12-3136-0000123-51",
+  // The import pipeline's own examples: `sure_app::import`'s routing tests and doc comments, the
+  // `assign` query parameter's format in `routes::import` (which reaches the generated client
+  // through its OpenAPI description, and is exactly the spread rule 3 warns about — invented, so
+  // harmless, but the entry is why nobody has to work that out twice), and docs/IMPORT.md.
+  // Same digits as the `12-3456-…` bank fake CLAUDE.md rule 3 points at, with ASB's two suffixes.
+  "12-3456-0000123-50",
+  "12-3456-0000123-51",
   // The `-92` sibling a loan facility posts its interest and principal to, in the
   // `LOAN INT`/`LOAN PRIN` fixtures. Same invented account digits, new suffix.
   "12-3136-0000123-92",

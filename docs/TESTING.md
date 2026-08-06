@@ -167,10 +167,12 @@ these come from fire-and-forget work that may not reach the proxy before the ser
 `assertCount`/`assertSeen` (which see a miss like any other exchange) when the stronger statement is
 the point.
 
-The other way out is to answer the call. `specs/brokerage.spec.ts` stubs the import backfill's chart
-request with a body carrying no `timestamp` — the feed's own "nothing for this window" — because a
-price is irrelevant to everything that file asserts but an unanswered fetch still left a WARN per
-import and a 502 inside the backfill.
+The other way out is to answer the call. `specs/brokerage.spec.ts` and `specs/import.spec.ts` both
+stub the import backfill's chart request with a body carrying no `timestamp` — the feed's own
+"nothing for this window" — because a price is irrelevant to everything either file asserts but an
+unanswered fetch still left a WARN per import and a 502 inside the backfill. Any spec that uploads
+a Sharesies export needs that stub: the import hands the valuation walk back as a `FollowUp` the
+route spawns, so the outbound call happens whether the test cares about it or not.
 
 Four things catch people:
 

@@ -61,27 +61,52 @@ const HISTORY: AsbRow[] = [
   row("2022/03/15", "2022031501", "D/C", "D/C FROM ACME CORP CONSULTING", "ACME CORP CO IPAYROLL 431", "1500.00"),
 ];
 
+/** The ASB account every fixture in this file is for — see `PREAMBLE`. */
+const ASB_ACCOUNT = "12-3136-0000123-50";
+
 /**
- * `openingBalance` defaults to **false** here, which is *not* the endpoint's default — it's
- * on. Most specs opt out so their row counts assert the thing they're about rather than
- * absorbing the extra opening row; the default-on behaviour has its own tests below.
+ * One account's import, through the one import endpoint.
+ *
+ * `assign` is how "the account is the path" is expressed now that there is no per-account route:
+ * naming it outright is the top routing tier, so these tests exercise exactly the placement they
+ * always did rather than depending on whichever tier happens to fire for their fixtures.
+ *
+ * `openingBalance` defaults to **false** here, which is *not* the endpoint's default — it's on.
+ * Most specs opt out so their row counts assert the thing they're about rather than absorbing the
+ * extra opening row; the default-on behaviour has its own tests below.
  */
 async function upload(
   baseURL: string,
   accountId: number,
   body: ArrayBuffer,
   dryRun = false,
-  openingBalance = false
+  openingBalance = false,
+  assign = `${ASB_ACCOUNT}:${accountId}`
 ) {
   const q = new URLSearchParams({
     dry_run: String(dryRun),
     opening_balance: String(openingBalance),
+    assign,
   });
-  return fetch(`${baseURL}/api/accounts/${accountId}/asb/import?${q}`, {
+  return fetch(`${baseURL}/api/import?${q}`, {
     method: "POST",
     headers: { "Content-Type": "text/csv" },
     body,
   });
+}
+
+/**
+ * The one item out of a single-account upload, with its `reconciliation` block flattened in.
+ *
+ * Flattened only here, in the test: the wire shape nests the balance figures under
+ * `reconciliation` so that a myIR or Sharesies result doesn't carry six nulls describing a check
+ * that was never available to it. These tests are all about a source where it *is* available, and
+ * reading `r.ledger_balance_minor` keeps each assertion about the fact it is asserting.
+ */
+async function only(res: Promise<Response> | Response) {
+  const body = await (await res).json();
+  const item = body.items?.[0] ?? {};
+  return { ...body, ...item, ...(item.reconciliation ?? {}) };
 }
 
 /** A live feed on the account, so the importer has a cutover to derive. */
@@ -102,7 +127,7 @@ test("imports an ASB export, mapping each transaction type's fields", async ({ a
 
   const res = await upload(server.baseURL, acc.id, exportFile(HISTORY));
   expect(res.status).toBe(200);
-  const r = await res.json();
+  const r = await only(res);
   expect(r.dry_run).toBe(false);
   expect(r.imported).toBe(3);
   expect(r.skipped).toBe(0);
@@ -110,8 +135,8 @@ test("imports an ASB export, mapping each transaction type's fields", async ({ a
   expect(r.held_back).toBe(0);
   expect(r.cutover).toBe(null);
   // Echoed back so a wrong upload is obvious.
-  expect(r.asb_account).toBe("12-3136-0000123-50");
-  expect(r.product).toBe("Streamline");
+  expect(r.source_account).toBe("12-3136-0000123-50");
+  expect(r.label).toBe("Streamline");
   expect(r.covered_from).toBe("2020-01-20");
   expect(r.covered_to).toBe("2022-03-15");
 
@@ -162,7 +187,7 @@ test("a dry run reports what a commit would do and writes nothing", async ({ api
 
   const previewRes = await upload(server.baseURL, acc.id, exportFile(HISTORY), true);
   expect(previewRes.status).toBe(200);
-  const preview = await previewRes.json();
+  const preview = await only(previewRes);
   expect(preview.dry_run).toBe(true);
   expect(preview.would_import).toBe(3);
   // Nothing was written, so nothing is reported as written.
@@ -175,21 +200,21 @@ test("a dry run reports what a commit would do and writes nothing", async ({ api
   expect(before.data?.length).toBe(0);
 
   // The preview's promise is that the commit matches it.
-  const commit = await (await upload(server.baseURL, acc.id, exportFile(HISTORY))).json();
+  const commit = await only(upload(server.baseURL, acc.id, exportFile(HISTORY)));
   expect(commit.imported).toBe(preview.would_import);
   expect(commit.rows_total).toBe(preview.rows_total);
   expect(commit.held_back).toBe(preview.held_back);
   expect(commit.cutover).toBe(preview.cutover);
-  expect(commit.asb_account).toBe(preview.asb_account);
+  expect(commit.source_account).toBe(preview.source_account);
 });
 
 test("re-uploading the same export imports nothing new", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
 
-  const first = await (await upload(server.baseURL, acc.id, exportFile(HISTORY))).json();
+  const first = await only(upload(server.baseURL, acc.id, exportFile(HISTORY)));
   expect(first.imported).toBe(3);
 
-  const second = await (await upload(server.baseURL, acc.id, exportFile(HISTORY))).json();
+  const second = await only(upload(server.baseURL, acc.id, exportFile(HISTORY)));
   expect(second.imported).toBe(0);
   expect(second.skipped).toBe(3);
 
@@ -204,7 +229,7 @@ test("rows a live feed already covers are held back, not counted twice", async (
   // The feed owns 2022-01-01 onward.
   await feed(api, acc.id, "date,amount,description,external_id\n2022-01-01,-5.00,Feed row,f1\n");
 
-  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY))).json();
+  const r = await only(upload(server.baseURL, acc.id, exportFile(HISTORY)));
   expect(r.cutover).toBe("2022-01-01");
   // The 2022-03-15 row falls inside the feed's window.
   expect(r.held_back).toBe(1);
@@ -228,8 +253,8 @@ test("a second upload derives the same cutover as the first", async ({ api, serv
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
   await feed(api, acc.id, "date,amount,description,external_id\n2022-01-01,-5.00,Feed row,f1\n");
 
-  const first = await (await upload(server.baseURL, acc.id, exportFile(HISTORY))).json();
-  const second = await (await upload(server.baseURL, acc.id, exportFile(HISTORY))).json();
+  const first = await only(upload(server.baseURL, acc.id, exportFile(HISTORY)));
+  const second = await only(upload(server.baseURL, acc.id, exportFile(HISTORY)));
 
   expect(second.cutover).toBe(first.cutover);
   expect(second.held_back).toBe(first.held_back);
@@ -250,7 +275,7 @@ test("a hand-entered row does not set the cutover", async ({ api, server }) => {
   });
   expect(manual.response.status).toBe(201);
 
-  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY))).json();
+  const r = await only(upload(server.baseURL, acc.id, exportFile(HISTORY)));
   expect(r.cutover).toBe(null);
   expect(r.imported).toBe(3);
 });
@@ -294,7 +319,7 @@ test("a disabled feed that never posted does not block the import", async ({ api
   expect(link.response.status).toBe(201);
 
   // Nothing will ever post from it, so there is no period to hold back.
-  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY))).json();
+  const r = await only(upload(server.baseURL, acc.id, exportFile(HISTORY)));
   expect(r.cutover).toBe(null);
   expect(r.imported).toBe(3);
 });
@@ -308,7 +333,7 @@ test("the export's closing balance is reconciled against the account's own", asy
   });
   expect(val.response.status).toBe(201);
 
-  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), true)).json();
+  const r = await only(upload(server.baseURL, acc.id, exportFile(HISTORY), true));
   expect(r.ledger_balance_minor).toBe(10_000);
   expect(r.account_balance_minor).toBe(25_000);
   // A mismatch is the strongest available hint the export is for a different account.
@@ -337,7 +362,7 @@ test("the closing balance is reconciled against a transaction-derived balance to
   });
   expect(before?.length).toBe(1);
 
-  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), true)).json();
+  const r = await only(upload(server.baseURL, acc.id, exportFile(HISTORY), true));
   expect(r.ledger_balance_minor).toBe(10_000);
   expect(r.account_balance_minor).toBe(50_000);
   expect(r.warnings.some((w: string) => w.includes("100.00") && w.includes("500.00"))).toBe(true);
@@ -351,7 +376,7 @@ test("the closing balance is reconciled against a transaction-derived balance to
 test("an account with no balance of its own is not reconciled against", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
 
-  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), true)).json();
+  const r = await only(upload(server.baseURL, acc.id, exportFile(HISTORY), true));
   expect(r.ledger_balance_minor).toBe(10_000);
   expect(r.account_balance_minor).toBe(null);
   expect(r.warnings.some((w: string) => w.includes("but the account"))).toBe(false);
@@ -361,24 +386,36 @@ test("an account kind with no bank statement is refused", async ({ api, server }
   const acc = await createAccount(api, "Family home", "real_estate");
   const res = await upload(server.baseURL, acc.id, exportFile(HISTORY));
   expect(res.status).toBe(422);
-  expect((await res.json()).error.message).toContain("can only be imported into");
+  const message = (await res.json()).error.message;
+  expect(message).toContain("can't be imported into Family home");
+  expect(message).toContain("real_estate");
 });
 
-test("an unknown account is a 404", async ({ server }) => {
+/**
+ * Naming an account that isn't there is a 404, the same as it was when the account lived in the
+ * path. It matters that this isn't a silent fall-through to the other routing tiers: those would
+ * put the rows somewhere the caller didn't ask for, or nowhere, and report success either way.
+ */
+test("an assignment naming an unknown account is a 404", async ({ server }) => {
   const res = await upload(server.baseURL, 987_654, exportFile(HISTORY));
   expect(res.status).toBe(404);
 });
 
 test("a file that isn't an ASB export is refused, and the server survives", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
+  // A bare `date,amount` CSV used to belong in this list, and no longer does: it is a file Sure
+  // reads now, as a plain transaction CSV. `import.spec.ts` asserts that positively.
   for (const body of [
     new TextEncoder().encode("").buffer as ArrayBuffer,
     new TextEncoder().encode("<html><body>not a csv</body></html>").buffer as ArrayBuffer,
-    new TextEncoder().encode("date,amount\n2020-01-01,-5.00\n").buffer as ArrayBuffer,
   ]) {
     const res = await upload(server.baseURL, acc.id, body);
     expect(res.status).toBe(422);
-    expect((await res.json()).error.message).toContain("could not read export");
+    // Either it looks like nothing Sure reads, or it looked like an ASB export and wasn't one.
+    // Both name a next step; neither is a bare "could not read export".
+    expect((await res.json()).error.message).toMatch(
+      /doesn't look like any export Sure can read|could not be understood/
+    );
   }
   // Still serving.
   const health = await api.GET("/api/health", {});
@@ -388,11 +425,11 @@ test("a file that isn't an ASB export is refused, and the server survives", asyn
 test("undo removes this importer's rows and leaves every other source alone", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
   await feed(api, acc.id, "date,amount,description,external_id\n2024-01-01,-5.00,Feed row,f1\n");
-  const imported = await (await upload(server.baseURL, acc.id, exportFile(HISTORY))).json();
+  const imported = await only(upload(server.baseURL, acc.id, exportFile(HISTORY)));
   expect(imported.imported).toBe(3);
 
-  const undo = await api.DELETE("/api/accounts/{id}/asb/import", {
-    params: { path: { id: acc.id } },
+  const undo = await api.DELETE("/api/import/{account_id}/{source}", {
+    params: { path: { account_id: acc.id, source: "asb_csv" } },
   });
   expect(undo.response.status).toBe(200);
   expect(undo.data?.deleted).toBe(3);
@@ -404,11 +441,11 @@ test("undo removes this importer's rows and leaves every other source alone", as
   expect(left?.[0].description).toBe("Feed row");
 
   // Idempotent, and the import can be redone.
-  const again = await api.DELETE("/api/accounts/{id}/asb/import", {
-    params: { path: { id: acc.id } },
+  const again = await api.DELETE("/api/import/{account_id}/{source}", {
+    params: { path: { account_id: acc.id, source: "asb_csv" } },
   });
   expect(again.data?.deleted).toBe(0);
-  const redone = await (await upload(server.baseURL, acc.id, exportFile(HISTORY))).json();
+  const redone = await only(upload(server.baseURL, acc.id, exportFile(HISTORY)));
   expect(redone.imported).toBe(3);
 });
 
@@ -417,7 +454,7 @@ test("a body over the size limit is rejected by the server, not the parser", asy
   // The route carries the shared import body limit (50 MB). Past it the request never reaches
   // the handler at all. Probed over a raw socket, not `fetch` — see `postOversized`.
   const res = await postOversized(server.baseURL, 51 * 1024 * 1024, {
-    path: `/api/accounts/${acc.id}/asb/import`,
+    path: "/api/import",
     contentType: "text/csv",
   });
   expect(res.status).toBe(413);
@@ -459,7 +496,7 @@ async function uploadAll(
     opening_balance: String(openingBalance),
   });
   if (assign) params.set("assign", assign);
-  return fetch(`${baseURL}/api/asb/import?${params}`, {
+  return fetch(`${baseURL}/api/import?${params}`, {
     method: "POST",
     headers: { "Content-Type": "application/zip" },
     body,
@@ -470,7 +507,7 @@ test("a zip holding one account's export imports through the per-account route",
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
   const zip = zipOf({ "chequing.csv": HISTORY }, { "chequing.csv": { account: "0000123-50" } });
 
-  const r = await (await upload(server.baseURL, acc.id, zip)).json();
+  const r = await only(upload(server.baseURL, acc.id, zip));
   expect(r.imported).toBe(3);
   expect(r.sources).toEqual(["chequing.csv"]);
 });
@@ -483,13 +520,19 @@ test("several windows of one account in a zip reconcile into one ledger", async 
     { "a.csv": { account: "0000123-50" }, "b.csv": { account: "0000123-50" } }
   );
 
-  const r = await (await upload(server.baseURL, acc.id, zip)).json();
+  const r = await only(upload(server.baseURL, acc.id, zip));
   expect(r.rows_total).toBe(3);
   expect(r.imported).toBe(3);
   expect(r.sources.length).toBe(2);
 });
 
-test("a multi-account zip is refused by the per-account route, which can't know where each goes", async ({ api, server }) => {
+/**
+ * What used to be a refusal. The per-account route couldn't know where a second account's export
+ * belonged, so it rejected the whole upload; one endpoint reports each export instead — importing
+ * the one that was assigned and describing the one that wasn't, rather than guessing or refusing
+ * the lot. That the unmatched one writes *nothing* is the property worth pinning.
+ */
+test("a zip spanning two accounts imports the one assigned and reports the other", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
   const zip = zipOf(
     { "chequing.csv": CHEQUING, "savings.csv": SAVINGS },
@@ -497,10 +540,20 @@ test("a multi-account zip is refused by the per-account route, which can't know 
   );
 
   const res = await upload(server.baseURL, acc.id, zip);
-  expect(res.status).toBe(422);
-  const message = (await res.json()).error.message;
-  expect(message).toContain("2 different ASB accounts");
-  expect(message).toContain("12-3136-0000123-51");
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body.items).toHaveLength(2);
+
+  const mine = body.items.find((x: { source_account: string }) => x.source_account.endsWith("-50"));
+  expect(mine.account_id).toBe(acc.id);
+  expect(mine.imported).toBeGreaterThan(0);
+
+  const theirs = body.items.find((x: { source_account: string }) =>
+    x.source_account.endsWith("-51")
+  );
+  expect(theirs.account_id).toBeNull();
+  expect(theirs.imported).toBe(0);
+  expect(theirs.warnings.join(" ")).toContain("no account was matched");
 });
 
 test("assigning each export routes a whole bank's worth of accounts in one upload", async ({ api, server }) => {
@@ -514,20 +567,20 @@ test("assigning each export routes a whole bank's worth of accounts in one uploa
   // Nothing identifies either account yet, so the preview reports them unmatched.
   const preview = await (await uploadAll(server.baseURL, zip, true)).json();
   expect(preview.dry_run).toBe(true);
-  expect(preview.exports.length).toBe(2);
-  expect(preview.exports.map((x: { asb_account: string }) => x.asb_account)).toEqual([
+  expect(preview.items.length).toBe(2);
+  expect(preview.items.map((x: { source_account: string }) => x.source_account)).toEqual([
     "12-3136-0000123-50",
     "12-3136-0000123-51",
   ]);
-  expect(preview.exports.every((x: { account_id: number | null }) => x.account_id === null)).toBe(true);
-  expect(preview.exports[0].would_import).toBe(2);
+  expect(preview.items.every((x: { account_id: number | null }) => x.account_id === null)).toBe(true);
+  expect(preview.items[0].would_import).toBe(2);
 
   const assign = `12-3136-0000123-50:${chequing.id},12-3136-0000123-51:${savings.id}`;
   const done = await (await uploadAll(server.baseURL, zip, false, assign)).json();
-  expect(done.exports.map((x: { account_id: number }) => x.account_id)).toEqual([chequing.id, savings.id]);
-  expect(done.exports.map((x: { matched_by: string }) => x.matched_by)).toEqual(["assigned", "assigned"]);
-  expect(done.exports.map((x: { imported: number }) => x.imported)).toEqual([2, 2]);
-  expect(done.exports[1].account_name).toBe("Emergency Fund");
+  expect(done.items.map((x: { account_id: number }) => x.account_id)).toEqual([chequing.id, savings.id]);
+  expect(done.items.map((x: { matched_by: string }) => x.matched_by)).toEqual(["assigned", "assigned"]);
+  expect(done.items.map((x: { imported: number }) => x.imported)).toEqual([2, 2]);
+  expect(done.items[1].account_name).toBe("Emergency Fund");
 
   // Each account got its own rows, and only its own.
   for (const [id, want] of [
@@ -553,8 +606,8 @@ test("a second upload routes itself from the previous import", async ({ api, ser
 
   // No assignments this time.
   const again = await (await uploadAll(server.baseURL, zip, true)).json();
-  expect(again.exports.map((x: { account_id: number }) => x.account_id)).toEqual([chequing.id, savings.id]);
-  expect(again.exports.map((x: { matched_by: string }) => x.matched_by)).toEqual([
+  expect(again.items.map((x: { account_id: number }) => x.account_id)).toEqual([chequing.id, savings.id]);
+  expect(again.items.map((x: { matched_by: string }) => x.matched_by)).toEqual([
     "previous_import",
     "previous_import",
   ]);
@@ -567,8 +620,8 @@ test("an account whose name carries the number is matched, and reported as a gue
   const zip = zipOf({ "savings.csv": SAVINGS }, { "savings.csv": { account: "0000123-51" } });
 
   const r = await (await uploadAll(server.baseURL, zip, true)).json();
-  expect(r.exports[0].account_id).toBe(named.id);
-  expect(r.exports[0].matched_by).toBe("account_name");
+  expect(r.items[0].account_id).toBe(named.id);
+  expect(r.items[0].matched_by).toBe("account_name");
 });
 
 test("a stored account number matches exactly", async ({ api, server }) => {
@@ -579,8 +632,8 @@ test("a stored account number matches exactly", async ({ api, server }) => {
   const zip = zipOf({ "savings.csv": SAVINGS }, { "savings.csv": { account: "0000123-51" } });
 
   const r = await (await uploadAll(server.baseURL, zip, true)).json();
-  expect(r.exports[0].account_id).toBe(acc.id);
-  expect(r.exports[0].matched_by).toBe("account_number");
+  expect(r.items[0].account_id).toBe(acc.id);
+  expect(r.items[0].matched_by).toBe("account_number");
 });
 
 /**
@@ -624,9 +677,9 @@ test("an export routes itself by the transactions the account already holds", as
   const zip = zipOf({ "mystery.csv": rows }, { "mystery.csv": { account: "0000123-77" } });
 
   const r = await (await uploadAll(server.baseURL, zip, true)).json();
-  expect(r.exports[0].account_id).toBe(mine.id);
-  expect(r.exports[0].matched_by).toBe("transaction_history");
-  expect(r.exports[0].account_id).not.toBe(decoy.id);
+  expect(r.items[0].account_id).toBe(mine.id);
+  expect(r.items[0].matched_by).toBe("transaction_history");
+  expect(r.items[0].account_id).not.toBe(decoy.id);
 });
 
 /** Rate alone is not evidence: two matching rows is a transfer pair, not an identification. */
@@ -647,8 +700,8 @@ test("a perfect match on too few rows does not route an export", async ({ api, s
   const zip = zipOf({ "mystery.csv": rows }, { "mystery.csv": { account: "0000123-77" } });
 
   const r = await (await uploadAll(server.baseURL, zip, true)).json();
-  expect(r.exports[0].account_id).toBe(null);
-  expect(r.exports[0].matched_by).toBe(null);
+  expect(r.items[0].account_id).toBe(null);
+  expect(r.items[0].matched_by).toBe(null);
 });
 
 test("an unmatched export is reported and left alone, while its neighbours import", async ({ api, server }) => {
@@ -659,10 +712,10 @@ test("an unmatched export is reported and left alone, while its neighbours impor
   );
 
   const r = await (await uploadAll(server.baseURL, zip, false, `12-3136-0000123-50:${chequing.id}`)).json();
-  expect(r.exports[0].imported).toBe(2);
-  expect(r.exports[1].account_id).toBe(null);
-  expect(r.exports[1].imported).toBe(0);
-  expect(r.exports[1].warnings.some((w: string) => w.includes("no account was matched"))).toBe(true);
+  expect(r.items[0].imported).toBe(2);
+  expect(r.items[1].account_id).toBe(null);
+  expect(r.items[1].imported).toBe(0);
+  expect(r.items[1].warnings.some((w: string) => w.includes("no account was matched"))).toBe(true);
 
   const { data } = await api.GET("/api/transactions", {});
   expect(data?.length).toBe(2);
@@ -681,12 +734,12 @@ test("each account's own cutover applies, not one for the whole upload", async (
   const r = await (
     await uploadAll(server.baseURL, zip, false, `12-3136-0000123-50:${chequing.id},12-3136-0000123-51:${savings.id}`)
   ).json();
-  expect(r.exports[0].cutover).toBe("2021-01-01");
-  expect(r.exports[0].held_back).toBe(1);
-  expect(r.exports[0].imported).toBe(1);
-  expect(r.exports[1].cutover).toBe(null);
-  expect(r.exports[1].held_back).toBe(0);
-  expect(r.exports[1].imported).toBe(2);
+  expect(r.items[0].cutover).toBe("2021-01-01");
+  expect(r.items[0].held_back).toBe(1);
+  expect(r.items[0].imported).toBe(1);
+  expect(r.items[1].cutover).toBe(null);
+  expect(r.items[1].held_back).toBe(0);
+  expect(r.items[1].imported).toBe(2);
 });
 
 test("a malformed assignment is refused before anything is read", async ({ api, server }) => {
@@ -702,7 +755,9 @@ test("a zip with no exports in it is refused", async ({ api, server }) => {
   await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
   const res = await uploadAll(server.baseURL, makeZip({ "notes.txt": "hello" }));
   expect(res.status).toBe(422);
-  expect((await res.json()).error.message).toContain("no .csv files");
+  // A zip of nothing recognisable is refused by detection now, before any parser sees it, so the
+  // message is about the upload rather than about ASB's own "no .csv files in the zip".
+  expect((await res.json()).error.message).toContain("doesn't look like any export Sure can read");
 });
 
 
@@ -724,21 +779,21 @@ test("an assigned preview reports exactly what the commit then does", async ({ a
 
   // Unassigned: no account, so no cutover to apply — the whole file.
   const blind = await (await uploadAll(server.baseURL, zip, true)).json();
-  expect(blind.exports[0].account_id).toBe(null);
-  expect(blind.exports[0].would_import).toBe(2);
-  expect(blind.exports[0].cutover).toBe(null);
+  expect(blind.items[0].account_id).toBe(null);
+  expect(blind.items[0].would_import).toBe(2);
+  expect(blind.items[0].cutover).toBe(null);
 
   // Assigned: the chequing account's feed cuts its contribution down.
   const preview = await (await uploadAll(server.baseURL, zip, true, assign)).json();
-  expect(preview.exports[0].cutover).toBe("2021-01-01");
-  expect(preview.exports[0].would_import).toBe(1);
+  expect(preview.items[0].cutover).toBe("2021-01-01");
+  expect(preview.items[0].would_import).toBe(1);
 
   const done = await (await uploadAll(server.baseURL, zip, false, assign)).json();
-  for (const [i, x] of done.exports.entries()) {
-    expect(x.imported).toBe(preview.exports[i].would_import);
-    expect(x.held_back).toBe(preview.exports[i].held_back);
-    expect(x.cutover).toBe(preview.exports[i].cutover);
-    expect(x.account_id).toBe(preview.exports[i].account_id);
+  for (const [i, x] of done.items.entries()) {
+    expect(x.imported).toBe(preview.items[i].would_import);
+    expect(x.held_back).toBe(preview.items[i].held_back);
+    expect(x.cutover).toBe(preview.items[i].cutover);
+    expect(x.account_id).toBe(preview.items[i].account_id);
   }
 });
 
@@ -859,8 +914,8 @@ test("path-traversal entry names are inert — nothing is ever written to disk",
   });
   const r = await (await uploadAll(server.baseURL, zip, false, `12-3136-0000123-50:${chequing.id}`)).json();
   // The name is only ever a label in a message; the rows import as any other file's would.
-  expect(r.exports[0].imported).toBe(3);
-  expect(r.exports[0].sources[0]).toContain("passwd.csv");
+  expect(r.items[0].imported).toBe(3);
+  expect(r.items[0].sources[0]).toContain("passwd.csv");
 });
 
 test("a giant single field is refused rather than parsed", async ({ api, server }) => {
@@ -883,7 +938,7 @@ test("a large but honest upload imports, and stays fast", async ({ api, server }
     row("2020/01/20", `2020012${String(i).padStart(4, "0")}`, "EFTPOS", `SHOP ${i}`, "EFTPOS", "-1.00")
   );
   const started = Date.now();
-  const r = await (await upload(server.baseURL, acc.id, exportFile(rows))).json();
+  const r = await only(upload(server.baseURL, acc.id, exportFile(rows)));
   expect(r.imported).toBe(3000);
   expect(Date.now() - started).toBeLessThan(30_000);
 });
@@ -903,7 +958,7 @@ const OPENING_MINOR = 100_00 - (-1250 - 200_00 + 150_000);
 
 test("records the opening balance the export implies, by default", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
-  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), false, true)).json();
+  const r = await only(upload(server.baseURL, acc.id, exportFile(HISTORY), false, true));
 
   expect(r.implied_opening_minor).toBe(OPENING_MINOR);
   expect(r.opening_balance_minor).toBe(OPENING_MINOR);
@@ -970,8 +1025,10 @@ test("the opening balance changes no spend or income figure", async ({ api, serv
   const before = await totals();
   expect(before.income + before.expense).not.toBe(0);
 
-  await api.DELETE("/api/accounts/{id}/asb/import", { params: { path: { id: acc.id } } });
-  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), false, true)).json();
+  await api.DELETE("/api/import/{account_id}/{source}", {
+    params: { path: { account_id: acc.id, source: "asb_csv" } },
+  });
+  const r = await only(upload(server.baseURL, acc.id, exportFile(HISTORY), false, true));
   expect(r.opening_balance_minor).toBe(OPENING_MINOR);
 
   expect(await totals()).toEqual(before);
@@ -979,7 +1036,7 @@ test("the opening balance changes no spend or income figure", async ({ api, serv
 
 test("opting out records no opening balance", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
-  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), false, false)).json();
+  const r = await only(upload(server.baseURL, acc.id, exportFile(HISTORY), false, false));
   // The arithmetic is still reported — it's the recording that was declined.
   expect(r.implied_opening_minor).toBe(OPENING_MINOR);
   expect(r.opening_balance_minor).toBe(null);
@@ -993,14 +1050,14 @@ test("opting out records no opening balance", async ({ api, server }) => {
 
 test("a dry run reports the opening balance without writing it", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
-  const preview = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), true, true)).json();
+  const preview = await only(upload(server.baseURL, acc.id, exportFile(HISTORY), true, true));
   expect(preview.opening_balance_minor).toBe(OPENING_MINOR);
   // Counted in what the commit would write, so the preview's figure is the real one.
   expect(preview.would_import).toBe(4);
   const { data } = await api.GET("/api/transactions", { params: { query: { account_id: acc.id } } });
   expect(data?.length).toBe(0);
 
-  const done = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), false, true)).json();
+  const done = await only(upload(server.baseURL, acc.id, exportFile(HISTORY), false, true));
   expect(done.imported).toBe(preview.would_import);
   expect(done.opening_balance_minor).toBe(preview.opening_balance_minor);
   expect(done.opening_balance_as_of).toBe(preview.opening_balance_as_of);
@@ -1022,7 +1079,7 @@ test("an account with earlier history gets no opening balance, and is told why",
     },
   });
 
-  const r = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), false, true)).json();
+  const r = await only(upload(server.baseURL, acc.id, exportFile(HISTORY), false, true));
   expect(r.opening_balance_minor).toBe(null);
   expect(r.imported).toBe(3);
   expect(r.warnings.some((w: string) => w.includes("already has transactions from before"))).toBe(true);
@@ -1031,7 +1088,7 @@ test("an account with earlier history gets no opening balance, and is told why",
 test("re-uploading doesn't add a second opening balance", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
   await upload(server.baseURL, acc.id, exportFile(HISTORY), false, true);
-  const again = await (await upload(server.baseURL, acc.id, exportFile(HISTORY), false, true)).json();
+  const again = await only(upload(server.baseURL, acc.id, exportFile(HISTORY), false, true));
   expect(again.imported).toBe(0);
   expect(again.skipped).toBe(4);
 
@@ -1044,7 +1101,9 @@ test("re-uploading doesn't add a second opening balance", async ({ api, server }
 test("undo removes the opening balance along with the rest", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
   await upload(server.baseURL, acc.id, exportFile(HISTORY), false, true);
-  const undo = await api.DELETE("/api/accounts/{id}/asb/import", { params: { path: { id: acc.id } } });
+  const undo = await api.DELETE("/api/import/{account_id}/{source}", {
+    params: { path: { account_id: acc.id, source: "asb_csv" } },
+  });
   expect(undo.data?.deleted).toBe(4);
   const { data } = await api.GET("/api/transactions", { params: { query: { account_id: acc.id } } });
   expect(data?.length).toBe(0);
@@ -1057,9 +1116,10 @@ test("an export with no closing balance records no opening balance", async ({ ap
     text.replace("Ledger Balance : 100.00 as of 20260803\r\n", "")
   ).buffer as ArrayBuffer;
 
-  const r = await (await upload(server.baseURL, acc.id, without, false, true)).json();
-  expect(r.implied_opening_minor).toBe(null);
-  expect(r.opening_balance_minor).toBe(null);
+  const r = await only(upload(server.baseURL, acc.id, without, false, true));
+  // No stated balance and nothing to work back from, so there is no reconciliation block at all —
+  // not a block full of nulls. That distinction is the whole reason the figures are grouped.
+  expect(r.reconciliation).toBeNull();
   expect(r.imported).toBe(3);
 });
 
@@ -1074,9 +1134,9 @@ test("each account in a multi-account upload gets its own opening balance", asyn
 
   const r = await (await uploadAll(server.baseURL, zip, false, assign, true)).json();
   // 100.00 − (−12.50 − 200.00) for the first; 9500.00 − (200.00 + 3.21) for the second.
-  expect(r.exports[0].opening_balance_minor).toBe(100_00 - (-1250 - 200_00));
-  expect(r.exports[1].opening_balance_minor).toBe(950_000 - (200_00 + 321));
-  expect(r.exports.map((x: { imported: number }) => x.imported)).toEqual([3, 3]);
-  expect(r.exports[0].opening_balance_as_of).toBe("2020-01-19");
-  expect(r.exports[1].opening_balance_as_of).toBe("2021-06-29");
+  expect(r.items[0].reconciliation.opening_balance_minor).toBe(100_00 - (-1250 - 200_00));
+  expect(r.items[1].reconciliation.opening_balance_minor).toBe(950_000 - (200_00 + 321));
+  expect(r.items.map((x: { imported: number }) => x.imported)).toEqual([3, 3]);
+  expect(r.items[0].reconciliation.opening_balance_as_of).toBe("2020-01-19");
+  expect(r.items[1].reconciliation.opening_balance_as_of).toBe("2021-06-29");
 });

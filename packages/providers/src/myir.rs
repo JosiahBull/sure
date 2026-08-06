@@ -119,10 +119,14 @@ pub struct MyIrExport {
 /// so the two are told apart by looking for `.xlsx` entries inside, rather than by trusting
 /// a filename or a content type.
 ///
-/// `until`, when set, drops rows on or after that date: the seam against
-/// `sure_app::tasks::balance_delta`, which derives everything from there onward out of the
-/// daily balance feed. Without it the two would both post the same movement.
-pub fn parse_export(bytes: &[u8], until: Option<NaiveDate>) -> anyhow::Result<MyIrExport> {
+/// Returns **every** row the upload describes. The seam against
+/// `sure_app::tasks::balance_delta` — which derives everything from the cutover onward out of
+/// the daily balance feed, and would otherwise post the same movement twice — is applied by
+/// `sure_app::import`, not here: the cutover belongs to the *target account*, which a parser
+/// has no way to know. Holding back afterwards is also what keeps
+/// [`external_ids`] stable, since it numbers repeated rows over the merged union and a
+/// pre-filtered union would number them differently.
+pub fn parse_export(bytes: &[u8]) -> anyhow::Result<MyIrExport> {
     let workbooks = read_workbooks(bytes)?;
     let Some(first) = workbooks.first() else {
         anyhow::bail!("no myIR .xlsx exports found in the upload");
@@ -150,12 +154,7 @@ pub fn parse_export(bytes: &[u8], until: Option<NaiveDate>) -> anyhow::Result<My
     }
 
     let mut transactions = Vec::new();
-    let mut held_back = 0;
     for (row, external_id) in merged.iter().zip(ids) {
-        if until.is_some_and(|cutoff| row.date >= cutoff) {
-            held_back += 1;
-            continue;
-        }
         transactions.push(ProviderTransaction {
             external_id,
             // Midday UTC matches every other `posted_at` this app writes, so an imported row
@@ -168,13 +167,6 @@ pub fn parse_export(bytes: &[u8], until: Option<NaiveDate>) -> anyhow::Result<My
             merchant: None,
             category: None,
         });
-    }
-    if held_back > 0 {
-        let cutoff = until.map(iso).unwrap_or_default();
-        warnings.push(format!(
-            "{held_back} row(s) on/after {cutoff} were not imported — from that date this \
-             account's movements are derived from its balance feed"
-        ));
     }
 
     Ok(MyIrExport {
@@ -704,7 +696,7 @@ mod tests {
                 ("2025-03-10", "Living costs", "222.00"),
             ],
         );
-        let out = parse_export(&bytes, None).unwrap();
+        let out = parse_export(&bytes).unwrap();
 
         let by_desc: HashMap<&str, i64> = out
             .transactions
@@ -730,10 +722,10 @@ mod tests {
             "2026-07-31",
             &[("2025-04-14", "Payment", "-11.11")],
         );
-        assert_eq!(parse_export(&single, None).unwrap().transactions.len(), 1);
+        assert_eq!(parse_export(&single).unwrap().transactions.len(), 1);
 
         let zipped = bundle(&[("exports/sls_2024_2026.xlsx", single.clone())]);
-        assert_eq!(parse_export(&zipped, None).unwrap().transactions.len(), 1);
+        assert_eq!(parse_export(&zipped).unwrap().transactions.len(), 1);
     }
 
     /// Overlapping windows are the normal case, not an error: myIR caps an export at ~2
@@ -755,7 +747,7 @@ mod tests {
             "2026-07-31",
             &[shared, ("2025-04-14", "Repayment deduction", "-400.00")],
         );
-        let out = parse_export(&bundle(&[("a.xlsx", older), ("b.xlsx", newer)]), None).unwrap();
+        let out = parse_export(&bundle(&[("a.xlsx", older), ("b.xlsx", newer)])).unwrap();
 
         assert_eq!(out.transactions.len(), 3, "the shared row must appear once");
         let ids: HashSet<&str> = out
@@ -779,8 +771,8 @@ mod tests {
             "2026-07-31",
             &[("2025-04-14", "Repayment deduction", "-400.00")],
         );
-        let first = parse_export(&bytes, None).unwrap();
-        let second = parse_export(&bytes, None).unwrap();
+        let first = parse_export(&bytes).unwrap();
+        let second = parse_export(&bytes).unwrap();
         assert_eq!(
             first.transactions[0].external_id,
             second.transactions[0].external_id
@@ -803,7 +795,7 @@ mod tests {
                 ("2025-04-14", "Living costs", "222.00"),
             ],
         );
-        let out = parse_export(&bytes, None).unwrap();
+        let out = parse_export(&bytes).unwrap();
         assert_eq!(out.transactions.len(), 2);
         assert_ne!(
             out.transactions[0].external_id,
@@ -827,7 +819,7 @@ mod tests {
             "2023-01-01",
             &[("2022-06-01", "Living costs", "10")],
         );
-        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)]), None).unwrap_err();
+        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)])).unwrap_err();
         assert!(err.to_string().contains("gap in coverage"), "{err}");
     }
 
@@ -846,7 +838,7 @@ mod tests {
             "2023-01-01",
             &[("2022-06-01", "Living costs", "10")],
         );
-        assert!(parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)]), None).is_ok());
+        assert!(parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)])).is_ok());
     }
 
     /// A restatement: the import is INSERT OR IGNORE with no update-on-conflict, so a
@@ -865,7 +857,7 @@ mod tests {
             "2024-01-01",
             &[("2022-06-01", "Living costs", "250")],
         );
-        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)]), None).unwrap_err();
+        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)])).unwrap_err();
         assert!(
             err.to_string().contains("disagree about 2022-06-01"),
             "{err}"
@@ -883,7 +875,7 @@ mod tests {
             &[("2022-06-01", "Living costs", "100")],
         );
         let b = export(ACCT, "2022-01-01", "2024-01-01", &[]);
-        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)]), None).unwrap_err();
+        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)])).unwrap_err();
         assert!(
             err.to_string().contains("disagree about 2022-06-01"),
             "{err}"
@@ -899,7 +891,7 @@ mod tests {
             &[("2022-06-01", "Living costs", "10")],
         );
         let b = export("012-345-678-SLS009", "2021-01-01", "2023-01-01", &[]);
-        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)]), None).unwrap_err();
+        let err = parse_export(&bundle(&[("a.xlsx", a), ("b.xlsx", b)])).unwrap_err();
         assert!(err.to_string().contains("different accounts"), "{err}");
     }
 
@@ -913,7 +905,7 @@ mod tests {
             "2026-07-31",
             &[("2025-04-14", "Voluntary repayment bonus", "-100")],
         );
-        let out = parse_export(&bytes, None).unwrap();
+        let out = parse_export(&bytes).unwrap();
 
         assert_eq!(out.transactions.len(), 1, "it must not be dropped");
         assert_eq!(out.transactions[0].amount_minor, 100_00);
@@ -926,28 +918,36 @@ mod tests {
         );
     }
 
-    /// The seam against the balance-delta task: rows it will derive from the balance feed
-    /// must not also be imported here, or the same movement lands twice.
+    /// The seam against the balance-delta task — rows it derives from the balance feed must not
+    /// also be imported, or the same movement lands twice — is applied by `sure_app::import`,
+    /// against the target account's own cutover. What has to hold *here* is the precondition
+    /// that makes moving it there safe: an id depends only on the rows at or before it, so
+    /// whether the tail is later held back cannot change the ids of the rows that are kept.
+    ///
+    /// If ids shifted with the row set, the same movement would import under one id today and a
+    /// different one after the cutover moved — and dedupe, which is `(provider, external_id)`,
+    /// would see two transactions.
     #[test]
-    fn rows_on_or_after_the_cutover_are_held_back() {
-        let bytes = export(
-            ACCT,
-            "2024-07-31",
-            "2026-08-31",
-            &[
-                ("2026-07-28", "Repayment deduction", "-500.00"),
-                ("2026-07-31", "Repayment deduction", "-500.00"),
-                ("2026-08-14", "Repayment deduction", "-500.00"),
-            ],
-        );
-        let out = parse_export(&bytes, Some(d("2026-07-31"))).unwrap();
+    fn an_id_does_not_depend_on_the_rows_that_come_after_it() {
+        let early = [("2026-07-28", "Repayment deduction", "-500.00")];
+        let with_tail = [
+            ("2026-07-28", "Repayment deduction", "-500.00"),
+            ("2026-07-31", "Repayment deduction", "-500.00"),
+            ("2026-08-14", "Repayment deduction", "-500.00"),
+        ];
 
-        assert_eq!(out.transactions.len(), 1);
-        assert!(out.transactions[0].posted_at.starts_with("2026-07-28"));
-        assert!(
-            out.warnings.iter().any(|w| w.contains("2 row(s)")),
-            "{:?}",
-            out.warnings
+        let alone = parse_export(&export(ACCT, "2024-07-31", "2026-07-28", &early)).unwrap();
+        let together = parse_export(&export(ACCT, "2024-07-31", "2026-08-31", &with_tail)).unwrap();
+
+        assert_eq!(alone.transactions.len(), 1);
+        assert_eq!(
+            together.transactions.len(),
+            3,
+            "every row is returned; holding back is not this parser's job"
+        );
+        assert_eq!(
+            alone.transactions[0].external_id, together.transactions[0].external_id,
+            "the first row's id is the same whether or not the later ones came with it"
         );
     }
 
@@ -974,7 +974,7 @@ mod tests {
                 Cell::Number("-100"),
             ],
         ];
-        let err = parse_export(&xlsx(grid), None).unwrap_err();
+        let err = parse_export(&xlsx(grid)).unwrap_err();
         assert!(err.to_string().contains("not a student loan"), "{err}");
     }
 
@@ -1001,7 +1001,7 @@ mod tests {
                 Cell::Number("-400.00"),
             ],
         ];
-        let out = parse_export(&xlsx(grid), None).unwrap();
+        let out = parse_export(&xlsx(grid)).unwrap();
         assert_eq!(out.covered_from.as_deref(), Some("2024-07-31"));
         assert_eq!(out.transactions[0].amount_minor, 400_00);
     }
@@ -1034,7 +1034,7 @@ mod tests {
             bomb.len()
         );
 
-        let err = parse_export(&bomb, None).unwrap_err();
+        let err = parse_export(&bomb).unwrap_err();
         assert!(err.to_string().contains("over the limit"), "{err}");
     }
 
@@ -1052,7 +1052,7 @@ mod tests {
         ]);
         assert!(huge_sheet.len() < 200_000);
 
-        let err = parse_export(&huge_sheet, None).unwrap_err();
+        let err = parse_export(&huge_sheet).unwrap_err();
         assert!(err.to_string().contains("once decompressed"), "{err}");
     }
 
@@ -1069,7 +1069,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
 
-        let err = parse_export(&bundle, None).unwrap_err();
+        let err = parse_export(&bundle).unwrap_err();
         assert!(err.to_string().contains("at most"), "{err}");
     }
 
@@ -1087,7 +1087,7 @@ mod tests {
         let borrowed: Vec<(&str, &str, &str)> =
             rows.iter().map(|(a, b, c)| (a.as_str(), *b, *c)).collect();
 
-        let out = parse_export(&export(ACCT, "2009-01-01", "2020-01-01", &borrowed), None).unwrap();
+        let out = parse_export(&export(ACCT, "2009-01-01", "2020-01-01", &borrowed)).unwrap();
 
         assert_eq!(out.transactions.len(), 3_000);
         assert_eq!(out.transactions[0].amount_minor, -222_00);
@@ -1117,7 +1117,7 @@ mod tests {
                 "2026-07-31",
                 &[("2025-04-14", "Repayment deduction", amount)],
             );
-            let err = parse_export(&bytes, None).unwrap_err();
+            let err = parse_export(&bytes).unwrap_err();
             assert!(
                 err.to_string().contains("out of range")
                     || err.to_string().contains("as an amount"),
@@ -1128,7 +1128,7 @@ mod tests {
 
     #[test]
     fn a_non_xlsx_upload_fails_clearly() {
-        let err = parse_export(b"this is not a spreadsheet", None).unwrap_err();
+        let err = parse_export(b"this is not a spreadsheet").unwrap_err();
         assert!(err.to_string().contains("not a .zip or .xlsx"), "{err}");
     }
 
@@ -1141,7 +1141,7 @@ mod tests {
             "2026-07-31",
             &[("2024-08-14", "Repayment deduction", "-329.36")],
         );
-        let out = parse_export(&bytes, None).unwrap();
+        let out = parse_export(&bytes).unwrap();
         assert_eq!(out.transactions[0].amount_minor, 329_36);
     }
 }

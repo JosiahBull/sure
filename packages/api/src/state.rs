@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use sure_app::brokerage::BrokerageService;
 use sure_app::forecast::ForecastService;
+use sure_app::import::ImportService;
 use sure_app::ports::{
     AccountRepo, CategoryRepo, CronRepo, CurrencyRepo, EquityRepo, MerchantRepo, PersonRepo,
     ProviderRegistry, ProviderRepo, SettingsRepo, SnapshotRepo, StockPriceCacheRepo,
@@ -21,6 +22,10 @@ use sure_app::sync::SyncService;
 #[derive(Clone)]
 pub struct AppState {
     pub brokerage: Arc<BrokerageService>,
+    /// The one pipeline every file upload goes through — sniff, parse, route, hold back,
+    /// reconcile, write. It owns the import adapters (injected by the composition root), which
+    /// is why `sure-api` no longer names a parser.
+    pub import: Arc<ImportService>,
     pub reports: Arc<ReportService>,
     pub forecast: Arc<ForecastService>,
     pub rules: Arc<RuleService>,

@@ -9,6 +9,7 @@
   import Forecast from "./pages/Forecast.svelte";
   import Transactions from "./pages/Transactions.svelte";
   import Accounts from "./pages/Accounts.svelte";
+  import Import from "./pages/Import.svelte";
   import Household from "./pages/Household.svelte";
   import Rules from "./pages/Rules.svelte";
   import Categories from "./pages/Categories.svelte";
@@ -37,6 +38,7 @@
   // "Home > Settings > {subpage}" — labels mirror SettingsNav's groups.
   const SETTINGS_LABELS: Record<string, string> = {
     "/settings/accounts": "Accounts",
+    "/settings/import": "Import",
     "/settings/household": "Household",
     "/settings/providers": "Bank sync",
     "/settings/tax": "Tax rates",
@@ -60,6 +62,8 @@
         return Forecast;
       case "/settings/accounts":
         return Accounts;
+      case "/settings/import":
+        return Import;
       case "/settings/household":
         return Household;
       case "/settings/rules":

@@ -7,6 +7,7 @@ pub mod brokerage;
 pub mod detect;
 pub mod forecast;
 pub mod fx;
+pub mod import;
 pub mod income;
 pub mod ports;
 pub mod reports;

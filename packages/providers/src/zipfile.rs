@@ -19,6 +19,31 @@ pub const ENTRIES: usize = 64;
 pub const ENTRY_BYTES: u64 = 16 * 1024 * 1024;
 pub const TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Whether these bytes open as a zip at all, by magic number. An `.xlsx` answers yes — it *is*
+/// a zip — which is exactly why telling the upload formats apart needs [`entry_names`] and not
+/// this alone.
+pub fn is_zip(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"PK\x03\x04")
+}
+
+/// The names of the entries in a zip, or `None` if it isn't one (or won't open).
+///
+/// Reads the central directory only — no entry content, nothing decompressed — so it is cheap
+/// enough to run over an upload several times while working out which importer it belongs to.
+/// Truncated at [`ENTRIES`], because past that the answer to "which importer is this?" doesn't
+/// change and a crafted archive shouldn't get to make the question expensive.
+pub fn entry_names(bytes: &[u8]) -> Option<Vec<String>> {
+    if !is_zip(bytes) {
+        return None;
+    }
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
+    Some(
+        (0..archive.len().min(ENTRIES))
+            .filter_map(|i| Some(archive.by_index_raw(i).ok()?.name().to_string()))
+            .collect(),
+    )
+}
+
 /// A running budget over one upload's entries. Built once per upload, spent per entry.
 #[derive(Debug)]
 pub struct Budget {

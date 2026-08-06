@@ -2,14 +2,14 @@
   import { onMount } from "svelte";
   import { api, formatMoney, type Schemas } from "./api";
   import FxNotice from "./FxNotice.svelte";
+  import ImportPanel from "./ImportPanel.svelte";
 
   let { accountId, onchange }: { accountId: number; onchange?: () => void } = $props();
 
   let snapshot = $state<Schemas["BrokerageSnapshot"] | null>(null);
-  let busy = $state<null | "revalue" | "backfill" | "import">(null);
+  let busy = $state<null | "revalue" | "backfill">(null);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
-  let fileInput = $state<HTMLInputElement | null>(null);
 
   async function load() {
     const { data } = await api.GET("/api/accounts/{id}/brokerage", {
@@ -18,6 +18,11 @@
     snapshot = data ?? null;
   }
   onMount(load);
+
+  function reload() {
+    load();
+    onchange?.();
+  }
 
   async function revalue() {
     busy = "revalue";
@@ -47,42 +52,6 @@
     busy = null;
   }
 
-  async function importZip(e: Event) {
-    const input = e.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    busy = "import";
-    error = null;
-    notice = null;
-    // A binary upload doesn't fit the JSON client, so post the raw zip bytes directly to
-    // the same-origin API (dev proxies /api to the backend), like Settings' config export.
-    try {
-      const res = await fetch(`/api/accounts/${accountId}/brokerage/import`, {
-        method: "POST",
-        headers: { "Content-Type": "application/zip" },
-        body: file,
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        error = body?.error?.message ?? "Import failed — is this a Sharesies export zip?";
-      } else {
-        const r = (await res.json()) as Schemas["BrokerageImportResult"];
-        const bits = [
-          `${r.transactions_imported} transactions`,
-          `${r.holdings_imported} holdings`,
-          `${r.dividends_imported} dividends`,
-        ];
-        notice = `Imported ${bits.join(", ")}. Valuation history is backfilling in the background.`;
-        if (r.warnings.length) notice += ` (${r.warnings.length} record(s) skipped)`;
-        await load();
-        onchange?.();
-      }
-    } catch {
-      error = "Import failed — could not reach the server.";
-    }
-    if (fileInput) fileInput.value = "";
-    busy = null;
-  }
 </script>
 
 <div class="brokerage">
@@ -97,22 +66,12 @@
         >
       </span>
       <div class="row" style="gap:8px">
-        <button class="btn btn-sm" onclick={() => fileInput?.click()} disabled={busy !== null}>
-          {busy === "import" ? "Importing…" : "Import zip"}
-        </button>
         <button class="btn btn-sm" onclick={revalue} disabled={busy !== null}>
           {busy === "revalue" ? "…" : "Revalue"}
         </button>
         <button class="btn btn-sm" onclick={backfill} disabled={busy !== null}>
           {busy === "backfill" ? "…" : "Backfill"}
         </button>
-        <input
-          bind:this={fileInput}
-          type="file"
-          accept=".zip,application/zip"
-          style="display:none"
-          onchange={importZip}
-        />
       </div>
     </div>
 
@@ -124,6 +83,8 @@
       ratesAsOf={snapshot.rates_as_of}
       currency={snapshot.currency_code}
     />
+
+    <ImportPanel {accountId} onchange={reload} />
 
     {#if snapshot.positions.length}
       <table class="holdings">
@@ -149,7 +110,7 @@
         </tbody>
       </table>
     {:else}
-      <div class="small faint" style="padding:6px 0">No holdings yet — import a Sharesies export to populate them.</div>
+      <div class="small faint" style="padding:6px 0">No holdings yet — import a Sharesies export above to populate them.</div>
     {/if}
 
     {#if snapshot.wallets.length}

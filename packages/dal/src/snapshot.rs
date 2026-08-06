@@ -619,6 +619,9 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         "rule_runs",
         "cron_runs",
         "provider_syncs",
+        // Audit, like the four above: a log of actions taken against *this* database, so it is
+        // cleared and not restored. Re-inserting another database's log would be a false history.
+        "imports",
         "forecast_events",
         "forecast_assumptions",
         "income_stream_steps",

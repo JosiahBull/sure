@@ -51,11 +51,14 @@ could not detect afterwards.
 2. Drop the `.xlsx` in `myir-export/` (gitignored — it is real transaction history, same as
    `sharesies-export/`). Name it for its window, e.g. `sls_2019-07-31_2026-07-31.xlsx`, and
    never delete or overwrite one: the directory *is* the manifest.
-3. Settings → Accounts → the loan → **Import** → **Import myIR export**. Upload the single
-   `.xlsx`, or a `.zip` of the whole directory once you have more than one.
+3. Settings → **Import** (or the loan's own row on Settings → Accounts, which shows the same
+   panel scoped to it). Drop the single `.xlsx`, or select the whole directory's worth at once —
+   the browser packs several files into one upload, which is what the cross-file checks above
+   need. Sure works out that they are myIR exports from the files themselves.
 
-The response reports how many rows were new, how many were already there, the SLS account
-the exports were for, and the window they cover. Re-uploading is free and expected — the
+You see what the upload contains and where it is going before anything is written, and the
+result reports how many rows were new, how many were already there, the SLS account the exports
+were for, and the window they cover. Re-uploading is free and expected — the
 import dedupes on a content-derived id, so overlapping windows cost nothing.
 
 ### What the parser refuses
@@ -168,3 +171,7 @@ Each half resets independently, and rebuilds by re-running:
 DELETE FROM transactions WHERE provider = 'myir#<account id>';
 DELETE FROM transactions WHERE provider = 'balance-delta#<provider id>';
 ```
+
+The pipeline every upload shares — detection, routing, the cutover, preview, undo — is
+[IMPORT.md](IMPORT.md). This file is the part specific to a student loan: the two-source ledger,
+the sign rule, and the five refusals.

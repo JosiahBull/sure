@@ -211,6 +211,41 @@ pub async fn create_holding(
     .try_into()
 }
 
+/// Delete every holding lot on this account that `provider_tag` imported — the holdings half
+/// of undoing a bulk upload, mirroring [`crate::transactions::delete_by_provider`]. Scoped to
+/// the account as well as the tag so a mistyped tag can't reach further than the account it was
+/// invoked for. Returns the number of rows deleted.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn delete_holdings_by_provider(
+    db: &Db,
+    account_id: i64,
+    provider_tag: &str,
+) -> AppResult<i64> {
+    let res = sqlx::query("DELETE FROM holdings WHERE account_id = ?1 AND provider = ?2")
+        .bind(account_id)
+        .bind(provider_tag)
+        .execute(db)
+        .await?;
+    Ok(res.rows_affected() as i64)
+}
+
+/// The same for dividends. Their `dividend_withholdings` go with them: the FK is
+/// `ON DELETE CASCADE` (`0012_brokerage.sql`) and `crate::connect` sets
+/// `PRAGMA foreign_keys = ON`, so the cascade actually fires rather than orphaning them.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn delete_dividends_by_provider(
+    db: &Db,
+    account_id: i64,
+    provider_tag: &str,
+) -> AppResult<i64> {
+    let res = sqlx::query("DELETE FROM dividends WHERE account_id = ?1 AND provider = ?2")
+        .bind(account_id)
+        .bind(provider_tag)
+        .execute(db)
+        .await?;
+    Ok(res.rows_affected() as i64)
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete_holding(db: &Db, id: i64) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM holdings WHERE id=?1")
@@ -932,6 +967,100 @@ mod tests {
         let detail = list_dividends(&db, account_id).await.unwrap();
         assert_eq!(detail.len(), 1);
         assert_eq!(detail[0].withholdings.len(), 1);
+    }
+
+    /// Undo takes the whole import back — including the withholdings, which no `DELETE` here
+    /// names. They go via `dividend_withholdings.dividend_id`'s `ON DELETE CASCADE`, which only
+    /// fires because `crate::connect` sets `PRAGMA foreign_keys = ON`; without it they would
+    /// survive as rows pointing at a dividend that no longer exists.
+    #[tokio::test]
+    async fn undoing_an_import_takes_its_holdings_dividends_and_withholdings() {
+        let db = test_db().await;
+        let account_id = brokerage_account(&db).await;
+
+        let rows = [wallet("w1", "2026-01-01", 100_000, "NZD")];
+        let holds = [holding("h1", "MEL", "2026-01-02", 100.0)];
+        let divs = [DividendImport {
+            ticker: "MEL".to_string(),
+            exchange: "NZX".to_string(),
+            record_date: Some("2026-03-01".to_string()),
+            paid_date: "2026-03-10".to_string(),
+            shares_held: Some(100.0),
+            gross_amount_minor: 5_000,
+            net_amount_minor: 4_100,
+            currency_code: "NZD".to_string(),
+            external_id: "d1".to_string(),
+            withholdings: vec![WithholdingImport {
+                owed_to: "NZ_IRD".to_string(),
+                tax_amount_minor: 900,
+                tax_credit_minor: Some(0),
+                currency_code: "NZD".to_string(),
+            }],
+        }];
+        import_export(&db, account_id, "NZD", "sharesies#1", &rows, &holds, &divs)
+            .await
+            .unwrap();
+
+        let withholdings = |db: Db| async move {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM dividend_withholdings")
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        };
+        assert_eq!(withholdings(db.clone()).await, 1);
+
+        assert_eq!(
+            delete_holdings_by_provider(&db, account_id, "sharesies#1")
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            delete_dividends_by_provider(&db, account_id, "sharesies#1")
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(list_holdings(&db, account_id).await.unwrap().is_empty());
+        assert!(list_dividends(&db, account_id).await.unwrap().is_empty());
+        assert_eq!(
+            withholdings(db.clone()).await,
+            0,
+            "cascaded with its dividend"
+        );
+    }
+
+    /// Scoped to the account *and* the tag, both: another source's rows on the same account, and
+    /// the same source's rows on another account, are somebody else's to remove.
+    #[tokio::test]
+    async fn undo_leaves_another_tag_and_another_account_alone() {
+        let db = test_db().await;
+        let mine = brokerage_account(&db).await;
+
+        let holds = [holding("h1", "MEL", "2026-01-02", 100.0)];
+        import_export(&db, mine, "NZD", "sharesies#1", &[], &holds, &[])
+            .await
+            .unwrap();
+        import_export(&db, mine, "NZD", "manual#1", &[], &holds, &[])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            delete_holdings_by_provider(&db, mine, "sharesies#1")
+                .await
+                .unwrap(),
+            1
+        );
+        let left = list_holdings(&db, mine).await.unwrap();
+        assert_eq!(left.len(), 1, "the other tag's lot is still there");
+        assert_eq!(
+            delete_holdings_by_provider(&db, mine + 1, "manual#1")
+                .await
+                .unwrap(),
+            0,
+            "a different account's undo reaches nothing here"
+        );
+        assert_eq!(list_holdings(&db, mine).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

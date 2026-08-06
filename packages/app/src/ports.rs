@@ -19,14 +19,14 @@ use serde_json::Value;
 use sure_core::{
     Account, AccountEquity, AccountKind, AppResult, BulkUpdate, Category, CategoryKind,
     CategoryNode, Cron, CronRun, CronRunResult, Currency, DividendDetail, EquityExercise,
-    EquityGrant, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot, IncomeStream,
-    LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind, Merchant, NewCurrency,
-    NewValuation, Ownership, Person, Provider, ProviderAccount, ProviderKind, ProviderSync, Rule,
-    RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
-    SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
-    SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTaxScale,
-    SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId, Transaction,
-    TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
+    EquityGrant, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot, ImportRecord,
+    ImportSource, IncomeStream, LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind,
+    Merchant, NewCurrency, NewValuation, Ownership, Person, Provider, ProviderAccount,
+    ProviderKind, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult,
+    SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent,
+    SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
+    SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
+    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
 };
 
 // ---- Clock ------------------------------------------------------------------
@@ -176,6 +176,48 @@ pub trait ProviderRegistry: Send + Sync {
     fn get(&self, kind: &str) -> Option<&dyn TransactionProvider>;
     /// Metadata for every registered provider kind (surfaced by the API).
     fn kinds(&self) -> Vec<ProviderKind>;
+}
+
+/// The integration point for *file* imports, as [`TransactionProvider`] is for feeds. One
+/// method to recognise a blob and one to turn it into rows; everything after that — routing
+/// each item to an account, deriving its cutover, reconciling, previewing, persisting — is
+/// handled generically by [`crate::import::ImportService`].
+///
+/// The asymmetry with `TransactionProvider` is deliberate: `fetch` is `async` because it
+/// waits on someone else's server, whereas parsing is pure CPU over bytes already in hand.
+/// Keeping it synchronous means the service can hand the whole thing to one
+/// `spawn_blocking` instead of every adapter remembering to.
+pub trait ImportAdapter: Send + Sync {
+    /// Which source this adapter reads.
+    fn source(&self) -> ImportSource;
+    /// Whether this blob looks like one of ours. Cheap — magic bytes, a zip's entry names, a
+    /// file's first line — because every adapter's `sniff` may be called before one claims
+    /// it. Never a full parse: a wrong guess here costs a better error message, not
+    /// correctness, since [`Self::parse`] still has to succeed.
+    fn sniff(&self, bytes: &[u8]) -> bool;
+    /// Read the blob. Pure: no I/O, no clock, no database — which is what lets the same call
+    /// serve a preview and a commit.
+    fn parse(&self, bytes: &[u8]) -> anyhow::Result<ParsedUpload>;
+    /// Recover the [`ParsedItem::source_account`] from an `external_id` this adapter once
+    /// wrote, so a re-upload finds the account it went to last time.
+    ///
+    /// Needed because the ids are the only durable record of that pairing for everything
+    /// imported before the `imports` table existed. `None` for a source whose ids don't
+    /// encode it (a hand-written CSV chooses its own), which simply means that routing tier
+    /// doesn't fire.
+    fn source_account_of(&self, external_id: &str) -> Option<String>;
+}
+
+/// The set of import adapters the server knows about, injected into
+/// [`crate::import::ImportService`] so the application core never names a concrete parser.
+/// `sure-providers`' `ImportRegistry` is the implementation; the composition root builds it.
+pub trait ImportRegistry: Send + Sync {
+    /// The adapter for a source the caller named outright.
+    fn get(&self, source: ImportSource) -> Option<&dyn ImportAdapter>;
+    /// The first adapter that recognises these bytes, in the registry's own order — which
+    /// must run the specific sources before the general one, since a bare CSV reader would
+    /// otherwise claim every bank export too.
+    fn detect(&self, bytes: &[u8]) -> Option<&dyn ImportAdapter>;
 }
 
 /// A single day's closing price for a ticker.
@@ -469,6 +511,90 @@ pub struct DividendImport {
     pub withholdings: Vec<WithholdingImport>,
 }
 
+/// What one [`ImportAdapter::parse`] made of a blob: the things it found, and anything
+/// worth saying about the blob as a whole (an entry that wasn't an export, a file that
+/// wouldn't read while its neighbours did).
+#[derive(Debug, Clone)]
+pub struct ParsedUpload {
+    pub source: ImportSource,
+    /// One per thing the upload described — one bank account's export, one loan, one
+    /// brokerage. Several only where a source can carry several (an ASB zip).
+    pub items: Vec<ParsedItem>,
+    pub warnings: Vec<String>,
+}
+
+/// One thing inside a parsed upload, with everything the pipeline needs to place it.
+///
+/// The optional fields are how an adapter opts into a capability rather than declaring one:
+/// a source "supports" reconciliation by knowing its `stated_closing_minor`, and "supports"
+/// holdings by returning [`ParsedExtras::Brokerage`]. No adapter answers a question about
+/// itself that its output can answer instead.
+#[derive(Debug, Clone)]
+pub struct ParsedItem {
+    /// How the source names this thing (`12-3456-0000123-50`, `012-345-678-SLS004`). The key
+    /// an assignment addresses, and what the previous-import tier matches on.
+    pub source_account: String,
+    /// The source's own label for it, where it has one — ASB's product name.
+    pub label: Option<String>,
+    /// The file(s) in the upload these rows came from.
+    pub sources: Vec<String>,
+    /// Every row, ids assigned, before anything is held back. The pipeline does the holding
+    /// back, because only it knows the target account's cutover.
+    pub rows: Vec<ImportRow>,
+    pub covered_from: Option<String>,
+    pub covered_to: Option<String>,
+    /// The balance the export states it closes at, where it states one. Present turns on the
+    /// reconciliation check, which needs a known figure to compare against.
+    pub stated_closing_minor: Option<i64>,
+    /// A row putting the balance the account held immediately *before* the first row onto the
+    /// ledger, for a source whose export says (or implies) what that was.
+    ///
+    /// Built by the adapter, not derived here, for two reasons. It has to be worked out over
+    /// **every** row in the file including any the cutover later holds back — those movements
+    /// still happened, they are just already on the ledger from the live feed — and this layer
+    /// only ever sees the rows that survived. And a source that *states* an opening balance
+    /// outright (ASB's running-balance shape does) should use that figure rather than arithmetic
+    /// that can only agree with it.
+    ///
+    /// Whether it is actually written is this layer's call: the caller can opt out, and an
+    /// account with history from before that date gets none, because then it would not be an
+    /// opening balance but a large invented movement in the middle of the ledger.
+    pub opening_balance: Option<ImportRow>,
+    /// Records other than transactions.
+    pub extras: ParsedExtras,
+    pub warnings: Vec<String>,
+}
+
+/// The non-transaction records a source produces. A closed set, matched exhaustively where
+/// the pipeline decides what to write, so a fifth source that brings something new is a
+/// compile error at that one place rather than rows silently dropped.
+#[derive(Debug, Clone)]
+pub enum ParsedExtras {
+    /// Transactions only — every source but Sharesies.
+    None,
+    Brokerage {
+        holdings: Vec<HoldingImport>,
+        dividends: Vec<DividendImport>,
+    },
+}
+
+/// One import to record. Written only for an item that was actually placed and committed — a dry
+/// run and an unrouted item both leave nothing behind to describe.
+#[derive(Debug, Clone)]
+pub struct NewImport {
+    pub account_id: i64,
+    pub source: ImportSource,
+    pub provider_tag: String,
+    pub source_account: Option<String>,
+    pub filenames: Vec<String>,
+    pub imported: i64,
+    pub skipped: i64,
+    pub held_back: i64,
+    pub covered_from: Option<String>,
+    pub covered_to: Option<String>,
+    pub cutover: Option<String>,
+}
+
 /// Counts from persisting one parsed brokerage export.
 #[derive(Debug, Clone, Default)]
 pub struct ImportCounts {
@@ -548,6 +674,29 @@ pub trait BrokerageRepo: Send + Sync {
         holdings: &[HoldingImport],
         dividends: &[DividendImport],
     ) -> AppResult<ImportCounts>;
+    /// Delete every holding lot on this account that `provider_tag` imported — the holdings
+    /// half of undoing a bulk upload, alongside
+    /// [`TransactionRepo::delete_by_provider`]. Returns how many went.
+    async fn delete_holdings_by_provider(
+        &self,
+        account_id: i64,
+        provider_tag: &str,
+    ) -> AppResult<i64>;
+    /// The same for dividends. Their withholdings go with them (`ON DELETE CASCADE`), because a
+    /// withholding is a detail of the dividend rather than a record in its own right.
+    async fn delete_dividends_by_provider(
+        &self,
+        account_id: i64,
+        provider_tag: &str,
+    ) -> AppResult<i64>;
+}
+
+/// The log of what file imports have done — `provider_syncs` for uploads.
+#[async_trait]
+pub trait ImportHistoryRepo: Send + Sync {
+    async fn record(&self, entry: NewImport) -> AppResult<()>;
+    /// Newest first. `account_id` narrows it to one account, which is the only read a panel does.
+    async fn list(&self, account_id: Option<i64>) -> AppResult<Vec<ImportRecord>>;
 }
 
 #[async_trait]

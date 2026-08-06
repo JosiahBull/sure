@@ -654,8 +654,9 @@
           <div class="empty">Add an account first — imported rows need somewhere to land.</div>
         {:else}
           <p class="hint">
-            Name the connection and choose the account its rows land in. You can then paste rows from
-            the connection's <strong>Import</strong> button; re-imports skip duplicates.
+            Name the connection and choose the account its rows land in. You can then bring rows in
+            from the connection's <strong>Import</strong> link, or from
+            <strong>Settings → Import</strong> directly; re-imports skip duplicates.
           </p>
           <div class="fields">
             <label class="field">

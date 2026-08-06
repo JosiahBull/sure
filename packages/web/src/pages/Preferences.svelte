@@ -45,10 +45,10 @@
     // The snapshot body is an opaque JSON blob (serde_json::Value on the backend).
     const { error: e } = await api.POST("/api/config/import", { body: parsed as never });
     if (e) {
-      error = "Import failed — check the snapshot.";
+      error = "Restore failed — check the snapshot.";
       return;
     }
-    notice = "Config imported.";
+    notice = "Backup restored.";
     importText = "";
     load();
   }
@@ -78,7 +78,7 @@
     <h2>Backup &amp; restore</h2>
     <p class="muted small" style="margin-top:0">
       Export the whole configuration and data as JSON (handy for rapid dev iteration), or
-      paste a snapshot to restore. Import <strong>replaces everything</strong>.
+      paste a snapshot to restore. Restoring <strong>replaces everything</strong>.
     </p>
     <div class="row" style="margin-bottom:10px">
       <button class="btn btn-primary" onclick={exportConfig}>Export JSON</button>
@@ -91,7 +91,7 @@
     ></textarea>
     <div class="row" style="justify-content:flex-end;margin-top:8px">
       <button class="btn btn-danger" onclick={importConfig} disabled={!importText.trim()}>
-        Import &amp; replace
+        Restore from backup
       </button>
     </div>
   </section>

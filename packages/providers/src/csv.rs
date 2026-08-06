@@ -33,51 +33,78 @@ impl TransactionProvider for CsvProvider {
         let payload = ctx
             .payload
             .ok_or_else(|| anyhow::anyhow!("CSV provider requires a payload"))?;
-
-        let mut reader = csv::ReaderBuilder::new()
-            .trim(csv::Trim::All)
-            .flexible(true)
-            .from_reader(payload.as_bytes());
-
-        let headers = reader.headers()?.clone();
-        let col = |name: &str| headers.iter().position(|h| h.eq_ignore_ascii_case(name));
-        let i_date = col("date").ok_or_else(|| anyhow::anyhow!("missing 'date' column"))?;
-        let i_amount = col("amount").ok_or_else(|| anyhow::anyhow!("missing 'amount' column"))?;
-        let i_desc = col("description");
-        let i_merchant = col("merchant");
-        let i_ext = col("external_id");
-        let i_ccy = col("currency");
-
-        let get = |rec: &csv::StringRecord, i: Option<usize>| -> Option<String> {
-            i.and_then(|i| rec.get(i))
-                .map(|s| s.to_string())
-                .filter(|s| !s.is_empty())
-        };
-
-        let mut out = Vec::new();
-        for record in reader.records() {
-            let record = record?;
-            let date = record.get(i_date).unwrap_or_default().to_string();
-            if date.is_empty() {
-                continue; // skip blank rows
-            }
-            let amount_str = record.get(i_amount).unwrap_or("0");
-            let amount_minor = parse_amount(amount_str)?;
-            let description = get(&record, i_desc).unwrap_or_default();
-            let external_id =
-                get(&record, i_ext).unwrap_or_else(|| format!("{date}|{amount_str}|{description}"));
-            out.push(ProviderTransaction {
-                external_id,
-                posted_at: date,
-                amount_minor,
-                currency_code: get(&record, i_ccy).map(|s| s.to_uppercase()),
-                description,
-                merchant: get(&record, i_merchant),
-                category: None,
-            });
-        }
-        Ok(out)
+        parse_rows(payload)
     }
+}
+
+/// Read CSV text into rows. Shared by the [`TransactionProvider`] above, which takes the text as
+/// a sync payload, and by `crate::import`'s upload adapter, which takes the same text as a
+/// dropped file — the two differ in how the bytes arrive, not in what a row means.
+pub fn parse_rows(payload: &str) -> anyhow::Result<Vec<ProviderTransaction>> {
+    let mut reader = csv::ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .flexible(true)
+        .from_reader(payload.as_bytes());
+
+    let headers = reader.headers()?.clone();
+    let col = |name: &str| headers.iter().position(|h| h.eq_ignore_ascii_case(name));
+    let i_date = col("date").ok_or_else(|| anyhow::anyhow!("missing 'date' column"))?;
+    let i_amount = col("amount").ok_or_else(|| anyhow::anyhow!("missing 'amount' column"))?;
+    let i_desc = col("description");
+    let i_merchant = col("merchant");
+    let i_ext = col("external_id");
+    let i_ccy = col("currency");
+
+    let get = |rec: &csv::StringRecord, i: Option<usize>| -> Option<String> {
+        i.and_then(|i| rec.get(i))
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+    };
+
+    let mut out = Vec::new();
+    for record in reader.records() {
+        let record = record?;
+        let date = record.get(i_date).unwrap_or_default().to_string();
+        if date.is_empty() {
+            continue; // skip blank rows
+        }
+        let amount_str = record.get(i_amount).unwrap_or("0");
+        let amount_minor = parse_amount(amount_str)?;
+        let description = get(&record, i_desc).unwrap_or_default();
+        let external_id =
+            get(&record, i_ext).unwrap_or_else(|| format!("{date}|{amount_str}|{description}"));
+        out.push(ProviderTransaction {
+            external_id,
+            posted_at: date,
+            amount_minor,
+            currency_code: get(&record, i_ccy).map(|s| s.to_uppercase()),
+            description,
+            merchant: get(&record, i_merchant),
+            category: None,
+        });
+    }
+    Ok(out)
+}
+
+/// Whether this text has the columns [`parse_rows`] needs. Cheap: the header line only, so it
+/// can run while working out which importer an upload belongs to.
+///
+/// Deliberately strict about *where* the header is — the first line with anything on it, which
+/// is where [`parse_rows`] will look for it too. A bank export that puts a preamble above its
+/// header (ASB's does) is therefore not claimed here, and is left to the adapter that knows how
+/// to read that particular preamble. Being tolerant would mean recognising files this reader
+/// then can't parse, which trades a clear "nothing here reads this" for a confusing
+/// "read it as a CSV and it went wrong".
+pub fn has_required_columns(payload: &str) -> bool {
+    let Some(header) = payload.lines().find(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    let has = |name: &str| {
+        header
+            .split(',')
+            .any(|h| h.trim().trim_matches('"').eq_ignore_ascii_case(name))
+    };
+    has("date") && has("amount")
 }
 
 /// Parse a human-written amount (`-1,234.56`, `$5.00`) into 2-dp minor units.

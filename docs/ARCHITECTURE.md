@@ -24,8 +24,10 @@ sure-scheduler ─► (nothing)        generic recurring-task scheduler: Schedul
                                      TaskStateStore ports, storage-agnostic
 sure-providers ─► app, sure-core   concrete adapters implementing sure-app's provider
                                      ports: CSV + Akahu (NZ banking) transaction sources,
-                                     Yahoo Finance prices, Frankfurter FX, a `Registry`
-                                     (implements `ProviderRegistry`), + the Sharesies parser
+                                     Yahoo Finance prices, Frankfurter FX, and the upload
+                                     parsers (ASB, myIR, Sharesies, CSV) behind
+                                     `ImportAdapter`; two registries implement the two
+                                     lookup ports (`ProviderRegistry`, `ImportRegistry`)
 sure-app   ──►  core, scheduler    the application core: use-case services (brokerage,
                                      reports, rules, sync, stock prices, forecast) + the
                                      background tasks, the compute engines (rule eval,
@@ -52,8 +54,10 @@ sure-server ──► app, dal,          the composition root: the only crate th
 ```
 
 Arrows are "depends on". The graph runs `core ← app ← {dal, providers}`, with `sure-api`
-depending on `sure-app` for every handler (plus `sure-providers` directly for just one
-thing now — the Sharesies export parser in `routes::brokerage`) and never on `sure-dal`.
+depending on `sure-app` for every handler and on neither `sure-dal` nor `sure-providers`.
+That last part was only true of `sure-dal` until the import unification: `sure-api` named
+three parsers directly (`routes::{asb, student_loan, brokerage}`), which is what putting
+them behind the `ImportAdapter` port closed — see [IMPORT.md](IMPORT.md).
 The key inversion is that **both `sure-dal` and `sure-providers` depend on `sure-app`** —
 the adapters depend on the core to see the port traits they implement (`SqliteStore` the
 repo ports; the provider clients the `TransactionProvider` / `StockPriceProvider` /

@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use sure_app::brokerage::BrokerageService;
 use sure_app::forecast::ForecastService;
-use sure_app::ports::{ProviderRegistry, StockPriceProvider};
+use sure_app::import::ImportService;
+use sure_app::ports::{ImportRegistry, ProviderRegistry, StockPriceProvider};
 use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
 use sure_app::sync::SyncService;
@@ -33,6 +34,7 @@ use crate::config::Config;
 fn build_state(
     db: Db,
     registry: Arc<dyn ProviderRegistry>,
+    imports: Arc<dyn ImportRegistry>,
     stock_price_provider: Arc<dyn StockPriceProvider>,
     shutdown: Shutdown,
 ) -> sure_api::State {
@@ -68,9 +70,23 @@ fn build_state(
         store.clone(),
         clock,
     ));
+    // Takes `reports` rather than the balances repo: an import reconciles an export's stated
+    // closing balance against the figure the account page shows, and that figure is a
+    // derivation (newest valuation, else the running transaction sum) rather than a column.
+    let import = Arc::new(ImportService::new(
+        imports,
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        registry.clone(),
+        reports.clone(),
+    ));
 
     sure_api::State {
         brokerage,
+        import,
         reports,
         forecast,
         rules,
@@ -120,6 +136,10 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         sure_providers::AkahuCredentials::from_env(),
     );
     let registry: Arc<dyn ProviderRegistry> = Arc::new(sure_providers::Registry::new(akahu));
+    // The file-import adapters. Nothing to configure — a parser has no endpoint and reads no
+    // environment — but built here all the same, so `sure-api` names no parser and the
+    // detection order stays one list in one place.
+    let imports: Arc<dyn ImportRegistry> = Arc::new(sure_providers::import::ImportRegistry::new());
     let stock_price_provider: Arc<dyn StockPriceProvider> =
         Arc::new(sure_providers::YahooFinanceProvider::with_endpoint(
             config.provider_endpoints.yahoo_finance.clone(),
@@ -212,6 +232,7 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
     let state = build_state(
         pool.clone(),
         registry,
+        imports,
         stock_price_provider,
         shutdown.clone(),
     );

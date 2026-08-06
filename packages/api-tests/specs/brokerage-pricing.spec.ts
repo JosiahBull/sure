@@ -443,13 +443,20 @@ test("the import's fire-and-forget backfill really does write the history", asyn
       },
     ]),
   });
-  const imported = await fetch(`${server.baseURL}/api/accounts/${acc.id}/brokerage/import`, {
+  // Through the one import endpoint, naming the source and the account it goes to — the backfill
+  // is now the single `FollowUp` an import hands back for the transport to spawn, so what this
+  // test really pins is that the handoff still happens.
+  const q = new URLSearchParams({ source: "sharesies_zip", assign: `sharesies:${acc.id}` });
+  const imported = await fetch(`${server.baseURL}/api/import?${q}`, {
     method: "POST",
     headers: { "Content-Type": "application/zip" },
     body: zip,
   });
   expect(imported.status).toBe(200);
-  expect((await imported.json()).holdings_imported).toBe(1);
+  const holdings = (await imported.json()).items[0].extras.find(
+    (x: { kind: string }) => x.kind === "holdings",
+  );
+  expect(holdings.imported).toBe(1);
 
   const seen = await testproxy.assertSeen(
     { upstream: "yahoo_finance", path_pattern: "^/v8/finance/chart/ZZFILL\\.NZ$" },
