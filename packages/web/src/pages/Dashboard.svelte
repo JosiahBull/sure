@@ -10,8 +10,11 @@
   import Sankey from "../lib/charts/Sankey.svelte";
   import WeightBar from "../lib/charts/WeightBar.svelte";
   import { balances, refresh as refreshBalances } from "../lib/balances.svelte";
-  import { groupByKind, groupByOwner } from "../lib/balanceGroups";
-  import { people } from "../lib/people.svelte";
+  import { groupByKind } from "../lib/balanceGroups";
+  // Disabled with the "Net worth by person" card below — re-add `groupByOwner` and
+  // `people` here if that card comes back.
+  // import { groupByOwner } from "../lib/balanceGroups";
+  // import { people } from "../lib/people.svelte";
   import Icon from "../lib/Icon.svelte";
   import FxNotice from "../lib/FxNotice.svelte";
 
@@ -97,8 +100,14 @@
    * cards above use — and it is deliberately *not* driven by the header's "whose money"
    * filter: this card's whole job is the side-by-side comparison, which filtering to one
    * person would collapse.
+   *
+   * Disabled 2026-08-06: the side-by-side comparison frames a household's finances as two
+   * scores to compare, which is not how we want to think about a relationship. Kept rather
+   * than deleted in case it earns a place back — `groupByOwner` in lib/balanceGroups.ts is
+   * still exported and tested, so this is the only thing to un-comment (plus the markup and
+   * the .owner-* CSS, both marked below).
    */
-  const byOwner = $derived(groupByOwner(balances.data?.accounts ?? [], "all"));
+  // const byOwner = $derived(groupByOwner(balances.data?.accounts ?? [], "all"));
   const investmentAccounts = $derived(
     (balances.data?.accounts ?? []).filter((a) => a.class === "investment")
   );
@@ -382,6 +391,9 @@
     </div>
   {/if}
 
+  <!-- "Net worth by person" — disabled 2026-08-06, see the byOwner note in the script block.
+       Un-commenting this needs the byOwner derived, the groupByOwner/people imports, and the
+       .owner-* CSS restored too.
   {#if balances.data && people.list.length > 1 && byOwner.groups.length > 1}
     <section class="card">
       <div class="card-title">
@@ -409,6 +421,7 @@
       </p>
     </section>
   {/if}
+  -->
 
   {#if balances.data && (assetsGrouped.groups.length || liabilitiesGrouped.groups.length)}
     <div class="grid two">
@@ -612,8 +625,10 @@
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
   }
 
-  /* One column per household member, plus joint. Wraps rather than scrolls: a household is
-     two or three people, not a table. */
+  /* Disabled with the "Net worth by person" card — kept so restoring it is one un-comment.
+     One column per household member, plus joint. Wraps rather than scrolls: a household is
+     two or three people, not a table.
+
   .owner-cards {
     display: flex;
     flex-wrap: wrap;
@@ -642,6 +657,7 @@
   .owner-total.neg {
     color: var(--negative);
   }
+  */
 
   .cards {
     gap: 16px;
