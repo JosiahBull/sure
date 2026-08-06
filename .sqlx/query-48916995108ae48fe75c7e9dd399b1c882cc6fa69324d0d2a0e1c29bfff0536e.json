@@ -1,0 +1,92 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT a.id AS \"id!\", a.transaction_id, t.posted_at, t.description, t.amount_minor,\n                  t.currency_code, a.prev_category_id, a.new_category_id, a.prev_merchant_id,\n                  a.new_merchant_id, a.prev_one_off AS \"prev_one_off: bool\",\n                  a.new_one_off AS \"new_one_off: bool\", a.reverted AS \"reverted!: bool\"\n             FROM rule_applications a\n             JOIN transactions t ON t.id = a.transaction_id\n            WHERE a.rule_run_id = ?1\n            ORDER BY a.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "transaction_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "posted_at",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "description",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "prev_category_id",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "new_category_id",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "prev_merchant_id",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "new_merchant_id",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "prev_one_off: bool",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "new_one_off: bool",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "reverted!: bool",
+        "ordinal": 12,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "48916995108ae48fe75c7e9dd399b1c882cc6fa69324d0d2a0e1c29bfff0536e"
+}

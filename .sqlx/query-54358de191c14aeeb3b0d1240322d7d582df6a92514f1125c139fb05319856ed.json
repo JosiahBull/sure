@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE transactions SET linked_transaction_id=?2 WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "54358de191c14aeeb3b0d1240322d7d582df6a92514f1125c139fb05319856ed"
+}

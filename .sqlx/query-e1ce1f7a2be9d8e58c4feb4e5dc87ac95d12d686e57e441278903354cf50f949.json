@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO valuations\n                (id, account_id, as_of, value_minor, currency_code, source, note, created_at)\n             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "e1ce1f7a2be9d8e58c4feb4e5dc87ac95d12d686e57e441278903354cf50f949"
+}

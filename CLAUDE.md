@@ -147,7 +147,9 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   `test:rust` (`cargo test --workspace --all-features`) then `test:api`
   (`@sure/api-tests`, Playwright-driven backend e2e) then `test:web`;
   `pnpm lint:rust` is `cargo clippy --all-targets -- -D warnings`; `pnpm fmt:rust` is
-  `cargo fmt --all`. `test:rust` carries `--all-features` but deliberately *not*
+  `cargo fmt --all`; `pnpm sqlx:prepare` regenerates the compile-time query metadata in
+  `.sqlx/` and `pnpm sqlx:check` verifies it is current (see the query-checking convention
+  below). `test:rust` carries `--all-features` but deliberately *not*
   `--all-targets`: for `cargo test` that flag excludes doctests rather than adding to
   them, which would silently drop `sure_appbase`'s usage example.
 - **Blocking-code detector** (development only): `pnpm dev:api:blocked` and
@@ -186,9 +188,33 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   would carry. Nothing re-checks them against the live API, so a capture is evidence about the day
   it was taken — `pnpm fixtures:record` and read the diff when a price or FX path misbehaves
   against the real app but not in the suite. Tiers, fixtures and the traps: `docs/TESTING.md`.
+- **Every query is compile-time checked; `.sqlx/` is how.** All SQL in `sure-dal` goes through
+  `sqlx::query!` / `query_as!` / `query_scalar!`, so a column that doesn't exist, a bind count
+  that doesn't match, or a row struct whose types disagree with the table is a build error
+  rather than a runtime failure on whichever request reaches it first. (It found a live one on
+  the way in: `snapshot.rs` had been exporting `forecast_events` by four columns migration 0022
+  removed, which 500'd `GET /api/config/export` for anyone with a forecast event and passed its
+  tests only because the fixture never inserted one.) The macros check against the committed
+  `.sqlx/` metadata, and `.cargo/config.toml` pins `SQLX_OFFLINE=true` so a build never opens a
+  database to do it — which is also what keeps `cargo build` away from `data/sure.db` whatever
+  a developer's `.env` says. **Edit a query or a migration and you must run `pnpm sqlx:prepare`
+  and commit the result**; `pnpm sqlx:check` (pre-commit, and the `sqlx` job in `checks.yml`)
+  fails if you didn't. `scripts/sqlx-prepare.mjs` applies the migrations to a throwaway database
+  under `target/` and describes against that, so the checked schema is always the one the
+  migrations produce.
+  Three annotations recur because SQLite's `describe` is conservative — `col AS "col!"` forces
+  non-null (a rowid alias, or anything read out of a subquery/CTE/`GROUP BY`), `col AS "col?"`
+  forces nullable, and `col AS "col: T"` names the decode type (needed for `bool`, and for an
+  aggregate like `SUM(x)` that describes as `NULL`). See the module docs in
+  `packages/dal/src/lib.rs`. The handful of queries whose *shape* is decided at runtime — the
+  transaction list's optional filters, `bulk_update`/`bulk_delete`, the chunked provider import
+  — keep `QueryBuilder`/`format!` and each says so at the call site; they are the only unchecked
+  SQL left.
 - **Pre-commit** (`.githooks/pre-commit`, wired by the `prepare` script): runs
   `node scripts/pii-scan.mjs` (rule 3; first, because it is the cheapest gate and the only
-  one guarding something a later gate cannot undo), then `cargo fmt --all --check`,
+  one guarding something a later gate cannot undo), then `node scripts/sqlx-prepare.mjs --check`
+  (before the compilers, so stale query metadata reports itself instead of surfacing as a
+  baffling query error out of clippy), then `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
   `cargo test --workspace --all-features` (directly after clippy, which has already
   compiled the workspace, so the marginal cost is linking and running the test binaries;
@@ -205,7 +231,8 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   `sqlx::migrate!("./migrations")` in `packages/dal/src/lib.rs`): append-only. sqlx
   records each applied migration's checksum in `_sqlx_migrations`; editing a migration
   that has already run anywhere breaks that checksum check on next connect. A schema
-  change is always a new numbered file.
+  change is always a new numbered file — and a new file means running `pnpm sqlx:prepare`,
+  because the queries are checked against the schema the migrations produce.
 - **Money and rates**: amounts are signed integer minor units (e.g. `114_269_63` ==
   $114,269.63 — see the `clippy::inconsistent_digit_grouping` allow and its comment in
   `packages/dal/src/lib.rs`); rates are basis points (`packages/core/src/types.rs`,

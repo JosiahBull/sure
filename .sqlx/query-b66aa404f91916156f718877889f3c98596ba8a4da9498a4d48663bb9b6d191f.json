@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE rule_applications SET reverted=1 WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "b66aa404f91916156f718877889f3c98596ba8a4da9498a4d48663bb9b6d191f"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM equity_grants",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "d7018f58683ff08d4470fd70f0c17de4f147c5926b077bf3e6a73f011a0d4077"
+}

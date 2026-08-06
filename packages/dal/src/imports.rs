@@ -7,7 +7,6 @@
 //! snapshot import clearing the log along with every other audit table.
 
 use serde::Deserialize;
-use sqlx::FromRow;
 
 use sure_core::{AppResult, ImportRecord, ImportSource};
 
@@ -29,7 +28,7 @@ pub struct NewImport {
     pub cutover: Option<String>,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct ImportRow {
     id: i64,
     account_id: i64,
@@ -79,23 +78,25 @@ impl TryFrom<ImportRow> for ImportRecord {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn record(db: &Db, entry: NewImport) -> AppResult<()> {
-    sqlx::query(
+    let source = entry.source.as_str();
+    let filenames = serde_json::to_string(&entry.filenames).unwrap_or_else(|_| "[]".to_string());
+    sqlx::query!(
         "INSERT INTO imports
            (account_id, source, provider_tag, source_account, filenames,
             imported, skipped, held_back, covered_from, covered_to, cutover)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        entry.account_id,
+        source,
+        entry.provider_tag,
+        entry.source_account,
+        filenames,
+        entry.imported,
+        entry.skipped,
+        entry.held_back,
+        entry.covered_from,
+        entry.covered_to,
+        entry.cutover
     )
-    .bind(entry.account_id)
-    .bind(entry.source.as_str())
-    .bind(&entry.provider_tag)
-    .bind(&entry.source_account)
-    .bind(serde_json::to_string(&entry.filenames).unwrap_or_else(|_| "[]".to_string()))
-    .bind(entry.imported)
-    .bind(entry.skipped)
-    .bind(entry.held_back)
-    .bind(&entry.covered_from)
-    .bind(&entry.covered_to)
-    .bind(&entry.cutover)
     .execute(db)
     .await?;
     Ok(())
@@ -103,21 +104,20 @@ pub async fn record(db: &Db, entry: NewImport) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db, account_id: Option<i64>) -> AppResult<Vec<ImportRecord>> {
-    let rows: Vec<ImportRow> = match account_id {
-        Some(id) => {
-            sqlx::query_as(
-                "SELECT * FROM imports WHERE account_id = ?1 ORDER BY created_at DESC, id DESC",
-            )
-            .bind(id)
-            .fetch_all(db)
-            .await?
-        }
-        None => {
-            sqlx::query_as("SELECT * FROM imports ORDER BY created_at DESC, id DESC")
-                .fetch_all(db)
-                .await?
-        }
-    };
+    // One query rather than the two the `SELECT *` version needed: `?1 IS NULL` makes the
+    // unscoped case a bind value instead of a second statement, and the macro has to see a
+    // literal string either way.
+    let rows = sqlx::query_as!(
+        ImportRow,
+        "SELECT id, account_id, source, source_account, filenames,
+                imported, skipped, held_back, covered_from, covered_to, cutover, created_at
+           FROM imports
+          WHERE ?1 IS NULL OR account_id = ?1
+          ORDER BY created_at DESC, id DESC",
+        account_id
+    )
+    .fetch_all(db)
+    .await?;
     rows.into_iter().map(ImportRecord::try_from).collect()
 }
 

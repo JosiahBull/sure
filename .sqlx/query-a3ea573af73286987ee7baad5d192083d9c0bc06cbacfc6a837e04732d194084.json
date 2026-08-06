@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT account_id, as_of, value_minor, currency_code FROM valuations\n              WHERE as_of >= ?1 ORDER BY as_of, id",
+  "describe": {
+    "columns": [
+      {
+        "name": "account_id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "as_of",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "value_minor",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a3ea573af73286987ee7baad5d192083d9c0bc06cbacfc6a837e04732d194084"
+}

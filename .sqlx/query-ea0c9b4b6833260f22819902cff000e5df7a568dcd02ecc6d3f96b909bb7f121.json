@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO forecast_assumptions\n              (target_type, target_id, annual_growth_bps, annual_volatility_bps,\n               dividend_yield_bps, long_run_growth_bps, notes, annual_fee_bps,\n               annual_fixed_fee_minor)\n           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)\n           ON CONFLICT(target_type, target_id) DO UPDATE SET\n              annual_growth_bps=excluded.annual_growth_bps,\n              annual_volatility_bps=excluded.annual_volatility_bps,\n              dividend_yield_bps=excluded.dividend_yield_bps,\n              long_run_growth_bps=excluded.long_run_growth_bps,\n              annual_fee_bps=excluded.annual_fee_bps,\n              annual_fixed_fee_minor=excluded.annual_fixed_fee_minor,\n              notes=excluded.notes,\n              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           RETURNING id AS \"id!\", target_type, target_id, annual_growth_bps, annual_volatility_bps,\n                     dividend_yield_bps, long_run_growth_bps, annual_fee_bps,\n                     annual_fixed_fee_minor, notes, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "target_type",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "target_id",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "annual_growth_bps",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "annual_volatility_bps",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "dividend_yield_bps",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "long_run_growth_bps",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "annual_fee_bps",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "annual_fixed_fee_minor",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "notes",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 11,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "ea0c9b4b6833260f22819902cff000e5df7a568dcd02ecc6d3f96b909bb7f121"
+}

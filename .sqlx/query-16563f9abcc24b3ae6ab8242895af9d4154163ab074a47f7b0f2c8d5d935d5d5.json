@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT base_code AS \"base_code!\", quote_code AS \"quote_code!\",\n                  rate AS \"rate!\", as_of AS \"as_of!\"\n             FROM (SELECT base_code, quote_code, rate, as_of,\n                          ROW_NUMBER() OVER (\n                              PARTITION BY base_code, quote_code ORDER BY as_of DESC\n                          ) AS rn\n                     FROM exchange_rates)\n            WHERE rn = 1\n            ORDER BY base_code, quote_code",
+  "describe": {
+    "columns": [
+      {
+        "name": "base_code!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "quote_code!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "rate!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "as_of!",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "16563f9abcc24b3ae6ab8242895af9d4154163ab074a47f7b0f2c8d5d935d5d5"
+}

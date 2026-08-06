@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", account_id, ticker, exchange, name, currency_code, trade_date,\n                  quantity, unit_price, fee_minor, kind, external_id, provider, created_at\n             FROM holdings WHERE account_id=?1 ORDER BY date(trade_date), id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "ticker",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "exchange",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "trade_date",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "quantity",
+        "ordinal": 7,
+        "type_info": "Float"
+      },
+      {
+        "name": "unit_price",
+        "ordinal": 8,
+        "type_info": "Float"
+      },
+      {
+        "name": "fee_minor",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kind",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "external_id",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "provider",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 13,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "329b4ee0e6bb9bbe1390cdd3f202f867f76d7aa2c2ba6846bc37b83546226a26"
+}

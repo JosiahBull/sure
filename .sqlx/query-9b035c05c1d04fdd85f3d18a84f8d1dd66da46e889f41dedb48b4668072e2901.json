@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO currencies (code, name, symbol, decimal_places)\n         VALUES (?1, ?2, ?3, ?4)\n         ON CONFLICT(code) DO UPDATE SET\n            name = excluded.name, symbol = excluded.symbol, decimal_places = excluded.decimal_places\n         RETURNING code, name, symbol, decimal_places, created_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "code",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "symbol",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "decimal_places",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9b035c05c1d04fdd85f3d18a84f8d1dd66da46e889f41dedb48b4668072e2901"
+}

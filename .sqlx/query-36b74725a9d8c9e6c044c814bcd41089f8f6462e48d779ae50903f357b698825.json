@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", label, kind, person_id, expected_on, timing_spread_months,\n                      probability_bps, notes, created_at, updated_at\n                 FROM forecast_events ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "label",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "person_id",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "expected_on",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "timing_spread_months",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "probability_bps",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "notes",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 9,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "36b74725a9d8c9e6c044c814bcd41089f8f6462e48d779ae50903f357b698825"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT MIN(as_of) AS \"earliest: String\"\n             FROM valuations\n            WHERE as_of GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'\n              AND date(as_of) = substr(as_of, 1, 10)",
+  "describe": {
+    "columns": [
+      {
+        "name": "earliest: String",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "63ab0b1f608668e33e73d9c8c199ed85e6d6b671631ea648a199c0c54cc74786"
+}

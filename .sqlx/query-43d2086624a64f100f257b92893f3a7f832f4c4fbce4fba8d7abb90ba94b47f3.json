@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "WITH RECURSIVE down(id, depth) AS (\n               SELECT id, 0 FROM categories WHERE id = ?1\n               UNION ALL\n               SELECT c.id, down.depth + 1\n               FROM categories c JOIN down ON c.parent_id = down.id WHERE down.depth < 64\n           )\n           SELECT COALESCE(MAX(depth), 0) AS \"depth!: i64\" FROM down",
+  "describe": {
+    "columns": [
+      {
+        "name": "depth!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "43d2086624a64f100f257b92893f3a7f832f4c4fbce4fba8d7abb90ba94b47f3"
+}

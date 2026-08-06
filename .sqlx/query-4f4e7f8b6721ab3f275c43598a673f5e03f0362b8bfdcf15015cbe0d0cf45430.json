@@ -1,0 +1,92 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO equity_grants\n              (account_id, company, grant_date, quantity, strike_minor, currency_code,\n               vest_months, cliff_months, unit_value_minor, note)\n           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)\n           RETURNING id AS \"id!\", account_id, company, grant_date, quantity, strike_minor,\n                     currency_code, vest_months, cliff_months, unit_value_minor, note, created_at,\n                     updated_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "company",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "grant_date",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "quantity",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "strike_minor",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "vest_months",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cliff_months",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "unit_value_minor",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "note",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 12,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "4f4e7f8b6721ab3f275c43598a673f5e03f0362b8bfdcf15015cbe0d0cf45430"
+}

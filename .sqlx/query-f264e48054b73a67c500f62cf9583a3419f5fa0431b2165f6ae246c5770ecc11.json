@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO dividends\n                (account_id, ticker, exchange, record_date, paid_date, shares_held,\n                 gross_amount_minor, net_amount_minor, currency_code, external_id, provider)\n             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": []
+  },
+  "hash": "f264e48054b73a67c500f62cf9583a3419f5fa0431b2165f6ae246c5770ecc11"
+}

@@ -1,10 +1,9 @@
-use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
 pub use sure_core::{Ownership, Person, SavePerson};
 
 use crate::Db;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct PersonRow {
     id: i64,
     name: String,
@@ -31,8 +30,11 @@ impl From<PersonRow> for Person {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Person>> {
-    Ok(sqlx::query_as::<_, PersonRow>(
-        "SELECT * FROM people ORDER BY sort_order, name COLLATE NOCASE",
+    Ok(sqlx::query_as!(
+        PersonRow,
+        r#"SELECT id AS "id!", name, color, sort_order, placeholder AS "placeholder: bool",
+                  created_at, updated_at
+             FROM people ORDER BY sort_order, name COLLATE NOCASE"#
     )
     .fetch_all(db)
     .await?
@@ -43,14 +45,17 @@ pub async fn list(db: &Db) -> AppResult<Vec<Person>> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn get(db: &Db, id: i64) -> AppResult<Person> {
-    Ok(
-        sqlx::query_as::<_, PersonRow>("SELECT * FROM people WHERE id = ?1")
-            .bind(id)
-            .fetch_optional(db)
-            .await?
-            .ok_or(AppError::NotFound("person"))?
-            .into(),
+    Ok(sqlx::query_as!(
+        PersonRow,
+        r#"SELECT id AS "id!", name, color, sort_order, placeholder AS "placeholder: bool",
+                      created_at, updated_at
+                 FROM people WHERE id = ?1"#,
+        id
     )
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("person"))?
+    .into())
 }
 
 /// Whether a person id exists — for validating an [`Ownership::Person`] target before it
@@ -59,8 +64,7 @@ pub async fn get(db: &Db, id: i64) -> AppResult<Person> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn exists(db: &Db, id: i64) -> AppResult<bool> {
     Ok(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM people WHERE id = ?1")
-            .bind(id)
+        sqlx::query_scalar!("SELECT COUNT(*) FROM people WHERE id = ?1", id)
             .fetch_one(db)
             .await?
             > 0,
@@ -110,12 +114,17 @@ fn color_of(input: &SavePerson) -> Option<String> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SavePerson) -> AppResult<Person> {
     validate(&input)?;
-    Ok(sqlx::query_as::<_, PersonRow>(
-        "INSERT INTO people (name, color, sort_order) VALUES (?1, ?2, ?3) RETURNING *",
+    let name = input.name.trim();
+    let color = color_of(&input);
+    Ok(sqlx::query_as!(
+        PersonRow,
+        r#"INSERT INTO people (name, color, sort_order) VALUES (?1, ?2, ?3)
+           RETURNING id AS "id!", name, color, sort_order,
+                     placeholder AS "placeholder: bool", created_at, updated_at"#,
+        name,
+        color,
+        input.sort_order
     )
-    .bind(input.name.trim())
-    .bind(color_of(&input))
-    .bind(input.sort_order)
     .fetch_one(db)
     .await
     .map_err(unique_name)?
@@ -131,15 +140,20 @@ pub async fn create(db: &Db, input: SavePerson) -> AppResult<Person> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SavePerson) -> AppResult<Person> {
     validate(&input)?;
-    Ok(sqlx::query_as::<_, PersonRow>(
-        "UPDATE people SET name=?2, color=?3, sort_order=?4, placeholder=0,
-            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1 RETURNING *",
+    let name = input.name.trim();
+    let color = color_of(&input);
+    Ok(sqlx::query_as!(
+        PersonRow,
+        r#"UPDATE people SET name=?2, color=?3, sort_order=?4, placeholder=0,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id AS "id!", name, color, sort_order,
+                     placeholder AS "placeholder: bool", created_at, updated_at"#,
+        id,
+        name,
+        color,
+        input.sort_order
     )
-    .bind(id)
-    .bind(input.name.trim())
-    .bind(color_of(&input))
-    .bind(input.sort_order)
     .fetch_optional(db)
     .await
     .map_err(unique_name)?
@@ -155,10 +169,10 @@ pub async fn update(db: &Db, id: i64, input: SavePerson) -> AppResult<Person> {
 /// asset that still has debts secured against it.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
-    let owned = sqlx::query_scalar::<_, String>(
+    let owned = sqlx::query_scalar!(
         "SELECT name FROM accounts WHERE person_id = ?1 ORDER BY sort_order, name",
+        id
     )
-    .bind(id)
     .fetch_all(db)
     .await?;
     if !owned.is_empty() {
@@ -170,10 +184,10 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     // Income is attributed too, and `income_streams.person_id` is RESTRICT for the same reason
     // accounts are: deleting an earner would silently delete their income from every projection.
     // Named here rather than left to the constraint, so the message says which stream to move.
-    let earning = sqlx::query_scalar::<_, String>(
+    let earning = sqlx::query_scalar!(
         "SELECT label FROM income_streams WHERE person_id = ?1 ORDER BY sort_order, label",
+        id
     )
-    .bind(id)
     .fetch_all(db)
     .await?;
     if !earning.is_empty() {
@@ -185,7 +199,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     // Every account must name an owner, so emptying the household would leave a database in
     // which no account can be created at all. Refused rather than allowed and then hit as a
     // baffling 422 on the next "add account".
-    let remaining = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM people")
+    let remaining = sqlx::query_scalar!("SELECT COUNT(*) FROM people")
         .fetch_one(db)
         .await?;
     if remaining <= 1 {
@@ -194,8 +208,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
              Add someone else first, or rename this one.",
         ));
     }
-    let res = sqlx::query("DELETE FROM people WHERE id = ?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM people WHERE id = ?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {
@@ -311,11 +324,11 @@ mod tests {
     async fn deleting_someone_who_owns_an_account_is_refused_by_name() {
         let db = test_db().await;
         let alex = person(&db, "Alex").await;
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO accounts (name, kind, currency_code, ownership, person_id)
              VALUES ('Everyday', 'bank', 'NZD', 'person', ?1)",
+            alex.id
         )
-        .bind(alex.id)
         .execute(&db)
         .await
         .unwrap();
@@ -328,7 +341,7 @@ mod tests {
 
         // ...and once nothing is attributed to them, it goes through. (The placeholder person
         // every database is created with is what keeps this from being the last one.)
-        sqlx::query("UPDATE accounts SET ownership='joint', person_id=NULL")
+        sqlx::query!("UPDATE accounts SET ownership='joint', person_id=NULL")
             .execute(&db)
             .await
             .unwrap();

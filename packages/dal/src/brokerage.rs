@@ -3,7 +3,6 @@
 //! snapshot lives in `sure_api::brokerage` (it needs the stock-price provider); this
 //! module is pure persistence, mirroring the split used by `equity`.
 
-use sqlx::FromRow;
 use sure_core::{AppError, AppResult, LotKind};
 pub use sure_core::{Dividend, DividendDetail, DividendWithholding, HoldingLot, SaveHoldingLot};
 
@@ -111,7 +110,7 @@ fn parse_kind(kind: String) -> AppResult<LotKind> {
         .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct HoldingLotRow {
     id: i64,
     account_id: i64,
@@ -156,10 +155,13 @@ impl TryFrom<HoldingLotRow> for HoldingLot {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_holdings(db: &Db, account_id: i64) -> AppResult<Vec<HoldingLot>> {
-    sqlx::query_as::<_, HoldingLotRow>(
-        "SELECT * FROM holdings WHERE account_id=?1 ORDER BY date(trade_date), id",
+    sqlx::query_as!(
+        HoldingLotRow,
+        r#"SELECT id AS "id!", account_id, ticker, exchange, name, currency_code, trade_date,
+                  quantity, unit_price, fee_minor, kind, external_id, provider, created_at
+             FROM holdings WHERE account_id=?1 ORDER BY date(trade_date), id"#,
+        account_id
     )
-    .bind(account_id)
     .fetch_all(db)
     .await?
     .into_iter()
@@ -189,22 +191,28 @@ pub async fn create_holding(
             "unknown currency '{currency}'"
         )));
     }
-    sqlx::query_as::<_, HoldingLotRow>(
-        "INSERT INTO holdings
-            (account_id, ticker, exchange, name, currency_code, trade_date, quantity,
-             unit_price, fee_minor, kind)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) RETURNING *",
+    let exchange = input.exchange.trim();
+    let trade_date = input.trade_date.to_string();
+    let kind = input.kind.as_str();
+    sqlx::query_as!(
+        HoldingLotRow,
+        r#"INSERT INTO holdings
+              (account_id, ticker, exchange, name, currency_code, trade_date, quantity,
+               unit_price, fee_minor, kind)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+           RETURNING id AS "id!", account_id, ticker, exchange, name, currency_code, trade_date,
+                     quantity, unit_price, fee_minor, kind, external_id, provider, created_at"#,
+        account_id,
+        ticker,
+        exchange,
+        input.name,
+        currency,
+        trade_date,
+        input.quantity,
+        input.unit_price,
+        input.fee_minor,
+        kind
     )
-    .bind(account_id)
-    .bind(&ticker)
-    .bind(input.exchange.trim())
-    .bind(&input.name)
-    .bind(&currency)
-    .bind(input.trade_date.to_string())
-    .bind(input.quantity)
-    .bind(input.unit_price)
-    .bind(input.fee_minor)
-    .bind(input.kind.as_str())
     .fetch_one(db)
     .await
     .map_err(map_fk)?
@@ -221,11 +229,13 @@ pub async fn delete_holdings_by_provider(
     account_id: i64,
     provider_tag: &str,
 ) -> AppResult<i64> {
-    let res = sqlx::query("DELETE FROM holdings WHERE account_id = ?1 AND provider = ?2")
-        .bind(account_id)
-        .bind(provider_tag)
-        .execute(db)
-        .await?;
+    let res = sqlx::query!(
+        "DELETE FROM holdings WHERE account_id = ?1 AND provider = ?2",
+        account_id,
+        provider_tag
+    )
+    .execute(db)
+    .await?;
     Ok(res.rows_affected() as i64)
 }
 
@@ -238,18 +248,19 @@ pub async fn delete_dividends_by_provider(
     account_id: i64,
     provider_tag: &str,
 ) -> AppResult<i64> {
-    let res = sqlx::query("DELETE FROM dividends WHERE account_id = ?1 AND provider = ?2")
-        .bind(account_id)
-        .bind(provider_tag)
-        .execute(db)
-        .await?;
+    let res = sqlx::query!(
+        "DELETE FROM dividends WHERE account_id = ?1 AND provider = ?2",
+        account_id,
+        provider_tag
+    )
+    .execute(db)
+    .await?;
     Ok(res.rows_affected() as i64)
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete_holding(db: &Db, id: i64) -> AppResult<()> {
-    let res = sqlx::query("DELETE FROM holdings WHERE id=?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM holdings WHERE id=?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {
@@ -260,7 +271,7 @@ pub async fn delete_holding(db: &Db, id: i64) -> AppResult<()> {
 
 // ---- dividends -----------------------------------------------------------
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct DividendRow {
     id: i64,
     account_id: i64,
@@ -297,7 +308,7 @@ impl From<DividendRow> for Dividend {
     }
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct DividendWithholdingRow {
     id: i64,
     dividend_id: i64,
@@ -322,10 +333,14 @@ impl From<DividendWithholdingRow> for DividendWithholding {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_dividends(db: &Db, account_id: i64) -> AppResult<Vec<DividendDetail>> {
-    let dividends: Vec<Dividend> = sqlx::query_as::<_, DividendRow>(
-        "SELECT * FROM dividends WHERE account_id=?1 ORDER BY date(paid_date) DESC, id DESC",
+    let dividends: Vec<Dividend> = sqlx::query_as!(
+        DividendRow,
+        r#"SELECT id AS "id!", account_id, ticker, exchange, record_date, paid_date, shares_held,
+                  gross_amount_minor, net_amount_minor, currency_code, external_id, provider,
+                  created_at
+             FROM dividends WHERE account_id=?1 ORDER BY date(paid_date) DESC, id DESC"#,
+        account_id
     )
-    .bind(account_id)
     .fetch_all(db)
     .await?
     .into_iter()
@@ -333,10 +348,13 @@ pub async fn list_dividends(db: &Db, account_id: i64) -> AppResult<Vec<DividendD
     .collect();
     let mut out = Vec::with_capacity(dividends.len());
     for dividend in dividends {
-        let withholdings: Vec<DividendWithholding> = sqlx::query_as::<_, DividendWithholdingRow>(
-            "SELECT * FROM dividend_withholdings WHERE dividend_id=?1 ORDER BY id",
+        let withholdings: Vec<DividendWithholding> = sqlx::query_as!(
+            DividendWithholdingRow,
+            r#"SELECT id AS "id!", dividend_id, owed_to, tax_amount_minor, tax_credit_minor,
+                      currency_code
+                 FROM dividend_withholdings WHERE dividend_id=?1 ORDER BY id"#,
+            dividend.id
         )
-        .bind(dividend.id)
         .fetch_all(db)
         .await?
         .into_iter()
@@ -353,7 +371,7 @@ pub async fn list_dividends(db: &Db, account_id: i64) -> AppResult<Vec<DividendD
 // ---- computed positions / wallet balances --------------------------------
 
 /// A ticker's net held quantity as of a date (before pricing — see `sure_api::brokerage`).
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 pub struct PositionRow {
     pub ticker: String,
     pub exchange: String,
@@ -365,7 +383,7 @@ pub struct PositionRow {
 /// The raw row shape for [`CostLotRow`] — `kind` as stored, before parsing. Carries `id`,
 /// which [`CostLotRow`] has no use for, purely so a row rejected by [`lot_amounts_usable`]
 /// can be named in the WARN that explains why the panel is missing it.
-#[derive(Debug, FromRow, Clone)]
+#[derive(Debug, Clone)]
 struct CostLotRowRaw {
     id: i64,
     ticker: String,
@@ -418,14 +436,16 @@ impl TryFrom<CostLotRowRaw> for CostLotRow {
 /// deleted; the position itself survives on its remaining lots.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn lots_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<CostLotRow>> {
-    let rows = sqlx::query_as::<_, CostLotRowRaw>(
-        "SELECT id, ticker, exchange, currency_code, quantity, unit_price, fee_minor, kind
-         FROM holdings
-         WHERE account_id=?1 AND date(trade_date) <= date(?2)
-         ORDER BY ticker, exchange, date(trade_date), id",
+    let rows = sqlx::query_as!(
+        CostLotRowRaw,
+        r#"SELECT id AS "id!", ticker, exchange, currency_code, quantity, unit_price, fee_minor,
+                  kind
+             FROM holdings
+            WHERE account_id=?1 AND date(trade_date) <= date(?2)
+            ORDER BY ticker, exchange, date(trade_date), id"#,
+        account_id,
+        as_of
     )
-    .bind(account_id)
-    .bind(as_of)
     .fetch_all(db)
     .await?;
 
@@ -449,7 +469,7 @@ pub async fn lots_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<Cos
 /// Rolling 30-days-to-`as_of` activity: an exact trade count, plus a heuristic
 /// contributions/withdrawals split — see [`sure_core::BrokerageActivity30d`] doc comment
 /// for why the latter is text-matched rather than category-driven.
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 pub struct Activity30dRow {
     pub contributions_minor: i64,
     pub withdrawals_minor: i64,
@@ -458,35 +478,35 @@ pub struct Activity30dRow {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn activity_30d(db: &Db, account_id: i64, as_of: &str) -> AppResult<Activity30dRow> {
-    let trades: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM holdings
-         WHERE account_id=?1 AND kind IN ('buy','sell')
-           AND date(trade_date) > date(?2, '-30 days') AND date(trade_date) <= date(?2)",
+    let trades = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "trades!: i64" FROM holdings
+            WHERE account_id=?1 AND kind IN ('buy','sell')
+              AND date(trade_date) > date(?2, '-30 days') AND date(trade_date) <= date(?2)"#,
+        account_id,
+        as_of
     )
-    .bind(account_id)
-    .bind(as_of)
     .fetch_one(db)
     .await?;
 
-    let contributions_minor: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount_minor),0) FROM transactions
-         WHERE account_id=?1 AND amount_minor > 0
-           AND (description LIKE 'Wallet top up%' OR description LIKE 'Deposit%')
-           AND date(posted_at) > date(?2, '-30 days') AND date(posted_at) <= date(?2)",
+    let contributions_minor = sqlx::query_scalar!(
+        r#"SELECT COALESCE(SUM(amount_minor),0) AS "contributions!: i64" FROM transactions
+            WHERE account_id=?1 AND amount_minor > 0
+              AND (description LIKE 'Wallet top up%' OR description LIKE 'Deposit%')
+              AND date(posted_at) > date(?2, '-30 days') AND date(posted_at) <= date(?2)"#,
+        account_id,
+        as_of
     )
-    .bind(account_id)
-    .bind(as_of)
     .fetch_one(db)
     .await?;
 
-    let withdrawals_minor: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(-amount_minor),0) FROM transactions
-         WHERE account_id=?1 AND amount_minor < 0
-           AND description LIKE 'Withdrawal%'
-           AND date(posted_at) > date(?2, '-30 days') AND date(posted_at) <= date(?2)",
+    let withdrawals_minor = sqlx::query_scalar!(
+        r#"SELECT COALESCE(SUM(-amount_minor),0) AS "withdrawals!: i64" FROM transactions
+            WHERE account_id=?1 AND amount_minor < 0
+              AND description LIKE 'Withdrawal%'
+              AND date(posted_at) > date(?2, '-30 days') AND date(posted_at) <= date(?2)"#,
+        account_id,
+        as_of
     )
-    .bind(account_id)
-    .bind(as_of)
     .fetch_one(db)
     .await?;
 
@@ -511,22 +531,24 @@ pub async fn activity_30d(db: &Db, account_id: i64, as_of: &str) -> AppResult<Ac
 /// alongside this (see `sure_app::brokerage::BrokerageService::snapshot`).
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn positions_at(db: &Db, account_id: i64, as_of: &str) -> AppResult<Vec<PositionRow>> {
-    Ok(sqlx::query_as::<_, PositionRow>(
-        "SELECT ticker, exchange, currency_code, MAX(name) AS name, SUM(quantity) AS quantity
-         FROM holdings
-         WHERE account_id=?1 AND date(trade_date) <= date(?2) AND ABS(quantity) <= ?3
-         GROUP BY ticker, exchange
-         HAVING ABS(SUM(quantity)) > 0.0000001
-         ORDER BY ticker",
+    Ok(sqlx::query_as!(
+        PositionRow,
+        r#"SELECT ticker AS "ticker!", exchange AS "exchange!", currency_code AS "currency_code!",
+                  MAX(name) AS "name: String", SUM(quantity) AS "quantity!: f64"
+             FROM holdings
+            WHERE account_id=?1 AND date(trade_date) <= date(?2) AND ABS(quantity) <= ?3
+            GROUP BY ticker, exchange
+            HAVING ABS(SUM(quantity)) > 0.0000001
+            ORDER BY ticker"#,
+        account_id,
+        as_of,
+        MAX_LOT_QUANTITY
     )
-    .bind(account_id)
-    .bind(as_of)
-    .bind(MAX_LOT_QUANTITY)
     .fetch_all(db)
     .await?)
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 pub struct WalletRow {
     pub currency_code: String,
     pub amount_minor: i64,
@@ -541,16 +563,18 @@ pub async fn wallet_balances_at(
     account_id: i64,
     as_of: &str,
 ) -> AppResult<Vec<WalletRow>> {
-    Ok(sqlx::query_as::<_, WalletRow>(
-        "SELECT currency_code, CAST(SUM(amount_minor) AS INTEGER) AS amount_minor
-         FROM transactions
-         WHERE account_id=?1 AND date(posted_at) <= date(?2)
-         GROUP BY currency_code
-         HAVING SUM(amount_minor) <> 0
-         ORDER BY currency_code",
+    Ok(sqlx::query_as!(
+        WalletRow,
+        r#"SELECT currency_code AS "currency_code!",
+                  CAST(SUM(amount_minor) AS INTEGER) AS "amount_minor!: i64"
+             FROM transactions
+            WHERE account_id=?1 AND date(posted_at) <= date(?2)
+            GROUP BY currency_code
+            HAVING SUM(amount_minor) <> 0
+            ORDER BY currency_code"#,
+        account_id,
+        as_of
     )
-    .bind(account_id)
-    .bind(as_of)
     .fetch_all(db)
     .await?)
 }
@@ -560,12 +584,15 @@ pub async fn wallet_balances_at(
 /// including tickers fully sold before today that still held value in the past.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn account_tickers(db: &Db, account_id: i64) -> AppResult<Vec<(String, String)>> {
-    Ok(sqlx::query_as::<_, (String, String)>(
+    Ok(sqlx::query!(
         "SELECT DISTINCT ticker, exchange FROM holdings WHERE account_id=?1",
+        account_id
     )
-    .bind(account_id)
     .fetch_all(db)
-    .await?)
+    .await?
+    .into_iter()
+    .map(|r| (r.ticker, r.exchange))
+    .collect())
 }
 
 /// The earliest date this account has any activity (a trade or a wallet transaction), as
@@ -573,14 +600,14 @@ pub async fn account_tickers(db: &Db, account_id: i64) -> AppResult<Vec<(String,
 /// if the account is empty.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn earliest_activity_date(db: &Db, account_id: i64) -> AppResult<Option<String>> {
-    Ok(sqlx::query_scalar::<_, Option<String>>(
-        "SELECT MIN(d) FROM (
-            SELECT MIN(date(trade_date)) AS d FROM holdings WHERE account_id=?1
-            UNION ALL
-            SELECT MIN(date(posted_at)) AS d FROM transactions WHERE account_id=?1
-         )",
+    Ok(sqlx::query_scalar!(
+        r#"SELECT MIN(d) AS "earliest: String" FROM (
+               SELECT MIN(date(trade_date)) AS d FROM holdings WHERE account_id=?1
+               UNION ALL
+               SELECT MIN(date(posted_at)) AS d FROM transactions WHERE account_id=?1
+           )"#,
+        account_id
     )
-    .bind(account_id)
     .fetch_one(db)
     .await?)
 }
@@ -685,24 +712,25 @@ pub async fn import_export(
             counts.holdings_skipped += 1;
             continue;
         }
-        let res = sqlx::query(
+        let kind = h.kind.as_str();
+        let res = sqlx::query!(
             "INSERT OR IGNORE INTO holdings
                 (account_id, ticker, exchange, name, currency_code, trade_date, quantity,
                  unit_price, fee_minor, kind, external_id, provider)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            account_id,
+            h.ticker,
+            h.exchange,
+            h.name,
+            h.currency_code,
+            h.trade_date,
+            h.quantity,
+            h.unit_price,
+            h.fee_minor,
+            kind,
+            h.external_id,
+            provider_tag
         )
-        .bind(account_id)
-        .bind(&h.ticker)
-        .bind(&h.exchange)
-        .bind(&h.name)
-        .bind(&h.currency_code)
-        .bind(&h.trade_date)
-        .bind(h.quantity)
-        .bind(h.unit_price)
-        .bind(h.fee_minor)
-        .bind(h.kind.as_str())
-        .bind(&h.external_id)
-        .bind(provider_tag)
         .execute(&mut *tx)
         .await?;
         if res.rows_affected() > 0 {
@@ -712,38 +740,38 @@ pub async fn import_export(
         }
     }
     for d in dividends {
-        let res = sqlx::query(
+        let res = sqlx::query!(
             "INSERT OR IGNORE INTO dividends
                 (account_id, ticker, exchange, record_date, paid_date, shares_held,
                  gross_amount_minor, net_amount_minor, currency_code, external_id, provider)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            account_id,
+            d.ticker,
+            d.exchange,
+            d.record_date,
+            d.paid_date,
+            d.shares_held,
+            d.gross_amount_minor,
+            d.net_amount_minor,
+            d.currency_code,
+            d.external_id,
+            provider_tag
         )
-        .bind(account_id)
-        .bind(&d.ticker)
-        .bind(&d.exchange)
-        .bind(&d.record_date)
-        .bind(&d.paid_date)
-        .bind(d.shares_held)
-        .bind(d.gross_amount_minor)
-        .bind(d.net_amount_minor)
-        .bind(&d.currency_code)
-        .bind(&d.external_id)
-        .bind(provider_tag)
         .execute(&mut *tx)
         .await?;
         if res.rows_affected() > 0 {
             let dividend_id = res.last_insert_rowid();
             for w in &d.withholdings {
-                sqlx::query(
+                sqlx::query!(
                     "INSERT INTO dividend_withholdings
                         (dividend_id, owed_to, tax_amount_minor, tax_credit_minor, currency_code)
                      VALUES (?1,?2,?3,?4,?5)",
+                    dividend_id,
+                    w.owed_to,
+                    w.tax_amount_minor,
+                    w.tax_credit_minor,
+                    w.currency_code
                 )
-                .bind(dividend_id)
-                .bind(&w.owed_to)
-                .bind(w.tax_amount_minor)
-                .bind(w.tax_credit_minor)
-                .bind(&w.currency_code)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -1002,7 +1030,7 @@ mod tests {
             .unwrap();
 
         let withholdings = |db: Db| async move {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM dividend_withholdings")
+            sqlx::query_scalar!("SELECT COUNT(*) FROM dividend_withholdings")
                 .fetch_one(&db)
                 .await
                 .unwrap()
@@ -1238,6 +1266,8 @@ mod tests {
     /// `9e999` as `Inf`; it has no `NaN`, storing one as `NULL`, which `quantity REAL NOT NULL`
     /// refuses outright, so `Inf` and absurd-but-finite are the only two cases on disk.
     async fn insert_unvalidated(db: &Db, account_id: i64, ticker: &str, quantity_sql: &str) {
+        // `quantity_sql` is a raw SQL expression (`9e999`), which is the whole point of this
+        // helper — so this one cannot be a checked macro.
         sqlx::query(&format!(
             "INSERT INTO holdings
                 (account_id, ticker, exchange, currency_code, trade_date, quantity, unit_price,

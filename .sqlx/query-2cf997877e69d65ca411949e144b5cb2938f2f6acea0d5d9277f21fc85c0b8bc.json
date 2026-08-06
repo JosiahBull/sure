@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO forecast_events\n              (label, kind, person_id, expected_on, timing_spread_months, probability_bps, notes)\n           VALUES (?1,?2,?3,?4,?5,?6,?7)\n           RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2cf997877e69d65ca411949e144b5cb2938f2f6acea0d5d9277f21fc85c0b8bc"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO valuations (account_id, as_of, value_minor, currency_code)\n             VALUES (?1, '2026-02-01', 3_800_00, 'NZD')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "83f19bc487f88c5d1946899f9ccf0bdd359a97295e6ff71e9cd7ab5e1eb225c0"
+}

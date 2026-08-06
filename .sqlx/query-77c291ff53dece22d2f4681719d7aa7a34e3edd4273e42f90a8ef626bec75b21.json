@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO dividend_withholdings\n                (id, dividend_id, owed_to, tax_amount_minor, tax_credit_minor, currency_code)\n             VALUES (?1,?2,?3,?4,?5,?6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "77c291ff53dece22d2f4681719d7aa7a34e3edd4273e42f90a8ef626bec75b21"
+}

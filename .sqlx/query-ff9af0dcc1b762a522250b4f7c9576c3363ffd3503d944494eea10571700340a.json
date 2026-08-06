@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", currency_code, ownership, person_id FROM accounts",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "ownership",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "person_id",
+        "ordinal": 3,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "ff9af0dcc1b762a522250b4f7c9576c3363ffd3503d944494eea10571700340a"
+}

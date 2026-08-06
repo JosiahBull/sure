@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM merchants WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "f0f4f969e32530755c6dfa5119ec3bc93eac6a213693f95b93a101d0e9f9665c"
+}

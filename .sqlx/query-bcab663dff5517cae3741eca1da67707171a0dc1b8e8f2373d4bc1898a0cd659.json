@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM equity_exercises",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "bcab663dff5517cae3741eca1da67707171a0dc1b8e8f2373d4bc1898a0cd659"
+}

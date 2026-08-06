@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE forecast_events SET\n            label=?2, kind=?3, person_id=?4, expected_on=?5, timing_spread_months=?6,\n            probability_bps=?7, notes=?8,\n            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n         WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "ed99cc5df7de14bbcaf3f7e3edc2254c3f6a3755a4e751f46bc1ccdaf9850c1a"
+}

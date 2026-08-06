@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM provider_syncs",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "e5027e9211b7ea5e2ce32865f863a04e7e0644aea5461eb9c06224010b74e630"
+}

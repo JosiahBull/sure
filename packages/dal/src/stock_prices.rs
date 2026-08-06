@@ -5,13 +5,12 @@
 //! for the same reason (it once had a latest-only cache beside it; that ended badly — see
 //! `crate::exchange_rates`).
 
-use sqlx::FromRow;
 pub use sure_core::StockPrice;
 use sure_core::{AppError, AppResult};
 
 use crate::Db;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct StockPriceRow {
     ticker: String,
     exchange: String,
@@ -62,19 +61,20 @@ pub async fn upsert(
     if !crate::currencies::exists(db, &currency).await? {
         return Err(unknown_currency(&currency));
     }
-    Ok(sqlx::query_as::<_, StockPriceRow>(
+    Ok(sqlx::query_as!(
+        StockPriceRow,
         "INSERT INTO stock_prices (ticker, exchange, as_of, close, currency_code)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(ticker, exchange, as_of) DO UPDATE SET
             close = excluded.close, currency_code = excluded.currency_code,
             fetched_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         RETURNING *",
+         RETURNING ticker, exchange, as_of, close, currency_code, fetched_at",
+        ticker,
+        exchange,
+        as_of,
+        close,
+        currency
     )
-    .bind(ticker)
-    .bind(exchange)
-    .bind(as_of)
-    .bind(close)
-    .bind(&currency)
     .fetch_one(db)
     .await
     .map_err(|e| map_unknown_currency(e, &currency))?
@@ -111,13 +111,15 @@ pub async fn get_at(
     exchange: &str,
     as_of: &str,
 ) -> AppResult<Option<StockPrice>> {
-    Ok(sqlx::query_as::<_, StockPriceRow>(
-        "SELECT * FROM stock_prices WHERE ticker = ?1 AND exchange = ?2 AND as_of <= ?3
-         ORDER BY as_of DESC LIMIT 1",
+    Ok(sqlx::query_as!(
+        StockPriceRow,
+        "SELECT ticker, exchange, as_of, close, currency_code, fetched_at
+           FROM stock_prices WHERE ticker = ?1 AND exchange = ?2 AND as_of <= ?3
+          ORDER BY as_of DESC LIMIT 1",
+        ticker,
+        exchange,
+        as_of
     )
-    .bind(ticker)
-    .bind(exchange)
-    .bind(as_of)
     .fetch_optional(db)
     .await?
     .map(Into::into))
@@ -126,11 +128,13 @@ pub async fn get_at(
 /// Every cached close for a ticker, oldest first.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_history(db: &Db, ticker: &str, exchange: &str) -> AppResult<Vec<StockPrice>> {
-    Ok(sqlx::query_as::<_, StockPriceRow>(
-        "SELECT * FROM stock_prices WHERE ticker = ?1 AND exchange = ?2 ORDER BY as_of",
+    Ok(sqlx::query_as!(
+        StockPriceRow,
+        "SELECT ticker, exchange, as_of, close, currency_code, fetched_at
+           FROM stock_prices WHERE ticker = ?1 AND exchange = ?2 ORDER BY as_of",
+        ticker,
+        exchange
     )
-    .bind(ticker)
-    .bind(exchange)
     .fetch_all(db)
     .await?
     .into_iter()
@@ -223,9 +227,9 @@ mod tests {
     #[tokio::test]
     async fn a_currency_foreign_key_violation_is_reported_as_an_unknown_currency() {
         let db = test_db().await;
-        let raw = sqlx::query(
+        let raw = sqlx::query!(
             "INSERT INTO stock_prices (ticker, exchange, as_of, close, currency_code)
-             VALUES ('MEL', 'NZX', '2026-07-14', '5.60', 'ZZZ')",
+             VALUES ('MEL', 'NZX', '2026-07-14', '5.60', 'ZZZ')"
         )
         .execute(&db)
         .await

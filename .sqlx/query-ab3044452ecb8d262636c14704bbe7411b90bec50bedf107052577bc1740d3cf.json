@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO forecast_event_relations\n                (event_id, depends_on_event_id, kind, min_gap_months)\n             VALUES (?1,?2,?3,?4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "ab3044452ecb8d262636c14704bbe7411b90bec50bedf107052577bc1740d3cf"
+}

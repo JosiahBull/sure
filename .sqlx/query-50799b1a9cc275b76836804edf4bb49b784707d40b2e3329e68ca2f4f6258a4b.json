@@ -1,0 +1,158 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", person_id, label, employer, currency_code,\n                      annual_amount_minor, basis, pay_frequency, first_payment_on, starts_on,\n                      ends_on, annual_increase_bps, kiwisaver_bps,\n                      student_loan AS \"student_loan!: bool\", take_home_bps, linked_category_id,\n                      enabled AS \"enabled!: bool\", sort_order, notes, employer_kiwisaver_bps,\n                      kiwisaver_account_id, student_loan_account_id, created_at, updated_at\n                 FROM income_streams ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "person_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "label",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "employer",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "annual_amount_minor",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "basis",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "pay_frequency",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "first_payment_on",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "starts_on",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "ends_on",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "annual_increase_bps",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kiwisaver_bps",
+        "ordinal": 12,
+        "type_info": "Integer"
+      },
+      {
+        "name": "student_loan!: bool",
+        "ordinal": 13,
+        "type_info": "Integer"
+      },
+      {
+        "name": "take_home_bps",
+        "ordinal": 14,
+        "type_info": "Integer"
+      },
+      {
+        "name": "linked_category_id",
+        "ordinal": 15,
+        "type_info": "Integer"
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 16,
+        "type_info": "Integer"
+      },
+      {
+        "name": "sort_order",
+        "ordinal": 17,
+        "type_info": "Integer"
+      },
+      {
+        "name": "notes",
+        "ordinal": 18,
+        "type_info": "Text"
+      },
+      {
+        "name": "employer_kiwisaver_bps",
+        "ordinal": 19,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kiwisaver_account_id",
+        "ordinal": 20,
+        "type_info": "Integer"
+      },
+      {
+        "name": "student_loan_account_id",
+        "ordinal": 21,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 22,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 23,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "50799b1a9cc275b76836804edf4bb49b784707d40b2e3329e68ca2f4f6258a4b"
+}

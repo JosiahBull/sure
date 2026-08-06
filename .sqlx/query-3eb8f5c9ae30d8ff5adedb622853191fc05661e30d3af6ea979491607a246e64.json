@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT MIN(d) AS \"earliest: String\" FROM (\n               SELECT MIN(date(trade_date)) AS d FROM holdings WHERE account_id=?1\n               UNION ALL\n               SELECT MIN(date(posted_at)) AS d FROM transactions WHERE account_id=?1\n           )",
+  "describe": {
+    "columns": [
+      {
+        "name": "earliest: String",
+        "ordinal": 0,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "3eb8f5c9ae30d8ff5adedb622853191fc05661e30d3af6ea979491607a246e64"
+}

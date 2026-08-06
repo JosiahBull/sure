@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT name FROM accounts WHERE secured_by_account_id = ?1 ORDER BY sort_order, name",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7e7b2b5ec1a14e05e49640a562ca41b2ede7df32535a622bb8e25c728a4453fa"
+}

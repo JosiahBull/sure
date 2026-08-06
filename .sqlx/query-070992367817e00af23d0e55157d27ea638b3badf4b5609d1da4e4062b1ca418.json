@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO transactions\n                (id, account_id, posted_at, amount_minor, currency_code, description, merchant,\n                 notes, category_id, is_one_off, linked_transaction_id, provider, external_id,\n                 categorized_by_rule_id, merchant_id, ownership, person_id, created_at,\n                 updated_at)\n             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 19
+    },
+    "nullable": []
+  },
+  "hash": "070992367817e00af23d0e55157d27ea638b3badf4b5609d1da4e4062b1ca418"
+}

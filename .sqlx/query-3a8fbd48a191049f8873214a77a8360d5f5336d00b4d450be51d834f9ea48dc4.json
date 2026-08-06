@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT SUM(quantity) AS \"exercised: i64\"\n             FROM equity_exercises WHERE grant_id=?1 AND exercise_date <= ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "exercised: i64",
+        "ordinal": 0,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "3a8fbd48a191049f8873214a77a8360d5f5336d00b4d450be51d834f9ea48dc4"
+}

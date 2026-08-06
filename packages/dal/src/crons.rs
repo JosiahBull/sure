@@ -1,7 +1,7 @@
 //! Scheduled adjustments engine + persistence.
 
 use chrono::{Datelike, NaiveDate, Utc};
-use sqlx::{FromRow, SqliteConnection};
+use sqlx::SqliteConnection;
 use sure_core::{AppError, AppResult, Money, ValuationSource};
 pub use sure_core::{Cron, CronKind, CronRun, CronRunResult, SaveCron};
 
@@ -16,7 +16,7 @@ fn parse_kind(kind: String) -> AppResult<CronKind> {
         .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct CronRow {
     id: i64,
     name: String,
@@ -57,7 +57,7 @@ impl TryFrom<CronRow> for Cron {
     }
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct CronRunRow {
     id: i64,
     cron_id: i64,
@@ -88,31 +88,46 @@ impl TryFrom<CronRunRow> for CronRun {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Cron>> {
-    sqlx::query_as::<_, CronRow>("SELECT * FROM crons ORDER BY id")
-        .fetch_all(db)
-        .await?
-        .into_iter()
-        .map(Cron::try_from)
-        .collect()
+    sqlx::query_as!(
+        CronRow,
+        r#"SELECT id AS "id!", name, account_id, kind, rate_bps, amount_minor, category_id,
+                  frequency, day_of_month, start_date, last_run_on, enabled AS "enabled!: bool",
+                  created_at, updated_at
+             FROM crons ORDER BY id"#
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(Cron::try_from)
+    .collect()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveCron) -> AppResult<Cron> {
     validate(&input)?;
-    sqlx::query_as::<_, CronRow>(
-        "INSERT INTO crons (name, account_id, kind, rate_bps, amount_minor, category_id,
-            day_of_month, start_date, enabled)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) RETURNING *",
+    let name = input.name.trim();
+    let kind = input.kind.as_str();
+    let amount_minor = input.amount_minor.map(Money::minor);
+    let day_of_month = input.day_of_month.unwrap_or(1).clamp(1, 28);
+    let start_date = input.start_date.to_string();
+    sqlx::query_as!(
+        CronRow,
+        r#"INSERT INTO crons (name, account_id, kind, rate_bps, amount_minor, category_id,
+              day_of_month, start_date, enabled)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+           RETURNING id AS "id!", name, account_id, kind, rate_bps, amount_minor, category_id,
+                     frequency, day_of_month, start_date, last_run_on, enabled AS "enabled!: bool",
+                     created_at, updated_at"#,
+        name,
+        input.account_id,
+        kind,
+        input.rate_bps,
+        amount_minor,
+        input.category_id,
+        day_of_month,
+        start_date,
+        input.enabled
     )
-    .bind(input.name.trim())
-    .bind(input.account_id)
-    .bind(input.kind.as_str())
-    .bind(input.rate_bps)
-    .bind(input.amount_minor.map(Money::minor))
-    .bind(input.category_id)
-    .bind(input.day_of_month.unwrap_or(1).clamp(1, 28))
-    .bind(input.start_date.to_string())
-    .bind(input.enabled)
     .fetch_one(db)
     .await
     .map_err(map_fk)?
@@ -122,22 +137,31 @@ pub async fn create(db: &Db, input: SaveCron) -> AppResult<Cron> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveCron) -> AppResult<Cron> {
     validate(&input)?;
-    sqlx::query_as::<_, CronRow>(
-        "UPDATE crons SET name=?2, account_id=?3, kind=?4, rate_bps=?5, amount_minor=?6,
-            category_id=?7, day_of_month=?8, start_date=?9, enabled=?10,
-            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1 RETURNING *",
+    let name = input.name.trim();
+    let kind = input.kind.as_str();
+    let amount_minor = input.amount_minor.map(Money::minor);
+    let day_of_month = input.day_of_month.unwrap_or(1).clamp(1, 28);
+    let start_date = input.start_date.to_string();
+    sqlx::query_as!(
+        CronRow,
+        r#"UPDATE crons SET name=?2, account_id=?3, kind=?4, rate_bps=?5, amount_minor=?6,
+              category_id=?7, day_of_month=?8, start_date=?9, enabled=?10,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id AS "id!", name, account_id, kind, rate_bps, amount_minor, category_id,
+                     frequency, day_of_month, start_date, last_run_on, enabled AS "enabled!: bool",
+                     created_at, updated_at"#,
+        id,
+        name,
+        input.account_id,
+        kind,
+        input.rate_bps,
+        amount_minor,
+        input.category_id,
+        day_of_month,
+        start_date,
+        input.enabled
     )
-    .bind(id)
-    .bind(input.name.trim())
-    .bind(input.account_id)
-    .bind(input.kind.as_str())
-    .bind(input.rate_bps)
-    .bind(input.amount_minor.map(Money::minor))
-    .bind(input.category_id)
-    .bind(input.day_of_month.unwrap_or(1).clamp(1, 28))
-    .bind(input.start_date.to_string())
-    .bind(input.enabled)
     .fetch_optional(db)
     .await
     .map_err(map_fk)?
@@ -147,8 +171,7 @@ pub async fn update(db: &Db, id: i64, input: SaveCron) -> AppResult<Cron> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
-    let res = sqlx::query("DELETE FROM crons WHERE id=?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM crons WHERE id=?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {
@@ -159,13 +182,18 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_runs(db: &Db, cron_id: i64) -> AppResult<Vec<CronRun>> {
-    sqlx::query_as::<_, CronRunRow>("SELECT * FROM cron_runs WHERE cron_id=?1 ORDER BY period DESC")
-        .bind(cron_id)
-        .fetch_all(db)
-        .await?
-        .into_iter()
-        .map(CronRun::try_from)
-        .collect()
+    sqlx::query_as!(
+        CronRunRow,
+        r#"SELECT id AS "id!", cron_id, period, kind, valuation_id, transaction_id, detail,
+                  created_at
+             FROM cron_runs WHERE cron_id=?1 ORDER BY period DESC"#,
+        cron_id
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(CronRun::try_from)
+    .collect()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -187,13 +215,18 @@ pub async fn run_all(db: &Db, to: Option<&str>) -> AppResult<CronRunResult> {
     let to = to
         .and_then(parse_date)
         .unwrap_or_else(|| Utc::now().date_naive());
-    let crons: Vec<Cron> =
-        sqlx::query_as::<_, CronRow>("SELECT * FROM crons WHERE enabled=1 ORDER BY id")
-            .fetch_all(db)
-            .await?
-            .into_iter()
-            .map(Cron::try_from)
-            .collect::<AppResult<_>>()?;
+    let crons: Vec<Cron> = sqlx::query_as!(
+        CronRow,
+        r#"SELECT id AS "id!", name, account_id, kind, rate_bps, amount_minor, category_id,
+                  frequency, day_of_month, start_date, last_run_on, enabled AS "enabled!: bool",
+                  created_at, updated_at
+                 FROM crons WHERE enabled=1 ORDER BY id"#
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(Cron::try_from)
+    .collect::<AppResult<_>>()?;
     let mut all = Vec::new();
     let mut conn = db.acquire().await?;
     for cron in crons {
@@ -207,40 +240,46 @@ pub async fn run_all(db: &Db, to: Option<&str>) -> AppResult<CronRunResult> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<()> {
-    let run: CronRun = sqlx::query_as::<_, CronRunRow>("SELECT * FROM cron_runs WHERE id=?1")
-        .bind(run_id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(AppError::NotFound("cron run"))?
-        .try_into()?;
+    let run: CronRun = sqlx::query_as!(
+        CronRunRow,
+        r#"SELECT id AS "id!", cron_id, period, kind, valuation_id, transaction_id, detail,
+                  created_at
+             FROM cron_runs WHERE id=?1"#,
+        run_id
+    )
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("cron run"))?
+    .try_into()?;
     let mut txn = db.begin().await?;
     if let Some(vid) = run.valuation_id {
-        sqlx::query("DELETE FROM valuations WHERE id=?1")
-            .bind(vid)
+        sqlx::query!("DELETE FROM valuations WHERE id=?1", vid)
             .execute(&mut *txn)
             .await?;
     }
     if let Some(tid) = run.transaction_id {
-        sqlx::query("DELETE FROM transactions WHERE id=?1")
-            .bind(tid)
+        sqlx::query!("DELETE FROM transactions WHERE id=?1", tid)
             .execute(&mut *txn)
             .await?;
     }
-    sqlx::query("DELETE FROM cron_runs WHERE id=?1")
-        .bind(run_id)
+    sqlx::query!("DELETE FROM cron_runs WHERE id=?1", run_id)
         .execute(&mut *txn)
         .await?;
-    let latest = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT MAX(period) FROM cron_runs WHERE cron_id=?1",
+    // MAX over no remaining runs is NULL, which is exactly the value `last_run_on` wants when
+    // the undone run was the only one.
+    let latest = sqlx::query_scalar!(
+        r#"SELECT MAX(period) AS "period: String" FROM cron_runs WHERE cron_id=?1"#,
+        run.cron_id
     )
-    .bind(run.cron_id)
     .fetch_one(&mut *txn)
     .await?;
-    sqlx::query("UPDATE crons SET last_run_on=?2 WHERE id=?1")
-        .bind(run.cron_id)
-        .bind(latest)
-        .execute(&mut *txn)
-        .await?;
+    sqlx::query!(
+        "UPDATE crons SET last_run_on=?2 WHERE id=?1",
+        run.cron_id,
+        latest
+    )
+    .execute(&mut *txn)
+    .await?;
     txn.commit().await?;
     Ok(())
 }
@@ -269,11 +308,14 @@ async fn apply_cron(
         let due = period >= start && last.map(|l| period > l).unwrap_or(true);
         if due {
             if let Some(run) = apply_period(conn, cron, period).await? {
-                sqlx::query("UPDATE crons SET last_run_on=?2 WHERE id=?1")
-                    .bind(cron.id)
-                    .bind(period.to_string())
-                    .execute(&mut *conn)
-                    .await?;
+                let period_s = period.to_string();
+                sqlx::query!(
+                    "UPDATE crons SET last_run_on=?2 WHERE id=?1",
+                    cron.id,
+                    period_s
+                )
+                .execute(&mut *conn)
+                .await?;
                 created.push(run);
             }
         }
@@ -336,20 +378,25 @@ async fn apply_fixed_transaction(
     period_s: &str,
 ) -> AppResult<Option<CronRun>> {
     let amount = cron.amount_minor.unwrap_or(0);
-    let ccy = sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
-        .bind(cron.account_id)
-        .fetch_one(&mut *conn)
-        .await?;
-    let tx_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code, description, category_id)
-         VALUES (?1,?2,?3,?4,?5,?6) RETURNING id",
+    let ccy = sqlx::query_scalar!(
+        "SELECT currency_code FROM accounts WHERE id=?1",
+        cron.account_id
     )
-    .bind(cron.account_id)
-    .bind(period_s)
-    .bind(amount)
-    .bind(&ccy)
-    .bind(cron.name.trim())
-    .bind(cron.category_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    let description = cron.name.trim();
+    let tx_id = sqlx::query_scalar!(
+        r#"INSERT INTO transactions
+              (account_id, posted_at, amount_minor, currency_code, description, category_id)
+           VALUES (?1,?2,?3,?4,?5,?6)
+           RETURNING id AS "id!""#,
+        cron.account_id,
+        period_s,
+        amount,
+        ccy,
+        description,
+        cron.category_id
+    )
     .fetch_one(&mut *conn)
     .await?;
     Ok(Some(
@@ -365,12 +412,12 @@ async fn apply_valuation_cron(
     period_s: &str,
     direction: ValuationDirection,
 ) -> AppResult<Option<CronRun>> {
-    let latest = sqlx::query_scalar::<_, i64>(
+    let latest = sqlx::query_scalar!(
         "SELECT value_minor FROM valuations WHERE account_id=?1 AND as_of <= ?2
          ORDER BY as_of DESC, id DESC LIMIT 1",
+        cron.account_id,
+        period_s
     )
-    .bind(cron.account_id)
-    .bind(period_s)
     .fetch_optional(&mut *conn)
     .await?;
     let Some(latest) = latest else {
@@ -388,20 +435,25 @@ async fn apply_valuation_cron(
     };
 
     let new_value = compounded_value(cron, latest, direction)?;
-    let ccy = sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
-        .bind(cron.account_id)
-        .fetch_one(&mut *conn)
-        .await?;
-    let val_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
-         VALUES (?1,?2,?3,?4,?5,?6) RETURNING id",
+    let ccy = sqlx::query_scalar!(
+        "SELECT currency_code FROM accounts WHERE id=?1",
+        cron.account_id
     )
-    .bind(cron.account_id)
-    .bind(period_s)
-    .bind(new_value)
-    .bind(&ccy)
-    .bind(ValuationSource::Cron.as_str())
-    .bind(cron.name.trim())
+    .fetch_one(&mut *conn)
+    .await?;
+    let source = ValuationSource::Cron.as_str();
+    let note = cron.name.trim();
+    let val_id = sqlx::query_scalar!(
+        r#"INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
+           VALUES (?1,?2,?3,?4,?5,?6)
+           RETURNING id AS "id!""#,
+        cron.account_id,
+        period_s,
+        new_value,
+        ccy,
+        source,
+        note
+    )
     .fetch_one(&mut *conn)
     .await?;
     Ok(Some(
@@ -463,16 +515,20 @@ async fn record_run(
     transaction_id: Option<i64>,
     detail: Option<String>,
 ) -> AppResult<CronRun> {
-    sqlx::query_as::<_, CronRunRow>(
-        "INSERT INTO cron_runs (cron_id, period, kind, valuation_id, transaction_id, detail)
-         VALUES (?1,?2,?3,?4,?5,?6) RETURNING *",
+    let kind = cron.kind.as_str();
+    sqlx::query_as!(
+        CronRunRow,
+        r#"INSERT INTO cron_runs (cron_id, period, kind, valuation_id, transaction_id, detail)
+           VALUES (?1,?2,?3,?4,?5,?6)
+           RETURNING id AS "id!", cron_id, period, kind, valuation_id, transaction_id, detail,
+                     created_at"#,
+        cron.id,
+        period,
+        kind,
+        valuation_id,
+        transaction_id,
+        detail
     )
-    .bind(cron.id)
-    .bind(period)
-    .bind(cron.kind.as_str())
-    .bind(valuation_id)
-    .bind(transaction_id)
-    .bind(detail)
     .fetch_one(&mut *conn)
     .await?
     .try_into()
@@ -553,12 +609,18 @@ fn validate_rate_bps(kind: CronKind, rate_bps: i64) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn fetch(db: &Db, id: i64) -> AppResult<Cron> {
-    sqlx::query_as::<_, CronRow>("SELECT * FROM crons WHERE id=?1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(AppError::NotFound("cron"))?
-        .try_into()
+    sqlx::query_as!(
+        CronRow,
+        r#"SELECT id AS "id!", name, account_id, kind, rate_bps, amount_minor, category_id,
+                  frequency, day_of_month, start_date, last_run_on, enabled AS "enabled!: bool",
+                  created_at, updated_at
+             FROM crons WHERE id=?1"#,
+        id
+    )
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("cron"))?
+    .try_into()
 }
 
 fn parse_date(s: &str) -> Option<NaiveDate> {

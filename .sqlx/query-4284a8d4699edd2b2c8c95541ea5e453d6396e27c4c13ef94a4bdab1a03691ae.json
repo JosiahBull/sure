@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO transactions\n              (account_id, posted_at, amount_minor, currency_code, description, category_id)\n           VALUES (?1,?2,?3,?4,?5,?6)\n           RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "4284a8d4699edd2b2c8c95541ea5e453d6396e27c4c13ef94a4bdab1a03691ae"
+}

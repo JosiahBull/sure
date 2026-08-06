@@ -1,6 +1,5 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sqlx::FromRow;
 pub use sure_core::{Account, SaveAccount, SetSecuredBy};
 use sure_core::{
     AccountClass, AccountKind, AccountMetadata, AppError, AppResult, IsoDate, Ownership,
@@ -27,7 +26,7 @@ fn metadata_from_stored(kind: AccountKind, stored: &str) -> AccountMetadata {
     serde_json::from_value(value).unwrap_or_else(|_| AccountMetadata::default_for(kind))
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 pub struct AccountRow {
     pub id: i64,
     pub name: String,
@@ -87,12 +86,20 @@ pub struct ListQuery {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db, include_archived: bool) -> AppResult<Vec<Account>> {
-    let sql = if include_archived {
-        "SELECT * FROM accounts ORDER BY sort_order, name"
-    } else {
-        "SELECT * FROM accounts WHERE archived = 0 ORDER BY sort_order, name"
-    };
-    let rows = sqlx::query_as::<_, AccountRow>(sql).fetch_all(db).await?;
+    // One checked statement rather than a choice between two literals: `?1 OR archived = 0`
+    // makes "include archived" a bind value, which is what lets the macro see the SQL.
+    let rows = sqlx::query_as!(
+        AccountRow,
+        r#"SELECT id AS "id!", name, kind, currency_code, institution, metadata,
+                  archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                  person_id, created_at, updated_at
+             FROM accounts
+            WHERE ?1 OR archived = 0
+            ORDER BY sort_order, name"#,
+        include_archived
+    )
+    .fetch_all(db)
+    .await?;
     rows.into_iter().map(Account::try_from).collect()
 }
 
@@ -134,12 +141,12 @@ pub async fn list_shares_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
 /// stock-price poller to keep every held ticker's price cache warm.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_brokerage_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
-    let rows =
-        sqlx::query_as::<_, (String, String)>("SELECT DISTINCT ticker, exchange FROM holdings")
-            .fetch_all(db)
-            .await?;
+    let rows = sqlx::query!("SELECT DISTINCT ticker, exchange FROM holdings")
+        .fetch_all(db)
+        .await?;
     Ok(rows
         .into_iter()
+        .map(|r| (r.ticker, r.exchange))
         .filter_map(|(ticker, exchange)| {
             let ticker = ticker.trim().to_uppercase();
             if ticker.is_empty() {
@@ -155,11 +162,17 @@ pub async fn list_brokerage_tickers(db: &Db) -> AppResult<Vec<SharesTicker>> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn get(db: &Db, id: i64) -> AppResult<Account> {
-    let row = sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE id = ?1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(AppError::NotFound("account"))?;
+    let row = sqlx::query_as!(
+        AccountRow,
+        r#"SELECT id AS "id!", name, kind, currency_code, institution, metadata,
+                  archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                  person_id, created_at, updated_at
+             FROM accounts WHERE id = ?1"#,
+        id
+    )
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("account"))?;
     row.try_into()
 }
 
@@ -372,20 +385,28 @@ pub(crate) async fn insert(
     metadata: &str,
 ) -> AppResult<Account> {
     let (ownership, person_id) = input.ownership.as_parts();
-    let row = sqlx::query_as::<_, AccountRow>(
-        "INSERT INTO accounts (name, kind, currency_code, institution, metadata, archived, sort_order,
-             ownership, person_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING *",
+    let name = input.name.trim();
+    let kind = input.kind.as_str();
+    let currency_code = input.currency_code.trim().to_uppercase();
+    let row = sqlx::query_as!(
+        AccountRow,
+        r#"INSERT INTO accounts
+              (name, kind, currency_code, institution, metadata, archived, sort_order,
+               ownership, person_id)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+           RETURNING id AS "id!", name, kind, currency_code, institution, metadata,
+                     archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                     person_id, created_at, updated_at"#,
+        name,
+        kind,
+        currency_code,
+        input.institution,
+        metadata,
+        input.archived,
+        input.sort_order,
+        ownership,
+        person_id
     )
-    .bind(input.name.trim())
-    .bind(input.kind.as_str())
-    .bind(input.currency_code.trim().to_uppercase())
-    .bind(&input.institution)
-    .bind(metadata)
-    .bind(input.archived)
-    .bind(input.sort_order)
-    .bind(ownership)
-    .bind(person_id)
     .fetch_one(&mut **tx)
     .await?;
     let account: Account = row.try_into()?;
@@ -420,15 +441,16 @@ pub(crate) async fn insert(
                 // A brokerage account has no ledger to seed — see the fn's doc comment.
                 None => {}
                 Some(OpeningBalanceLedger::Transaction) => {
-                    sqlx::query(
-                        "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code,
-                            description, is_one_off)
+                    sqlx::query!(
+                        "INSERT INTO transactions
+                            (account_id, posted_at, amount_minor, currency_code, description,
+                             is_one_off)
                          VALUES (?1, ?2, ?3, ?4, 'Opening balance', 1)",
+                        account.id,
+                        date,
+                        amount,
+                        account.currency_code
                     )
-                    .bind(account.id)
-                    .bind(date)
-                    .bind(amount)
-                    .bind(&account.currency_code)
                     .execute(&mut **tx)
                     .await?;
                 }
@@ -504,16 +526,17 @@ async fn insert_valuation(
     value_minor: i64,
     note: &str,
 ) -> AppResult<()> {
-    sqlx::query(
+    let source = ValuationSource::Manual.as_str();
+    sqlx::query!(
         "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        account.id,
+        as_of,
+        value_minor,
+        account.currency_code,
+        source,
+        note
     )
-    .bind(account.id)
-    .bind(as_of)
-    .bind(value_minor)
-    .bind(&account.currency_code)
-    .bind(ValuationSource::Manual.as_str())
-    .bind(note)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -534,22 +557,29 @@ pub async fn update(db: &Db, id: i64, input: SaveAccount) -> AppResult<Account> 
     // Both columns move together in one statement, so there is no window where a row has an
     // ownership discriminant that disagrees with its person_id.
     let (ownership, person_id) = input.ownership.as_parts();
-    let row = sqlx::query_as::<_, AccountRow>(
-        "UPDATE accounts SET name=?2, kind=?3, currency_code=?4, institution=?5, metadata=?6,
-            archived=?7, sort_order=?8, ownership=?9, person_id=?10,
-            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1 RETURNING *",
+    let name = input.name.trim();
+    let kind = input.kind.as_str();
+    let currency_code = input.currency_code.trim().to_uppercase();
+    let row = sqlx::query_as!(
+        AccountRow,
+        r#"UPDATE accounts SET name=?2, kind=?3, currency_code=?4, institution=?5, metadata=?6,
+              archived=?7, sort_order=?8, ownership=?9, person_id=?10,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id AS "id!", name, kind, currency_code, institution, metadata,
+                     archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                     person_id, created_at, updated_at"#,
+        id,
+        name,
+        kind,
+        currency_code,
+        input.institution,
+        metadata,
+        input.archived,
+        input.sort_order,
+        ownership,
+        person_id
     )
-    .bind(id)
-    .bind(input.name.trim())
-    .bind(input.kind.as_str())
-    .bind(input.currency_code.trim().to_uppercase())
-    .bind(&input.institution)
-    .bind(metadata)
-    .bind(input.archived)
-    .bind(input.sort_order)
-    .bind(ownership)
-    .bind(person_id)
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound("account"))?;
@@ -561,10 +591,10 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
     // An asset is a "parent" for the debts secured against it. Refuse to delete it while
     // any remain, so we never silently orphan them — the caller must unlink or delete
     // those debts first.
-    let dependents = sqlx::query_scalar::<_, String>(
+    let dependents = sqlx::query_scalar!(
         "SELECT name FROM accounts WHERE secured_by_account_id = ?1 ORDER BY sort_order, name",
+        id
     )
-    .bind(id)
     .fetch_all(db)
     .await?;
     if !dependents.is_empty() {
@@ -573,8 +603,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
             dependents.join(", ")
         )));
     }
-    let res = sqlx::query("DELETE FROM accounts WHERE id = ?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM accounts WHERE id = ?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {
@@ -589,21 +618,24 @@ pub async fn set_secured_by(db: &Db, id: i64, target: Option<i64>) -> AppResult<
         if t == id {
             return Err(AppError::validation("an account cannot secure itself"));
         }
-        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE id=?1")
-            .bind(t)
+        let exists = sqlx::query_scalar!("SELECT COUNT(*) FROM accounts WHERE id=?1", t)
             .fetch_one(db)
             .await?;
         if exists == 0 {
             return Err(AppError::validation("securing account does not exist"));
         }
     }
-    let row = sqlx::query_as::<_, AccountRow>(
-        "UPDATE accounts SET secured_by_account_id=?2,
-            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1 RETURNING *",
+    let row = sqlx::query_as!(
+        AccountRow,
+        r#"UPDATE accounts SET secured_by_account_id=?2,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id AS "id!", name, kind, currency_code, institution, metadata,
+                     archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                     person_id, created_at, updated_at"#,
+        id,
+        target
     )
-    .bind(id)
-    .bind(target)
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound("account"))?;
@@ -619,14 +651,18 @@ pub async fn set_secured_by(db: &Db, id: i64, target: Option<i64>) -> AppResult<
 pub async fn set_ownership(db: &Db, id: i64, ownership: Ownership) -> AppResult<Account> {
     validate_ownership(db, ownership).await?;
     let (ownership, person_id) = ownership.as_parts();
-    let row = sqlx::query_as::<_, AccountRow>(
-        "UPDATE accounts SET ownership=?2, person_id=?3,
-            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1 RETURNING *",
+    let row = sqlx::query_as!(
+        AccountRow,
+        r#"UPDATE accounts SET ownership=?2, person_id=?3,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id AS "id!", name, kind, currency_code, institution, metadata,
+                     archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                     person_id, created_at, updated_at"#,
+        id,
+        ownership,
+        person_id
     )
-    .bind(id)
-    .bind(ownership)
-    .bind(person_id)
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound("account"))?;
@@ -650,14 +686,14 @@ pub async fn set_ownership_bulk(db: &Db, ids: &[i64], ownership: Ownership) -> A
     let mut tx = db.begin().await?;
     let mut affected = 0;
     for id in ids {
-        let res = sqlx::query(
+        let res = sqlx::query!(
             "UPDATE accounts SET ownership=?2, person_id=?3,
                 updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
              WHERE id=?1",
+            id,
+            ownership_str,
+            person_id
         )
-        .bind(id)
-        .bind(ownership_str)
-        .bind(person_id)
         .execute(&mut *tx)
         .await?;
         if res.rows_affected() == 0 {
@@ -777,12 +813,12 @@ pub async fn set_institution_if_unset(
     account_id: i64,
     institution: &str,
 ) -> AppResult<()> {
-    sqlx::query(
+    sqlx::query!(
         "UPDATE accounts SET institution=?2, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id=?1 AND (institution IS NULL OR institution = '')",
+        account_id,
+        institution
     )
-    .bind(account_id)
-    .bind(institution)
     .execute(db)
     .await?;
     Ok(())
@@ -791,11 +827,12 @@ pub async fn set_institution_if_unset(
 #[tracing::instrument(level = "debug", skip_all)]
 async fn write_metadata(db: &Db, account_id: i64, metadata: &AccountMetadata) -> AppResult<()> {
     let json = serde_json::to_string(metadata).map_err(|e| AppError::Internal(e.into()))?;
-    sqlx::query(
-        "UPDATE accounts SET metadata=?2, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
+    sqlx::query!(
+        "UPDATE accounts SET metadata=?2, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id=?1",
+        account_id,
+        json
     )
-    .bind(account_id)
-    .bind(json)
     .execute(db)
     .await?;
     Ok(())
@@ -958,14 +995,15 @@ mod tests {
         // `ownership` is set even here: the schema's triggers refuse a row without an owner
         // however it's written, which is the point of them. What this bypasses is the
         // *metadata* validation, which is what these tests are about.
-        sqlx::query_scalar::<_, i64>(
-            "INSERT INTO accounts (name, kind, currency_code, metadata, ownership)
-             VALUES (?1,?2,'NZD',?3,'joint')
-             RETURNING id",
+        let kind = kind.as_str();
+        sqlx::query_scalar!(
+            r#"INSERT INTO accounts (name, kind, currency_code, metadata, ownership)
+               VALUES (?1,?2,'NZD',?3,'joint')
+               RETURNING id AS "id!""#,
+            name,
+            kind,
+            metadata
         )
-        .bind(name)
-        .bind(kind.as_str())
-        .bind(metadata)
         .fetch_one(db)
         .await
         .unwrap()
@@ -1106,17 +1144,18 @@ mod tests {
         let account = create(&db, valid("Student Loan", AccountKind::StudentLoan))
             .await
             .unwrap();
-        sqlx::query("UPDATE accounts SET metadata = ? WHERE id = ?")
-            .bind(LEGACY_STUDENT_LOAN_METADATA)
-            .bind(account.id)
-            .execute(&db)
-            .await
-            .unwrap();
+        sqlx::query!(
+            "UPDATE accounts SET metadata = ? WHERE id = ?",
+            LEGACY_STUDENT_LOAN_METADATA,
+            account.id
+        )
+        .execute(&db)
+        .await
+        .unwrap();
 
         let migration = include_str!("../migrations/0019_student_loan_profile.sql");
         let stored = |db: Db| async move {
-            sqlx::query_scalar::<_, String>("SELECT metadata FROM accounts WHERE id = ?")
-                .bind(account.id)
+            sqlx::query_scalar!("SELECT metadata FROM accounts WHERE id = ?", account.id)
                 .fetch_one(&db)
                 .await
                 .unwrap()
@@ -1165,12 +1204,14 @@ mod tests {
         let account = create(&db, valid("Student Loan", AccountKind::StudentLoan))
             .await
             .unwrap();
-        sqlx::query("UPDATE accounts SET metadata = ? WHERE id = ?")
-            .bind(LEGACY_STUDENT_LOAN_METADATA)
-            .bind(account.id)
-            .execute(&db)
-            .await
-            .unwrap();
+        sqlx::query!(
+            "UPDATE accounts SET metadata = ? WHERE id = ?",
+            LEGACY_STUDENT_LOAN_METADATA,
+            account.id
+        )
+        .execute(&db)
+        .await
+        .unwrap();
 
         let updated = get(&db, account.id).await.unwrap();
         assert_eq!(

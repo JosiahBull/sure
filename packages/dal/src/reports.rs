@@ -3,34 +3,36 @@
 //! graphs) lives in the API crate, which calls these loaders and crunches the numbers.
 
 use chrono::NaiveDate;
-use sqlx::FromRow;
 use sure_core::{effective_ownership, AccountKind, AppError, AppResult, CategoryKind, Ownership};
 
 use crate::Db;
 
-/// SQLite predicate on `col` recognising a stored date `sure_app::reports::parse_stored_date`
-/// can actually read. `col` is always a literal column name from this module — never caller
-/// input.
-///
-/// Two halves, both needed:
-/// * the `GLOB` is the ten-character zero-padded `YYYY-MM-DD` prefix [`sure_core::IsoDate`]
-///   writes — a legacy `31/07/2026` fails it, and so does anything that would compare
-///   nonsensically against a lexicographic window bound;
-/// * `date(x) = substr(x, 1, 10)` is the calendar check `GLOB` can't do. SQLite's `date()`
-///   *normalises*, so `date('2026-02-30')` is `'2026-03-02'` and the equality fails — which
-///   is exactly the row `chrono` refuses too.
-///
-/// Why it is needed at all: a row in any other shape is invisible to every report today
-/// (`parse_stored_date` drops it, loudly). The windowed reads below collapse a window's
-/// pre-history into a per-account *aggregate*, and an aggregate cannot drop a row after the
-/// fact — an unreadable row folded into that sum would silently move the balance sheet.
-/// Filtered here, it stays exactly as visible (and as invisible) as it was.
-fn readable_date(col: &str) -> String {
-    format!(
-        "{col} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' \
-         AND date({col}) = substr({col}, 1, 10)"
-    )
-}
+// Several queries below filter on "a stored date `sure_app::reports::parse_stored_date` can
+// actually read":
+//
+//     col GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+//         AND date(col) = substr(col, 1, 10)
+//
+// Two halves, both needed:
+//   * the `GLOB` is the ten-character zero-padded `YYYY-MM-DD` prefix `sure_core::IsoDate`
+//     writes — a legacy `31/07/2026` fails it, and so does anything that would compare
+//     nonsensically against a lexicographic window bound;
+//   * `date(x) = substr(x, 1, 10)` is the calendar check `GLOB` can't do. SQLite's `date()`
+//     *normalises*, so `date('2026-02-30')` is `'2026-03-02'` and the equality fails — which
+//     is exactly the row `chrono` refuses too.
+//
+// Why it is needed at all: a row in any other shape is invisible to every report today
+// (`parse_stored_date` drops it, loudly). The windowed reads below collapse a window's
+// pre-history into a per-account *aggregate*, and an aggregate cannot drop a row after the
+// fact — an unreadable row folded into that sum would silently move the balance sheet.
+// Filtered here, it stays exactly as visible (and as invisible) as it was.
+//
+// It used to be one `readable_date(col)` helper, but the compile-time-checked query macros
+// need a literal string and cannot take an interpolated one — so there is now one copy per
+// query: over `posted_at` in `pre_window_rows`, `seed_aggregate` and
+// `earliest_transaction_date`, over `as_of` in `valuations` and `earliest_valuation_date`.
+// They must stay identical, and `an_unreadable_pre_window_date_is_left_out_of_the_seed` below
+// is what notices if one drifts.
 
 /// A stored date column, formatted for SQLite's *lexicographic* `TEXT` comparison. Every date
 /// this system writes is zero-padded `YYYY-MM-DD` ([`sure_core::IsoDate`]), so `>=`/`<` on the
@@ -80,14 +82,14 @@ fn parse_ownership(ownership: String, person_id: Option<i64>) -> AppResult<Owner
 }
 
 /// A currency's minor-unit scale, for converting minor units to major.
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 pub struct CurrencyDecimals {
     pub code: String,
     pub decimal_places: i64,
 }
 
 /// An account and its currency (all accounts, including archived) — for net-worth history.
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 pub struct AccountCurrencyRow {
     pub id: i64,
     pub currency_code: String,
@@ -117,7 +119,7 @@ impl TryFrom<AccountCurrencyRow> for AccountCurrency {
 }
 
 /// The raw row shape for [`ActiveAccount`] — `kind` as stored, before parsing.
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct ActiveAccountRow {
     id: i64,
     name: String,
@@ -152,7 +154,7 @@ impl TryFrom<ActiveAccountRow> for ActiveAccount {
 }
 
 /// A single asset account, for the equity-position report.
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 pub struct AssetAccount {
     pub id: i64,
     pub name: String,
@@ -160,7 +162,7 @@ pub struct AssetAccount {
 }
 
 /// The raw row shape for [`SecuredLiabilityAccount`] — `kind` as stored, before parsing.
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct SecuredLiabilityAccountRow {
     id: i64,
     name: String,
@@ -191,7 +193,7 @@ impl TryFrom<SecuredLiabilityAccountRow> for SecuredLiabilityAccount {
 }
 
 /// A transaction reduced to what a running balance needs.
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 pub struct LedgerTx {
     pub account_id: i64,
     pub posted_at: String,
@@ -199,7 +201,7 @@ pub struct LedgerTx {
 }
 
 /// A point-in-time valuation reduced to what a running balance needs.
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 pub struct LedgerValuation {
     pub account_id: i64,
     pub as_of: String,
@@ -208,7 +210,7 @@ pub struct LedgerValuation {
 }
 
 /// The raw row shape for [`Category`] — `kind` as stored, before parsing.
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct CategoryRow {
     id: i64,
     parent_id: Option<i64>,
@@ -248,7 +250,7 @@ fn parse_category_kind(kind: String) -> AppResult<CategoryKind> {
 }
 
 /// The raw row shape for [`SpendTransaction`] — `account_kind` as stored, before parsing.
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct SpendTransactionRow {
     posted_at: String,
     amount_minor: i64,
@@ -310,18 +312,20 @@ impl TryFrom<SpendTransactionRow> for SpendTransaction {
 /// Every currency's decimal scale.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn currency_decimals(db: &Db) -> AppResult<Vec<CurrencyDecimals>> {
-    Ok(
-        sqlx::query_as::<_, CurrencyDecimals>("SELECT code, decimal_places FROM currencies")
-            .fetch_all(db)
-            .await?,
+    Ok(sqlx::query_as!(
+        CurrencyDecimals,
+        "SELECT code, decimal_places FROM currencies"
     )
+    .fetch_all(db)
+    .await?)
 }
 
 /// Every account's id + currency (net-worth history spans archived accounts too).
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn account_currencies(db: &Db) -> AppResult<Vec<AccountCurrency>> {
-    sqlx::query_as::<_, AccountCurrencyRow>(
-        "SELECT id, currency_code, ownership, person_id FROM accounts",
+    sqlx::query_as!(
+        AccountCurrencyRow,
+        r#"SELECT id AS "id!", currency_code, ownership, person_id FROM accounts"#
     )
     .fetch_all(db)
     .await?
@@ -333,9 +337,10 @@ pub async fn account_currencies(db: &Db) -> AppResult<Vec<AccountCurrency>> {
 /// Non-archived accounts in display order.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn active_accounts(db: &Db) -> AppResult<Vec<ActiveAccount>> {
-    sqlx::query_as::<_, ActiveAccountRow>(
-        "SELECT id, name, kind, currency_code, ownership, person_id
-         FROM accounts WHERE archived=0 ORDER BY sort_order, name",
+    sqlx::query_as!(
+        ActiveAccountRow,
+        r#"SELECT id AS "id!", name, kind, currency_code, ownership, person_id
+             FROM accounts WHERE archived=0 ORDER BY sort_order, name"#
     )
     .fetch_all(db)
     .await?
@@ -347,11 +352,14 @@ pub async fn active_accounts(db: &Db) -> AppResult<Vec<ActiveAccount>> {
 /// One account by id (NotFound if it doesn't exist).
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn account(db: &Db, id: i64) -> AppResult<AssetAccount> {
-    sqlx::query_as::<_, AssetAccount>("SELECT id, name, currency_code FROM accounts WHERE id=?1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(AppError::NotFound("account"))
+    sqlx::query_as!(
+        AssetAccount,
+        r#"SELECT id AS "id!", name, currency_code FROM accounts WHERE id=?1"#,
+        id
+    )
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("account"))
 }
 
 /// Liabilities secured against `asset_id`, in display order.
@@ -360,11 +368,12 @@ pub async fn secured_liabilities(
     db: &Db,
     asset_id: i64,
 ) -> AppResult<Vec<SecuredLiabilityAccount>> {
-    sqlx::query_as::<_, SecuredLiabilityAccountRow>(
-        "SELECT id, name, kind, currency_code FROM accounts
-         WHERE secured_by_account_id=?1 ORDER BY sort_order, name",
+    sqlx::query_as!(
+        SecuredLiabilityAccountRow,
+        r#"SELECT id AS "id!", name, kind, currency_code FROM accounts
+             WHERE secured_by_account_id=?1 ORDER BY sort_order, name"#,
+        asset_id
     )
-    .bind(asset_id)
     .fetch_all(db)
     .await?
     .into_iter()
@@ -374,7 +383,7 @@ pub async fn secured_liabilities(
 
 /// The raw row shape of the transaction *seed*: one per account, collapsing every readable
 /// row before the window into a single (latest date, running total) pair.
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct LedgerSeedRow {
     account_id: i64,
     /// The latest readable `posted_at` before the window — `None` when every pre-window row
@@ -407,8 +416,7 @@ struct LedgerSeedRow {
 /// falls back to the individual rows and lets `sure_app::reports`' `i128` aggregation saturate
 /// them loudly, exactly as it did before there was a seed at all.
 async fn transaction_seed(db: &Db, from: &str) -> AppResult<Vec<LedgerTx>> {
-    let readable = readable_date("posted_at");
-    let rows = match seed_aggregate(db, from, &readable).await {
+    let rows = match seed_aggregate(db, from).await {
         Ok(rows) => rows,
         Err(e) if is_integer_overflow(&e) => {
             tracing::warn!(
@@ -417,7 +425,7 @@ async fn transaction_seed(db: &Db, from: &str) -> AppResult<Vec<LedgerTx>> {
                  sure_core::MAX_MONEY_MINOR (legacy data, a provider import or a snapshot \
                  restore); find it and repair it"
             );
-            return pre_window_rows(db, from, &readable).await;
+            return pre_window_rows(db, from).await;
         }
         Err(e) => return Err(e.into()),
     };
@@ -441,12 +449,15 @@ fn is_integer_overflow(e: &sqlx::Error) -> bool {
 /// Every readable transaction before the window, uncollapsed — the fallback above, and nothing
 /// else. Costs the memory the seed exists to avoid, which is the right trade for a ledger that
 /// cannot be summed at all.
-async fn pre_window_rows(db: &Db, from: &str, readable: &str) -> AppResult<Vec<LedgerTx>> {
-    Ok(sqlx::query_as::<_, LedgerTx>(&format!(
+async fn pre_window_rows(db: &Db, from: &str) -> AppResult<Vec<LedgerTx>> {
+    Ok(sqlx::query_as!(
+        LedgerTx,
         "SELECT account_id, posted_at, amount_minor FROM transactions
-         WHERE posted_at < ?1 AND {readable}"
-    ))
-    .bind(from)
+          WHERE posted_at < ?1
+            AND posted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+                    AND date(posted_at) = substr(posted_at, 1, 10)",
+        from
+    )
     .fetch_all(db)
     .await?)
 }
@@ -478,21 +489,24 @@ fn seed_rows(rows: Vec<LedgerSeedRow>) -> AppResult<Vec<LedgerTx>> {
 /// One row per account with pre-window history: its latest readable date, the exact sum of those
 /// rows' amounts, and how many were left out as unreadable. `sqlx::Error` rather than `AppError`
 /// so [`transaction_seed`] can recognise SQLite's `integer overflow` before it is wrapped.
-async fn seed_aggregate(
-    db: &Db,
-    from: &str,
-    readable: &str,
-) -> Result<Vec<LedgerSeedRow>, sqlx::Error> {
-    sqlx::query_as::<_, LedgerSeedRow>(&format!(
-        "SELECT account_id,
-                MAX(CASE WHEN {readable} THEN posted_at END) AS posted_at,
-                SUM(CASE WHEN {readable} THEN amount_minor ELSE 0 END) AS amount_minor,
-                SUM(CASE WHEN {readable} THEN 0 ELSE 1 END) AS unreadable
-         FROM transactions
-         WHERE posted_at < ?1
-         GROUP BY account_id"
-    ))
-    .bind(from)
+async fn seed_aggregate(db: &Db, from: &str) -> Result<Vec<LedgerSeedRow>, sqlx::Error> {
+    sqlx::query_as!(
+        LedgerSeedRow,
+        r#"SELECT account_id AS "account_id!",
+                  MAX(CASE WHEN posted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+                          AND date(posted_at) = substr(posted_at, 1, 10)
+                           THEN posted_at END) AS "posted_at: String",
+                  SUM(CASE WHEN posted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+                          AND date(posted_at) = substr(posted_at, 1, 10)
+                           THEN amount_minor ELSE 0 END) AS "amount_minor!: i64",
+                  SUM(CASE WHEN posted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+                          AND date(posted_at) = substr(posted_at, 1, 10)
+                           THEN 0 ELSE 1 END) AS "unreadable!: i64"
+             FROM transactions
+            WHERE posted_at < ?1
+            GROUP BY account_id"#,
+        from
+    )
     .fetch_all(db)
     .await
 }
@@ -514,10 +528,11 @@ pub async fn transactions(db: &Db, from: Option<NaiveDate>) -> AppResult<Vec<Led
     let from = lower_bound(from);
     let mut rows = transaction_seed(db, &from).await?;
     rows.extend(
-        sqlx::query_as::<_, LedgerTx>(
+        sqlx::query_as!(
+            LedgerTx,
             "SELECT account_id, posted_at, amount_minor FROM transactions WHERE posted_at >= ?1",
+            from
         )
-        .bind(&from)
         .fetch_all(db)
         .await?,
     );
@@ -546,26 +561,32 @@ pub async fn transactions(db: &Db, from: Option<NaiveDate>) -> AppResult<Vec<Led
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn valuations(db: &Db, from: Option<NaiveDate>) -> AppResult<Vec<LedgerValuation>> {
     let from = lower_bound(from);
-    let readable = readable_date("as_of");
-    let mut rows = sqlx::query_as::<_, LedgerValuation>(&format!(
-        "SELECT account_id, as_of, value_minor, currency_code FROM (
-             SELECT account_id, as_of, value_minor, currency_code,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY account_id ORDER BY as_of DESC, id DESC
-                    ) AS rn
-             FROM valuations
-             WHERE as_of < ?1 AND {readable}
-         ) WHERE rn = 1"
-    ))
-    .bind(&from)
+    let mut rows = sqlx::query_as!(
+        LedgerValuation,
+        // The subquery does not carry `valuations`' NOT NULL through, so each column is
+        // forced back — `WHERE rn = 1` only ever yields real rows.
+        r#"SELECT account_id AS "account_id!", as_of AS "as_of!",
+                  value_minor AS "value_minor!", currency_code AS "currency_code!"
+             FROM (SELECT account_id, as_of, value_minor, currency_code,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY account_id ORDER BY as_of DESC, id DESC
+                          ) AS rn
+                     FROM valuations
+                    WHERE as_of < ?1
+                      AND as_of GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+                          AND date(as_of) = substr(as_of, 1, 10))
+            WHERE rn = 1"#,
+        from
+    )
     .fetch_all(db)
     .await?;
     rows.extend(
-        sqlx::query_as::<_, LedgerValuation>(
+        sqlx::query_as!(
+            LedgerValuation,
             "SELECT account_id, as_of, value_minor, currency_code FROM valuations
-             WHERE as_of >= ?1 ORDER BY as_of, id",
+              WHERE as_of >= ?1 ORDER BY as_of, id",
+            from
         )
-        .bind(&from)
         .fetch_all(db)
         .await?,
     );
@@ -575,12 +596,15 @@ pub async fn valuations(db: &Db, from: Option<NaiveDate>) -> AppResult<Vec<Ledge
 /// Every category's shape.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn categories(db: &Db) -> AppResult<Vec<Category>> {
-    sqlx::query_as::<_, CategoryRow>("SELECT id, parent_id, name, color, kind FROM categories")
-        .fetch_all(db)
-        .await?
-        .into_iter()
-        .map(Category::try_from)
-        .collect()
+    sqlx::query_as!(
+        CategoryRow,
+        r#"SELECT id AS "id!", parent_id, name, color, kind FROM categories"#
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(Category::try_from)
+    .collect()
 }
 
 /// Transactions posted within `from ..= to`, with the fields the spend reports need to filter
@@ -598,16 +622,20 @@ pub async fn spend_transactions(
     from: NaiveDate,
     to: NaiveDate,
 ) -> AppResult<Vec<SpendTransaction>> {
-    sqlx::query_as::<_, SpendTransactionRow>(
-        "SELECT t.posted_at, t.amount_minor, t.currency_code, t.category_id, t.is_one_off,
-                t.linked_transaction_id, a.kind AS account_kind,
-                t.ownership AS tx_ownership, t.person_id AS tx_person_id,
-                a.ownership AS account_ownership, a.person_id AS account_person_id
-         FROM transactions t JOIN accounts a ON a.id = t.account_id
-         WHERE t.posted_at >= ?1 AND t.posted_at < ?2",
+    let from = bound(from);
+    let to = day_after(to);
+    sqlx::query_as!(
+        SpendTransactionRow,
+        r#"SELECT t.posted_at, t.amount_minor, t.currency_code, t.category_id,
+                  t.is_one_off AS "is_one_off!: bool", t.linked_transaction_id,
+                  a.kind AS account_kind, t.ownership AS tx_ownership,
+                  t.person_id AS tx_person_id, a.ownership AS account_ownership,
+                  a.person_id AS account_person_id
+             FROM transactions t JOIN accounts a ON a.id = t.account_id
+            WHERE t.posted_at >= ?1 AND t.posted_at < ?2"#,
+        from,
+        to
     )
-    .bind(bound(from))
-    .bind(day_after(to))
     .fetch_all(db)
     .await?
     .into_iter()
@@ -622,10 +650,12 @@ pub async fn spend_transactions(
 /// plotted at (`01/07/2026` sorts below every real ISO date, so it would win a bare `MIN`).
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn earliest_transaction_date(db: &Db) -> AppResult<Option<String>> {
-    Ok(sqlx::query_scalar::<_, Option<String>>(&format!(
-        "SELECT MIN(posted_at) FROM transactions WHERE {}",
-        readable_date("posted_at")
-    ))
+    Ok(sqlx::query_scalar!(
+        r#"SELECT MIN(posted_at) AS "earliest: String"
+             FROM transactions
+            WHERE posted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+                     AND date(posted_at) = substr(posted_at, 1, 10)"#
+    )
     .fetch_one(db)
     .await?)
 }
@@ -639,10 +669,12 @@ pub async fn earliest_transaction_date(db: &Db) -> AppResult<Option<String>> {
 /// on (a house bought for cash, valued at purchase, with no transactions at all).
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn earliest_valuation_date(db: &Db) -> AppResult<Option<String>> {
-    Ok(sqlx::query_scalar::<_, Option<String>>(&format!(
-        "SELECT MIN(as_of) FROM valuations WHERE {}",
-        readable_date("as_of")
-    ))
+    Ok(sqlx::query_scalar!(
+        r#"SELECT MIN(as_of) AS "earliest: String"
+             FROM valuations
+            WHERE as_of GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+              AND date(as_of) = substr(as_of, 1, 10)"#
+    )
     .fetch_one(db)
     .await?)
 }
@@ -668,11 +700,11 @@ mod tests {
             .unwrap();
         crate::migrate(&db).await.unwrap();
         for id in accounts {
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO accounts (id, name, kind, currency_code, metadata, ownership)
                  VALUES (?1, 'Test', 'bank', 'NZD', '{}', 'joint')",
+                id
             )
-            .bind(id)
             .execute(&db)
             .await
             .unwrap();
@@ -681,26 +713,26 @@ mod tests {
     }
 
     async fn insert_tx(db: &Db, account_id: i64, posted_at: &str, amount_minor: i64) {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code)
              VALUES (?1, ?2, ?3, 'NZD')",
+            account_id,
+            posted_at,
+            amount_minor
         )
-        .bind(account_id)
-        .bind(posted_at)
-        .bind(amount_minor)
         .execute(db)
         .await
         .unwrap();
     }
 
     async fn insert_val(db: &Db, account_id: i64, as_of: &str, value_minor: i64) {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO valuations (account_id, as_of, value_minor, currency_code)
              VALUES (?1, ?2, ?3, 'NZD')",
+            account_id,
+            as_of,
+            value_minor
         )
-        .bind(account_id)
-        .bind(as_of)
-        .bind(value_minor)
         .execute(db)
         .await
         .unwrap();

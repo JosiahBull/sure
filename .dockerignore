@@ -34,6 +34,10 @@ scripts/*.mjs
 # Generated (regenerated inside the image from the backend)
 packages/client/openapi.json
 
+# NOT ignored, and deliberately: `.sqlx` (compile-time query metadata) and `.cargo/config.toml`
+# (which pins SQLX_OFFLINE=true) are COPYd by both Rust stages of packages/api/Dockerfile. They
+# are what let the image compile with no database at all — excluding them breaks the build.
+
 # Editor / OS cruft and loose images
 **/.DS_Store
 .idea

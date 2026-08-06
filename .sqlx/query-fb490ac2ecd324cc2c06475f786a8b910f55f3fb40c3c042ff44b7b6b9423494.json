@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO imports\n           (account_id, source, provider_tag, source_account, filenames,\n            imported, skipped, held_back, covered_from, covered_to, cutover)\n         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": []
+  },
+  "hash": "fb490ac2ecd324cc2c06475f786a8b910f55f3fb40c3c042ff44b7b6b9423494"
+}

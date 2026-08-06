@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT 1 AS \"one!\" FROM sqlite_master\n            WHERE type='table' AND name='forecast_event_effects'",
+  "describe": {
+    "columns": [
+      {
+        "name": "one!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5059198ef4ef5c184ee7805492db6890a3bae2ba5eda7d996e866bc0d067dbee"
+}

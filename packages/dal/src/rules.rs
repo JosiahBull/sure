@@ -3,7 +3,6 @@
 //! itself lives in the API crate (it owns `zen-expression`); this layer loads the
 //! contexts, then persists the changes the evaluator decided on.
 
-use sqlx::FromRow;
 use sure_core::{AccountKind, AppError, AppResult, RuleRunKind};
 pub use sure_core::{
     PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RunResult,
@@ -21,19 +20,9 @@ fn parse_kind(kind: String) -> AppResult<RuleRunKind> {
         .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
 }
 
-/// Columns needed to evaluate a rule against a transaction, denormalised for speed.
-pub const CTX_QUERY: &str =
-    "SELECT t.id, t.account_id, t.posted_at, t.amount_minor, t.currency_code,
-        cur.decimal_places AS decimal_places, t.description, t.merchant, t.merchant_id, t.notes,
-        t.category_id, t.is_one_off, t.categorized_by_rule_id,
-        a.name AS account_name, a.kind AS account_kind
-    FROM transactions t
-    JOIN accounts a ON a.id = t.account_id
-    JOIN currencies cur ON cur.code = t.currency_code";
-
 /// A rule application row as stored — internal to `undo_run`'s revert check. Never
 /// serialised: the API-facing view is [`RuleApplicationDetail`].
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 pub struct RuleApplication {
     pub id: i64,
     pub rule_run_id: i64,
@@ -51,7 +40,7 @@ pub struct RuleApplication {
 }
 
 /// The raw row shape for [`TxCtx`] — `account_kind` as stored, before parsing.
-#[derive(Debug, FromRow, Clone)]
+#[derive(Debug, Clone)]
 struct TxCtxRow {
     id: i64,
     account_id: i64,
@@ -137,7 +126,7 @@ pub struct PlannedApplication {
     pub new_merchant_id: Option<i64>,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct RuleRow {
     id: i64,
     name: String,
@@ -179,59 +168,85 @@ impl From<RuleRow> for Rule {
 /// List rules in evaluation order.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Rule>> {
-    Ok(
-        sqlx::query_as::<_, RuleRow>("SELECT * FROM rules ORDER BY priority, id")
-            .fetch_all(db)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect(),
+    Ok(sqlx::query_as!(
+        RuleRow,
+        r#"SELECT id AS "id!", name, description, expression, set_category_id,
+                  set_one_off AS "set_one_off: bool", set_merchant_id,
+                  overwrite_manual AS "overwrite_manual!: bool",
+                  stop_on_match AS "stop_on_match!: bool", priority,
+                  enabled AS "enabled!: bool", created_at, updated_at
+                 FROM rules ORDER BY priority, id"#
     )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect())
 }
 
 /// Enabled rules in evaluation order (for a "run all").
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn enabled_rules(db: &Db) -> AppResult<Vec<Rule>> {
-    Ok(
-        sqlx::query_as::<_, RuleRow>("SELECT * FROM rules WHERE enabled=1 ORDER BY priority, id")
-            .fetch_all(db)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect(),
+    Ok(sqlx::query_as!(
+        RuleRow,
+        r#"SELECT id AS "id!", name, description, expression, set_category_id,
+                  set_one_off AS "set_one_off: bool", set_merchant_id,
+                  overwrite_manual AS "overwrite_manual!: bool",
+                  stop_on_match AS "stop_on_match!: bool", priority,
+                  enabled AS "enabled!: bool", created_at, updated_at
+                 FROM rules WHERE enabled=1 ORDER BY priority, id"#
     )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn get(db: &Db, id: i64) -> AppResult<Rule> {
-    Ok(
-        sqlx::query_as::<_, RuleRow>("SELECT * FROM rules WHERE id=?1")
-            .bind(id)
-            .fetch_optional(db)
-            .await?
-            .ok_or(AppError::NotFound("rule"))?
-            .into(),
+    Ok(sqlx::query_as!(
+        RuleRow,
+        r#"SELECT id AS "id!", name, description, expression, set_category_id,
+                  set_one_off AS "set_one_off: bool", set_merchant_id,
+                  overwrite_manual AS "overwrite_manual!: bool",
+                  stop_on_match AS "stop_on_match!: bool", priority,
+                  enabled AS "enabled!: bool", created_at, updated_at
+                 FROM rules WHERE id=?1"#,
+        id
     )
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("rule"))?
+    .into())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveRule) -> AppResult<Rule> {
-    Ok(sqlx::query_as::<_, RuleRow>(
-        "INSERT INTO rules
-            (name, description, expression, set_category_id, set_one_off, overwrite_manual,
-             stop_on_match, priority, enabled, set_merchant_id)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) RETURNING *",
+    let name = input.name.trim();
+    let expression = input.expression.trim();
+    Ok(sqlx::query_as!(
+        RuleRow,
+        r#"INSERT INTO rules
+              (name, description, expression, set_category_id, set_one_off, overwrite_manual,
+               stop_on_match, priority, enabled, set_merchant_id)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+           RETURNING id AS "id!", name, description, expression, set_category_id,
+                     set_one_off AS "set_one_off: bool", set_merchant_id,
+                     overwrite_manual AS "overwrite_manual!: bool",
+                     stop_on_match AS "stop_on_match!: bool", priority,
+                     enabled AS "enabled!: bool", created_at, updated_at"#,
+        name,
+        input.description,
+        expression,
+        input.set_category_id,
+        input.set_one_off,
+        input.overwrite_manual,
+        input.stop_on_match,
+        input.priority,
+        input.enabled,
+        input.set_merchant_id
     )
-    .bind(input.name.trim())
-    .bind(&input.description)
-    .bind(input.expression.trim())
-    .bind(input.set_category_id)
-    .bind(input.set_one_off)
-    .bind(input.overwrite_manual)
-    .bind(input.stop_on_match)
-    .bind(input.priority)
-    .bind(input.enabled)
-    .bind(input.set_merchant_id)
     .fetch_one(db)
     .await?
     .into())
@@ -239,23 +254,31 @@ pub async fn create(db: &Db, input: SaveRule) -> AppResult<Rule> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveRule) -> AppResult<Rule> {
-    Ok(sqlx::query_as::<_, RuleRow>(
-        "UPDATE rules SET name=?2, description=?3, expression=?4, set_category_id=?5, set_one_off=?6,
-            overwrite_manual=?7, stop_on_match=?8, priority=?9, enabled=?10, set_merchant_id=?11,
-            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1 RETURNING *",
+    let name = input.name.trim();
+    let expression = input.expression.trim();
+    Ok(sqlx::query_as!(
+        RuleRow,
+        r#"UPDATE rules SET name=?2, description=?3, expression=?4, set_category_id=?5,
+              set_one_off=?6, overwrite_manual=?7, stop_on_match=?8, priority=?9, enabled=?10,
+              set_merchant_id=?11, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id AS "id!", name, description, expression, set_category_id,
+                     set_one_off AS "set_one_off: bool", set_merchant_id,
+                     overwrite_manual AS "overwrite_manual!: bool",
+                     stop_on_match AS "stop_on_match!: bool", priority,
+                     enabled AS "enabled!: bool", created_at, updated_at"#,
+        id,
+        name,
+        input.description,
+        expression,
+        input.set_category_id,
+        input.set_one_off,
+        input.overwrite_manual,
+        input.stop_on_match,
+        input.priority,
+        input.enabled,
+        input.set_merchant_id
     )
-    .bind(id)
-    .bind(input.name.trim())
-    .bind(&input.description)
-    .bind(input.expression.trim())
-    .bind(input.set_category_id)
-    .bind(input.set_one_off)
-    .bind(input.overwrite_manual)
-    .bind(input.stop_on_match)
-    .bind(input.priority)
-    .bind(input.enabled)
-    .bind(input.set_merchant_id)
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound("rule"))?
@@ -265,8 +288,7 @@ pub async fn update(db: &Db, id: i64, input: SaveRule) -> AppResult<Rule> {
 /// Delete a rule (audit history is retained; its rule_id becomes null via ON DELETE SET NULL).
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
-    let res = sqlx::query("DELETE FROM rules WHERE id=?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM rules WHERE id=?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {
@@ -280,12 +302,23 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 /// Load every transaction's evaluation context.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn load_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
-    sqlx::query_as::<_, TxCtxRow>(CTX_QUERY)
-        .fetch_all(db)
-        .await?
-        .into_iter()
-        .map(TxCtx::try_from)
-        .collect()
+    // Columns needed to evaluate a rule against a transaction, denormalised for speed, in
+    // `TxCtxRow`'s field order (`query_as!` maps positionally).
+    sqlx::query_as!(
+        TxCtxRow,
+        r#"SELECT t.id AS "id!", t.account_id, t.posted_at, t.amount_minor, t.currency_code,
+                  cur.decimal_places, t.description, t.merchant, t.merchant_id, t.notes,
+                  t.category_id, t.is_one_off AS "is_one_off!: bool", t.categorized_by_rule_id,
+                  a.name AS account_name, a.kind AS account_kind
+             FROM transactions t
+             JOIN accounts a ON a.id = t.account_id
+             JOIN currencies cur ON cur.code = t.currency_code"#
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(TxCtx::try_from)
+    .collect()
 }
 
 /// Persist a run: insert the run row, apply each decided change (updating the
@@ -301,53 +334,58 @@ pub async fn persist_run(
     applications: Vec<PlannedApplication>,
 ) -> AppResult<RunResult> {
     let mut txn = db.begin().await?;
-    let run_id = sqlx::query("INSERT INTO rule_runs (rule_id, kind) VALUES (?1,?2)")
-        .bind(rule_id)
-        .bind(kind.as_str())
-        .execute(&mut *txn)
-        .await?
-        .last_insert_rowid();
+    let kind = kind.as_str();
+    let run_id = sqlx::query!(
+        "INSERT INTO rule_runs (rule_id, kind) VALUES (?1,?2)",
+        rule_id,
+        kind
+    )
+    .execute(&mut *txn)
+    .await?
+    .last_insert_rowid();
 
     let changed = applications.len() as i64;
     for a in &applications {
-        sqlx::query(
+        sqlx::query!(
             "UPDATE transactions SET category_id=?2, categorized_by_rule_id=?3, is_one_off=?4,
                 merchant_id=?5, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
+            a.transaction_id,
+            a.new_category_id,
+            a.new_categorized_by_rule_id,
+            a.new_one_off,
+            a.new_merchant_id
         )
-        .bind(a.transaction_id)
-        .bind(a.new_category_id)
-        .bind(a.new_categorized_by_rule_id)
-        .bind(a.new_one_off)
-        .bind(a.new_merchant_id)
         .execute(&mut *txn)
         .await?;
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO rule_applications
                 (rule_run_id, rule_id, transaction_id, prev_category_id, new_category_id,
                  prev_categorized_by_rule_id, prev_one_off, new_one_off,
                  prev_merchant_id, new_merchant_id)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            run_id,
+            a.rule_id,
+            a.transaction_id,
+            a.prev_category_id,
+            a.new_category_id,
+            a.prev_categorized_by_rule_id,
+            a.prev_one_off,
+            a.new_one_off,
+            a.prev_merchant_id,
+            a.new_merchant_id
         )
-        .bind(run_id)
-        .bind(a.rule_id)
-        .bind(a.transaction_id)
-        .bind(a.prev_category_id)
-        .bind(a.new_category_id)
-        .bind(a.prev_categorized_by_rule_id)
-        .bind(a.prev_one_off)
-        .bind(a.new_one_off)
-        .bind(a.prev_merchant_id)
-        .bind(a.new_merchant_id)
         .execute(&mut *txn)
         .await?;
     }
 
-    sqlx::query("UPDATE rule_runs SET matched=?2, changed=?3 WHERE id=?1")
-        .bind(run_id)
-        .bind(matched)
-        .bind(changed)
-        .execute(&mut *txn)
-        .await?;
+    sqlx::query!(
+        "UPDATE rule_runs SET matched=?2, changed=?3 WHERE id=?1",
+        run_id,
+        matched,
+        changed
+    )
+    .execute(&mut *txn)
+    .await?;
     txn.commit().await?;
 
     Ok(RunResult {
@@ -357,7 +395,7 @@ pub async fn persist_run(
     })
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct RuleRunRow {
     id: i64,
     rule_id: Option<i64>,
@@ -384,7 +422,7 @@ impl TryFrom<RuleRunRow> for RuleRun {
     }
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct RuleApplicationDetailRow {
     id: i64,
     transaction_id: i64,
@@ -424,12 +462,17 @@ impl From<RuleApplicationDetailRow> for RuleApplicationDetail {
 /// List rule runs (most recent first) — the audit trail.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_runs(db: &Db) -> AppResult<Vec<RuleRun>> {
-    sqlx::query_as::<_, RuleRunRow>("SELECT * FROM rule_runs ORDER BY id DESC")
-        .fetch_all(db)
-        .await?
-        .into_iter()
-        .map(RuleRun::try_from)
-        .collect()
+    sqlx::query_as!(
+        RuleRunRow,
+        r#"SELECT id AS "id!", rule_id, kind, matched, changed, undone AS "undone!: bool",
+                  created_at
+             FROM rule_runs ORDER BY id DESC"#
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(RuleRun::try_from)
+    .collect()
 }
 
 /// The per-transaction changes made by a run, each joined to its transaction's current
@@ -437,16 +480,18 @@ pub async fn list_runs(db: &Db) -> AppResult<Vec<RuleRun>> {
 /// application row can't outlive its transaction and the inner join always matches.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn run_applications(db: &Db, run_id: i64) -> AppResult<Vec<RuleApplicationDetail>> {
-    Ok(sqlx::query_as::<_, RuleApplicationDetailRow>(
-        "SELECT a.id, a.transaction_id, t.posted_at, t.description, t.amount_minor, t.currency_code,
-                a.prev_category_id, a.new_category_id, a.prev_merchant_id, a.new_merchant_id,
-                a.prev_one_off, a.new_one_off, a.reverted
-         FROM rule_applications a
-         JOIN transactions t ON t.id = a.transaction_id
-         WHERE a.rule_run_id = ?1
-         ORDER BY a.id",
+    Ok(sqlx::query_as!(
+        RuleApplicationDetailRow,
+        r#"SELECT a.id AS "id!", a.transaction_id, t.posted_at, t.description, t.amount_minor,
+                  t.currency_code, a.prev_category_id, a.new_category_id, a.prev_merchant_id,
+                  a.new_merchant_id, a.prev_one_off AS "prev_one_off: bool",
+                  a.new_one_off AS "new_one_off: bool", a.reverted AS "reverted!: bool"
+             FROM rule_applications a
+             JOIN transactions t ON t.id = a.transaction_id
+            WHERE a.rule_run_id = ?1
+            ORDER BY a.id"#,
+        run_id
     )
-    .bind(run_id)
     .fetch_all(db)
     .await?
     .into_iter()
@@ -459,17 +504,21 @@ pub async fn run_applications(db: &Db, run_id: i64) -> AppResult<Vec<RuleApplica
 /// transactions actually reverted.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<RunResult> {
-    let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM rule_runs WHERE id=?1")
-        .bind(run_id)
+    let exists = sqlx::query_scalar!("SELECT COUNT(*) FROM rule_runs WHERE id=?1", run_id)
         .fetch_one(db)
         .await?;
     if exists == 0 {
         return Err(AppError::NotFound("rule run"));
     }
-    let apps = sqlx::query_as::<_, RuleApplication>(
-        "SELECT * FROM rule_applications WHERE rule_run_id=?1 AND reverted=0",
+    let apps = sqlx::query_as!(
+        RuleApplication,
+        r#"SELECT id AS "id!", rule_run_id, rule_id, transaction_id, prev_category_id,
+                  new_category_id, prev_categorized_by_rule_id,
+                  prev_one_off AS "prev_one_off: bool", new_one_off AS "new_one_off: bool",
+                  prev_merchant_id, new_merchant_id, reverted AS "reverted!: bool", created_at
+             FROM rule_applications WHERE rule_run_id=?1 AND reverted=0"#,
+        run_id
     )
-    .bind(run_id)
     .fetch_all(db)
     .await?;
 
@@ -477,32 +526,33 @@ pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<RunResult> {
     let mut reverted = 0i64;
     for app in &apps {
         // Only revert if the transaction is still in the state this run left it in.
-        let res = sqlx::query(
+        let res = sqlx::query!(
             "UPDATE transactions
              SET category_id=?2, categorized_by_rule_id=?3, is_one_off=?4, merchant_id=?7,
                  updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
              WHERE id=?1 AND category_id IS ?5 AND is_one_off = ?6 AND merchant_id IS ?8",
+            app.transaction_id,
+            app.prev_category_id,
+            app.prev_categorized_by_rule_id,
+            app.prev_one_off,
+            app.new_category_id,
+            app.new_one_off,
+            app.prev_merchant_id,
+            app.new_merchant_id
         )
-        .bind(app.transaction_id)
-        .bind(app.prev_category_id)
-        .bind(app.prev_categorized_by_rule_id)
-        .bind(app.prev_one_off)
-        .bind(app.new_category_id)
-        .bind(app.new_one_off)
-        .bind(app.prev_merchant_id)
-        .bind(app.new_merchant_id)
         .execute(&mut *txn)
         .await?;
         if res.rows_affected() > 0 {
             reverted += 1;
         }
-        sqlx::query("UPDATE rule_applications SET reverted=1 WHERE id=?1")
-            .bind(app.id)
-            .execute(&mut *txn)
-            .await?;
+        sqlx::query!(
+            "UPDATE rule_applications SET reverted=1 WHERE id=?1",
+            app.id
+        )
+        .execute(&mut *txn)
+        .await?;
     }
-    sqlx::query("UPDATE rule_runs SET undone=1 WHERE id=?1")
-        .bind(run_id)
+    sqlx::query!("UPDATE rule_runs SET undone=1 WHERE id=?1", run_id)
         .execute(&mut *txn)
         .await?;
     txn.commit().await?;

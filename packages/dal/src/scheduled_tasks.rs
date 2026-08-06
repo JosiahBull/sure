@@ -22,11 +22,12 @@ impl SqliteTaskStateStore {
 #[async_trait]
 impl TaskStateStore for SqliteTaskStateStore {
     async fn last_run_at(&self, task_name: &str) -> anyhow::Result<Option<DateTime<Utc>>> {
-        let row: Option<String> =
-            sqlx::query_scalar("SELECT last_run_at FROM scheduled_task_runs WHERE task_name = ?1")
-                .bind(task_name)
-                .fetch_optional(&self.db)
-                .await?;
+        let row = sqlx::query_scalar!(
+            "SELECT last_run_at FROM scheduled_task_runs WHERE task_name = ?1",
+            task_name
+        )
+        .fetch_optional(&self.db)
+        .await?;
         let Some(text) = row else {
             return Ok(None);
         };
@@ -36,14 +37,15 @@ impl TaskStateStore for SqliteTaskStateStore {
     }
 
     async fn record_run(&self, task_name: &str, at: DateTime<Utc>) -> anyhow::Result<()> {
-        sqlx::query(
+        let at = at.to_rfc3339_opts(SecondsFormat::Millis, true);
+        sqlx::query!(
             "INSERT INTO scheduled_task_runs (task_name, last_run_at, updated_at)
              VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
              ON CONFLICT(task_name) DO UPDATE SET
                 last_run_at = excluded.last_run_at, updated_at = excluded.updated_at",
+            task_name,
+            at
         )
-        .bind(task_name)
-        .bind(at.to_rfc3339_opts(SecondsFormat::Millis, true))
         .execute(&self.db)
         .await?;
         Ok(())

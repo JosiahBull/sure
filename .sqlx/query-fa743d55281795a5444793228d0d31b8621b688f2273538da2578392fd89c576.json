@@ -1,0 +1,92 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", name, kind, currency_code, institution, metadata,\n                  archived AS \"archived!: bool\", sort_order, secured_by_account_id, ownership,\n                  person_id, created_at, updated_at\n             FROM accounts\n            WHERE ?1 OR archived = 0\n            ORDER BY sort_order, name",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "institution",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "metadata",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "archived!: bool",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "sort_order",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "secured_by_account_id",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "ownership",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "person_id",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 12,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "fa743d55281795a5444793228d0d31b8621b688f2273538da2578392fd89c576"
+}

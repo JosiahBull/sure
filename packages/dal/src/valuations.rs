@@ -1,10 +1,9 @@
-use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
 pub use sure_core::{NewValuation, Valuation, ValuationSource};
 
 use crate::Db;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct ValuationRow {
     id: i64,
     account_id: i64,
@@ -44,10 +43,13 @@ impl TryFrom<ValuationRow> for Valuation {
 /// List an account's valuations, newest first.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_for_account(db: &Db, account_id: i64) -> AppResult<Vec<Valuation>> {
-    sqlx::query_as::<_, ValuationRow>(
-        "SELECT * FROM valuations WHERE account_id=?1 ORDER BY as_of DESC, id DESC",
+    sqlx::query_as!(
+        ValuationRow,
+        r#"SELECT id AS "id!", account_id, as_of, value_minor, currency_code, source, note,
+                  created_at
+             FROM valuations WHERE account_id=?1 ORDER BY as_of DESC, id DESC"#,
+        account_id
     )
-    .bind(account_id)
     .fetch_all(db)
     .await?
     .into_iter()
@@ -59,8 +61,7 @@ pub async fn list_for_account(db: &Db, account_id: i64) -> AppResult<Vec<Valuati
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, account_id: i64, input: NewValuation) -> AppResult<Valuation> {
     let account_ccy =
-        sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
-            .bind(account_id)
+        sqlx::query_scalar!("SELECT currency_code FROM accounts WHERE id=?1", account_id)
             .fetch_optional(db)
             .await?
             .ok_or(AppError::NotFound("account"))?;
@@ -70,16 +71,22 @@ pub async fn create(db: &Db, account_id: i64, input: NewValuation) -> AppResult<
         .filter(|s| !s.is_empty())
         .map(|s| s.to_uppercase())
         .unwrap_or(account_ccy);
-    sqlx::query_as::<_, ValuationRow>(
-        "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING *",
+    let as_of = input.as_of.to_string();
+    let value_minor = input.value_minor.minor();
+    let source = ValuationSource::Manual.as_str();
+    sqlx::query_as!(
+        ValuationRow,
+        r#"INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         RETURNING id AS "id!", account_id, as_of, value_minor, currency_code, source, note,
+                   created_at"#,
+        account_id,
+        as_of,
+        value_minor,
+        currency,
+        source,
+        input.note
     )
-    .bind(account_id)
-    .bind(input.as_of.to_string())
-    .bind(input.value_minor.minor())
-    .bind(currency)
-    .bind(ValuationSource::Manual.as_str())
-    .bind(&input.note)
     .fetch_one(db)
     .await?
     .try_into()
@@ -97,21 +104,24 @@ pub async fn upsert_from_provider(
     value_minor: i64,
     currency_code: &str,
 ) -> AppResult<Valuation> {
-    sqlx::query_as::<_, ValuationRow>(
-        "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(account_id, as_of) WHERE source='provider' DO UPDATE SET
-            value_minor = excluded.value_minor, currency_code = excluded.currency_code
-         RETURNING *",
-    )
-    .bind(account_id)
-    .bind(as_of)
-    .bind(value_minor)
-    .bind(currency_code)
     // The partial unique index's predicate (`0010_provider_valuations.sql`) is a fixed
     // part of the schema and can't take a bound parameter, so it stays a literal — but
     // it must always match this bound value.
-    .bind(ValuationSource::Provider.as_str())
+    let source = ValuationSource::Provider.as_str();
+    sqlx::query_as!(
+        ValuationRow,
+        r#"INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(account_id, as_of) WHERE source='provider' DO UPDATE SET
+            value_minor = excluded.value_minor, currency_code = excluded.currency_code
+         RETURNING id AS "id!", account_id, as_of, value_minor, currency_code, source, note,
+                   created_at"#,
+        account_id,
+        as_of,
+        value_minor,
+        currency_code,
+        source
+    )
     .fetch_one(db)
     .await?
     .try_into()
@@ -131,21 +141,24 @@ pub async fn upsert_from_brokerage(
     value_minor: i64,
     currency_code: &str,
 ) -> AppResult<Valuation> {
-    sqlx::query_as::<_, ValuationRow>(
-        "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(account_id, as_of) WHERE source='brokerage' DO UPDATE SET
-            value_minor = excluded.value_minor, currency_code = excluded.currency_code
-         RETURNING *",
-    )
-    .bind(account_id)
-    .bind(as_of)
-    .bind(value_minor)
-    .bind(currency_code)
     // The partial unique index's predicate (`0012_brokerage.sql`) is a fixed part of
     // the schema and can't take a bound parameter, so it stays a literal — but it must
     // always match this bound value.
-    .bind(ValuationSource::Brokerage.as_str())
+    let source = ValuationSource::Brokerage.as_str();
+    sqlx::query_as!(
+        ValuationRow,
+        r#"INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(account_id, as_of) WHERE source='brokerage' DO UPDATE SET
+            value_minor = excluded.value_minor, currency_code = excluded.currency_code
+         RETURNING id AS "id!", account_id, as_of, value_minor, currency_code, source, note,
+                   created_at"#,
+        account_id,
+        as_of,
+        value_minor,
+        currency_code,
+        source
+    )
     .fetch_one(db)
     .await?
     .try_into()
@@ -154,8 +167,7 @@ pub async fn upsert_from_brokerage(
 /// Delete a valuation.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
-    let res = sqlx::query("DELETE FROM valuations WHERE id=?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM valuations WHERE id=?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {

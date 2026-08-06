@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO accounts (id, name, kind, currency_code, metadata, ownership)\n                 VALUES (?1, 'Test', 'bank', 'NZD', '{}', 'joint')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "e297ca6779f660914d4fe97fe4cc0ac04e936a92cecad5302496de49fdb126b3"
+}

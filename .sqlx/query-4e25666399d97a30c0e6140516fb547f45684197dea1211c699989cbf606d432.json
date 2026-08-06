@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT label FROM income_streams WHERE person_id = ?1 ORDER BY sort_order, label",
+  "describe": {
+    "columns": [
+      {
+        "name": "label",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4e25666399d97a30c0e6140516fb547f45684197dea1211c699989cbf606d432"
+}

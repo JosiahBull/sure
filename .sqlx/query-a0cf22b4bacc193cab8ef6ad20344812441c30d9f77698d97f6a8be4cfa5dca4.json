@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM people",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "a0cf22b4bacc193cab8ef6ad20344812441c30d9f77698d97f6a8be4cfa5dca4"
+}

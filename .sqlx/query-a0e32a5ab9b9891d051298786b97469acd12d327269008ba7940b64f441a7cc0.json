@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM holdings WHERE account_id = ?1 AND provider = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "a0e32a5ab9b9891d051298786b97469acd12d327269008ba7940b64f441a7cc0"
+}

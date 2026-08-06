@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT scale_id FROM tax_scales WHERE id=?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "scale_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "050e4d43f4d1c2187d0f9b1b950849763405759742534cc3e1f692b14ded16c4"
+}

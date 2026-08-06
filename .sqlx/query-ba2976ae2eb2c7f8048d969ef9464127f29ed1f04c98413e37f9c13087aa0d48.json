@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(SUM(-amount_minor),0) AS \"withdrawals!: i64\" FROM transactions\n            WHERE account_id=?1 AND amount_minor < 0\n              AND description LIKE 'Withdrawal%'\n              AND date(posted_at) > date(?2, '-30 days') AND date(posted_at) <= date(?2)",
+  "describe": {
+    "columns": [
+      {
+        "name": "withdrawals!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ba2976ae2eb2c7f8048d969ef9464127f29ed1f04c98413e37f9c13087aa0d48"
+}

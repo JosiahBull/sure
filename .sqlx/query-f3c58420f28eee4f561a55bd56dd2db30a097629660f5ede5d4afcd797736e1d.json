@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT e.label\n           FROM forecast_event_relations r\n           JOIN forecast_events e ON e.id = r.event_id\n          WHERE r.depends_on_event_id = ?1 AND r.kind = 'only_if'\n          ORDER BY e.label",
+  "describe": {
+    "columns": [
+      {
+        "name": "label",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f3c58420f28eee4f561a55bd56dd2db30a097629660f5ede5d4afcd797736e1d"
+}

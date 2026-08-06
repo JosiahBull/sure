@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM forecast_event_relations WHERE event_id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "ae4713e64e651d42b515b8a2f3bc08478aeb0449e4478ea88077ff90d9ba8626"
+}

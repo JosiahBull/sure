@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO scheduled_task_runs (task_name, last_run_at, updated_at)\n             VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now'))\n             ON CONFLICT(task_name) DO UPDATE SET\n                last_run_at = excluded.last_run_at, updated_at = excluded.updated_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "4e07790b00157da1e724f42a5ca4994a98d46f83920de0049c051038422875d7"
+}

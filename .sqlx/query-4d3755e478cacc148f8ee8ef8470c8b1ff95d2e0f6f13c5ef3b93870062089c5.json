@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE rule_runs SET matched=?2, changed=?3 WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "4d3755e478cacc148f8ee8ef8470c8b1ff95d2e0f6f13c5ef3b93870062089c5"
+}

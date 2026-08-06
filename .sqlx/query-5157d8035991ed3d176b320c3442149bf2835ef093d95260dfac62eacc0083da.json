@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", account_id, posted_at FROM transactions\n                WHERE account_id <> ?1\n                  AND linked_transaction_id IS NULL\n                  AND amount_minor = ?2\n                  AND currency_code = ?3\n                  AND ABS(julianday(posted_at) - julianday(?4)) <= ?5\n                LIMIT 2",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "posted_at",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5157d8035991ed3d176b320c3442149bf2835ef093d95260dfac62eacc0083da"
+}

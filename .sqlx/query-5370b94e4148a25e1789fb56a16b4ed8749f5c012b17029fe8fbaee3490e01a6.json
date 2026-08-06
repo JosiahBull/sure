@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE crons SET last_run_on=?2 WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "5370b94e4148a25e1789fb56a16b4ed8749f5c012b17029fe8fbaee3490e01a6"
+}

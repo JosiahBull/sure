@@ -3,14 +3,21 @@
 # Pre-commit checks for the sure repo. Mirrors the deterministic gates in
 # .github/workflows/checks.yml so most failures are caught before they reach CI.
 #
-# Runs: the personal-data scan, rustfmt (check), clippy (-D warnings), the Rust unit and
-# integration tests, the backend e2e suite, and the web type-check. The scan goes first
-# because it costs milliseconds and guards something a later gate cannot undo — see
-# CLAUDE.md rule 3, and `node scripts/pii-scan.mjs --all` to sweep the whole tree rather
-# than staged additions. `cargo test` sits directly after clippy: clippy has already
-# compiled the workspace by then, so the marginal cost is linking and running the test
+# Runs: the personal-data scan, the sqlx offline-metadata check, rustfmt (check), clippy
+# (-D warnings), the Rust unit and integration tests, the backend e2e suite, and the web
+# type-check. The scan goes first because it costs milliseconds and guards something a later
+# gate cannot undo — see CLAUDE.md rule 3, and `node scripts/pii-scan.mjs --all` to sweep the
+# whole tree rather than staged additions. `cargo test` sits directly after clippy: clippy has
+# already compiled the workspace by then, so the marginal cost is linking and running the test
 # binaries, and a type error is reported by the cheaper gate first rather than surfacing
 # as a confusing test-compile failure.
+#
+# The sqlx check comes before rustfmt/clippy for a specific reason: every query in the DAL is
+# compile-time checked against the committed `.sqlx/` metadata, so if that metadata is stale,
+# clippy and `cargo test` both fail with a confusing *query* error rather than saying what is
+# actually wrong. Running it first turns "you edited a query and didn't re-run
+# `pnpm sqlx:prepare`" into its own message. It also rebuilds the throwaway schema database
+# under `target/`, never `data/sure.db` — see scripts/sqlx-prepare.mjs.
 #
 # Deliberately does NOT run the web *visual* suite (`pnpm test:web`): those
 # screenshot tests are only deterministic inside the pinned Playwright container CI uses
@@ -28,6 +35,7 @@ run() {
 }
 
 run node scripts/pii-scan.mjs
+run node scripts/sqlx-prepare.mjs --check
 run cargo fmt --all --check
 run cargo clippy --workspace --all-targets --all-features -- -D warnings
 # Feature set mirrors clippy's so feature-gated tests are compiled; no --all-targets,

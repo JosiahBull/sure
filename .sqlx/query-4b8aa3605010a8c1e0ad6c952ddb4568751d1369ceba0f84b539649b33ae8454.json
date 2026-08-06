@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT t.posted_at, t.amount_minor, t.currency_code, t.category_id,\n                  t.is_one_off AS \"is_one_off!: bool\", t.linked_transaction_id,\n                  a.kind AS account_kind, t.ownership AS tx_ownership,\n                  t.person_id AS tx_person_id, a.ownership AS account_ownership,\n                  a.person_id AS account_person_id\n             FROM transactions t JOIN accounts a ON a.id = t.account_id\n            WHERE t.posted_at >= ?1 AND t.posted_at < ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "posted_at",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "category_id",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "is_one_off!: bool",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "linked_transaction_id",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_kind",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "tx_ownership",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "tx_person_id",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_ownership",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "account_person_id",
+        "ordinal": 10,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "4b8aa3605010a8c1e0ad6c952ddb4568751d1369ceba0f84b539649b33ae8454"
+}

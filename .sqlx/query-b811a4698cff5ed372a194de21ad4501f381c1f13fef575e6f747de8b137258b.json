@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT currency_code FROM accounts WHERE id=?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "currency_code",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b811a4698cff5ed372a194de21ad4501f381c1f13fef575e6f747de8b137258b"
+}

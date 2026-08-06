@@ -1,0 +1,92 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", name, description, expression, set_category_id,\n                  set_one_off AS \"set_one_off: bool\", set_merchant_id,\n                  overwrite_manual AS \"overwrite_manual!: bool\",\n                  stop_on_match AS \"stop_on_match!: bool\", priority,\n                  enabled AS \"enabled!: bool\", created_at, updated_at\n                 FROM rules WHERE id=?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "description",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "expression",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "set_category_id",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "set_one_off: bool",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "set_merchant_id",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "overwrite_manual!: bool",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "stop_on_match!: bool",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "priority",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 12,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7847aa94a7f3454e47d7105060ecd5b1f485a87bbb3f9e2b27460e1f9c63dc20"
+}

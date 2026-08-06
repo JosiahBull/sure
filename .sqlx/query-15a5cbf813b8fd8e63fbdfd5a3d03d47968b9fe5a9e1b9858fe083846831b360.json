@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO crons\n                (id, name, account_id, kind, rate_bps, amount_minor, category_id, frequency,\n                 day_of_month, start_date, last_run_on, enabled, created_at, updated_at)\n             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 14
+    },
+    "nullable": []
+  },
+  "hash": "15a5cbf813b8fd8e63fbdfd5a3d03d47968b9fe5a9e1b9858fe083846831b360"
+}

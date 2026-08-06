@@ -1198,13 +1198,14 @@ mod tests {
         // Straight into the table: no `SaveTransaction`, so no ceiling. This is the shape of a
         // row that predates the type.
         for posted_at in ["2026-01-05", "2026-01-06"] {
-            sqlx::query(
+            let huge = i64::MAX;
+            sqlx::query!(
                 "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code, description)
                  VALUES (?1, ?2, ?3, 'NZD', 'legacy')",
+                account,
+                posted_at,
+                huge
             )
-            .bind(account)
-            .bind(posted_at)
-            .bind(i64::MAX)
             .execute(&db)
             .await
             .unwrap();

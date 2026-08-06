@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE accounts SET institution=?2, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n         WHERE id=?1 AND (institution IS NULL OR institution = '')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "1947c266b80e1341e528edda7339843e338872e6c5611ea963cd161ade5467a2"
+}

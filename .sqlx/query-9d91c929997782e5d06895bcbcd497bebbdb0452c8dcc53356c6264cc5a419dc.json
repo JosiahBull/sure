@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO cron_runs (cron_id, period, kind, valuation_id, transaction_id, detail)\n           VALUES (?1,?2,?3,?4,?5,?6)\n           RETURNING id AS \"id!\", cron_id, period, kind, valuation_id, transaction_id, detail,\n                     created_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cron_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "period",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "valuation_id",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "transaction_id",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "detail",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "9d91c929997782e5d06895bcbcd497bebbdb0452c8dcc53356c6264cc5a419dc"
+}
