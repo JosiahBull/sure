@@ -1,0 +1,92 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", account_id, company, grant_date, quantity, strike_minor,\n                  currency_code, vest_months, cliff_months, unit_value_minor, note, created_at,\n                  updated_at\n                 FROM equity_grants WHERE id=?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "company",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "grant_date",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "quantity",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "strike_minor",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "vest_months",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cliff_months",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "unit_value_minor",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "note",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 12,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "ddaf6785045e41382af658ae95edd2a3655104b2fc3dccce55560988335bd7c4"
+}

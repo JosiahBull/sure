@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO stock_prices (ticker, exchange, as_of, close, currency_code)\n         VALUES (?1, ?2, ?3, ?4, ?5)\n         ON CONFLICT(ticker, exchange, as_of) DO UPDATE SET\n            close = excluded.close, currency_code = excluded.currency_code,\n            fetched_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')\n         RETURNING ticker, exchange, as_of, close, currency_code, fetched_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "ticker",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "exchange",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "as_of",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "close",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "fetched_at",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ac136db03d9e9d92269fbe1630e49ac35812dfce12720b4c9cd60a9a40d76399"
+}

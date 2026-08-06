@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", account_id, as_of, value_minor, currency_code, source, note,\n                  created_at\n             FROM valuations ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "as_of",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "value_minor",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "source",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "note",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "1485792aa358646b824da29e95034852ac5dc4ff37608447eb2f901d82be0d0d"
+}

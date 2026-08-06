@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code,\n                                           description, category_id)\n                 VALUES (?1, ?2, ?3, 'NZD', 'x', ?4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "ea899aeafca31d1766e9ebb508766256e7d625e0a43f1db7c5a18a6fed22166f"
+}

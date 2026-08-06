@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use serde_json::json;
-use sqlx::FromRow;
 use sure_core::{AppError, AppResult, CategoryKind, SyncOutcome};
 pub use sure_core::{
     LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderSync, SaveProvider,
@@ -61,7 +60,7 @@ async fn resolve_merchant(
     Ok(id)
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 pub struct ProviderRow {
     pub id: i64,
     pub name: String,
@@ -115,34 +114,49 @@ pub struct ImportRow {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Provider>> {
-    let rows = sqlx::query_as::<_, ProviderRow>("SELECT * FROM providers ORDER BY id")
-        .fetch_all(db)
-        .await?;
+    let rows = sqlx::query_as!(
+        ProviderRow,
+        r#"SELECT id AS "id!", name, kind, account_id, config, enabled AS "enabled!: bool",
+                  last_synced_at, created_at, updated_at
+             FROM providers ORDER BY id"#
+    )
+    .fetch_all(db)
+    .await?;
     Ok(rows.into_iter().map(Provider::from).collect())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn get(db: &Db, id: i64) -> AppResult<Provider> {
-    let row = sqlx::query_as::<_, ProviderRow>("SELECT * FROM providers WHERE id=?1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(AppError::NotFound("provider"))?;
+    let row = sqlx::query_as!(
+        ProviderRow,
+        r#"SELECT id AS "id!", name, kind, account_id, config, enabled AS "enabled!: bool",
+                  last_synced_at, created_at, updated_at
+             FROM providers WHERE id=?1"#,
+        id
+    )
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("provider"))?;
     Ok(row.into())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveProvider) -> AppResult<Provider> {
     let config = input.config.clone().unwrap_or_else(|| json!({}));
-    let row = sqlx::query_as::<_, ProviderRow>(
-        "INSERT INTO providers (name, kind, account_id, config, enabled)
-         VALUES (?1,?2,?3,?4,?5) RETURNING *",
+    let name = input.name.trim();
+    let config = config.to_string();
+    let row = sqlx::query_as!(
+        ProviderRow,
+        r#"INSERT INTO providers (name, kind, account_id, config, enabled)
+           VALUES (?1,?2,?3,?4,?5)
+           RETURNING id AS "id!", name, kind, account_id, config, enabled AS "enabled!: bool",
+                     last_synced_at, created_at, updated_at"#,
+        name,
+        input.kind,
+        input.account_id,
+        config,
+        input.enabled
     )
-    .bind(input.name.trim())
-    .bind(&input.kind)
-    .bind(input.account_id)
-    .bind(config.to_string())
-    .bind(input.enabled)
     .fetch_one(db)
     .await
     .map_err(map_fk)?;
@@ -152,17 +166,22 @@ pub async fn create(db: &Db, input: SaveProvider) -> AppResult<Provider> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveProvider) -> AppResult<Provider> {
     let config = input.config.clone().unwrap_or_else(|| json!({}));
-    let row = sqlx::query_as::<_, ProviderRow>(
-        "UPDATE providers SET name=?2, kind=?3, account_id=?4, config=?5, enabled=?6,
-            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1 RETURNING *",
+    let name = input.name.trim();
+    let config = config.to_string();
+    let row = sqlx::query_as!(
+        ProviderRow,
+        r#"UPDATE providers SET name=?2, kind=?3, account_id=?4, config=?5, enabled=?6,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id AS "id!", name, kind, account_id, config, enabled AS "enabled!: bool",
+                     last_synced_at, created_at, updated_at"#,
+        id,
+        name,
+        input.kind,
+        input.account_id,
+        config,
+        input.enabled
     )
-    .bind(id)
-    .bind(input.name.trim())
-    .bind(&input.kind)
-    .bind(input.account_id)
-    .bind(config.to_string())
-    .bind(input.enabled)
     .fetch_optional(db)
     .await
     .map_err(map_fk)?
@@ -199,8 +218,7 @@ pub async fn link(db: &Db, input: LinkProviderAccount) -> AppResult<Provider> {
             let id = input
                 .existing_account_id
                 .expect("validated exactly-one above");
-            let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE id=?1")
-                .bind(id)
+            let exists = sqlx::query_scalar!("SELECT COUNT(*) FROM accounts WHERE id=?1", id)
                 .fetch_one(&mut *tx)
                 .await?;
             if exists == 0 {
@@ -210,14 +228,18 @@ pub async fn link(db: &Db, input: LinkProviderAccount) -> AppResult<Provider> {
         };
 
     let config = json!({ "external_account_id": input.external_id }).to_string();
-    let row = sqlx::query_as::<_, ProviderRow>(
-        "INSERT INTO providers (name, kind, account_id, config, enabled)
-         VALUES (?1,?2,?3,?4,1) RETURNING *",
+    let name = input.name.trim();
+    let row = sqlx::query_as!(
+        ProviderRow,
+        r#"INSERT INTO providers (name, kind, account_id, config, enabled)
+           VALUES (?1,?2,?3,?4,1)
+           RETURNING id AS "id!", name, kind, account_id, config, enabled AS "enabled!: bool",
+                     last_synced_at, created_at, updated_at"#,
+        name,
+        input.kind,
+        account_id,
+        config
     )
-    .bind(input.name.trim())
-    .bind(&input.kind)
-    .bind(account_id)
-    .bind(config)
     .fetch_one(&mut *tx)
     .await
     .map_err(map_fk)?;
@@ -258,8 +280,7 @@ pub async fn link_group(db: &Db, input: LinkProviderGroup) -> AppResult<Vec<Prov
             let id = input
                 .existing_account_id
                 .expect("validated exactly-one above");
-            let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE id=?1")
-                .bind(id)
+            let exists = sqlx::query_scalar!("SELECT COUNT(*) FROM accounts WHERE id=?1", id)
                 .fetch_one(&mut *tx)
                 .await?;
             if exists == 0 {
@@ -271,14 +292,18 @@ pub async fn link_group(db: &Db, input: LinkProviderGroup) -> AppResult<Vec<Prov
     let mut providers = Vec::with_capacity(input.members.len());
     for member in &input.members {
         let config = json!({ "external_account_id": member.external_id }).to_string();
-        let row = sqlx::query_as::<_, ProviderRow>(
-            "INSERT INTO providers (name, kind, account_id, config, enabled)
-             VALUES (?1,?2,?3,?4,1) RETURNING *",
+        let name = member.name.trim();
+        let row = sqlx::query_as!(
+            ProviderRow,
+            r#"INSERT INTO providers (name, kind, account_id, config, enabled)
+               VALUES (?1,?2,?3,?4,1)
+               RETURNING id AS "id!", name, kind, account_id, config, enabled AS "enabled!: bool",
+                         last_synced_at, created_at, updated_at"#,
+            name,
+            input.kind,
+            account_id,
+            config
         )
-        .bind(member.name.trim())
-        .bind(&input.kind)
-        .bind(account_id)
-        .bind(config)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_fk)?;
@@ -291,8 +316,7 @@ pub async fn link_group(db: &Db, input: LinkProviderGroup) -> AppResult<Vec<Prov
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
-    let res = sqlx::query("DELETE FROM providers WHERE id=?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM providers WHERE id=?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {
@@ -304,8 +328,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn account_currency(db: &Db, account_id: i64) -> AppResult<String> {
     Ok(
-        sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
-            .bind(account_id)
+        sqlx::query_scalar!("SELECT currency_code FROM accounts WHERE id=?1", account_id)
             .fetch_one(db)
             .await?,
     )
@@ -420,6 +443,10 @@ async fn insert_chunk(
 ) -> AppResult<i64> {
     debug_assert_eq!(chunk.len(), resolved.len());
     let mut tx = db.begin().await?;
+    // The one query in this module the compile-time checker cannot see: the number of
+    // `VALUES` tuples is the chunk's length, so the SQL text is only known at runtime and
+    // `sqlx::query!` needs a literal. The column list and its eleven `push_bind`s below are
+    // therefore matched by hand — keep them in step.
     let mut builder = sqlx::QueryBuilder::new(
         "INSERT OR IGNORE INTO transactions
             (account_id, posted_at, amount_minor, currency_code, description, merchant,
@@ -445,10 +472,10 @@ async fn insert_chunk(
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update_last_synced(db: &Db, id: i64) -> AppResult<()> {
-    sqlx::query(
+    sqlx::query!(
         "UPDATE providers SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
+        id
     )
-    .bind(id)
     .execute(db)
     .await?;
     Ok(())
@@ -464,7 +491,7 @@ fn parse_status(status: String) -> AppResult<SyncOutcome> {
         .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct ProviderSyncRow {
     id: i64,
     provider_id: i64,
@@ -500,15 +527,18 @@ pub async fn record_sync(
     status: SyncOutcome,
     detail: Option<&str>,
 ) -> AppResult<ProviderSync> {
-    sqlx::query_as::<_, ProviderSyncRow>(
-        "INSERT INTO provider_syncs (provider_id, imported, skipped, status, detail)
-         VALUES (?1,?2,?3,?4,?5) RETURNING *",
+    let status = status.as_str();
+    sqlx::query_as!(
+        ProviderSyncRow,
+        r#"INSERT INTO provider_syncs (provider_id, imported, skipped, status, detail)
+           VALUES (?1,?2,?3,?4,?5)
+           RETURNING id AS "id!", provider_id, imported, skipped, status, detail, created_at"#,
+        provider_id,
+        imported,
+        skipped,
+        status,
+        detail
     )
-    .bind(provider_id)
-    .bind(imported)
-    .bind(skipped)
-    .bind(status.as_str())
-    .bind(detail)
     .fetch_one(db)
     .await?
     .try_into()
@@ -516,10 +546,12 @@ pub async fn record_sync(
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_syncs(db: &Db, provider_id: i64) -> AppResult<Vec<ProviderSync>> {
-    sqlx::query_as::<_, ProviderSyncRow>(
-        "SELECT * FROM provider_syncs WHERE provider_id=?1 ORDER BY id DESC",
+    sqlx::query_as!(
+        ProviderSyncRow,
+        r#"SELECT id AS "id!", provider_id, imported, skipped, status, detail, created_at
+             FROM provider_syncs WHERE provider_id=?1 ORDER BY id DESC"#,
+        provider_id
     )
-    .bind(provider_id)
     .fetch_all(db)
     .await?
     .into_iter()
@@ -840,10 +872,15 @@ mod tests {
     }
 
     async fn imported_row(db: &Db, external_id: &str) -> sure_core::Transaction {
-        sqlx::query_as::<_, crate::transactions::TransactionRow>(
-            "SELECT * FROM transactions WHERE external_id = ?1",
+        sqlx::query_as!(
+            crate::transactions::TransactionRow,
+            r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
+                      merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                      linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                      ownership, person_id, created_at, updated_at
+                 FROM transactions WHERE external_id = ?1"#,
+            external_id
         )
-        .bind(external_id)
         .fetch_one(db)
         .await
         .unwrap()
@@ -1011,11 +1048,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!((imported, skipped), (count as i64, 0));
-        let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE provider=?1")
-            .bind("akahu#1")
-            .fetch_one(&db)
-            .await
-            .unwrap();
+        let stored = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM transactions WHERE provider=?1",
+            "akahu#1"
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
         assert_eq!(stored, count as i64);
 
         // Re-importing the same export is still idempotent: `INSERT OR IGNORE` dedupes
@@ -1061,17 +1100,18 @@ mod tests {
         // retryable 503.
         assert!(!err.is_overloaded(), "{err}");
 
-        let committed: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE external_id LIKE 'good_%'")
-                .fetch_one(&db)
-                .await
-                .unwrap();
+        let committed = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM transactions WHERE external_id LIKE 'good_%'"
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
         assert_eq!(
             committed, IMPORT_CHUNK_ROWS as i64,
             "the chunk that succeeded should have committed"
         );
-        let from_failed_chunk: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM transactions WHERE external_id LIKE 'second_%'",
+        let from_failed_chunk = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM transactions WHERE external_id LIKE 'second_%'"
         )
         .fetch_one(&db)
         .await

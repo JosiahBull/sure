@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT ticker AS \"ticker!\", exchange AS \"exchange!\", currency_code AS \"currency_code!\",\n                  MAX(name) AS \"name: String\", SUM(quantity) AS \"quantity!: f64\"\n             FROM holdings\n            WHERE account_id=?1 AND date(trade_date) <= date(?2) AND ABS(quantity) <= ?3\n            GROUP BY ticker, exchange\n            HAVING ABS(SUM(quantity)) > 0.0000001\n            ORDER BY ticker",
+  "describe": {
+    "columns": [
+      {
+        "name": "ticker!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "exchange!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "currency_code!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "name: String",
+        "ordinal": 3,
+        "type_info": "Null"
+      },
+      {
+        "name": "quantity!: f64",
+        "ordinal": 4,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "5e6bcf4b883a9cf03ce2d165adab4578c672693a2f4f97d47432940b349ecb40"
+}

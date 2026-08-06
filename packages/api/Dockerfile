@@ -21,12 +21,22 @@ FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-bookworm AS spec
 WORKDIR /build
 # Only the Cargo workspace members are needed here (web/client are not Cargo crates).
 COPY Cargo.toml Cargo.lock ./
+# `appbase` and `testproxy` are workspace members, so cargo needs their manifests to load the
+# workspace at all — even though `-p sure-server` never builds testproxy.
+COPY packages/appbase ./packages/appbase
+COPY packages/testproxy ./packages/testproxy
 COPY packages/core ./packages/core
 COPY packages/scheduler ./packages/scheduler
 COPY packages/dal ./packages/dal
 COPY packages/providers ./packages/providers
 COPY packages/app ./packages/app
 COPY packages/api ./packages/api
+# `.sqlx` carries the compile-time query metadata every `sqlx::query!` in `sure-dal` is checked
+# against, and `.cargo/config.toml` pins SQLX_OFFLINE=true. Both are required for the build: with
+# no metadata and no database the macros cannot resolve, and the compile fails. Nothing here ever
+# reaches a database — that is the point of shipping the metadata instead.
+COPY .cargo ./.cargo
+COPY .sqlx ./.sqlx
 COPY packages/server ./packages/server
 # gen-openapi writes the spec the TypeScript client is generated from (it creates the
 # parent directory itself). This is the same artifact `pnpm gen:openapi` produces.
@@ -56,12 +66,22 @@ RUN pnpm --filter @sure/client generate \
 FROM rust:${RUST_VERSION}-bookworm AS bin
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
+# `appbase` and `testproxy` are workspace members, so cargo needs their manifests to load the
+# workspace at all — even though `-p sure-server` never builds testproxy.
+COPY packages/appbase ./packages/appbase
+COPY packages/testproxy ./packages/testproxy
 COPY packages/core ./packages/core
 COPY packages/scheduler ./packages/scheduler
 COPY packages/dal ./packages/dal
 COPY packages/providers ./packages/providers
 COPY packages/app ./packages/app
 COPY packages/api ./packages/api
+# `.sqlx` carries the compile-time query metadata every `sqlx::query!` in `sure-dal` is checked
+# against, and `.cargo/config.toml` pins SQLX_OFFLINE=true. Both are required for the build: with
+# no metadata and no database the macros cannot resolve, and the compile fails. Nothing here ever
+# reaches a database — that is the point of shipping the metadata instead.
+COPY .cargo ./.cargo
+COPY .sqlx ./.sqlx
 COPY packages/server ./packages/server
 # The release profile (Cargo.toml) already strips symbols and enables LTO. The `sure-api`
 # binary is produced by the `sure-server` crate (the composition root); `sure-api` itself

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT last_run_at FROM scheduled_task_runs WHERE task_name = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "last_run_at",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "971a689872ae0c5fddd17bbb1c565b31eef526921a4fcf71da0fe31cf3c7df96"
+}

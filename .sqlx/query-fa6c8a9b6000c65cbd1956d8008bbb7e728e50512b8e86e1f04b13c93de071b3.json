@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO income_stream_steps\n                (income_stream_id, effective_on, annual_amount_minor, label)\n             VALUES (?1,?2,?3,?4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "fa6c8a9b6000c65cbd1956d8008bbb7e728e50512b8e86e1f04b13c93de071b3"
+}

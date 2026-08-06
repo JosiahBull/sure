@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO equity_exercises\n                (id, grant_id, exercise_date, quantity, price_minor, note, created_at)\n             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "4a02ceff3f261caafcdbb95481943f6959e2454e2b614fc6854edc1325aaafa4"
+}

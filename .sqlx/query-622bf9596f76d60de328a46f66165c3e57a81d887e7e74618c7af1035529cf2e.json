@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT base_currency_code, updated_at FROM settings WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "base_currency_code",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "622bf9596f76d60de328a46f66165c3e57a81d887e7e74618c7af1035529cf2e"
+}

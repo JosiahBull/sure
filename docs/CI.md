@@ -20,6 +20,14 @@ whenever a version tag is pushed. Everything lives under [`.github/`](../.github
   later gate cannot undo. It is *also* in CI and not only in the hook: a hook is bypassable with
   `--no-verify` and is installed per clone by the `prepare` script, so the hook is the
   convenience and this is the gate.
+- **sqlx offline metadata** — `pnpm sqlx:check`. Every query in `sure-dal` is compile-time
+  checked against the committed `.sqlx/` directory, and `.cargo/config.toml` pins
+  `SQLX_OFFLINE=true` so no build anywhere opens a database to do it. A *missing* entry already
+  fails Clippy and Cargo tests (the macro cannot resolve at all); what only this gate catches is
+  metadata that no longer agrees with `packages/dal/migrations` — a query edited without
+  re-running `pnpm sqlx:prepare`, or a new migration that changes a column a cached query still
+  describes the old way. The script applies the migrations to a throwaway database under
+  `target/`, never `data/sure.db`.
 - **Rustfmt** — `cargo fmt --all --check`
 - **Clippy** — `cargo clippy --workspace --all-targets --all-features -D warnings`
 - **Cargo tests** — `cargo test --workspace --all-features` (unit, integration and doctests;
@@ -77,8 +85,8 @@ These need to be done once in the GitHub repo settings after the first push:
    allow GitHub Actions to create/write packages (the release job pushes to GHCR with
    the built-in `GITHUB_TOKEN`) and, for Dependabot auto-merge, "Allow auto-merge" under
    Settings → General.
-2. **Branch protection** on `main` — require the CI checks (Personal-data scan, Rustfmt,
-   Clippy, Cargo tests, Typecheck, API e2e tests, Web visual tests, Versions) as status
+2. **Branch protection** on `main` — require the CI checks (Personal-data scan, sqlx offline
+   metadata, Rustfmt, Clippy, Cargo tests, Typecheck, API e2e tests, Web visual tests, Versions) as status
    checks. Dependabot auto-merge relies on these being required, so a job missing from this
    list is a job a green-looking dependency bump can merge past.
 3. **Bootstrap the Linux screenshot baselines** — the committed baselines are macOS

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO forecast_event_effects\n                (event_id, kind, sort_order, income_stream_id, person_id, category_id, account_id,\n                 amount_minor, rate_bps, delay_months, ramp_months, duration_months)\n             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": []
+  },
+  "hash": "e57917ec5c275bce069d3a36caebbce53222c551722d2a354b9806ab3ebf7e36"
+}

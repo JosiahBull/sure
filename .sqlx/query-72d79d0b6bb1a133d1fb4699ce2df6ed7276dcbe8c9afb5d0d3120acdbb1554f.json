@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE accounts SET ownership='joint', person_id=NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "72d79d0b6bb1a133d1fb4699ce2df6ed7276dcbe8c9afb5d0d3120acdbb1554f"
+}

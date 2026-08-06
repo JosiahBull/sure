@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE transactions SET category_id=?2, categorized_by_rule_id=?3, is_one_off=?4,\n                merchant_id=?5, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "f4ddb394893a6167627a0f9b020700a46e2d11a46e6f4e651f13a2e07a148271"
+}

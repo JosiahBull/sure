@@ -1,0 +1,68 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO providers (name, kind, account_id, config, enabled)\n           VALUES (?1,?2,?3,?4,?5)\n           RETURNING id AS \"id!\", name, kind, account_id, config, enabled AS \"enabled!: bool\",\n                     last_synced_at, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "config",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_synced_at",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 8,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "792c03f27dac2d645657decc82978100c6a051d61575f0312b9e67bba5842f5c"
+}

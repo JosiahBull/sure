@@ -2,7 +2,6 @@
 //! lives in `sure-app`; this module only stores/retrieves the override rows plus the one
 //! read query (`trailing_dividends_minor`) nothing else already exposes.
 
-use sqlx::FromRow;
 use sure_core::{
     AppError, AppResult, EffectColumns, ForecastAssumption, ForecastEvent, ForecastEventEffect,
     ForecastEventRelation, ForecastTargetType, LifeEffectKind, LifeEffectSpec, RelationKind,
@@ -11,7 +10,7 @@ use sure_core::{
 
 use crate::Db;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct ForecastAssumptionRow {
     id: i64,
     target_type: String,
@@ -58,12 +57,18 @@ impl TryFrom<ForecastAssumptionRow> for ForecastAssumption {
 /// Every stored override, across both account and category targets.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_assumptions(db: &Db) -> AppResult<Vec<ForecastAssumption>> {
-    sqlx::query_as::<_, ForecastAssumptionRow>("SELECT * FROM forecast_assumptions ORDER BY id")
-        .fetch_all(db)
-        .await?
-        .into_iter()
-        .map(TryInto::try_into)
-        .collect()
+    sqlx::query_as!(
+        ForecastAssumptionRow,
+        r#"SELECT id AS "id!", target_type, target_id, annual_growth_bps, annual_volatility_bps,
+                  dividend_yield_bps, long_run_growth_bps, annual_fee_bps,
+                  annual_fixed_fee_minor, notes, created_at, updated_at
+             FROM forecast_assumptions ORDER BY id"#
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(TryInto::try_into)
+    .collect()
 }
 
 /// Ceiling on an explicit `annual_volatility_bps` override, 300%/yr in basis points.
@@ -107,31 +112,36 @@ pub async fn upsert_assumption(
             )));
         }
     }
-    sqlx::query_as::<_, ForecastAssumptionRow>(
-        "INSERT INTO forecast_assumptions
-            (target_type, target_id, annual_growth_bps, annual_volatility_bps, dividend_yield_bps,
-             long_run_growth_bps, notes, annual_fee_bps, annual_fixed_fee_minor)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
-         ON CONFLICT(target_type, target_id) DO UPDATE SET
-            annual_growth_bps=excluded.annual_growth_bps,
-            annual_volatility_bps=excluded.annual_volatility_bps,
-            dividend_yield_bps=excluded.dividend_yield_bps,
-            long_run_growth_bps=excluded.long_run_growth_bps,
-            annual_fee_bps=excluded.annual_fee_bps,
-            annual_fixed_fee_minor=excluded.annual_fixed_fee_minor,
-            notes=excluded.notes,
-            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         RETURNING *",
+    let target_type = input.target_type.as_str();
+    sqlx::query_as!(
+        ForecastAssumptionRow,
+        r#"INSERT INTO forecast_assumptions
+              (target_type, target_id, annual_growth_bps, annual_volatility_bps,
+               dividend_yield_bps, long_run_growth_bps, notes, annual_fee_bps,
+               annual_fixed_fee_minor)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+           ON CONFLICT(target_type, target_id) DO UPDATE SET
+              annual_growth_bps=excluded.annual_growth_bps,
+              annual_volatility_bps=excluded.annual_volatility_bps,
+              dividend_yield_bps=excluded.dividend_yield_bps,
+              long_run_growth_bps=excluded.long_run_growth_bps,
+              annual_fee_bps=excluded.annual_fee_bps,
+              annual_fixed_fee_minor=excluded.annual_fixed_fee_minor,
+              notes=excluded.notes,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           RETURNING id AS "id!", target_type, target_id, annual_growth_bps, annual_volatility_bps,
+                     dividend_yield_bps, long_run_growth_bps, annual_fee_bps,
+                     annual_fixed_fee_minor, notes, created_at, updated_at"#,
+        target_type,
+        input.target_id,
+        input.annual_growth_bps,
+        input.annual_volatility_bps,
+        input.dividend_yield_bps,
+        input.long_run_growth_bps,
+        input.notes,
+        input.annual_fee_bps,
+        input.annual_fixed_fee_minor
     )
-    .bind(input.target_type.as_str())
-    .bind(input.target_id)
-    .bind(input.annual_growth_bps)
-    .bind(input.annual_volatility_bps)
-    .bind(input.dividend_yield_bps)
-    .bind(input.long_run_growth_bps)
-    .bind(input.notes)
-    .bind(input.annual_fee_bps)
-    .bind(input.annual_fixed_fee_minor)
     .fetch_one(db)
     .await?
     .try_into()
@@ -145,11 +155,14 @@ pub async fn clear_assumption(
     target_type: ForecastTargetType,
     target_id: i64,
 ) -> AppResult<()> {
-    sqlx::query("DELETE FROM forecast_assumptions WHERE target_type=?1 AND target_id=?2")
-        .bind(target_type.as_str())
-        .bind(target_id)
-        .execute(db)
-        .await?;
+    let target_type = target_type.as_str();
+    sqlx::query!(
+        "DELETE FROM forecast_assumptions WHERE target_type=?1 AND target_id=?2",
+        target_type,
+        target_id
+    )
+    .execute(db)
+    .await?;
     Ok(())
 }
 
@@ -157,11 +170,13 @@ pub async fn clear_assumption(
 /// (ISO-8601 date) — the numerator for a trailing-window dividend-yield default.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn trailing_dividends_minor(db: &Db, account_id: i64, since: &str) -> AppResult<i64> {
-    Ok(sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT SUM(net_amount_minor) FROM dividends WHERE account_id=?1 AND paid_date >= ?2",
+    Ok(sqlx::query_scalar!(
+        // SUM over no matching rows is NULL, hence the type override and the `unwrap_or`.
+        r#"SELECT SUM(net_amount_minor) AS "total: i64"
+             FROM dividends WHERE account_id=?1 AND paid_date >= ?2"#,
+        account_id,
+        since
     )
-    .bind(account_id)
-    .bind(since)
     .fetch_one(db)
     .await?
     .unwrap_or(0))
@@ -169,7 +184,7 @@ pub async fn trailing_dividends_minor(db: &Db, account_id: i64, since: &str) -> 
 
 // ---- forecast events -------------------------------------------------------------
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct ForecastEventRow {
     id: i64,
     label: String,
@@ -183,7 +198,7 @@ struct ForecastEventRow {
     updated_at: String,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct EffectRow {
     id: i64,
     event_id: i64,
@@ -234,7 +249,7 @@ impl TryFrom<EffectRow> for ForecastEventEffect {
     }
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct RelationRow {
     id: i64,
     event_id: i64,
@@ -264,19 +279,28 @@ impl TryFrom<RelationRow> for ForecastEventRelation {
 /// Every event with its effects and relations attached, soonest first.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_events(db: &Db) -> AppResult<Vec<ForecastEvent>> {
-    let rows = sqlx::query_as::<_, ForecastEventRow>(
-        "SELECT * FROM forecast_events ORDER BY expected_on, id",
+    let rows = sqlx::query_as!(
+        ForecastEventRow,
+        r#"SELECT id AS "id!", label, kind, person_id, expected_on, timing_spread_months,
+                  probability_bps, notes, created_at, updated_at
+             FROM forecast_events ORDER BY expected_on, id"#
     )
     .fetch_all(db)
     .await?;
     // Two queries for all the children rather than two per event: this list is always wanted whole.
-    let effects = sqlx::query_as::<_, EffectRow>(
-        "SELECT * FROM forecast_event_effects ORDER BY event_id, sort_order, id",
+    let effects = sqlx::query_as!(
+        EffectRow,
+        r#"SELECT id AS "id!", event_id, kind, sort_order, income_stream_id, person_id,
+                  category_id, account_id, amount_minor, rate_bps, delay_months, ramp_months,
+                  duration_months
+             FROM forecast_event_effects ORDER BY event_id, sort_order, id"#
     )
     .fetch_all(db)
     .await?;
-    let relations = sqlx::query_as::<_, RelationRow>(
-        "SELECT * FROM forecast_event_relations ORDER BY event_id, id",
+    let relations = sqlx::query_as!(
+        RelationRow,
+        r#"SELECT id AS "id!", event_id, depends_on_event_id, kind, min_gap_months
+             FROM forecast_event_relations ORDER BY event_id, id"#
     )
     .fetch_all(db)
     .await?;
@@ -362,14 +386,14 @@ async fn would_cycle(
     proposed: &[SaveForecastEventRelation],
 ) -> AppResult<Option<String>> {
     // Every existing edge except this event's own outgoing ones, which the write replaces.
-    let mut edges: Vec<(i64, i64)> = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT event_id, depends_on_event_id FROM forecast_event_relations",
-    )
-    .fetch_all(db)
-    .await?
-    .into_iter()
-    .filter(|(from, _)| Some(*from) != event_id)
-    .collect();
+    let mut edges: Vec<(i64, i64)> =
+        sqlx::query!("SELECT event_id, depends_on_event_id FROM forecast_event_relations")
+            .fetch_all(db)
+            .await?
+            .into_iter()
+            .map(|r| (r.event_id, r.depends_on_event_id))
+            .filter(|(from, _)| Some(*from) != event_id)
+            .collect();
 
     // A create has no id yet; a sentinel that cannot collide stands in for it, and any cycle through
     // it is a cycle through the row about to exist.
@@ -403,48 +427,55 @@ async fn write_children(
     event_id: i64,
     input: &SaveForecastEvent,
 ) -> AppResult<()> {
-    sqlx::query("DELETE FROM forecast_event_effects WHERE event_id=?1")
-        .bind(event_id)
-        .execute(&mut **txn)
-        .await?;
-    sqlx::query("DELETE FROM forecast_event_relations WHERE event_id=?1")
-        .bind(event_id)
-        .execute(&mut **txn)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM forecast_event_effects WHERE event_id=?1",
+        event_id
+    )
+    .execute(&mut **txn)
+    .await?;
+    sqlx::query!(
+        "DELETE FROM forecast_event_relations WHERE event_id=?1",
+        event_id
+    )
+    .execute(&mut **txn)
+    .await?;
     for (i, spec) in input.effects.iter().enumerate() {
         let c = spec.as_columns();
-        sqlx::query(
+        let kind = spec.kind().as_str();
+        let sort_order = i as i64;
+        sqlx::query!(
             "INSERT INTO forecast_event_effects
                 (event_id, kind, sort_order, income_stream_id, person_id, category_id, account_id,
                  amount_minor, rate_bps, delay_months, ramp_months, duration_months)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            event_id,
+            kind,
+            sort_order,
+            c.income_stream_id,
+            c.person_id,
+            c.category_id,
+            c.account_id,
+            c.amount_minor,
+            c.rate_bps,
+            c.delay_months,
+            c.ramp_months,
+            c.duration_months
         )
-        .bind(event_id)
-        .bind(spec.kind().as_str())
-        .bind(i as i64)
-        .bind(c.income_stream_id)
-        .bind(c.person_id)
-        .bind(c.category_id)
-        .bind(c.account_id)
-        .bind(c.amount_minor)
-        .bind(c.rate_bps)
-        .bind(c.delay_months)
-        .bind(c.ramp_months)
-        .bind(c.duration_months)
         .execute(&mut **txn)
         .await
         .map_err(fk_error)?;
     }
     for r in &input.relations {
-        sqlx::query(
+        let kind = r.kind.as_str();
+        sqlx::query!(
             "INSERT INTO forecast_event_relations
                 (event_id, depends_on_event_id, kind, min_gap_months)
              VALUES (?1,?2,?3,?4)",
+            event_id,
+            r.depends_on_event_id,
+            kind,
+            r.min_gap_months
         )
-        .bind(event_id)
-        .bind(r.depends_on_event_id)
-        .bind(r.kind.as_str())
-        .bind(r.min_gap_months)
         .execute(&mut **txn)
         .await
         .map_err(fk_error)?;
@@ -460,22 +491,28 @@ pub async fn create_event(db: &Db, input: SaveForecastEvent) -> AppResult<Foreca
         return Err(AppError::conflict(cycle));
     }
     let mut txn = db.begin().await?;
-    let row = sqlx::query_as::<_, ForecastEventRow>(
-        "INSERT INTO forecast_events
-            (label, kind, person_id, expected_on, timing_spread_months, probability_bps, notes)
-         VALUES (?1,?2,?3,?4,?5,?6,?7) RETURNING *",
+    let label = input.label.trim();
+    let kind = input.kind.as_str();
+    let expected_on = input.expected_on.to_string();
+    let notes = input.notes.as_deref();
+    // Only the id is wanted here: the children go in below and `get_event` re-reads the event
+    // whole.
+    let id = sqlx::query_scalar!(
+        r#"INSERT INTO forecast_events
+              (label, kind, person_id, expected_on, timing_spread_months, probability_bps, notes)
+           VALUES (?1,?2,?3,?4,?5,?6,?7)
+           RETURNING id AS "id!""#,
+        label,
+        kind,
+        input.person_id,
+        expected_on,
+        input.timing_spread_months,
+        input.probability_bps,
+        notes
     )
-    .bind(input.label.trim())
-    .bind(input.kind.as_str())
-    .bind(input.person_id)
-    .bind(input.expected_on.to_string())
-    .bind(input.timing_spread_months)
-    .bind(input.probability_bps)
-    .bind(input.notes.as_deref())
     .fetch_one(&mut *txn)
     .await
     .map_err(fk_error)?;
-    let id = row.id;
     write_children(&mut txn, id, &input).await?;
     txn.commit().await?;
     get_event(db, id).await
@@ -489,21 +526,25 @@ pub async fn update_event(db: &Db, id: i64, input: SaveForecastEvent) -> AppResu
         return Err(AppError::conflict(cycle));
     }
     let mut txn = db.begin().await?;
-    let res = sqlx::query(
+    let label = input.label.trim();
+    let kind = input.kind.as_str();
+    let expected_on = input.expected_on.to_string();
+    let notes = input.notes.as_deref();
+    let res = sqlx::query!(
         "UPDATE forecast_events SET
             label=?2, kind=?3, person_id=?4, expected_on=?5, timing_spread_months=?6,
             probability_bps=?7, notes=?8,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id=?1",
+        id,
+        label,
+        kind,
+        input.person_id,
+        expected_on,
+        input.timing_spread_months,
+        input.probability_bps,
+        notes
     )
-    .bind(id)
-    .bind(input.label.trim())
-    .bind(input.kind.as_str())
-    .bind(input.person_id)
-    .bind(input.expected_on.to_string())
-    .bind(input.timing_spread_months)
-    .bind(input.probability_bps)
-    .bind(input.notes.as_deref())
     .execute(&mut *txn)
     .await
     .map_err(fk_error)?;
@@ -524,14 +565,14 @@ pub async fn update_event(db: &Db, id: i64, input: SaveForecastEvent) -> AppResu
 /// which is a change of meaning with no trace.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete_event(db: &Db, id: i64) -> AppResult<()> {
-    let conditional: Vec<String> = sqlx::query_scalar(
+    let conditional = sqlx::query_scalar!(
         "SELECT e.label
            FROM forecast_event_relations r
            JOIN forecast_events e ON e.id = r.event_id
           WHERE r.depends_on_event_id = ?1 AND r.kind = 'only_if'
           ORDER BY e.label",
+        id
     )
-    .bind(id)
     .fetch_all(db)
     .await?;
     if !conditional.is_empty() {
@@ -542,12 +583,13 @@ pub async fn delete_event(db: &Db, id: i64) -> AppResult<()> {
     }
     let mut txn = db.begin().await?;
     // Pure ordering edges pointing at it: dropped, since the ordering is meaningless without it.
-    sqlx::query("DELETE FROM forecast_event_relations WHERE depends_on_event_id=?1")
-        .bind(id)
-        .execute(&mut *txn)
-        .await?;
-    let res = sqlx::query("DELETE FROM forecast_events WHERE id=?1")
-        .bind(id)
+    sqlx::query!(
+        "DELETE FROM forecast_event_relations WHERE depends_on_event_id=?1",
+        id
+    )
+    .execute(&mut *txn)
+    .await?;
+    let res = sqlx::query!("DELETE FROM forecast_events WHERE id=?1", id)
         .execute(&mut *txn)
         .await?;
     if res.rows_affected() == 0 {

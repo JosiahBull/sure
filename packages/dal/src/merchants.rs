@@ -1,10 +1,9 @@
-use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
 pub use sure_core::{Merchant, SaveMerchant};
 
 use crate::Db;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct MerchantRow {
     id: i64,
     name: String,
@@ -29,14 +28,16 @@ impl From<MerchantRow> for Merchant {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<Merchant>> {
-    Ok(
-        sqlx::query_as::<_, MerchantRow>("SELECT * FROM merchants ORDER BY name COLLATE NOCASE")
-            .fetch_all(db)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect(),
+    Ok(sqlx::query_as!(
+        MerchantRow,
+        r#"SELECT id AS "id!", name, category_id, note, created_at, updated_at
+             FROM merchants ORDER BY name COLLATE NOCASE"#
     )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -45,12 +46,14 @@ pub async fn create(db: &Db, input: SaveMerchant) -> AppResult<Merchant> {
     if name.is_empty() {
         return Err(AppError::validation("merchant name is required"));
     }
-    Ok(sqlx::query_as::<_, MerchantRow>(
-        "INSERT INTO merchants (name, category_id, note) VALUES (?1, ?2, ?3) RETURNING *",
+    Ok(sqlx::query_as!(
+        MerchantRow,
+        "INSERT INTO merchants (name, category_id, note) VALUES (?1, ?2, ?3)
+         RETURNING id, name, category_id, note, created_at, updated_at",
+        name,
+        input.category_id,
+        input.note
     )
-    .bind(name)
-    .bind(input.category_id)
-    .bind(&input.note)
     .fetch_one(db)
     .await
     .map_err(unique_or_fk)?
@@ -63,15 +66,17 @@ pub async fn update(db: &Db, id: i64, input: SaveMerchant) -> AppResult<Merchant
     if name.is_empty() {
         return Err(AppError::validation("merchant name is required"));
     }
-    Ok(sqlx::query_as::<_, MerchantRow>(
+    Ok(sqlx::query_as!(
+        MerchantRow,
         "UPDATE merchants SET name=?2, category_id=?3, note=?4,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1 RETURNING *",
+         WHERE id=?1
+         RETURNING id, name, category_id, note, created_at, updated_at",
+        id,
+        name,
+        input.category_id,
+        input.note
     )
-    .bind(id)
-    .bind(name)
-    .bind(input.category_id)
-    .bind(&input.note)
     .fetch_optional(db)
     .await
     .map_err(unique_or_fk)?
@@ -87,42 +92,46 @@ pub async fn update(db: &Db, id: i64, input: SaveMerchant) -> AppResult<Merchant
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn find_or_create(db: &Db, name: &str, category_id: Option<i64>) -> AppResult<Merchant> {
     let name = name.trim();
-    if let Some(existing) =
-        sqlx::query_as::<_, MerchantRow>("SELECT * FROM merchants WHERE name = ?1 COLLATE NOCASE")
-            .bind(name)
-            .fetch_optional(db)
-            .await?
+    if let Some(existing) = sqlx::query_as!(
+        MerchantRow,
+        r#"SELECT id AS "id!", name, category_id, note, created_at, updated_at
+             FROM merchants WHERE name = ?1 COLLATE NOCASE"#,
+        name
+    )
+    .fetch_optional(db)
+    .await?
     {
         return Ok(existing.into());
     }
-    match sqlx::query_as::<_, MerchantRow>(
-        "INSERT INTO merchants (name, category_id) VALUES (?1, ?2) RETURNING *",
+    match sqlx::query_as!(
+        MerchantRow,
+        "INSERT INTO merchants (name, category_id) VALUES (?1, ?2)
+         RETURNING id, name, category_id, note, created_at, updated_at",
+        name,
+        category_id
     )
-    .bind(name)
-    .bind(category_id)
     .fetch_one(db)
     .await
     {
         Ok(m) => Ok(m.into()),
         // Lost a race with a concurrent import of the same merchant name — reuse theirs.
-        Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
-            sqlx::query_as::<_, MerchantRow>(
-                "SELECT * FROM merchants WHERE name = ?1 COLLATE NOCASE",
-            )
-            .bind(name)
-            .fetch_optional(db)
-            .await?
-            .map(Into::into)
-            .ok_or(AppError::NotFound("merchant"))
-        }
+        Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => sqlx::query_as!(
+            MerchantRow,
+            r#"SELECT id AS "id!", name, category_id, note, created_at, updated_at
+                     FROM merchants WHERE name = ?1 COLLATE NOCASE"#,
+            name
+        )
+        .fetch_optional(db)
+        .await?
+        .map(Into::into)
+        .ok_or(AppError::NotFound("merchant")),
         Err(e) => Err(AppError::from(e)),
     }
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
-    let res = sqlx::query("DELETE FROM merchants WHERE id=?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM merchants WHERE id=?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {

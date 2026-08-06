@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT name FROM accounts WHERE person_id = ?1 ORDER BY sort_order, name",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5261f355a4a3608d3804a05db2eab9503b2fa40707413726311db9540cf163f7"
+}

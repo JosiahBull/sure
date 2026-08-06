@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM dividends",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "8e77dff8b094575640f66f0a8cac336ec83e97e86c6a3a66e4f867ac997813e0"
+}

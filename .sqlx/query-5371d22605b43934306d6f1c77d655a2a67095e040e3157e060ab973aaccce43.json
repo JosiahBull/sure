@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(SUM(amount_minor),0) AS \"contributions!: i64\" FROM transactions\n            WHERE account_id=?1 AND amount_minor > 0\n              AND (description LIKE 'Wallet top up%' OR description LIKE 'Deposit%')\n              AND date(posted_at) > date(?2, '-30 days') AND date(posted_at) <= date(?2)",
+  "describe": {
+    "columns": [
+      {
+        "name": "contributions!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5371d22605b43934306d6f1c77d655a2a67095e040e3157e060ab973aaccce43"
+}

@@ -1,0 +1,68 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", name, kind, account_id, config, enabled AS \"enabled!: bool\",\n                  last_synced_at, created_at, updated_at\n             FROM providers ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "config",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_synced_at",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 8,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e054ba2b7c1eb41a537c2b02ef1cb72bf8c25b36a6f2c14d0c9acfb46654ec2f"
+}

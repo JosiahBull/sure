@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", grant_id, exercise_date, quantity, price_minor, note, created_at\n             FROM equity_exercises WHERE grant_id=?1 ORDER BY exercise_date, id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "grant_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "exercise_date",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "quantity",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "price_minor",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "note",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "c49f1ecdf20e3e460fa211c6cb13880fc2683297831455af8d32e0cc43303390"
+}

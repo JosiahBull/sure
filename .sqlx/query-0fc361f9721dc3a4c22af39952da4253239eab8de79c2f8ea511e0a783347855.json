@@ -1,0 +1,128 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                  merchant, merchant_id, notes, category_id, is_one_off AS \"is_one_off!: bool\",\n                  linked_transaction_id, provider, external_id, categorized_by_rule_id,\n                  ownership, person_id, created_at, updated_at\n             FROM transactions WHERE id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "posted_at",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "description",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "merchant",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "merchant_id",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "notes",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "category_id",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "is_one_off!: bool",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "linked_transaction_id",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "provider",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "external_id",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "categorized_by_rule_id",
+        "ordinal": 14,
+        "type_info": "Integer"
+      },
+      {
+        "name": "ownership",
+        "ordinal": 15,
+        "type_info": "Text"
+      },
+      {
+        "name": "person_id",
+        "ordinal": 16,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 17,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 18,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "0fc361f9721dc3a4c22af39952da4253239eab8de79c2f8ea511e0a783347855"
+}

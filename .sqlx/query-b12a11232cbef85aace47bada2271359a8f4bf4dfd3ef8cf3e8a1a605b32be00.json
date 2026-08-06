@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO stock_prices (ticker, exchange, as_of, close, currency_code)\n             VALUES ('MEL', 'NZX', '2026-07-14', '5.60', 'ZZZ')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "b12a11232cbef85aace47bada2271359a8f4bf4dfd3ef8cf3e8a1a605b32be00"
+}

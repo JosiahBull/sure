@@ -1,13 +1,12 @@
 //! Editable tax scales: persistence, plus the seeding that keeps `sure_core::tax`'s constants the
 //! single place the figures are written down.
 
-use sqlx::FromRow;
 use sure_core::tax::{builtin_scales, OwnedTaxScale, SaveTaxScale, StoredTaxScale, TaxScaleId};
 use sure_core::{AppError, AppResult};
 
 use crate::Db;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct TaxScaleRow {
     id: i64,
     scale_id: String,
@@ -68,8 +67,16 @@ impl TryFrom<TaxScaleRow> for StoredTaxScale {
 /// Every stored scale, oldest first.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<StoredTaxScale>> {
-    sqlx::query_as::<_, TaxScaleRow>(
-        "SELECT * FROM tax_scales ORDER BY scale_id, effective_from, id",
+    sqlx::query_as!(
+        TaxScaleRow,
+        // Listed rather than `SELECT *`, and in `TaxScaleRow`'s field order: `query_as!` maps
+        // columns to fields positionally, and this struct groups the JSON bands differently
+        // from the table's column order.
+        r#"SELECT id AS "id!", scale_id, effective_from, brackets, acc_levy_bps,
+                  acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,
+                  esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
+                  kiwisaver_govt_income_cap_minor, source_note, created_at, updated_at
+             FROM tax_scales ORDER BY scale_id, effective_from, id"#
     )
     .fetch_all(db)
     .await?
@@ -88,7 +95,7 @@ pub async fn list(db: &Db) -> AppResult<Vec<StoredTaxScale>> {
 /// place the numbers are written down, so there is no second copy to drift.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn seed(db: &Db) -> AppResult<()> {
-    let existing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tax_scales")
+    let existing = sqlx::query_scalar!("SELECT COUNT(*) FROM tax_scales")
         .fetch_one(db)
         .await?;
     if existing > 0 {
@@ -117,26 +124,35 @@ async fn insert(
     scale: &OwnedTaxScale,
     source_note: Option<&str>,
 ) -> AppResult<StoredTaxScale> {
-    let row = sqlx::query_as::<_, TaxScaleRow>(
-        "INSERT INTO tax_scales
-            (scale_id, effective_from, brackets, acc_levy_bps, acc_income_cap_minor,
-             student_loan_threshold_minor, student_loan_rate_bps, esct_brackets, source_note,
-             kiwisaver_govt_match_bps, kiwisaver_govt_max_minor, kiwisaver_govt_income_cap_minor)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
-         RETURNING *",
+    let scale_id = scale_id.as_str();
+    let brackets =
+        serde_json::to_string(&scale.brackets).map_err(|e| AppError::Internal(e.into()))?;
+    let esct_brackets =
+        serde_json::to_string(&scale.esct_brackets).map_err(|e| AppError::Internal(e.into()))?;
+    let row = sqlx::query_as!(
+        TaxScaleRow,
+        r#"INSERT INTO tax_scales
+              (scale_id, effective_from, brackets, acc_levy_bps, acc_income_cap_minor,
+               student_loan_threshold_minor, student_loan_rate_bps, esct_brackets, source_note,
+               kiwisaver_govt_match_bps, kiwisaver_govt_max_minor, kiwisaver_govt_income_cap_minor)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+           RETURNING id AS "id!", scale_id, effective_from, brackets, acc_levy_bps,
+                     acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,
+                     esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
+                     kiwisaver_govt_income_cap_minor, source_note, created_at, updated_at"#,
+        scale_id,
+        scale.effective_from,
+        brackets,
+        scale.acc_levy_bps,
+        scale.acc_income_cap_minor,
+        scale.student_loan_threshold_minor,
+        scale.student_loan_rate_bps,
+        esct_brackets,
+        source_note,
+        scale.kiwisaver_govt_match_bps,
+        scale.kiwisaver_govt_max_minor,
+        scale.kiwisaver_govt_income_cap_minor
     )
-    .bind(scale_id.as_str())
-    .bind(&scale.effective_from)
-    .bind(serde_json::to_string(&scale.brackets).map_err(|e| AppError::Internal(e.into()))?)
-    .bind(scale.acc_levy_bps)
-    .bind(scale.acc_income_cap_minor)
-    .bind(scale.student_loan_threshold_minor)
-    .bind(scale.student_loan_rate_bps)
-    .bind(serde_json::to_string(&scale.esct_brackets).map_err(|e| AppError::Internal(e.into()))?)
-    .bind(source_note)
-    .bind(scale.kiwisaver_govt_match_bps)
-    .bind(scale.kiwisaver_govt_max_minor)
-    .bind(scale.kiwisaver_govt_income_cap_minor)
     .fetch_one(db)
     .await
     .map_err(unique_or_other)?;
@@ -171,27 +187,36 @@ pub async fn create(
 pub async fn update(db: &Db, id: i64, input: SaveTaxScale) -> AppResult<StoredTaxScale> {
     validate(&input)?;
     let s = &input.scale;
-    let row = sqlx::query_as::<_, TaxScaleRow>(
-        "UPDATE tax_scales SET
-            effective_from=?2, brackets=?3, acc_levy_bps=?4, acc_income_cap_minor=?5,
-            student_loan_threshold_minor=?6, student_loan_rate_bps=?7, esct_brackets=?8,
-            source_note=?9, kiwisaver_govt_match_bps=?10, kiwisaver_govt_max_minor=?11,
-            kiwisaver_govt_income_cap_minor=?12,
-            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1 RETURNING *",
+    let brackets = serde_json::to_string(&s.brackets).map_err(|e| AppError::Internal(e.into()))?;
+    let esct_brackets =
+        serde_json::to_string(&s.esct_brackets).map_err(|e| AppError::Internal(e.into()))?;
+    let source_note = input.source_note.as_deref();
+    let row = sqlx::query_as!(
+        TaxScaleRow,
+        r#"UPDATE tax_scales SET
+              effective_from=?2, brackets=?3, acc_levy_bps=?4, acc_income_cap_minor=?5,
+              student_loan_threshold_minor=?6, student_loan_rate_bps=?7, esct_brackets=?8,
+              source_note=?9, kiwisaver_govt_match_bps=?10, kiwisaver_govt_max_minor=?11,
+              kiwisaver_govt_income_cap_minor=?12,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id AS "id!", scale_id, effective_from, brackets, acc_levy_bps,
+                     acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,
+                     esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
+                     kiwisaver_govt_income_cap_minor, source_note, created_at, updated_at"#,
+        id,
+        s.effective_from,
+        brackets,
+        s.acc_levy_bps,
+        s.acc_income_cap_minor,
+        s.student_loan_threshold_minor,
+        s.student_loan_rate_bps,
+        esct_brackets,
+        source_note,
+        s.kiwisaver_govt_match_bps,
+        s.kiwisaver_govt_max_minor,
+        s.kiwisaver_govt_income_cap_minor
     )
-    .bind(id)
-    .bind(&s.effective_from)
-    .bind(serde_json::to_string(&s.brackets).map_err(|e| AppError::Internal(e.into()))?)
-    .bind(s.acc_levy_bps)
-    .bind(s.acc_income_cap_minor)
-    .bind(s.student_loan_threshold_minor)
-    .bind(s.student_loan_rate_bps)
-    .bind(serde_json::to_string(&s.esct_brackets).map_err(|e| AppError::Internal(e.into()))?)
-    .bind(input.source_note.as_deref())
-    .bind(s.kiwisaver_govt_match_bps)
-    .bind(s.kiwisaver_govt_max_minor)
-    .bind(s.kiwisaver_govt_income_cap_minor)
     .fetch_optional(db)
     .await
     .map_err(unique_or_other)?
@@ -206,28 +231,26 @@ pub async fn update(db: &Db, id: i64, input: SaveTaxScale) -> AppResult<StoredTa
 /// get the built-ins back is a reasonable instinct, so the message says how to actually do that.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
-    let scale_id: Option<String> =
-        sqlx::query_scalar("SELECT scale_id FROM tax_scales WHERE id=?1")
-            .bind(id)
-            .fetch_optional(db)
-            .await?;
+    let scale_id = sqlx::query_scalar!("SELECT scale_id FROM tax_scales WHERE id=?1", id)
+        .fetch_optional(db)
+        .await?;
     let Some(scale_id) = scale_id else {
         return Err(AppError::NotFound("tax scale"));
     };
-    let remaining: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM tax_scales WHERE scale_id=?1 AND id<>?2")
-            .bind(&scale_id)
-            .bind(id)
-            .fetch_one(db)
-            .await?;
+    let remaining = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM tax_scales WHERE scale_id=?1 AND id<>?2",
+        scale_id,
+        id
+    )
+    .fetch_one(db)
+    .await?;
     if remaining == 0 {
         return Err(AppError::conflict(
             "This is the only tax scale left, and removing it would tax every gross salary at \
              nothing. Add its replacement first, or use Restore defaults.",
         ));
     }
-    sqlx::query("DELETE FROM tax_scales WHERE id=?1")
-        .bind(id)
+    sqlx::query!("DELETE FROM tax_scales WHERE id=?1", id)
         .execute(db)
         .await?;
     Ok(())
@@ -240,7 +263,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn restore_defaults(db: &Db) -> AppResult<Vec<StoredTaxScale>> {
     let mut txn = db.begin().await?;
-    sqlx::query("DELETE FROM tax_scales")
+    sqlx::query!("DELETE FROM tax_scales")
         .execute(&mut *txn)
         .await?;
     txn.commit().await?;

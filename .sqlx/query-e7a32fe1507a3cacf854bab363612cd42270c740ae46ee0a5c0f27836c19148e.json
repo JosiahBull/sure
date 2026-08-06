@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO people\n                (id, name, color, sort_order, placeholder, created_at, updated_at)\n             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "e7a32fe1507a3cacf854bab363612cd42270c740ae46ee0a5c0f27836c19148e"
+}

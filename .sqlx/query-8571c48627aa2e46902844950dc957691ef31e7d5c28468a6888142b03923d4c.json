@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO categories (name, parent_id, kind, color, icon, sort_order)\n           VALUES (?1, ?2, ?3, ?4, ?5, ?6)\n           RETURNING id AS \"id!\", name, parent_id, kind, color, icon, sort_order, created_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "parent_id",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kind",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "color",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "icon",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "sort_order",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "8571c48627aa2e46902844950dc957691ef31e7d5c28468a6888142b03923d4c"
+}

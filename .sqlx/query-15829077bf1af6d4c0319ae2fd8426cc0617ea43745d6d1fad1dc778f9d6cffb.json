@@ -1,0 +1,104 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT t.id AS \"id!\", t.account_id, t.posted_at, t.amount_minor, t.currency_code,\n                  cur.decimal_places, t.description, t.merchant, t.merchant_id, t.notes,\n                  t.category_id, t.is_one_off AS \"is_one_off!: bool\", t.categorized_by_rule_id,\n                  a.name AS account_name, a.kind AS account_kind\n             FROM transactions t\n             JOIN accounts a ON a.id = t.account_id\n             JOIN currencies cur ON cur.code = t.currency_code",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "posted_at",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "decimal_places",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "description",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "merchant",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "merchant_id",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "notes",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "category_id",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "is_one_off!: bool",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "categorized_by_rule_id",
+        "ordinal": 12,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_name",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "account_kind",
+        "ordinal": 14,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "15829077bf1af6d4c0319ae2fd8426cc0617ea43745d6d1fad1dc778f9d6cffb"
+}

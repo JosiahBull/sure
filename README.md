@@ -108,6 +108,11 @@ error. (See `packages/client/strip-operation-ids.mjs` for why the spec is post-p
 
 - Rust (nightly is used here; stable ≥ 1.85 with edition 2021 also works)
 - Node ≥ 22 and `pnpm` (`corepack enable`)
+- `sqlx-cli`, **only if you change a SQL query or add a migration** —
+  `cargo install sqlx-cli --no-default-features --features sqlite,rustls` — so you can run
+  `pnpm sqlx:prepare`. Building and running the app needs neither it nor a database: the
+  compile-time query check reads the committed `.sqlx/` metadata (see
+  [Compile-time checked SQL](#compile-time-checked-sql)).
 
 ## Quick start
 
@@ -215,6 +220,38 @@ you're looking at.
 | `pnpm test:web:install` | One-time: install the Chromium used by the web suite |
 | `pnpm test:web` | Web Playwright suite (builds + boots + seeds automatically) |
 | `pnpm lint:rust` / `pnpm fmt:rust` | clippy / rustfmt |
+| `pnpm sqlx:prepare` | Regenerate `.sqlx/`, the compile-time query metadata — after any query or migration change |
+| `pnpm sqlx:check` | Fail if `.sqlx/` is stale (what pre-commit and CI run) |
+
+## Compile-time checked SQL
+
+Every query in `packages/dal` uses `sqlx::query!` / `query_as!` / `query_scalar!`, so the SQL
+is verified against the real schema when you compile: a column that doesn't exist, a bind count
+that doesn't line up, or a row struct whose types disagree with the table is a build error
+instead of a 500 on whichever request happens to hit it first.
+
+The schema it checks against is whatever `packages/dal/migrations` produces, cached in the
+committed `.sqlx/` directory. `.cargo/config.toml` sets `SQLX_OFFLINE=true`, so a build never
+opens a database — a fresh clone, CI and a container all compile with no `DATABASE_URL` at all,
+and nothing can wander into your real `data/sure.db`.
+
+So the one rule: **change a query or add a migration → `pnpm sqlx:prepare`, and commit the
+`.sqlx/` change with it.** `pnpm sqlx:check` (pre-commit, and a CI gate) fails when you forget.
+The script builds a throwaway database under `target/`, applies the migrations to it, and
+describes the queries against that.
+
+Three annotations show up a lot, because SQLite's `describe` is conservative about nullability:
+
+| Annotation | Means |
+| --- | --- |
+| `col AS "col!"` | force non-null — an `INTEGER PRIMARY KEY` (a rowid alias), or any column read back out of a subquery, CTE, `GROUP BY` or window function |
+| `col AS "col?"` | force nullable — the outer side of a `LEFT JOIN` |
+| `col AS "col: T"` | decode as `T` — needed for `bool` (a SQLite `INTEGER` is otherwise `i64`), and for an aggregate like `SUM(x)` that SQLite describes as having no type |
+
+A few queries are shaped at runtime rather than fixed — the transaction list's optional
+filters, the bulk update/delete id lists, the chunked provider import — and use
+`sqlx::QueryBuilder` instead. Each says so where it is written; they are the only SQL in the
+codebase the compiler does not check.
 
 ## Testing
 

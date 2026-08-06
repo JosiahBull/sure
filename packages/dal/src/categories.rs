@@ -1,4 +1,4 @@
-use sqlx::{FromRow, SqlitePool};
+use sqlx::SqlitePool;
 use sure_core::{AppError, AppResult, MAX_CATEGORY_DEPTH};
 pub use sure_core::{Category, CategoryKind, CategoryNode, SaveCategory};
 
@@ -13,7 +13,7 @@ fn parse_kind(kind: String) -> AppResult<CategoryKind> {
         .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct CategoryRow {
     id: i64,
     name: String,
@@ -59,16 +59,20 @@ pub async fn tree(db: &Db) -> AppResult<Vec<CategoryNode>> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn create(db: &Db, input: SaveCategory) -> AppResult<Category> {
     validate(db, &input, None).await?;
-    sqlx::query_as::<_, CategoryRow>(
-        "INSERT INTO categories (name, parent_id, kind, color, icon, sort_order)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING *",
+    let name = input.name.trim();
+    let kind = input.kind.as_str();
+    sqlx::query_as!(
+        CategoryRow,
+        r#"INSERT INTO categories (name, parent_id, kind, color, icon, sort_order)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+           RETURNING id AS "id!", name, parent_id, kind, color, icon, sort_order, created_at"#,
+        name,
+        input.parent_id,
+        kind,
+        input.color,
+        input.icon,
+        input.sort_order
     )
-    .bind(input.name.trim())
-    .bind(input.parent_id)
-    .bind(input.kind.as_str())
-    .bind(&input.color)
-    .bind(&input.icon)
-    .bind(input.sort_order)
     .fetch_one(db)
     .await?
     .try_into()
@@ -78,17 +82,21 @@ pub async fn create(db: &Db, input: SaveCategory) -> AppResult<Category> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update(db: &Db, id: i64, input: SaveCategory) -> AppResult<Category> {
     validate(db, &input, Some(id)).await?;
-    sqlx::query_as::<_, CategoryRow>(
-        "UPDATE categories SET name=?2, parent_id=?3, kind=?4, color=?5, icon=?6, sort_order=?7
-         WHERE id=?1 RETURNING *",
+    let name = input.name.trim();
+    let kind = input.kind.as_str();
+    sqlx::query_as!(
+        CategoryRow,
+        r#"UPDATE categories SET name=?2, parent_id=?3, kind=?4, color=?5, icon=?6, sort_order=?7
+           WHERE id=?1
+           RETURNING id AS "id!", name, parent_id, kind, color, icon, sort_order, created_at"#,
+        id,
+        name,
+        input.parent_id,
+        kind,
+        input.color,
+        input.icon,
+        input.sort_order
     )
-    .bind(id)
-    .bind(input.name.trim())
-    .bind(input.parent_id)
-    .bind(input.kind.as_str())
-    .bind(&input.color)
-    .bind(&input.icon)
-    .bind(input.sort_order)
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound("category"))?
@@ -108,34 +116,32 @@ pub async fn find_or_create(
     kind: CategoryKind,
 ) -> AppResult<Category> {
     let name = name.trim();
-    let existing: Option<Category> = match parent_id {
-        Some(pid) => sqlx::query_as::<_, CategoryRow>(
-            "SELECT * FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id = ?2",
-        )
-        .bind(name)
-        .bind(pid)
-        .fetch_optional(db)
-        .await?
-        .map(Category::try_from)
-        .transpose()?,
-        None => sqlx::query_as::<_, CategoryRow>(
-            "SELECT * FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id IS NULL",
-        )
-        .bind(name)
-        .fetch_optional(db)
-        .await?
-        .map(Category::try_from)
-        .transpose()?,
-    };
+    // One statement rather than the two the untyped version needed: `IS` (not `=`) matches a
+    // NULL bind against a NULL `parent_id`, so the top-level lookup is the same query with a
+    // NULL parameter — and the macro needs a single literal string either way.
+    let existing: Option<Category> = sqlx::query_as!(
+        CategoryRow,
+        r#"SELECT id AS "id!", name, parent_id, kind, color, icon, sort_order, created_at
+             FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id IS ?2"#,
+        name,
+        parent_id
+    )
+    .fetch_optional(db)
+    .await?
+    .map(Category::try_from)
+    .transpose()?;
     if let Some(existing) = existing {
         return Ok(existing);
     }
-    sqlx::query_as::<_, CategoryRow>(
-        "INSERT INTO categories (name, parent_id, kind) VALUES (?1, ?2, ?3) RETURNING *",
+    let kind = kind.as_str();
+    sqlx::query_as!(
+        CategoryRow,
+        r#"INSERT INTO categories (name, parent_id, kind) VALUES (?1, ?2, ?3)
+           RETURNING id AS "id!", name, parent_id, kind, color, icon, sort_order, created_at"#,
+        name,
+        parent_id,
+        kind
     )
-    .bind(name)
-    .bind(parent_id)
-    .bind(kind.as_str())
     .fetch_one(db)
     .await?
     .try_into()
@@ -145,8 +151,7 @@ pub async fn find_or_create(
 /// (`ON DELETE CASCADE` for children, `SET NULL` for transactions).
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
-    let res = sqlx::query("DELETE FROM categories WHERE id = ?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM categories WHERE id = ?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {
@@ -157,12 +162,16 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn all_categories(db: &SqlitePool) -> AppResult<Vec<Category>> {
-    sqlx::query_as::<_, CategoryRow>("SELECT * FROM categories ORDER BY sort_order, name")
-        .fetch_all(db)
-        .await?
-        .into_iter()
-        .map(Category::try_from)
-        .collect()
+    sqlx::query_as!(
+        CategoryRow,
+        r#"SELECT id AS "id!", name, parent_id, kind, color, icon, sort_order, created_at
+             FROM categories ORDER BY sort_order, name"#
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(Category::try_from)
+    .collect()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -175,8 +184,7 @@ async fn validate(db: &SqlitePool, input: &SaveCategory, id: Option<i64>) -> App
             return Err(AppError::validation("a category cannot be its own parent"));
         }
         // Parent must exist.
-        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM categories WHERE id = ?1")
-            .bind(parent)
+        let exists = sqlx::query_scalar!("SELECT COUNT(*) FROM categories WHERE id = ?1", parent)
             .fetch_one(db)
             .await?;
         if exists == 0 {
@@ -216,16 +224,16 @@ async fn validate(db: &SqlitePool, input: &SaveCategory, id: Option<i64>) -> App
 /// CTE over a hand-edited cyclic parent chain would otherwise spin forever.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn depth_of(db: &SqlitePool, id: i64) -> AppResult<i64> {
-    Ok(sqlx::query_scalar::<_, i64>(
-        "WITH RECURSIVE up(id, parent_id, depth) AS (
-             SELECT id, parent_id, 0 FROM categories WHERE id = ?1
-             UNION ALL
-             SELECT c.id, c.parent_id, up.depth + 1
-             FROM categories c JOIN up ON c.id = up.parent_id WHERE up.depth < 64
-         )
-         SELECT COALESCE(MAX(depth), 0) FROM up",
+    Ok(sqlx::query_scalar!(
+        r#"WITH RECURSIVE up(id, parent_id, depth) AS (
+               SELECT id, parent_id, 0 FROM categories WHERE id = ?1
+               UNION ALL
+               SELECT c.id, c.parent_id, up.depth + 1
+               FROM categories c JOIN up ON c.id = up.parent_id WHERE up.depth < 64
+           )
+           SELECT COALESCE(MAX(depth), 0) AS "depth!: i64" FROM up"#,
+        id
     )
-    .bind(id)
     .fetch_one(db)
     .await?)
 }
@@ -233,16 +241,16 @@ async fn depth_of(db: &SqlitePool, id: i64) -> AppResult<i64> {
 /// How many levels sit *below* `id`: 0 for a leaf. Same 64-hop bound as [`depth_of`].
 #[tracing::instrument(level = "debug", skip_all)]
 async fn subtree_height(db: &SqlitePool, id: i64) -> AppResult<i64> {
-    Ok(sqlx::query_scalar::<_, i64>(
-        "WITH RECURSIVE down(id, depth) AS (
-             SELECT id, 0 FROM categories WHERE id = ?1
-             UNION ALL
-             SELECT c.id, down.depth + 1
-             FROM categories c JOIN down ON c.parent_id = down.id WHERE down.depth < 64
-         )
-         SELECT COALESCE(MAX(depth), 0) FROM down",
+    Ok(sqlx::query_scalar!(
+        r#"WITH RECURSIVE down(id, depth) AS (
+               SELECT id, 0 FROM categories WHERE id = ?1
+               UNION ALL
+               SELECT c.id, down.depth + 1
+               FROM categories c JOIN down ON c.parent_id = down.id WHERE down.depth < 64
+           )
+           SELECT COALESCE(MAX(depth), 0) AS "depth!: i64" FROM down"#,
+        id
     )
-    .bind(id)
     .fetch_one(db)
     .await?)
 }
@@ -254,12 +262,10 @@ async fn would_cycle(db: &SqlitePool, id: i64, parent: i64) -> AppResult<bool> {
         if current == id {
             return Ok(true);
         }
-        cursor =
-            sqlx::query_scalar::<_, Option<i64>>("SELECT parent_id FROM categories WHERE id=?1")
-                .bind(current)
-                .fetch_optional(db)
-                .await?
-                .flatten();
+        cursor = sqlx::query_scalar!("SELECT parent_id FROM categories WHERE id=?1", current)
+            .fetch_optional(db)
+            .await?
+            .flatten();
     }
     Ok(false)
 }

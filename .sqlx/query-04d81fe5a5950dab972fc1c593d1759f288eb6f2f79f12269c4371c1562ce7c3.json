@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT account_id AS \"account_id!\", as_of AS \"as_of!\",\n                  value_minor AS \"value_minor!\", currency_code AS \"currency_code!\"\n             FROM (SELECT account_id, as_of, value_minor, currency_code,\n                          ROW_NUMBER() OVER (\n                              PARTITION BY account_id ORDER BY as_of DESC, id DESC\n                          ) AS rn\n                     FROM valuations\n                    WHERE as_of < ?1\n                      AND as_of GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'\n                          AND date(as_of) = substr(as_of, 1, 10))\n            WHERE rn = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "account_id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "as_of!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "value_minor!",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code!",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "04d81fe5a5950dab972fc1c593d1759f288eb6f2f79f12269c4371c1562ce7c3"
+}

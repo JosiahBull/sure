@@ -8,27 +8,30 @@ pub use sure_core::{
 
 use crate::Db;
 
+// The one row struct that still needs `FromRow`: `list`'s filters are decided at runtime, so it
+// goes through `QueryBuilder::build_query_as` rather than `query_as!`. Every other row struct in
+// this crate is built field-by-field by the checked macros and needs no runtime mapping.
 #[derive(Debug, FromRow)]
 pub(crate) struct TransactionRow {
-    id: i64,
-    account_id: i64,
-    posted_at: String,
-    amount_minor: i64,
-    currency_code: String,
-    description: String,
-    merchant: Option<String>,
-    merchant_id: Option<i64>,
-    notes: Option<String>,
-    category_id: Option<i64>,
-    is_one_off: bool,
-    linked_transaction_id: Option<i64>,
-    provider: Option<String>,
-    external_id: Option<String>,
-    categorized_by_rule_id: Option<i64>,
-    ownership: Option<String>,
-    person_id: Option<i64>,
-    created_at: String,
-    updated_at: String,
+    pub(crate) id: i64,
+    pub(crate) account_id: i64,
+    pub(crate) posted_at: String,
+    pub(crate) amount_minor: i64,
+    pub(crate) currency_code: String,
+    pub(crate) description: String,
+    pub(crate) merchant: Option<String>,
+    pub(crate) merchant_id: Option<i64>,
+    pub(crate) notes: Option<String>,
+    pub(crate) category_id: Option<i64>,
+    pub(crate) is_one_off: bool,
+    pub(crate) linked_transaction_id: Option<i64>,
+    pub(crate) provider: Option<String>,
+    pub(crate) external_id: Option<String>,
+    pub(crate) categorized_by_rule_id: Option<i64>,
+    pub(crate) ownership: Option<String>,
+    pub(crate) person_id: Option<i64>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
 }
 
 impl TryFrom<TransactionRow> for Transaction {
@@ -101,6 +104,9 @@ async fn split_ownership(
 pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
     // `t.*`, not `*`: the join below would otherwise splice the account's own `ownership`
     // and `person_id` columns into the row and shadow the transaction's.
+    // Not `sqlx::query_as!`: which filters are present decides the SQL text, and the macro
+    // needs a literal. One of four such sites in this module (with `bulk_update`,
+    // `bulk_delete` and `amounts_for_matching`); everything else here is compile-time checked.
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
         "SELECT t.* FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE 1=1",
     );
@@ -175,24 +181,32 @@ pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
     let currency = resolve_currency(db, &input).await?;
     validate_category(db, input.category_id).await?;
     let (ownership, person_id) = split_ownership(db, input.ownership).await?;
-    sqlx::query_as::<_, TransactionRow>(
-        "INSERT INTO transactions
-            (account_id, posted_at, amount_minor, currency_code, description, merchant, notes,
-             category_id, is_one_off, merchant_id, ownership, person_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) RETURNING *",
+    let posted_at = input.posted_at.to_string();
+    let amount_minor = input.amount_minor.minor();
+    let description = input.description.trim();
+    sqlx::query_as!(
+        TransactionRow,
+        r#"INSERT INTO transactions
+              (account_id, posted_at, amount_minor, currency_code, description, merchant, notes,
+               category_id, is_one_off, merchant_id, ownership, person_id)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+           RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
+                     merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                     linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                     ownership, person_id, created_at, updated_at"#,
+        input.account_id,
+        posted_at,
+        amount_minor,
+        currency,
+        description,
+        input.merchant,
+        input.notes,
+        input.category_id,
+        input.is_one_off,
+        input.merchant_id,
+        ownership,
+        person_id
     )
-    .bind(input.account_id)
-    .bind(input.posted_at.to_string())
-    .bind(input.amount_minor.minor())
-    .bind(&currency)
-    .bind(input.description.trim())
-    .bind(&input.merchant)
-    .bind(&input.notes)
-    .bind(input.category_id)
-    .bind(input.is_one_off)
-    .bind(input.merchant_id)
-    .bind(ownership)
-    .bind(person_id)
     .fetch_one(db)
     .await
     .map_err(map_fk)?
@@ -204,26 +218,34 @@ pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Trans
     let currency = resolve_currency(db, &input).await?;
     validate_category(db, input.category_id).await?;
     let (ownership, person_id) = split_ownership(db, input.ownership).await?;
-    sqlx::query_as::<_, TransactionRow>(
-        "UPDATE transactions SET account_id=?2, posted_at=?3, amount_minor=?4, currency_code=?5,
-            description=?6, merchant=?7, notes=?8, category_id=?9, is_one_off=?10, merchant_id=?11,
-            ownership=?12, person_id=?13,
-            categorized_by_rule_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1 RETURNING *",
+    let posted_at = input.posted_at.to_string();
+    let amount_minor = input.amount_minor.minor();
+    let description = input.description.trim();
+    sqlx::query_as!(
+        TransactionRow,
+        r#"UPDATE transactions SET account_id=?2, posted_at=?3, amount_minor=?4,
+              currency_code=?5, description=?6, merchant=?7, notes=?8, category_id=?9,
+              is_one_off=?10, merchant_id=?11, ownership=?12, person_id=?13,
+              categorized_by_rule_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
+                     merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                     linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                     ownership, person_id, created_at, updated_at"#,
+        id,
+        input.account_id,
+        posted_at,
+        amount_minor,
+        currency,
+        description,
+        input.merchant,
+        input.notes,
+        input.category_id,
+        input.is_one_off,
+        input.merchant_id,
+        ownership,
+        person_id
     )
-    .bind(id)
-    .bind(input.account_id)
-    .bind(input.posted_at.to_string())
-    .bind(input.amount_minor.minor())
-    .bind(&currency)
-    .bind(input.description.trim())
-    .bind(&input.merchant)
-    .bind(&input.notes)
-    .bind(input.category_id)
-    .bind(input.is_one_off)
-    .bind(input.merchant_id)
-    .bind(ownership)
-    .bind(person_id)
     .fetch_optional(db)
     .await
     .map_err(map_fk)?
@@ -233,8 +255,7 @@ pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Trans
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
-    let res = sqlx::query("DELETE FROM transactions WHERE id = ?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM transactions WHERE id = ?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {
@@ -273,6 +294,8 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
         None => None,
     };
 
+    // Runtime-shaped, so not macro-checkable: the `SET` list is whichever fields the patch
+    // carries, and the `IN (…)` list is one placeholder per id.
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("UPDATE transactions SET ");
     {
         let mut set = qb.separated(", ");
@@ -335,6 +358,7 @@ pub async fn bulk_delete(db: &Db, ids: &[i64]) -> AppResult<i64> {
             ids.len()
         )));
     }
+    // Runtime-shaped, so not macro-checkable: one placeholder per id in the list.
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("DELETE FROM transactions WHERE id IN (");
     {
         let mut list = qb.separated(", ");
@@ -364,12 +388,12 @@ pub async fn earliest_posted_at_from_other_feed(
     account_id: i64,
     exclude_provider: &str,
 ) -> AppResult<Option<String>> {
-    Ok(sqlx::query_scalar::<_, Option<String>>(
-        "SELECT MIN(posted_at) FROM transactions
-         WHERE account_id = ?1 AND provider IS NOT NULL AND provider <> ?2",
+    Ok(sqlx::query_scalar!(
+        r#"SELECT MIN(posted_at) AS "earliest: String" FROM transactions
+            WHERE account_id = ?1 AND provider IS NOT NULL AND provider <> ?2"#,
+        account_id,
+        exclude_provider
     )
-    .bind(account_id)
-    .bind(exclude_provider)
     .fetch_one(db)
     .await?)
 }
@@ -379,10 +403,11 @@ pub async fn earliest_posted_at_from_other_feed(
 /// window disagrees with what a live feed already posted for the same period.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn sum_amount_minor(db: &Db, account_id: i64) -> AppResult<i64> {
-    Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(SUM(amount_minor), 0) FROM transactions WHERE account_id = ?1",
+    Ok(sqlx::query_scalar!(
+        r#"SELECT COALESCE(SUM(amount_minor), 0) AS "total!: i64"
+             FROM transactions WHERE account_id = ?1"#,
+        account_id
     )
-    .bind(account_id)
     .fetch_one(db)
     .await?)
 }
@@ -393,10 +418,11 @@ pub async fn sum_amount_minor(db: &Db, account_id: i64) -> AppResult<i64> {
 /// owns this window?".
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn earliest_posted_at(db: &Db, account_id: i64) -> AppResult<Option<String>> {
-    Ok(sqlx::query_scalar::<_, Option<String>>(
-        "SELECT MIN(posted_at) FROM transactions WHERE account_id = ?1",
+    Ok(sqlx::query_scalar!(
+        r#"SELECT MIN(posted_at) AS "earliest: String"
+             FROM transactions WHERE account_id = ?1"#,
+        account_id
     )
-    .bind(account_id)
     .fetch_one(db)
     .await?)
 }
@@ -413,14 +439,20 @@ pub async fn earliest_posted_at(db: &Db, account_id: i64) -> AppResult<Option<St
 /// passes a fixed tag stem like `asb#`.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn sample_external_ids(db: &Db, provider_prefix: &str) -> AppResult<Vec<(i64, String)>> {
-    Ok(sqlx::query_as::<_, (i64, String)>(
-        "SELECT account_id, MIN(external_id) FROM transactions
-         WHERE provider LIKE ?1 || '%' AND external_id IS NOT NULL
-         GROUP BY account_id",
+    Ok(sqlx::query!(
+        // `external_id IS NOT NULL` is what makes the MIN non-null for every group the
+        // `GROUP BY` produces, which SQLite's describe cannot see on its own.
+        r#"SELECT account_id AS "account_id!", MIN(external_id) AS "external_id!: String"
+             FROM transactions
+            WHERE provider LIKE ?1 || '%' AND external_id IS NOT NULL
+            GROUP BY account_id"#,
+        provider_prefix
     )
-    .bind(provider_prefix)
     .fetch_all(db)
-    .await?)
+    .await?
+    .into_iter()
+    .map(|r| (r.account_id, r.external_id))
+    .collect())
 }
 
 /// `(account_id, date, amount_minor)` for these accounts, for matching an uploaded bank export
@@ -445,6 +477,7 @@ pub async fn amounts_for_matching(
         .map(|id| id.to_string())
         .collect::<Vec<_>>()
         .join(",");
+    // Runtime-shaped, so not macro-checkable: the `IN (…)` list is built above.
     Ok(sqlx::query_as::<_, (i64, String, i64)>(&format!(
         "SELECT account_id, substr(posted_at, 1, 10), amount_minor FROM transactions
          WHERE account_id IN ({ids})
@@ -461,11 +494,13 @@ pub async fn amounts_for_matching(
 /// than the account it was invoked for. Returns the number of rows deleted.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete_by_provider(db: &Db, account_id: i64, provider_tag: &str) -> AppResult<i64> {
-    let res = sqlx::query("DELETE FROM transactions WHERE account_id = ?1 AND provider = ?2")
-        .bind(account_id)
-        .bind(provider_tag)
-        .execute(db)
-        .await?;
+    let res = sqlx::query!(
+        "DELETE FROM transactions WHERE account_id = ?1 AND provider = ?2",
+        account_id,
+        provider_tag
+    )
+    .execute(db)
+    .await?;
     Ok(res.rows_affected() as i64)
 }
 
@@ -477,24 +512,27 @@ pub async fn link(db: &Db, id: i64, req: LinkRequest) -> AppResult<Transaction> 
     }
     let mut tx = db.begin().await?;
     for tid in [id, other] {
-        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM transactions WHERE id=?1")
-            .bind(tid)
+        let exists = sqlx::query_scalar!("SELECT COUNT(*) FROM transactions WHERE id=?1", tid)
             .fetch_one(&mut *tx)
             .await?;
         if exists == 0 {
             return Err(AppError::NotFound("transaction"));
         }
     }
-    sqlx::query("UPDATE transactions SET linked_transaction_id=?2 WHERE id=?1")
-        .bind(id)
-        .bind(other)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("UPDATE transactions SET linked_transaction_id=?2 WHERE id=?1")
-        .bind(other)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "UPDATE transactions SET linked_transaction_id=?2 WHERE id=?1",
+        id,
+        other
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        "UPDATE transactions SET linked_transaction_id=?2 WHERE id=?1",
+        other,
+        id
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     fetch(db, id).await
 }
@@ -504,15 +542,19 @@ pub async fn unlink(db: &Db, id: i64) -> AppResult<Transaction> {
     let current = fetch(db, id).await?;
     let mut tx = db.begin().await?;
     if let Some(other) = current.linked_transaction_id {
-        sqlx::query("UPDATE transactions SET linked_transaction_id=NULL WHERE id=?1")
-            .bind(other)
-            .execute(&mut *tx)
-            .await?;
-    }
-    sqlx::query("UPDATE transactions SET linked_transaction_id=NULL WHERE id=?1")
-        .bind(id)
+        sqlx::query!(
+            "UPDATE transactions SET linked_transaction_id=NULL WHERE id=?1",
+            other
+        )
         .execute(&mut *tx)
         .await?;
+    }
+    sqlx::query!(
+        "UPDATE transactions SET linked_transaction_id=NULL WHERE id=?1",
+        id
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     fetch(db, id).await
 }
@@ -539,38 +581,57 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
     validate_category(db, req.category_id).await?;
 
     let mut tx = db.begin().await?;
-    let out: Transaction = sqlx::query_as::<_, TransactionRow>(
-        "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code, description, category_id)
-         VALUES (?1,?2,?3,?4,?5,?6) RETURNING *",
+    let posted_at = req.posted_at.to_string();
+    let description = req.description.trim();
+    let outflow_minor = out_amount.neg().minor();
+    let inflow_minor = in_amount.minor();
+    let out: Transaction = sqlx::query_as!(
+        TransactionRow,
+        r#"INSERT INTO transactions
+              (account_id, posted_at, amount_minor, currency_code, description, category_id)
+           VALUES (?1,?2,?3,?4,?5,?6)
+           RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
+                     merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                     linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                     ownership, person_id, created_at, updated_at"#,
+        req.from_account_id,
+        posted_at,
+        outflow_minor,
+        from_ccy,
+        description,
+        req.category_id
     )
-    .bind(req.from_account_id)
-    .bind(req.posted_at.to_string())
-    .bind(out_amount.neg().minor())
-    .bind(&from_ccy)
-    .bind(req.description.trim())
-    .bind(req.category_id)
     .fetch_one(&mut *tx)
     .await?
     .try_into()?;
-    let inflow: Transaction = sqlx::query_as::<_, TransactionRow>(
-        "INSERT INTO transactions (account_id, posted_at, amount_minor, currency_code, description, category_id, linked_transaction_id)
-         VALUES (?1,?2,?3,?4,?5,?6,?7) RETURNING *",
+    let inflow: Transaction = sqlx::query_as!(
+        TransactionRow,
+        r#"INSERT INTO transactions
+              (account_id, posted_at, amount_minor, currency_code, description, category_id,
+               linked_transaction_id)
+           VALUES (?1,?2,?3,?4,?5,?6,?7)
+           RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
+                     merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                     linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                     ownership, person_id, created_at, updated_at"#,
+        req.to_account_id,
+        posted_at,
+        inflow_minor,
+        to_ccy,
+        description,
+        req.category_id,
+        out.id
     )
-    .bind(req.to_account_id)
-    .bind(req.posted_at.to_string())
-    .bind(in_amount.minor())
-    .bind(&to_ccy)
-    .bind(req.description.trim())
-    .bind(req.category_id)
-    .bind(out.id)
     .fetch_one(&mut *tx)
     .await?
     .try_into()?;
-    sqlx::query("UPDATE transactions SET linked_transaction_id=?2 WHERE id=?1")
-        .bind(out.id)
-        .bind(inflow.id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "UPDATE transactions SET linked_transaction_id=?2 WHERE id=?1",
+        out.id,
+        inflow.id
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     let out = fetch(db, out.id).await?;
@@ -594,8 +655,9 @@ pub async fn link_transfers(db: &Db, window_days: i64) -> AppResult<i64> {
     // Snapshot the candidate ids up front; each link mutates both sides, so we re-check
     // each one is still unlinked before pairing it (an earlier iteration may have already
     // consumed it as some other row's counterpart).
-    let ids = sqlx::query_scalar::<_, i64>(
-        "SELECT id FROM transactions WHERE linked_transaction_id IS NULL ORDER BY id",
+    let ids = sqlx::query_scalar!(
+        r#"SELECT id AS "id!" FROM transactions
+            WHERE linked_transaction_id IS NULL ORDER BY id"#
     )
     .fetch_all(db)
     .await?;
@@ -603,35 +665,44 @@ pub async fn link_transfers(db: &Db, window_days: i64) -> AppResult<i64> {
     let mut linked = 0i64;
     for id in ids {
         // Load this row's current state (it may have been linked as a prior counterpart).
-        let Some((account_id, amount, currency, posted_at)) =
-            sqlx::query_as::<_, (i64, i64, String, String)>(
-                "SELECT account_id, amount_minor, currency_code, posted_at FROM transactions
-                 WHERE id=?1 AND linked_transaction_id IS NULL",
-            )
-            .bind(id)
-            .fetch_optional(db)
-            .await?
+        let Some(row) = sqlx::query!(
+            "SELECT account_id, amount_minor, currency_code, posted_at FROM transactions
+              WHERE id=?1 AND linked_transaction_id IS NULL",
+            id
+        )
+        .fetch_optional(db)
+        .await?
         else {
             continue;
         };
+        let (account_id, amount, currency, posted_at) = (
+            row.account_id,
+            row.amount_minor,
+            row.currency_code,
+            row.posted_at,
+        );
 
         // This row's opposite-amount counterparts on other accounts. Need exactly one.
-        let candidates = sqlx::query_as::<_, (i64, i64, String)>(
-            "SELECT id, account_id, posted_at FROM transactions
-             WHERE account_id <> ?1
-               AND linked_transaction_id IS NULL
-               AND amount_minor = ?2
-               AND currency_code = ?3
-               AND ABS(julianday(posted_at) - julianday(?4)) <= ?5
-             LIMIT 2",
+        let opposite = -amount; // an outflow here meets an inflow there
+        let candidates = sqlx::query!(
+            r#"SELECT id AS "id!", account_id, posted_at FROM transactions
+                WHERE account_id <> ?1
+                  AND linked_transaction_id IS NULL
+                  AND amount_minor = ?2
+                  AND currency_code = ?3
+                  AND ABS(julianday(posted_at) - julianday(?4)) <= ?5
+                LIMIT 2"#,
+            account_id,
+            opposite,
+            currency,
+            posted_at,
+            window_days
         )
-        .bind(account_id)
-        .bind(-amount) // opposite sign: an outflow here meets an inflow there
-        .bind(&currency)
-        .bind(&posted_at)
-        .bind(window_days)
         .fetch_all(db)
-        .await?;
+        .await?
+        .into_iter()
+        .map(|r| (r.id, r.account_id, r.posted_at))
+        .collect::<Vec<_>>();
         let [(other, other_account, other_posted_at)] = candidates.as_slice() else {
             continue; // zero or multiple → ambiguous from this side, leave it
         };
@@ -641,20 +712,21 @@ pub async fn link_transfers(db: &Db, window_days: i64) -> AppResult<i64> {
         // one deposit with two possible source withdrawals: each withdrawal sees only the
         // one deposit, but the deposit doesn't uniquely identify a withdrawal, so linking
         // either would be a guess. Leave both for manual reconciliation.
-        let counterpart_matches = sqlx::query_scalar::<_, i64>(
+        let counterpart_matches = sqlx::query_scalar!(
+            // The counterpart's opposite is this row's own amount.
             "SELECT COUNT(*) FROM (SELECT id FROM transactions
-             WHERE account_id <> ?1
-               AND linked_transaction_id IS NULL
-               AND amount_minor = ?2
-               AND currency_code = ?3
-               AND ABS(julianday(posted_at) - julianday(?4)) <= ?5
-             LIMIT 2)",
+              WHERE account_id <> ?1
+                AND linked_transaction_id IS NULL
+                AND amount_minor = ?2
+                AND currency_code = ?3
+                AND ABS(julianday(posted_at) - julianday(?4)) <= ?5
+              LIMIT 2)",
+            other_account,
+            amount,
+            currency,
+            other_posted_at,
+            window_days
         )
-        .bind(other_account)
-        .bind(amount) // the counterpart's opposite is this row's own amount
-        .bind(&currency)
-        .bind(other_posted_at)
-        .bind(window_days)
         .fetch_one(db)
         .await?;
 
@@ -677,22 +749,29 @@ pub async fn link_transfers(db: &Db, window_days: i64) -> AppResult<i64> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn fetch(db: &Db, id: i64) -> AppResult<Transaction> {
-    sqlx::query_as::<_, TransactionRow>("SELECT * FROM transactions WHERE id = ?1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(AppError::NotFound("transaction"))?
-        .try_into()
+    sqlx::query_as!(
+        TransactionRow,
+        r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
+                  merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                  linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                  ownership, person_id, created_at, updated_at
+             FROM transactions WHERE id = ?1"#,
+        id
+    )
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("transaction"))?
+    .try_into()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn account_currency(db: &Db, account_id: i64) -> AppResult<Option<String>> {
-    Ok(
-        sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id = ?1")
-            .bind(account_id)
-            .fetch_optional(db)
-            .await?,
+    Ok(sqlx::query_scalar!(
+        "SELECT currency_code FROM accounts WHERE id = ?1",
+        account_id
     )
+    .fetch_optional(db)
+    .await?)
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -708,8 +787,7 @@ async fn resolve_currency(db: &Db, input: &SaveTransaction) -> AppResult<String>
 #[tracing::instrument(level = "debug", skip_all)]
 async fn validate_category(db: &Db, category_id: Option<i64>) -> AppResult<()> {
     if let Some(cid) = category_id {
-        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM categories WHERE id=?1")
-            .bind(cid)
+        let exists = sqlx::query_scalar!("SELECT COUNT(*) FROM categories WHERE id=?1", cid)
             .fetch_one(db)
             .await?;
         if exists == 0 {

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO holdings\n                (account_id, ticker, exchange, name, currency_code, trade_date, quantity,\n                 unit_price, fee_minor, kind, external_id, provider)\n             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": []
+  },
+  "hash": "3af59da29a570e522c1b9a2de4a4999b7301e332ce0109a79e7e44ad9625dfe1"
+}

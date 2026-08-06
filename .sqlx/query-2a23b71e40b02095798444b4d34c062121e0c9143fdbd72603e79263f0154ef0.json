@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT currency_code AS \"currency_code!\",\n                  CAST(SUM(amount_minor) AS INTEGER) AS \"amount_minor!: i64\"\n             FROM transactions\n            WHERE account_id=?1 AND date(posted_at) <= date(?2)\n            GROUP BY currency_code\n            HAVING SUM(amount_minor) <> 0\n            ORDER BY currency_code",
+  "describe": {
+    "columns": [
+      {
+        "name": "currency_code!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "amount_minor!: i64",
+        "ordinal": 1,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "2a23b71e40b02095798444b4d34c062121e0c9143fdbd72603e79263f0154ef0"
+}

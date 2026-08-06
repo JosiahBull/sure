@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO people (name, sort_order, placeholder)\n                   VALUES ('Unassigned', 0, 1)\n                   RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "eadb634a63fe18717e4160d7cdc053fbf64b02853cd41da9ffa2e077994b6c8a"
+}

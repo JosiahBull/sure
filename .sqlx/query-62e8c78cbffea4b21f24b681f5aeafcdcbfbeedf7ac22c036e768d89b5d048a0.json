@@ -1,0 +1,92 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", account_id, ticker, exchange, record_date, paid_date, shares_held,\n                  gross_amount_minor, net_amount_minor, currency_code, external_id, provider,\n                  created_at\n             FROM dividends WHERE account_id=?1 ORDER BY date(paid_date) DESC, id DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "ticker",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "exchange",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "record_date",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "paid_date",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "shares_held",
+        "ordinal": 6,
+        "type_info": "Float"
+      },
+      {
+        "name": "gross_amount_minor",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "net_amount_minor",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "external_id",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "provider",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 12,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "62e8c78cbffea4b21f24b681f5aeafcdcbfbeedf7ac22c036e768d89b5d048a0"
+}

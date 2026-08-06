@@ -1,0 +1,17 @@
+# Compile-time SQL verification always reads the committed `.sqlx/` metadata, never a live
+# database. Two reasons this is pinned rather than left to sqlx's default:
+#
+#  1. `data/sure.db` is live developer data, and it is the default `DATABASE_URL`
+#     (see CLAUDE.md). sqlx's macros auto-load `.env` and would open whatever it names —
+#     and opening a WAL database is not read-only, it can recover and checkpoint. Offline
+#     mode means `cargo build` cannot touch it at all, whatever anyone's `.env` says.
+#  2. It makes the build hermetic: CI, a fresh clone, and `cargo build` in a container all
+#     verify against the same committed metadata rather than whatever schema happens to be
+#     on the machine.
+#
+# Regenerate the metadata with `pnpm sqlx:prepare` after changing any query or migration;
+# `pnpm sqlx:check` (run by .githooks/pre-commit) fails if it is stale. That script sets
+# SQLX_OFFLINE=false in its own environment, which wins over this file — cargo's `[env]`
+# defers to an already-set variable unless the entry is marked `force = true`.
+[env]
+SQLX_OFFLINE = "true"

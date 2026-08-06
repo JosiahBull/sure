@@ -10,13 +10,12 @@
 //! keep the two paths joined — a rate written on one side and read on the other is the whole
 //! point of this module.
 
-use sqlx::FromRow;
 use sure_core::AppResult;
 
 use crate::Db;
 
 /// A stored exchange rate. `rate` is kept as text (exact decimal) and parsed by the caller.
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone)]
 pub struct ExchangeRate {
     pub base_code: String,
     pub quote_code: String,
@@ -45,16 +44,17 @@ pub async fn upsert(
     as_of: &str,
     rate: &str,
 ) -> AppResult<ExchangeRate> {
-    Ok(sqlx::query_as::<_, ExchangeRate>(
+    Ok(sqlx::query_as!(
+        ExchangeRate,
         "INSERT INTO exchange_rates (base_code, quote_code, as_of, rate)
          VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(base_code, quote_code, as_of) DO UPDATE SET rate = excluded.rate
          RETURNING base_code, quote_code, rate, as_of",
+        base_code,
+        quote_code,
+        as_of,
+        rate
     )
-    .bind(base_code)
-    .bind(quote_code)
-    .bind(as_of)
-    .bind(rate)
     .fetch_one(db)
     .await?)
 }
@@ -67,15 +67,20 @@ pub async fn upsert(
 /// report and forecast request — while yielding the same handful of rates.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn latest_per_pair(db: &Db) -> AppResult<Vec<ExchangeRate>> {
-    Ok(sqlx::query_as::<_, ExchangeRate>(
-        "SELECT base_code, quote_code, rate, as_of
-           FROM (SELECT base_code, quote_code, rate, as_of,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY base_code, quote_code ORDER BY as_of DESC
-                        ) AS rn
-                   FROM exchange_rates)
-          WHERE rn = 1
-          ORDER BY base_code, quote_code",
+    Ok(sqlx::query_as!(
+        ExchangeRate,
+        // The subquery's columns come back nullable to SQLite's describe (it does not carry
+        // the base table's NOT NULL through a window-function subquery), so each is forced
+        // back with `!` — `WHERE rn = 1` still only ever yields real `exchange_rates` rows.
+        r#"SELECT base_code AS "base_code!", quote_code AS "quote_code!",
+                  rate AS "rate!", as_of AS "as_of!"
+             FROM (SELECT base_code, quote_code, rate, as_of,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY base_code, quote_code ORDER BY as_of DESC
+                          ) AS rn
+                     FROM exchange_rates)
+            WHERE rn = 1
+            ORDER BY base_code, quote_code"#
     )
     .fetch_all(db)
     .await?)
@@ -157,7 +162,7 @@ mod tests {
     }
 
     async fn row_count(db: &Db) -> i64 {
-        sqlx::query_scalar("SELECT COUNT(*) FROM exchange_rates")
+        sqlx::query_scalar!("SELECT COUNT(*) FROM exchange_rates")
             .fetch_one(db)
             .await
             .unwrap()

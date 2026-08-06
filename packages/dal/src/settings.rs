@@ -1,10 +1,9 @@
-use sqlx::FromRow;
 use sure_core::{AppError, AppResult};
 pub use sure_core::{Settings, UpdateSettings};
 
 use crate::Db;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct SettingsRow {
     base_currency_code: String,
     updated_at: String,
@@ -21,8 +20,9 @@ impl From<SettingsRow> for Settings {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn get(db: &Db) -> AppResult<Settings> {
-    Ok(sqlx::query_as::<_, SettingsRow>(
-        "SELECT base_currency_code, updated_at FROM settings WHERE id = 1",
+    Ok(sqlx::query_as!(
+        SettingsRow,
+        "SELECT base_currency_code, updated_at FROM settings WHERE id = 1"
     )
     .fetch_one(db)
     .await?
@@ -35,13 +35,14 @@ pub async fn update(db: &Db, input: UpdateSettings) -> AppResult<Settings> {
     if !crate::currencies::exists(db, &code).await? {
         return Err(AppError::validation(format!("unknown currency '{code}'")));
     }
-    Ok(sqlx::query_as::<_, SettingsRow>(
+    Ok(sqlx::query_as!(
+        SettingsRow,
         "UPDATE settings
          SET base_currency_code = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id = 1
          RETURNING base_currency_code, updated_at",
+        code
     )
-    .bind(&code)
     .fetch_one(db)
     .await?
     .into())
@@ -51,7 +52,7 @@ pub async fn update(db: &Db, input: UpdateSettings) -> AppResult<Settings> {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn base_currency(db: &Db) -> AppResult<String> {
     Ok(
-        sqlx::query_scalar::<_, String>("SELECT base_currency_code FROM settings WHERE id = 1")
+        sqlx::query_scalar!("SELECT base_currency_code FROM settings WHERE id = 1")
             .fetch_one(db)
             .await?,
     )

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT event_id, depends_on_event_id FROM forecast_event_relations",
+  "describe": {
+    "columns": [
+      {
+        "name": "event_id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "depends_on_event_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "6acf31dd1804b2791cf1a75b2d56ac700f29469f1f6640262a791012298433e1"
+}

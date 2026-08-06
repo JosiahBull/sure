@@ -1,7 +1,6 @@
 //! Equity grants, exercises, and computed vesting status.
 
 use chrono::{Datelike, NaiveDate, Utc};
-use sqlx::FromRow;
 pub use sure_core::{
     AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
 };
@@ -32,7 +31,7 @@ const MAX_GRANT_QUANTITY: i64 = 1_000_000_000_000;
 /// the rows already on disk.
 const MAX_MONEY_MINOR: i64 = sure_core::MAX_MONEY_MINOR;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct EquityGrantRow {
     id: i64,
     account_id: i64,
@@ -69,7 +68,7 @@ impl From<EquityGrantRow> for EquityGrant {
     }
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct EquityExerciseRow {
     id: i64,
     grant_id: i64,
@@ -96,10 +95,14 @@ impl From<EquityExerciseRow> for EquityExercise {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_grants(db: &Db, account_id: i64) -> AppResult<Vec<EquityGrant>> {
-    Ok(sqlx::query_as::<_, EquityGrantRow>(
-        "SELECT * FROM equity_grants WHERE account_id=?1 ORDER BY grant_date, id",
+    Ok(sqlx::query_as!(
+        EquityGrantRow,
+        r#"SELECT id AS "id!", account_id, company, grant_date, quantity, strike_minor,
+                  currency_code, vest_months, cliff_months, unit_value_minor, note, created_at,
+                  updated_at
+             FROM equity_grants WHERE account_id=?1 ORDER BY grant_date, id"#,
+        account_id
     )
-    .bind(account_id)
     .fetch_all(db)
     .await?
     .into_iter()
@@ -110,8 +113,7 @@ pub async fn list_grants(db: &Db, account_id: i64) -> AppResult<Vec<EquityGrant>
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn create_grant(db: &Db, account_id: i64, input: SaveGrant) -> AppResult<EquityGrant> {
     let account_ccy =
-        sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
-            .bind(account_id)
+        sqlx::query_scalar!("SELECT currency_code FROM accounts WHERE id=?1", account_id)
             .fetch_optional(db)
             .await?
             .ok_or(AppError::NotFound("account"))?;
@@ -122,22 +124,30 @@ pub async fn create_grant(db: &Db, account_id: i64, input: SaveGrant) -> AppResu
         .filter(|s| !s.is_empty())
         .map(|s| s.to_uppercase())
         .unwrap_or(account_ccy);
-    Ok(sqlx::query_as::<_, EquityGrantRow>(
-        "INSERT INTO equity_grants
-            (account_id, company, grant_date, quantity, strike_minor, currency_code,
-             vest_months, cliff_months, unit_value_minor, note)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) RETURNING *",
+    let company = input.company.trim();
+    let grant_date = input.grant_date.to_string();
+    let vest_months = input.vest_months.max(1);
+    let cliff_months = input.cliff_months.max(0);
+    Ok(sqlx::query_as!(
+        EquityGrantRow,
+        r#"INSERT INTO equity_grants
+              (account_id, company, grant_date, quantity, strike_minor, currency_code,
+               vest_months, cliff_months, unit_value_minor, note)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+           RETURNING id AS "id!", account_id, company, grant_date, quantity, strike_minor,
+                     currency_code, vest_months, cliff_months, unit_value_minor, note, created_at,
+                     updated_at"#,
+        account_id,
+        company,
+        grant_date,
+        input.quantity,
+        input.strike_minor,
+        ccy,
+        vest_months,
+        cliff_months,
+        input.unit_value_minor,
+        input.note
     )
-    .bind(account_id)
-    .bind(input.company.trim())
-    .bind(input.grant_date.to_string())
-    .bind(input.quantity)
-    .bind(input.strike_minor)
-    .bind(ccy)
-    .bind(input.vest_months.max(1))
-    .bind(input.cliff_months.max(0))
-    .bind(input.unit_value_minor)
-    .bind(&input.note)
     .fetch_one(db)
     .await?
     .into())
@@ -146,21 +156,29 @@ pub async fn create_grant(db: &Db, account_id: i64, input: SaveGrant) -> AppResu
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn update_grant(db: &Db, id: i64, input: SaveGrant) -> AppResult<EquityGrant> {
     validate_grant(&input)?;
-    Ok(sqlx::query_as::<_, EquityGrantRow>(
-        "UPDATE equity_grants SET company=?2, grant_date=?3, quantity=?4, strike_minor=?5,
-            vest_months=?6, cliff_months=?7, unit_value_minor=?8, note=?9,
-            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1 RETURNING *",
+    let company = input.company.trim();
+    let grant_date = input.grant_date.to_string();
+    let vest_months = input.vest_months.max(1);
+    let cliff_months = input.cliff_months.max(0);
+    Ok(sqlx::query_as!(
+        EquityGrantRow,
+        r#"UPDATE equity_grants SET company=?2, grant_date=?3, quantity=?4, strike_minor=?5,
+              vest_months=?6, cliff_months=?7, unit_value_minor=?8, note=?9,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id AS "id!", account_id, company, grant_date, quantity, strike_minor,
+                     currency_code, vest_months, cliff_months, unit_value_minor, note, created_at,
+                     updated_at"#,
+        id,
+        company,
+        grant_date,
+        input.quantity,
+        input.strike_minor,
+        vest_months,
+        cliff_months,
+        input.unit_value_minor,
+        input.note
     )
-    .bind(id)
-    .bind(input.company.trim())
-    .bind(input.grant_date.to_string())
-    .bind(input.quantity)
-    .bind(input.strike_minor)
-    .bind(input.vest_months.max(1))
-    .bind(input.cliff_months.max(0))
-    .bind(input.unit_value_minor)
-    .bind(&input.note)
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound("grant"))?
@@ -169,8 +187,7 @@ pub async fn update_grant(db: &Db, id: i64, input: SaveGrant) -> AppResult<Equit
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete_grant(db: &Db, id: i64) -> AppResult<()> {
-    let res = sqlx::query("DELETE FROM equity_grants WHERE id=?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM equity_grants WHERE id=?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {
@@ -181,10 +198,12 @@ pub async fn delete_grant(db: &Db, id: i64) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_exercises(db: &Db, grant_id: i64) -> AppResult<Vec<EquityExercise>> {
-    Ok(sqlx::query_as::<_, EquityExerciseRow>(
-        "SELECT * FROM equity_exercises WHERE grant_id=?1 ORDER BY exercise_date, id",
+    Ok(sqlx::query_as!(
+        EquityExerciseRow,
+        r#"SELECT id AS "id!", grant_id, exercise_date, quantity, price_minor, note, created_at
+             FROM equity_exercises WHERE grant_id=?1 ORDER BY exercise_date, id"#,
+        grant_id
     )
-    .bind(grant_id)
     .fetch_all(db)
     .await?
     .into_iter()
@@ -210,15 +229,18 @@ pub async fn create_exercise(
             status.vested_unexercised
         )));
     }
-    Ok(sqlx::query_as::<_, EquityExerciseRow>(
-        "INSERT INTO equity_exercises (grant_id, exercise_date, quantity, price_minor, note)
-         VALUES (?1,?2,?3,?4,?5) RETURNING *",
+    let exercise_date = input.exercise_date.to_string();
+    Ok(sqlx::query_as!(
+        EquityExerciseRow,
+        r#"INSERT INTO equity_exercises (grant_id, exercise_date, quantity, price_minor, note)
+           VALUES (?1,?2,?3,?4,?5)
+           RETURNING id AS "id!", grant_id, exercise_date, quantity, price_minor, note, created_at"#,
+        grant_id,
+        exercise_date,
+        input.quantity,
+        input.price_minor,
+        input.note
     )
-    .bind(grant_id)
-    .bind(input.exercise_date.to_string())
-    .bind(input.quantity)
-    .bind(input.price_minor)
-    .bind(&input.note)
     .fetch_one(db)
     .await?
     .into())
@@ -226,8 +248,7 @@ pub async fn create_exercise(
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete_exercise(db: &Db, id: i64) -> AppResult<()> {
-    let res = sqlx::query("DELETE FROM equity_exercises WHERE id=?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM equity_exercises WHERE id=?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {
@@ -250,16 +271,18 @@ pub async fn account_equity(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<
     let as_of = as_of
         .and_then(parse_date)
         .unwrap_or_else(|| Utc::now().date_naive());
-    let account_ccy =
-        sqlx::query_scalar::<_, String>("SELECT currency_code FROM accounts WHERE id=?1")
-            .bind(id)
-            .fetch_optional(db)
-            .await?
-            .ok_or(AppError::NotFound("account"))?;
-    let grants: Vec<EquityGrant> = sqlx::query_as::<_, EquityGrantRow>(
-        "SELECT * FROM equity_grants WHERE account_id=?1 ORDER BY grant_date, id",
+    let account_ccy = sqlx::query_scalar!("SELECT currency_code FROM accounts WHERE id=?1", id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound("account"))?;
+    let grants: Vec<EquityGrant> = sqlx::query_as!(
+        EquityGrantRow,
+        r#"SELECT id AS "id!", account_id, company, grant_date, quantity, strike_minor,
+                  currency_code, vest_months, cliff_months, unit_value_minor, note, created_at,
+                  updated_at
+             FROM equity_grants WHERE account_id=?1 ORDER BY grant_date, id"#,
+        id
     )
-    .bind(id)
     .fetch_all(db)
     .await?
     .into_iter()
@@ -294,16 +317,16 @@ pub async fn account_equity(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn revalue(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity> {
     let equity = account_equity(db, id, as_of).await?;
-    sqlx::query(
+    let source = ValuationSource::Equity.as_str();
+    sqlx::query!(
         "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
-         VALUES (?1,?2,?3,?4,?5,?6)",
+         VALUES (?1,?2,?3,?4,?5,'equity revaluation')",
+        id,
+        equity.as_of,
+        equity.total_intrinsic_minor,
+        equity.currency_code,
+        source
     )
-    .bind(id)
-    .bind(&equity.as_of)
-    .bind(equity.total_intrinsic_minor)
-    .bind(&equity.currency_code)
-    .bind(ValuationSource::Equity.as_str())
-    .bind("equity revaluation")
     .execute(db)
     .await?;
     Ok(equity)
@@ -325,11 +348,15 @@ async fn compute_status(
     }
     .clamp(0, grant.quantity);
 
-    let exercised: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT SUM(quantity) FROM equity_exercises WHERE grant_id=?1 AND exercise_date <= ?2",
+    let as_of_text = as_of.to_string();
+    let exercised: i64 = sqlx::query_scalar!(
+        // SUM over no rows is NULL, so this is genuinely nullable — `unwrap_or(0)` below is
+        // "nothing exercised yet", not a swallowed decode failure.
+        r#"SELECT SUM(quantity) AS "exercised: i64"
+             FROM equity_exercises WHERE grant_id=?1 AND exercise_date <= ?2"#,
+        grant.id,
+        as_of_text
     )
-    .bind(grant.id)
-    .bind(as_of.to_string())
     .fetch_one(db)
     .await?
     .unwrap_or(0);
@@ -433,14 +460,18 @@ fn validate_grant(input: &SaveGrant) -> AppResult<()> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn fetch_grant(db: &Db, id: i64) -> AppResult<EquityGrant> {
-    Ok(
-        sqlx::query_as::<_, EquityGrantRow>("SELECT * FROM equity_grants WHERE id=?1")
-            .bind(id)
-            .fetch_optional(db)
-            .await?
-            .ok_or(AppError::NotFound("grant"))?
-            .into(),
+    Ok(sqlx::query_as!(
+        EquityGrantRow,
+        r#"SELECT id AS "id!", account_id, company, grant_date, quantity, strike_minor,
+                  currency_code, vest_months, cliff_months, unit_value_minor, note, created_at,
+                  updated_at
+                 FROM equity_grants WHERE id=?1"#,
+        id
     )
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("grant"))?
+    .into())
 }
 
 fn parse_date(s: &str) -> Option<NaiveDate> {
@@ -501,16 +532,17 @@ mod tests {
         strike_minor: i64,
         unit_value_minor: Option<i64>,
     ) -> i64 {
-        sqlx::query_scalar::<_, i64>(
-            "INSERT INTO equity_grants
-                (account_id, company, grant_date, quantity, strike_minor, currency_code,
-                 vest_months, cliff_months, unit_value_minor)
-             VALUES (?1,'Acme','2020-01-01',?2,?3,'NZD',48,12,?4) RETURNING id",
+        sqlx::query_scalar!(
+            r#"INSERT INTO equity_grants
+                  (account_id, company, grant_date, quantity, strike_minor, currency_code,
+                   vest_months, cliff_months, unit_value_minor)
+               VALUES (?1,'Acme','2020-01-01',?2,?3,'NZD',48,12,?4)
+               RETURNING id AS "id!""#,
+            account_id,
+            quantity,
+            strike_minor,
+            unit_value_minor
         )
-        .bind(account_id)
-        .bind(quantity)
-        .bind(strike_minor)
-        .bind(unit_value_minor)
         .fetch_one(db)
         .await
         .unwrap()
@@ -586,11 +618,12 @@ mod tests {
         revalue(&db, account, Some("2024-01-01"))
             .await
             .expect_err("a wrapped total must never reach the valuations table");
-        let persisted = sqlx::query_scalar::<_, i64>(
+        let source = ValuationSource::Equity.as_str();
+        let persisted = sqlx::query_scalar!(
             "SELECT COUNT(*) FROM valuations WHERE account_id=?1 AND source=?2",
+            account,
+            source
         )
-        .bind(account)
-        .bind(ValuationSource::Equity.as_str())
         .fetch_one(&db)
         .await
         .unwrap();

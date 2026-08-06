@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE accounts SET metadata=?2, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n         WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "a7858ba34516eb8f67370c591c291ab7ad59ad1de913f90d84c7fb2786967c87"
+}

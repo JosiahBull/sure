@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE crons SET name=?2, account_id=?3, kind=?4, rate_bps=?5, amount_minor=?6,\n              category_id=?7, day_of_month=?8, start_date=?9, enabled=?10,\n              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           WHERE id=?1\n           RETURNING id AS \"id!\", name, account_id, kind, rate_bps, amount_minor, category_id,\n                     frequency, day_of_month, start_date, last_run_on, enabled AS \"enabled!: bool\",\n                     created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kind",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "rate_bps",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "category_id",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "frequency",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "day_of_month",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "start_date",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "last_run_on",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 13,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cf0344f48e6e11be66f8edc975630b593aca3df3fd66df9a51f489a03a256dab"
+}

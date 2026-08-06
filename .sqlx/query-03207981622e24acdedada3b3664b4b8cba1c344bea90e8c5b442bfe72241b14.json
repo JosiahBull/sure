@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT account_id, posted_at, amount_minor FROM transactions WHERE posted_at >= ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "account_id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "posted_at",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 2,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "03207981622e24acdedada3b3664b4b8cba1c344bea90e8c5b442bfe72241b14"
+}

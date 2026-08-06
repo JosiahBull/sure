@@ -3,8 +3,48 @@
 //! application core (`sure-app`) and the HTTP layer (`sure-api`) reach persistence only
 //! through the repository ports in `sure_app::ports`, which [`store::SqliteStore`]
 //! implements by delegating to the per-entity `pub` functions here. Each module keeps its
-//! own `FromRow` row structs and maps them into the `sure-core` domain types, so no `sqlx`
-//! type ever crosses the crate boundary.
+//! own row structs and maps them into the `sure-core` domain types, so no `sqlx` type ever
+//! crosses the crate boundary.
+//!
+//! # Queries are compile-time checked
+//!
+//! Every static query here uses the `sqlx::query!` / `query_as!` / `query_scalar!` macros,
+//! which check the SQL against the real schema at compile time: a column that does not
+//! exist, a bind count that doesn't match, or a row struct whose field types disagree with
+//! the table is a build error rather than a runtime `ColumnNotFound` on whichever request
+//! first reaches it. The schema they check against is the one
+//! `packages/dal/migrations` produces — see `scripts/sqlx-prepare.mjs`, which applies the
+//! migrations to a throwaway database and caches the results in the committed `.sqlx/`
+//! directory. **Change a query or a migration and you must re-run `pnpm sqlx:prepare`**;
+//! `.githooks/pre-commit` runs `pnpm sqlx:check` and fails if you didn't.
+//!
+//! Three things the macros need help with, so they recur throughout this crate:
+//!
+//! * **`col AS "col!"`** forces a column non-null. SQLite's `describe` is conservative and
+//!   reports a nullable type wherever it cannot prove otherwise — most often an
+//!   `INTEGER PRIMARY KEY` (a rowid alias, which the type system considers nullable even
+//!   though it never is), and any column read back out of a subquery, CTE, `GROUP BY`, or
+//!   window function, which do not carry the base table's `NOT NULL` through.
+//! * **`col AS "col?"`** forces a column nullable, for the mirror case: the outer side of a
+//!   `LEFT JOIN`, where the column is `NOT NULL` in its own table but absent when the join
+//!   misses.
+//!
+//! * **`col AS "col: Type"`** names the Rust type to decode into. Needed wherever SQLite
+//!   reports no type at all — an aggregate over an empty table (`SUM(x)` describes as
+//!   `NULL`), or `CASE`/`COALESCE` over mixed inputs — and for a `bool`, since a SQLite
+//!   `INTEGER` column otherwise decodes as `i64`. It composes with the nullability forcers:
+//!   `col AS "col!: bool"`.
+//!
+//! What that last override is deliberately *not* used for is the domain enums. Decoding a
+//! `kind` column straight into `AccountKind` would mean deriving `sqlx::Type` on it, and
+//! `sure-core`'s types stay free of `sqlx` on purpose (see its `Cargo.toml`): a `TEXT` column
+//! is read into a `String` on the row struct and parsed into the enum by that struct's
+//! `TryFrom`, which is the one place CLAUDE.md rule 1 wants the conversion to happen.
+//!
+//! Queries whose *shape* is decided at runtime — the transaction list's optional filters,
+//! the chunked bulk inserts — cannot be macro-checked (the macro needs a literal string)
+//! and use `sqlx::QueryBuilder` instead. Each such site says so; they are the only
+//! unchecked SQL left in the crate.
 
 // Money is stored in minor units and written with a `dollars_cents` digit grouping
 // (e.g. `114_269_63` == $114,269.63); clippy's grouping lint fights that convention.
@@ -384,6 +424,11 @@ mod tests {
             .unwrap()
     }
 
+    /// Deliberately not `sqlx::query!`: `busy_probe` is created by each test below at
+    /// runtime, so it is not in `migrations/` and the compile-time checker has no schema to
+    /// verify it against. The lock contention these tests are about needs a table nothing
+    /// else writes to, which is worth more here than checking a two-column insert. Every
+    /// query against the real schema uses the macros (see this module's docs).
     async fn insert_probe(pool: &Db) -> sure_core::AppResult<()> {
         sqlx::query("INSERT INTO busy_probe (id) VALUES (NULL)")
             .execute(pool)

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM income_stream_steps WHERE income_stream_id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "7240b6498b046f98d53906bfafada9a7c7d6493af3a6d42237f46c58116bb9c4"
+}

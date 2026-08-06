@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT account_id AS \"account_id!\", MIN(external_id) AS \"external_id!: String\"\n             FROM transactions\n            WHERE provider LIKE ?1 || '%' AND external_id IS NOT NULL\n            GROUP BY account_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "account_id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "external_id!: String",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "56dc1c0518135d5afaa558513ae31fdf2597d4acf803d3dfcd58b3a64d88b43c"
+}

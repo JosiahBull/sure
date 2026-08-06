@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO equity_grants\n                (id, account_id, company, grant_date, quantity, strike_minor, currency_code,\n                 vest_months, cliff_months, unit_value_minor, note, created_at, updated_at)\n             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 13
+    },
+    "nullable": []
+  },
+  "hash": "3a5f21684e059f3bbef1bd6043882274d4ba66b5370eff17336b7863d9ab6646"
+}

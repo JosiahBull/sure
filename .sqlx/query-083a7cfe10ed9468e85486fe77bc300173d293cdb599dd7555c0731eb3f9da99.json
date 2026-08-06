@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM tax_scales",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "083a7cfe10ed9468e85486fe77bc300173d293cdb599dd7555c0731eb3f9da99"
+}

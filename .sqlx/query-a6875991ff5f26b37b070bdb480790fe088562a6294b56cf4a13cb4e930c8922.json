@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", rule_id, kind, matched, changed, undone AS \"undone!: bool\",\n                  created_at\n             FROM rule_runs ORDER BY id DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "rule_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kind",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "matched",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "changed",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "undone!: bool",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a6875991ff5f26b37b070bdb480790fe088562a6294b56cf4a13cb4e930c8922"
+}

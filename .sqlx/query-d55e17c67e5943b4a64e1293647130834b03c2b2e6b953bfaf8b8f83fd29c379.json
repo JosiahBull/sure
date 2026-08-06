@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO exchange_rates (base_code, quote_code, as_of, rate)\n         VALUES (?1, ?2, ?3, ?4)\n         ON CONFLICT(base_code, quote_code, as_of) DO UPDATE SET rate = excluded.rate\n         RETURNING base_code, quote_code, rate, as_of",
+  "describe": {
+    "columns": [
+      {
+        "name": "base_code",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "quote_code",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "rate",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "as_of",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d55e17c67e5943b4a64e1293647130834b03c2b2e6b953bfaf8b8f83fd29c379"
+}

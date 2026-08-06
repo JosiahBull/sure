@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT MIN(posted_at) AS \"earliest: String\"\n             FROM transactions WHERE account_id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "earliest: String",
+        "ordinal": 0,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "6a7e747330fe11a59f198120e29511a85492113147bd3043d4da6deff8b7b7a2"
+}

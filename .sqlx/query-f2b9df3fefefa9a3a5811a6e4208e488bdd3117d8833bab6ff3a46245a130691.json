@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) AS \"trades!: i64\" FROM holdings\n            WHERE account_id=?1 AND kind IN ('buy','sell')\n              AND date(trade_date) > date(?2, '-30 days') AND date(trade_date) <= date(?2)",
+  "describe": {
+    "columns": [
+      {
+        "name": "trades!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f2b9df3fefefa9a3a5811a6e4208e488bdd3117d8833bab6ff3a46245a130691"
+}

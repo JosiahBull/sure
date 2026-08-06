@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO categories (name, kind, sort_order)\n               VALUES ('Groceries (fixture)', 'expense', 0)\n               RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2ef45a19aa4c3fec7ac434eedc787796f2a90157b193dbb600842a1378f6d284"
+}

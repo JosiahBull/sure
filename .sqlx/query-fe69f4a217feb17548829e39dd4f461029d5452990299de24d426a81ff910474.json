@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT DISTINCT ticker, exchange FROM holdings",
+  "describe": {
+    "columns": [
+      {
+        "name": "ticker",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "exchange",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "fe69f4a217feb17548829e39dd4f461029d5452990299de24d426a81ff910474"
+}

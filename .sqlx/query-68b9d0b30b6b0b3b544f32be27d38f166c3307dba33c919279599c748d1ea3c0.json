@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO forecast_events\n                (id, label, kind, person_id, expected_on, timing_spread_months, probability_bps,\n                 notes, created_at, updated_at)\n             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "68b9d0b30b6b0b3b544f32be27d38f166c3307dba33c919279599c748d1ea3c0"
+}

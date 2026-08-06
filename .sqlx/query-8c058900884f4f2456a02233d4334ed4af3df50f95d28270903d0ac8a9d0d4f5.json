@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM forecast_assumptions",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "8c058900884f4f2456a02233d4334ed4af3df50f95d28270903d0ac8a9d0d4f5"
+}

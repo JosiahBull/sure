@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", ticker, exchange, currency_code, quantity, unit_price, fee_minor,\n                  kind\n             FROM holdings\n            WHERE account_id=?1 AND date(trade_date) <= date(?2)\n            ORDER BY ticker, exchange, date(trade_date), id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "ticker",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "exchange",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "quantity",
+        "ordinal": 4,
+        "type_info": "Float"
+      },
+      {
+        "name": "unit_price",
+        "ordinal": 5,
+        "type_info": "Float"
+      },
+      {
+        "name": "fee_minor",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kind",
+        "ordinal": 7,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "c4e4c1cd985cd55e2ead54d0c7fbc52948ccf601aa675595a0780e6bf95cccbb"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT MIN(posted_at) AS \"earliest: String\"\n             FROM transactions\n            WHERE posted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'\n                     AND date(posted_at) = substr(posted_at, 1, 10)",
+  "describe": {
+    "columns": [
+      {
+        "name": "earliest: String",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "5cda9bd49b5d59e5a94c9f885568118dca48198021953e7cf3934cb3eccadb23"
+}

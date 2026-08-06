@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM transactions WHERE account_id = ?1 AND provider = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "240eaef8da35fc0567129643b808a67f85d1e368977c2d7ad58de52f7b7889ee"
+}

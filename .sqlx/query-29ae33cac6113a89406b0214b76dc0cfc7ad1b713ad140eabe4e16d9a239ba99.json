@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO equity_grants\n                  (account_id, company, grant_date, quantity, strike_minor, currency_code,\n                   vest_months, cliff_months, unit_value_minor)\n               VALUES (?1,'Acme','2020-01-01',?2,?3,'NZD',48,12,?4)\n               RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "29ae33cac6113a89406b0214b76dc0cfc7ad1b713ad140eabe4e16d9a239ba99"
+}

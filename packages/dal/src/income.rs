@@ -1,7 +1,6 @@
 //! Per-person income streams: persistence. Which take-home rate wins is resolution logic and
 //! lives in `sure-app`; this module stores and retrieves the rows.
 
-use sqlx::FromRow;
 use sure_core::{
     AppError, AppResult, IncomeBasis, IncomeStream, IncomeStreamStep, PayFrequency,
     SaveIncomeStream,
@@ -9,7 +8,7 @@ use sure_core::{
 
 use crate::Db;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct IncomeStreamRow {
     id: i64,
     person_id: i64,
@@ -77,7 +76,7 @@ impl IncomeStreamRow {
     }
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct IncomeStreamStepRow {
     id: i64,
     income_stream_id: i64,
@@ -101,15 +100,24 @@ impl From<IncomeStreamStepRow> for IncomeStreamStep {
 /// Every stream with its dated steps attached, by person then sort order then label.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db) -> AppResult<Vec<IncomeStream>> {
-    let rows = sqlx::query_as::<_, IncomeStreamRow>(
-        "SELECT * FROM income_streams ORDER BY person_id, sort_order, label, id",
+    let rows = sqlx::query_as!(
+        IncomeStreamRow,
+        r#"SELECT id AS "id!", person_id, label, employer, currency_code, annual_amount_minor,
+                  basis, pay_frequency, first_payment_on, starts_on, ends_on,
+                  annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,
+                  student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
+                  kiwisaver_account_id, student_loan_account_id, enabled AS "enabled!: bool",
+                  sort_order, notes, created_at, updated_at
+             FROM income_streams ORDER BY person_id, sort_order, label, id"#
     )
     .fetch_all(db)
     .await?;
     // One query for every step, grouped in memory: a per-stream query would be N+1 on a page that
     // always wants all of them.
-    let steps = sqlx::query_as::<_, IncomeStreamStepRow>(
-        "SELECT * FROM income_stream_steps ORDER BY income_stream_id, effective_on",
+    let steps = sqlx::query_as!(
+        IncomeStreamStepRow,
+        r#"SELECT id AS "id!", income_stream_id, effective_on, annual_amount_minor, label
+             FROM income_stream_steps ORDER BY income_stream_id, effective_on"#
     )
     .fetch_all(db)
     .await?;
@@ -131,15 +139,26 @@ pub async fn list(db: &Db) -> AppResult<Vec<IncomeStream>> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn get(db: &Db, id: i64) -> AppResult<IncomeStream> {
-    let row = sqlx::query_as::<_, IncomeStreamRow>("SELECT * FROM income_streams WHERE id=?1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(AppError::NotFound("income stream"))?;
-    let steps = sqlx::query_as::<_, IncomeStreamStepRow>(
-        "SELECT * FROM income_stream_steps WHERE income_stream_id=?1 ORDER BY effective_on",
+    let row = sqlx::query_as!(
+        IncomeStreamRow,
+        r#"SELECT id AS "id!", person_id, label, employer, currency_code, annual_amount_minor,
+                  basis, pay_frequency, first_payment_on, starts_on, ends_on,
+                  annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,
+                  student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
+                  kiwisaver_account_id, student_loan_account_id, enabled AS "enabled!: bool",
+                  sort_order, notes, created_at, updated_at
+             FROM income_streams WHERE id=?1"#,
+        id
     )
-    .bind(id)
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("income stream"))?;
+    let steps = sqlx::query_as!(
+        IncomeStreamStepRow,
+        r#"SELECT id AS "id!", income_stream_id, effective_on, annual_amount_minor, label
+             FROM income_stream_steps WHERE income_stream_id=?1 ORDER BY effective_on"#,
+        id
+    )
     .fetch_all(db)
     .await?;
     row.into_stream(steps.into_iter().map(Into::into).collect())
@@ -209,20 +228,25 @@ async fn replace_steps(
     stream_id: i64,
     input: &SaveIncomeStream,
 ) -> AppResult<()> {
-    sqlx::query("DELETE FROM income_stream_steps WHERE income_stream_id=?1")
-        .bind(stream_id)
-        .execute(&mut **txn)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM income_stream_steps WHERE income_stream_id=?1",
+        stream_id
+    )
+    .execute(&mut **txn)
+    .await?;
     for s in &input.steps {
-        sqlx::query(
+        let effective_on = s.effective_on.to_string();
+        let annual_amount_minor = s.annual_amount_minor.minor();
+        let label = s.label.as_deref();
+        sqlx::query!(
             "INSERT INTO income_stream_steps
                 (income_stream_id, effective_on, annual_amount_minor, label)
              VALUES (?1,?2,?3,?4)",
+            stream_id,
+            effective_on,
+            annual_amount_minor,
+            label
         )
-        .bind(stream_id)
-        .bind(s.effective_on.to_string())
-        .bind(s.annual_amount_minor.minor())
-        .bind(s.label.as_deref())
         .execute(&mut **txn)
         .await?;
     }
@@ -234,40 +258,52 @@ async fn replace_steps(
 pub async fn create(db: &Db, person_id: i64, input: SaveIncomeStream) -> AppResult<IncomeStream> {
     validate(&input)?;
     let mut txn = db.begin().await?;
-    let row = sqlx::query_as::<_, IncomeStreamRow>(
-        "INSERT INTO income_streams
-            (person_id, label, employer, currency_code, annual_amount_minor, basis, pay_frequency,
-             first_payment_on, starts_on, ends_on, annual_increase_bps, kiwisaver_bps,
-             student_loan, take_home_bps, linked_category_id, enabled, sort_order, notes,
-             employer_kiwisaver_bps, kiwisaver_account_id, student_loan_account_id)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
-         RETURNING *",
+    let label = input.label.trim();
+    let employer = input.employer.as_deref();
+    let currency_code = input.currency_code.to_uppercase();
+    let annual_amount_minor = input.annual_amount_minor.minor();
+    let basis = input.basis.as_str();
+    let pay_frequency = input.pay_frequency.as_str();
+    let first_payment_on = input.first_payment_on.to_string();
+    let starts_on = input.starts_on.to_string();
+    let ends_on = input.ends_on.as_ref().map(|d| d.to_string());
+    let notes = input.notes.as_deref();
+    // Only the new id is wanted — the steps go in below and `get` re-reads the whole stream —
+    // so this returns that rather than restating all two dozen columns.
+    let id = sqlx::query_scalar!(
+        r#"INSERT INTO income_streams
+              (person_id, label, employer, currency_code, annual_amount_minor, basis,
+               pay_frequency, first_payment_on, starts_on, ends_on, annual_increase_bps,
+               kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled,
+               sort_order, notes, employer_kiwisaver_bps, kiwisaver_account_id,
+               student_loan_account_id)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
+           RETURNING id AS "id!""#,
+        person_id,
+        label,
+        employer,
+        currency_code,
+        annual_amount_minor,
+        basis,
+        pay_frequency,
+        first_payment_on,
+        starts_on,
+        ends_on,
+        input.annual_increase_bps,
+        input.kiwisaver_bps,
+        input.student_loan,
+        input.take_home_bps,
+        input.linked_category_id,
+        input.enabled,
+        input.sort_order,
+        notes,
+        input.employer_kiwisaver_bps,
+        input.kiwisaver_account_id,
+        input.student_loan_account_id
     )
-    .bind(person_id)
-    .bind(input.label.trim())
-    .bind(input.employer.as_deref())
-    .bind(input.currency_code.to_uppercase())
-    .bind(input.annual_amount_minor.minor())
-    .bind(input.basis.as_str())
-    .bind(input.pay_frequency.as_str())
-    .bind(input.first_payment_on.to_string())
-    .bind(input.starts_on.to_string())
-    .bind(input.ends_on.as_ref().map(|d| d.to_string()))
-    .bind(input.annual_increase_bps)
-    .bind(input.kiwisaver_bps)
-    .bind(input.student_loan)
-    .bind(input.take_home_bps)
-    .bind(input.linked_category_id)
-    .bind(input.enabled)
-    .bind(input.sort_order)
-    .bind(input.notes.as_deref())
-    .bind(input.employer_kiwisaver_bps)
-    .bind(input.kiwisaver_account_id)
-    .bind(input.student_loan_account_id)
     .fetch_one(&mut *txn)
     .await
     .map_err(fk_error)?;
-    let id = row.id;
     replace_steps(&mut txn, id, &input).await?;
     txn.commit().await?;
     get(db, id).await
@@ -278,7 +314,17 @@ pub async fn create(db: &Db, person_id: i64, input: SaveIncomeStream) -> AppResu
 pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<IncomeStream> {
     validate(&input)?;
     let mut txn = db.begin().await?;
-    let updated = sqlx::query(
+    let label = input.label.trim();
+    let employer = input.employer.as_deref();
+    let currency_code = input.currency_code.to_uppercase();
+    let annual_amount_minor = input.annual_amount_minor.minor();
+    let basis = input.basis.as_str();
+    let pay_frequency = input.pay_frequency.as_str();
+    let first_payment_on = input.first_payment_on.to_string();
+    let starts_on = input.starts_on.to_string();
+    let ends_on = input.ends_on.as_ref().map(|d| d.to_string());
+    let notes = input.notes.as_deref();
+    let updated = sqlx::query!(
         "UPDATE income_streams SET
             label=?2, employer=?3, currency_code=?4, annual_amount_minor=?5, basis=?6,
             pay_frequency=?7, first_payment_on=?8, starts_on=?9, ends_on=?10,
@@ -287,28 +333,28 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
             employer_kiwisaver_bps=?19, kiwisaver_account_id=?20, student_loan_account_id=?21,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id=?1",
+        id,
+        label,
+        employer,
+        currency_code,
+        annual_amount_minor,
+        basis,
+        pay_frequency,
+        first_payment_on,
+        starts_on,
+        ends_on,
+        input.annual_increase_bps,
+        input.kiwisaver_bps,
+        input.student_loan,
+        input.take_home_bps,
+        input.linked_category_id,
+        input.enabled,
+        input.sort_order,
+        notes,
+        input.employer_kiwisaver_bps,
+        input.kiwisaver_account_id,
+        input.student_loan_account_id
     )
-    .bind(id)
-    .bind(input.label.trim())
-    .bind(input.employer.as_deref())
-    .bind(input.currency_code.to_uppercase())
-    .bind(input.annual_amount_minor.minor())
-    .bind(input.basis.as_str())
-    .bind(input.pay_frequency.as_str())
-    .bind(input.first_payment_on.to_string())
-    .bind(input.starts_on.to_string())
-    .bind(input.ends_on.as_ref().map(|d| d.to_string()))
-    .bind(input.annual_increase_bps)
-    .bind(input.kiwisaver_bps)
-    .bind(input.student_loan)
-    .bind(input.take_home_bps)
-    .bind(input.linked_category_id)
-    .bind(input.enabled)
-    .bind(input.sort_order)
-    .bind(input.notes.as_deref())
-    .bind(input.employer_kiwisaver_bps)
-    .bind(input.kiwisaver_account_id)
-    .bind(input.student_loan_account_id)
     .execute(&mut *txn)
     .await
     .map_err(fk_error)?;
@@ -336,8 +382,7 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
             "Remove or repoint the forecast changes that use this income first: {blockers}"
         )));
     }
-    let res = sqlx::query("DELETE FROM income_streams WHERE id=?1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM income_streams WHERE id=?1", id)
         .execute(db)
         .await?;
     if res.rows_affected() == 0 {
@@ -348,22 +393,23 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
 
 /// Labels of the forecast events whose effects target `stream_id`, or `None` if there are none.
 async fn blocking_events(db: &Db, stream_id: i64) -> AppResult<Option<String>> {
-    let exists: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='forecast_event_effects'",
+    let exists = sqlx::query_scalar!(
+        r#"SELECT 1 AS "one!" FROM sqlite_master
+            WHERE type='table' AND name='forecast_event_effects'"#
     )
     .fetch_optional(db)
     .await?;
     if exists.is_none() {
         return Ok(None);
     }
-    let labels: Vec<String> = sqlx::query_scalar(
+    let labels = sqlx::query_scalar!(
         "SELECT DISTINCT e.label
            FROM forecast_event_effects f
            JOIN forecast_events e ON e.id = f.event_id
           WHERE f.income_stream_id = ?1
           ORDER BY e.label",
+        stream_id
     )
-    .bind(stream_id)
     .fetch_all(db)
     .await?;
     if labels.is_empty() {

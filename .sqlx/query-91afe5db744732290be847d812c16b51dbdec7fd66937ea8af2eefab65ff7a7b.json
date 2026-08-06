@@ -1,0 +1,104 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO tax_scales\n              (scale_id, effective_from, brackets, acc_levy_bps, acc_income_cap_minor,\n               student_loan_threshold_minor, student_loan_rate_bps, esct_brackets, source_note,\n               kiwisaver_govt_match_bps, kiwisaver_govt_max_minor, kiwisaver_govt_income_cap_minor)\n           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)\n           RETURNING id AS \"id!\", scale_id, effective_from, brackets, acc_levy_bps,\n                     acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,\n                     esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,\n                     kiwisaver_govt_income_cap_minor, source_note, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "scale_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "effective_from",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "brackets",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "acc_levy_bps",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "acc_income_cap_minor",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "student_loan_threshold_minor",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "student_loan_rate_bps",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "esct_brackets",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "kiwisaver_govt_match_bps",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kiwisaver_govt_max_minor",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kiwisaver_govt_income_cap_minor",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "source_note",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 14,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "91afe5db744732290be847d812c16b51dbdec7fd66937ea8af2eefab65ff7a7b"
+}

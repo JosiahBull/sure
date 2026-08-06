@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, account_id, source, source_account, filenames,\n                imported, skipped, held_back, covered_from, covered_to, cutover, created_at\n           FROM imports\n          WHERE ?1 IS NULL OR account_id = ?1\n          ORDER BY created_at DESC, id DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "source",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "source_account",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "filenames",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "imported",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "skipped",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "held_back",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "covered_from",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "covered_to",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "cutover",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 11,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "93a19f463b6a6fcb77ef1df61d1e1a70deb6f4ac3f2d0b1c04d7f0c5789c9d6e"
+}

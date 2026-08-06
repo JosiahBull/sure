@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO exchange_rates (base_code, quote_code, as_of, rate)\n             VALUES ('NZD', 'USD', '2026-02-01', '0.6')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "94b74e4a0ad4ce8a4739b77339a13b90ec0b6dbc131dd8d4803ed7bd4d2a48f8"
+}

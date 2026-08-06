@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE accounts SET ownership=?2, person_id=?3,\n                updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n             WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "4ce4bc9cca0b7d75d417366fff6a61859fd08a9f93973a81e100625df8a48438"
+}

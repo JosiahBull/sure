@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT SUM(net_amount_minor) AS \"total: i64\"\n             FROM dividends WHERE account_id=?1 AND paid_date >= ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "total: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "0069b5a25d1225ed5ec963edb0a14683449dd6a578f3a0221e3903a47ab18cc5"
+}

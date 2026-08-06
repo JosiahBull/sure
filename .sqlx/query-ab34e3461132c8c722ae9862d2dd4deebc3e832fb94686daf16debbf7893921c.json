@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", name, kind, currency_code, ownership, person_id\n             FROM accounts WHERE archived=0 ORDER BY sort_order, name",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "ownership",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "person_id",
+        "ordinal": 5,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "ab34e3461132c8c722ae9862d2dd4deebc3e832fb94686daf16debbf7893921c"
+}

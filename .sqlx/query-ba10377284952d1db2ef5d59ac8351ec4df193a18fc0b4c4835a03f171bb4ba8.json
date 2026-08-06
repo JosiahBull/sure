@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT value_minor FROM valuations WHERE account_id=?1 AND as_of <= ?2\n         ORDER BY as_of DESC, id DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "value_minor",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ba10377284952d1db2ef5d59ac8351ec4df193a18fc0b4c4835a03f171bb4ba8"
+}

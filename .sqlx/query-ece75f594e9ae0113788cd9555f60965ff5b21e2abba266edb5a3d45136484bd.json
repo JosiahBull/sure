@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT MAX(period) AS \"period: String\" FROM cron_runs WHERE cron_id=?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "period: String",
+        "ordinal": 0,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "ece75f594e9ae0113788cd9555f60965ff5b21e2abba266edb5a3d45136484bd"
+}

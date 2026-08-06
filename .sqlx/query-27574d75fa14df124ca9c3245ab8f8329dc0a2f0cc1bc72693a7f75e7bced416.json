@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", dividend_id, owed_to, tax_amount_minor, tax_credit_minor,\n                      currency_code\n                 FROM dividend_withholdings ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "dividend_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "owed_to",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "tax_amount_minor",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "tax_credit_minor",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "27574d75fa14df124ca9c3245ab8f8329dc0a2f0cc1bc72693a7f75e7bced416"
+}

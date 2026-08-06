@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT account_id, amount_minor, currency_code, posted_at FROM transactions\n              WHERE id=?1 AND linked_transaction_id IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "account_id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "posted_at",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ba9e2c8c0d806bb1eb464ffa1022570078c654a0d0102eae758bdf2e2eab7ed0"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT DISTINCT e.label\n           FROM forecast_event_effects f\n           JOIN forecast_events e ON e.id = f.event_id\n          WHERE f.income_stream_id = ?1\n          ORDER BY e.label",
+  "describe": {
+    "columns": [
+      {
+        "name": "label",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c83dde7db030e67b15976f9b2fe21e3f4a6a59690ea2f56fc508efec4a4183fe"
+}

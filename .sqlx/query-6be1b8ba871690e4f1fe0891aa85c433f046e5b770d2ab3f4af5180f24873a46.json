@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT metadata FROM accounts WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "metadata",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6be1b8ba871690e4f1fe0891aa85c433f046e5b770d2ab3f4af5180f24873a46"
+}

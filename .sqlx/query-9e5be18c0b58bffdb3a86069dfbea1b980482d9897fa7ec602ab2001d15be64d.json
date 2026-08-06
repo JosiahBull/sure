@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM rule_applications",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "9e5be18c0b58bffdb3a86069dfbea1b980482d9897fa7ec602ab2001d15be64d"
+}

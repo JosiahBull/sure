@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO crons (name, account_id, kind, rate_bps, amount_minor, category_id,\n              day_of_month, start_date, enabled)\n           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)\n           RETURNING id AS \"id!\", name, account_id, kind, rate_bps, amount_minor, category_id,\n                     frequency, day_of_month, start_date, last_run_on, enabled AS \"enabled!: bool\",\n                     created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "account_id",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kind",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "rate_bps",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "category_id",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "frequency",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "day_of_month",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "start_date",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "last_run_on",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 13,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6b301866f5bd563b44a4d0efd1004e02fcfd74de21cce313a3aaf2a9b29d0acb"
+}

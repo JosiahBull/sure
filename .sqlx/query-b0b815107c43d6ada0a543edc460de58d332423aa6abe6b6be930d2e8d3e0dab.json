@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM dividends WHERE account_id = ?1 AND provider = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "b0b815107c43d6ada0a543edc460de58d332423aa6abe6b6be930d2e8d3e0dab"
+}

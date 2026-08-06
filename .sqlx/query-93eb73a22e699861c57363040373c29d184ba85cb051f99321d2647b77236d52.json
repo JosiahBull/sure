@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", cron_id, period, kind, valuation_id, transaction_id, detail,\n                  created_at\n             FROM cron_runs WHERE cron_id=?1 ORDER BY period DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cron_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "period",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "valuation_id",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "transaction_id",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "detail",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "93eb73a22e699861c57363040373c29d184ba85cb051f99321d2647b77236d52"
+}

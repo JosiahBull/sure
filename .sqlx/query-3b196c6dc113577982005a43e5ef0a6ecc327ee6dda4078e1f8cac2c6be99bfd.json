@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT ticker, exchange, as_of, close, currency_code, fetched_at\n           FROM stock_prices WHERE ticker = ?1 AND exchange = ?2 AND as_of <= ?3\n          ORDER BY as_of DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "ticker",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "exchange",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "as_of",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "close",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "fetched_at",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3b196c6dc113577982005a43e5ef0a6ecc327ee6dda4078e1f8cac2c6be99bfd"
+}

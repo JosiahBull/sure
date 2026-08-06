@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO accounts (name, kind, currency_code, metadata, ownership)\n               VALUES (?1,?2,'NZD',?3,'joint')\n               RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "efb56fd530def20319488797e47d8d9662dcb1efc0a80db24ec7e903c71c8c33"
+}
