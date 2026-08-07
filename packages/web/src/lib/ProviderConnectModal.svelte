@@ -128,6 +128,14 @@
   const singleAccounts = $derived(discovered.filter((a) => a.kind_hint !== "brokerage"));
   const rowCount = $derived(brokerageGroups.length + singleAccounts.length);
 
+  /** What a brokerage row is headed with — and therefore what it sorts under. */
+  const brokerageLabel = (g: (typeof brokerageGroups)[number]) =>
+    g.institution ?? g.members[0]?.name ?? "";
+
+  /** How two row names compare: see the sort in `loginGroups` for why it is not `<`. */
+  const byName = (a: string, b: string) =>
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+
   /**
    * Discovery grouped by the upstream login it came through (`authorisation_id`).
    *
@@ -179,6 +187,20 @@
       g.count++;
     }
     for (const g of groups.values()) {
+      // Alphabetical within the login, rather than the order the feed happened to answer in —
+      // which is not a promise any of them make, so a dialog closed and reopened dealt the
+      // same rows out in a different order. Locale-aware and numeric, because these are names
+      // a person reads down: "Savings 2" belongs above "Savings 10", and case is not an
+      // ordering. Ties break on the id, since two accounts really can share a name — one
+      // "Emergency Fund" each — and a comparator returning 0 there would leave exactly those
+      // two in payload order.
+      g.singles.sort(
+        (a, b) => byName(a.name, b.name) || a.external_id.localeCompare(b.external_id),
+      );
+      g.brokerage.sort(
+        (a, b) => byName(brokerageLabel(a), brokerageLabel(b)) || a.key.localeCompare(b.key),
+      );
+
       const seen = new Set<string>();
       for (const a of [...g.singles, ...g.brokerage.flatMap((b) => b.members)]) {
         if (a.institution && !seen.has(a.institution)) {
@@ -503,7 +525,7 @@
             <div class="row-card" class:open>
               <button class="row-head" onclick={() => toggleRow(g.key)} aria-expanded={open}>
                 <span class="col" style="min-width:0;gap:3px;text-align:left">
-                  <span class="name ell">{g.institution ?? g.members[0]?.name}</span>
+                  <span class="name ell">{brokerageLabel(g)}</span>
                   <span class="meta">
                     Brokerage · {g.members.length} wallet{g.members.length === 1 ? "" : "s"}
                   </span>

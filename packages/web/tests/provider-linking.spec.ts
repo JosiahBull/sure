@@ -27,12 +27,18 @@ import { type Page, type Request } from "@playwright/test";
 import { test, expect } from "./fixtures";
 
 /** A discovered Sharesies cash wallet, shaped as `map_account` in the Akahu adapter emits one. */
-function wallet(externalId: string, name: string, currency: string, authorisation: string) {
+function wallet(
+  externalId: string,
+  name: string,
+  currency: string,
+  authorisation: string,
+  institution = "Sharesies",
+) {
   return {
     external_id: externalId,
     name,
     currency_code: currency,
-    institution: "Sharesies",
+    institution,
     authorisation_id: authorisation,
     // Left null on purpose: a platform wallet has no bank account number, and two of them
     // sharing one would trip the "same account from two logins" warning instead.
@@ -252,4 +258,34 @@ test("linking a row does not re-order the login groups around it", async ({ page
   // the next group down: "login 2" stays the group it was when you started reading the list.
   await link("Bills");
   await expect(headings).toHaveText(["Kiwibank · login 2", "Westpac · login 3"]);
+});
+
+test("rows are alphabetical within a login, whatever order discovery answered in", async ({
+  page,
+}) => {
+  // The other half of the same complaint: the group order was unstable while linking, and the
+  // order *inside* a group was whatever the feed returned — which no feed promises, so closing
+  // and reopening the dialog dealt the same rows out differently.
+  await stubDiscovery(page, [
+    bankAccount("acc_sav10", "Savings 10", "ASB", "auth_one"),
+    wallet("acc_sh_nzd", "NZD Wallet", "NZD", "auth_one"),
+    bankAccount("acc_ev", "everyday", "ASB", "auth_one"),
+    wallet("acc_hatch_usd", "USD Wallet", "USD", "auth_one", "Hatch"),
+    bankAccount("acc_bills", "Bills", "ASB", "auth_one"),
+    bankAccount("acc_sav2", "Savings 2", "ASB", "auth_one"),
+  ]);
+  await openAkahuConnect(page);
+
+  await expect(page.locator(".row-card .name")).toHaveText([
+    // Brokerage platforms still lead — they are a different sort of row, and one row stands for
+    // several wallets — but they are alphabetical between themselves now too.
+    "Hatch",
+    "Sharesies",
+    // Then the ordinary accounts: case is not an ordering ("everyday" sits where an E sits, not
+    // after every capital letter), and "Savings 2" reads above "Savings 10" rather than below it.
+    "Bills",
+    "everyday",
+    "Savings 2",
+    "Savings 10",
+  ]);
 });
