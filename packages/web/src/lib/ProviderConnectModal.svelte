@@ -142,14 +142,28 @@
     brokerage: typeof brokerageGroups;
     singles: Schemas["ProviderAccount"][];
     count: number;
+    /** Stable 1-based label for the heading — see `loginRank`, not the array position. */
+    index: number;
   };
+
+  /**
+   * Display order of the login groups, ranked once from the discovery payload.
+   *
+   * It has to be frozen, because the thing it used to rank by — how many rows a login
+   * still has left to link — is exactly what linking changes. Ordering by the live count
+   * re-sorted the list under the cursor: link three of one login's eleven and it fell
+   * behind a login with nine, every row below it moved, and since the heading counted
+   * array positions the groups renumbered as well. Ranking from the payload means linking
+   * can only ever remove a row, never move one.
+   */
+  let loginRank = $state<Map<string, number>>(new Map());
   const loginGroups = $derived.by<LoginGroup[]>(() => {
     const keyOf = (a: Schemas["ProviderAccount"]) => a.authorisation_id ?? "";
     const groups = new Map<string, LoginGroup>();
     const groupFor = (key: string) => {
       let g = groups.get(key);
       if (!g) {
-        g = { key, institutions: [], brokerage: [], singles: [], count: 0 };
+        g = { key, institutions: [], brokerage: [], singles: [], count: 0, index: 0 };
         groups.set(key, g);
       }
       return g;
@@ -173,8 +187,17 @@
         }
       }
     }
-    // Biggest first: the everyday-banking login is the one you came here to link.
-    return [...groups.values()].sort((a, b) => b.count - a.count);
+    // The order discovery settled on, held still while rows are linked out of it. The key
+    // tie-breaks a login `loginRank` somehow doesn't know, so a partly-linked list can
+    // never fall back to Map insertion order — which depends on the rows still in it.
+    const rank = (key: string) => loginRank.get(key) ?? Number.MAX_SAFE_INTEGER;
+    const ordered = [...groups.values()].sort(
+      (a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key),
+    );
+    ordered.forEach((g, i) => {
+      g.index = (loginRank.get(g.key) ?? i) + 1;
+    });
+    return ordered;
   });
   /** Whether grouping tells the user anything — one login means it's just a heading. */
   const showLoginGroups = $derived(loginGroups.length > 1);
@@ -237,6 +260,25 @@
       discovered = [];
     } else {
       discovered = data ?? [];
+      // Biggest first: the everyday-banking login is the one you came here to link. Counted
+      // in rows the list actually shows — a brokerage platform's wallets are one row between
+      // them — and settled here, once, so linking cannot re-order it.
+      const rows = new Map<string, number>();
+      const countedBrokerage = new Set<string>();
+      for (const a of discovered) {
+        if (a.kind_hint === "brokerage") {
+          const bk = brokerageGroupKey(a);
+          if (countedBrokerage.has(bk)) continue;
+          countedBrokerage.add(bk);
+        }
+        const login = a.authorisation_id ?? "";
+        rows.set(login, (rows.get(login) ?? 0) + 1);
+      }
+      loginRank = new Map(
+        [...rows.entries()]
+          .sort(([ak, an], [bk, bn]) => bn - an || ak.localeCompare(bk))
+          .map(([login], i) => [login, i]),
+      );
       // Seed the link/group forms eagerly here — never as a side effect of rendering, which
       // trips Svelte 5's unsafe-mutation guard and silently aborts the {#each} render.
       for (const a of discovered) {
@@ -429,12 +471,12 @@
               : ""}. Pick one to bring into Sure.
           </p>
 
-          {#each loginGroups as lg, i (lg.key)}
+          {#each loginGroups as lg (lg.key)}
           {#if showLoginGroups}
             <div class="login-head">
               <div class="col" style="gap:2px;min-width:0">
                 <span class="login-title"
-                  >{lg.institutions.join(", ") || "Connection"} · login {i + 1}</span
+                  >{lg.institutions.join(", ") || "Connection"} · login {lg.index}</span
                 >
                 <span class="meta"
                   >{lg.count} account{lg.count === 1 ? "" : "s"} from one login — usually one
