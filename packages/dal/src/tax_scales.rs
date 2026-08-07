@@ -17,6 +17,7 @@ struct TaxScaleRow {
     student_loan_threshold_minor: i64,
     student_loan_rate_bps: i64,
     esct_brackets: String,
+    kiwisaver_employer_min_bps: i64,
     kiwisaver_govt_match_bps: i64,
     kiwisaver_govt_max_minor: i64,
     kiwisaver_govt_income_cap_minor: Option<i64>,
@@ -56,6 +57,7 @@ impl TryFrom<TaxScaleRow> for StoredTaxScale {
                 student_loan_threshold_minor: r.student_loan_threshold_minor,
                 student_loan_rate_bps: r.student_loan_rate_bps,
                 esct_brackets: parse_bands(&r.esct_brackets, "esct_brackets")?,
+                kiwisaver_employer_min_bps: r.kiwisaver_employer_min_bps,
                 kiwisaver_govt_match_bps: r.kiwisaver_govt_match_bps,
                 kiwisaver_govt_max_minor: r.kiwisaver_govt_max_minor,
                 kiwisaver_govt_income_cap_minor: r.kiwisaver_govt_income_cap_minor,
@@ -74,8 +76,9 @@ pub async fn list(db: &Db) -> AppResult<Vec<StoredTaxScale>> {
         // from the table's column order.
         r#"SELECT id AS "id!", scale_id, effective_from, brackets, acc_levy_bps,
                   acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,
-                  esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
-                  kiwisaver_govt_income_cap_minor, source_note, created_at, updated_at
+                  esct_brackets, kiwisaver_employer_min_bps, kiwisaver_govt_match_bps,
+                  kiwisaver_govt_max_minor, kiwisaver_govt_income_cap_minor, source_note,
+                  created_at, updated_at
              FROM tax_scales ORDER BY scale_id, effective_from, id"#
     )
     .fetch_all(db)
@@ -102,17 +105,21 @@ pub async fn seed(db: &Db) -> AppResult<()> {
         return Ok(());
     }
     for scale in builtin_scales(TaxScaleId::NzPaye) {
-        insert(
-            db,
-            TaxScaleId::NzPaye,
-            &scale,
-            Some(
-                "Seeded from the built-in New Zealand figures: income tax and student loan from \
-                 ird.govt.nz, ACC levy and cap and ESCT thresholds from published 2026/27 tables, \
-                 all read 2026-08-05.",
-            ),
-        )
-        .await?;
+        // Scales past the last published year carry a different note, because they are a different
+        // kind of claim: their KiwiSaver rate is legislated, but the rest is this year's figures
+        // carried forward. A reader deciding whether to trust a projection needs to be able to see
+        // that from the row rather than from the source of the binary that wrote it.
+        let note = if scale.effective_from.as_str() > "2027-03-31" {
+            "Seeded from the built-in figures. The KiwiSaver employer minimum is the legislated \
+             Budget 2025 step; every other figure is the 2026/27 scale carried forward, because \
+             the real ones are not published yet — treat this year as an estimate."
+        } else {
+            "Seeded from the built-in New Zealand figures: income tax and student loan from \
+             ird.govt.nz, ACC levy and cap and ESCT thresholds from published 2026/27 tables, \
+             KiwiSaver employer minimum and government contribution from the Budget 2025 changes, \
+             all read 2026-08-05."
+        };
+        insert(db, TaxScaleId::NzPaye, &scale, Some(note)).await?;
     }
     tracing::info!("seeded built-in tax scales");
     Ok(())
@@ -134,12 +141,14 @@ async fn insert(
         r#"INSERT INTO tax_scales
               (scale_id, effective_from, brackets, acc_levy_bps, acc_income_cap_minor,
                student_loan_threshold_minor, student_loan_rate_bps, esct_brackets, source_note,
-               kiwisaver_govt_match_bps, kiwisaver_govt_max_minor, kiwisaver_govt_income_cap_minor)
-           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+               kiwisaver_govt_match_bps, kiwisaver_govt_max_minor, kiwisaver_govt_income_cap_minor,
+               kiwisaver_employer_min_bps)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
            RETURNING id AS "id!", scale_id, effective_from, brackets, acc_levy_bps,
                      acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,
-                     esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
-                     kiwisaver_govt_income_cap_minor, source_note, created_at, updated_at"#,
+                     esct_brackets, kiwisaver_employer_min_bps, kiwisaver_govt_match_bps,
+                     kiwisaver_govt_max_minor, kiwisaver_govt_income_cap_minor, source_note,
+                     created_at, updated_at"#,
         scale_id,
         scale.effective_from,
         brackets,
@@ -151,7 +160,8 @@ async fn insert(
         source_note,
         scale.kiwisaver_govt_match_bps,
         scale.kiwisaver_govt_max_minor,
-        scale.kiwisaver_govt_income_cap_minor
+        scale.kiwisaver_govt_income_cap_minor,
+        scale.kiwisaver_employer_min_bps
     )
     .fetch_one(db)
     .await
@@ -197,13 +207,14 @@ pub async fn update(db: &Db, id: i64, input: SaveTaxScale) -> AppResult<StoredTa
               effective_from=?2, brackets=?3, acc_levy_bps=?4, acc_income_cap_minor=?5,
               student_loan_threshold_minor=?6, student_loan_rate_bps=?7, esct_brackets=?8,
               source_note=?9, kiwisaver_govt_match_bps=?10, kiwisaver_govt_max_minor=?11,
-              kiwisaver_govt_income_cap_minor=?12,
+              kiwisaver_govt_income_cap_minor=?12, kiwisaver_employer_min_bps=?13,
               updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE id=?1
            RETURNING id AS "id!", scale_id, effective_from, brackets, acc_levy_bps,
                      acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,
-                     esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
-                     kiwisaver_govt_income_cap_minor, source_note, created_at, updated_at"#,
+                     esct_brackets, kiwisaver_employer_min_bps, kiwisaver_govt_match_bps,
+                     kiwisaver_govt_max_minor, kiwisaver_govt_income_cap_minor, source_note,
+                     created_at, updated_at"#,
         id,
         s.effective_from,
         brackets,
@@ -215,7 +226,8 @@ pub async fn update(db: &Db, id: i64, input: SaveTaxScale) -> AppResult<StoredTa
         source_note,
         s.kiwisaver_govt_match_bps,
         s.kiwisaver_govt_max_minor,
-        s.kiwisaver_govt_income_cap_minor
+        s.kiwisaver_govt_income_cap_minor,
+        s.kiwisaver_employer_min_bps
     )
     .fetch_optional(db)
     .await
@@ -338,6 +350,29 @@ mod tests {
         assert!(stored[0].scale.brackets.last().unwrap().0.is_none());
     }
 
+    /// The end state migration 0029's backfill exists to produce: the compulsory employer
+    /// contribution is 3% on the pre-2026 scales and 3.5% from 1 April 2026, not one figure
+    /// stamped across every row.
+    #[tokio::test]
+    async fn the_employer_minimum_is_dated_rather_than_uniform() {
+        let db = test_db().await;
+        let by_date: Vec<(String, i64)> = list(&db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.scale.effective_from, s.scale.kiwisaver_employer_min_bps))
+            .collect();
+        assert_eq!(
+            by_date,
+            vec![
+                ("2025-04-01".to_string(), 300),
+                ("2025-07-01".to_string(), 300),
+                ("2026-04-01".to_string(), 350),
+                ("2028-04-01".to_string(), 400),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn an_unusable_scale_is_refused_with_every_problem_named() {
         let db = test_db().await;
@@ -354,6 +389,7 @@ mod tests {
                     student_loan_threshold_minor: 1,
                     student_loan_rate_bps: 1_200,
                     esct_brackets: vec![(None, 3_300)],
+                    kiwisaver_employer_min_bps: 350,
                     kiwisaver_govt_match_bps: 2_500,
                     kiwisaver_govt_max_minor: 260_72,
                     kiwisaver_govt_income_cap_minor: Some(180_000_00),

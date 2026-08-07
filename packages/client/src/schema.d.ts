@@ -6590,6 +6590,11 @@ export interface components {
                 number | null,
                 number
             ][];
+            /**
+             * Format: int64
+             * @description The compulsory employer contribution — see [`TaxScale::kiwisaver_employer_min_bps`].
+             */
+            kiwisaver_employer_min_bps: number;
             /** Format: int64 */
             kiwisaver_govt_match_bps: number;
             /** Format: int64 */

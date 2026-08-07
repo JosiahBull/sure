@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "UPDATE tax_scales SET\n              effective_from=?2, brackets=?3, acc_levy_bps=?4, acc_income_cap_minor=?5,\n              student_loan_threshold_minor=?6, student_loan_rate_bps=?7, esct_brackets=?8,\n              source_note=?9, kiwisaver_govt_match_bps=?10, kiwisaver_govt_max_minor=?11,\n              kiwisaver_govt_income_cap_minor=?12,\n              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           WHERE id=?1\n           RETURNING id AS \"id!\", scale_id, effective_from, brackets, acc_levy_bps,\n                     acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,\n                     esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,\n                     kiwisaver_govt_income_cap_minor, source_note, created_at, updated_at",
+  "query": "UPDATE tax_scales SET\n              effective_from=?2, brackets=?3, acc_levy_bps=?4, acc_income_cap_minor=?5,\n              student_loan_threshold_minor=?6, student_loan_rate_bps=?7, esct_brackets=?8,\n              source_note=?9, kiwisaver_govt_match_bps=?10, kiwisaver_govt_max_minor=?11,\n              kiwisaver_govt_income_cap_minor=?12, kiwisaver_employer_min_bps=?13,\n              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           WHERE id=?1\n           RETURNING id AS \"id!\", scale_id, effective_from, brackets, acc_levy_bps,\n                     acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,\n                     esct_brackets, kiwisaver_employer_min_bps, kiwisaver_govt_match_bps,\n                     kiwisaver_govt_max_minor, kiwisaver_govt_income_cap_minor, source_note,\n                     created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -49,40 +49,46 @@
         "type_info": "Text"
       },
       {
-        "name": "kiwisaver_govt_match_bps",
+        "name": "kiwisaver_employer_min_bps",
         "ordinal": 9,
         "type_info": "Integer"
       },
       {
-        "name": "kiwisaver_govt_max_minor",
+        "name": "kiwisaver_govt_match_bps",
         "ordinal": 10,
         "type_info": "Integer"
       },
       {
-        "name": "kiwisaver_govt_income_cap_minor",
+        "name": "kiwisaver_govt_max_minor",
         "ordinal": 11,
         "type_info": "Integer"
       },
       {
-        "name": "source_note",
+        "name": "kiwisaver_govt_income_cap_minor",
         "ordinal": 12,
-        "type_info": "Text"
+        "type_info": "Integer"
       },
       {
-        "name": "created_at",
+        "name": "source_note",
         "ordinal": 13,
         "type_info": "Text"
       },
       {
-        "name": "updated_at",
+        "name": "created_at",
         "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 15,
         "type_info": "Text"
       }
     ],
     "parameters": {
-      "Right": 12
+      "Right": 13
     },
     "nullable": [
+      false,
       false,
       false,
       false,
@@ -100,5 +106,5 @@
       false
     ]
   },
-  "hash": "96ae5d70d5737530a862177ee91b5ca917132f815b76ce7ba2269fb81010d888"
+  "hash": "d0a51b04ae813a17127d3e25514f94f75baa59fd02f0217c66ae92f08a6e4e81"
 }

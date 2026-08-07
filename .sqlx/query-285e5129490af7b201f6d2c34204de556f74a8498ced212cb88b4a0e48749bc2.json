@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", scale_id, effective_from, brackets, acc_levy_bps,\n                  acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,\n                  esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,\n                  kiwisaver_govt_income_cap_minor, source_note, created_at, updated_at\n             FROM tax_scales ORDER BY scale_id, effective_from, id",
+  "query": "SELECT id AS \"id!\", scale_id, effective_from, brackets, acc_levy_bps,\n                  acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,\n                  esct_brackets, kiwisaver_employer_min_bps, kiwisaver_govt_match_bps,\n                  kiwisaver_govt_max_minor, kiwisaver_govt_income_cap_minor, source_note,\n                  created_at, updated_at\n             FROM tax_scales ORDER BY scale_id, effective_from, id",
   "describe": {
     "columns": [
       {
@@ -49,33 +49,38 @@
         "type_info": "Text"
       },
       {
-        "name": "kiwisaver_govt_match_bps",
+        "name": "kiwisaver_employer_min_bps",
         "ordinal": 9,
         "type_info": "Integer"
       },
       {
-        "name": "kiwisaver_govt_max_minor",
+        "name": "kiwisaver_govt_match_bps",
         "ordinal": 10,
         "type_info": "Integer"
       },
       {
-        "name": "kiwisaver_govt_income_cap_minor",
+        "name": "kiwisaver_govt_max_minor",
         "ordinal": 11,
         "type_info": "Integer"
       },
       {
-        "name": "source_note",
+        "name": "kiwisaver_govt_income_cap_minor",
         "ordinal": 12,
-        "type_info": "Text"
+        "type_info": "Integer"
       },
       {
-        "name": "created_at",
+        "name": "source_note",
         "ordinal": 13,
         "type_info": "Text"
       },
       {
-        "name": "updated_at",
+        "name": "created_at",
         "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 15,
         "type_info": "Text"
       }
     ],
@@ -94,11 +99,12 @@
       false,
       false,
       false,
+      false,
       true,
       true,
       false,
       false
     ]
   },
-  "hash": "7a4920575bf2d46074a39b479d0cef1a2c4edc62aea73c5d192fdede3e135edc"
+  "hash": "285e5129490af7b201f6d2c34204de556f74a8498ced212cb88b4a0e48749bc2"
 }

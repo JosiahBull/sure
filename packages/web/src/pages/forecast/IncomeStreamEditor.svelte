@@ -35,7 +35,11 @@
     ends_on: initial?.ends_on ?? "",
     annual_increase: ((initial?.annual_increase_bps ?? 0) / 100).toString(),
     kiwisaver: ((initial?.kiwisaver_bps ?? 350) / 100).toString(),
-    employer_kiwisaver: ((initial?.employer_kiwisaver_bps ?? 350) / 100).toString(),
+    // Left blank for a new stream and filled once the tax rates load, because the compulsory
+    // employer minimum is a dated setting rather than a constant — hardcoding today's 3.5% here
+    // would quietly outlive the next change to it. An existing stream keeps what it was saved with.
+    employer_kiwisaver:
+      initial != null ? (initial.employer_kiwisaver_bps / 100).toString() : "",
     kiwisaver_account_id: initial?.kiwisaver_account_id ?? null,
     student_loan: initial?.student_loan ?? false,
     student_loan_account_id: initial?.student_loan_account_id ?? null,
@@ -67,6 +71,31 @@
       categories = (data ?? [])
         .filter((c) => c.kind === "income")
         .map((c) => ({ id: c.id, name: c.name }));
+    });
+  });
+
+  /**
+   * The compulsory employer contribution in force today, from Settings → Tax rates.
+   *
+   * Read rather than assumed: it was 3% until 1 April 2026 and is legislated to reach 4% in 2028,
+   * so the number a new stream should start at is a question only the dated scales can answer.
+   */
+  let employerMinBps = $state<number | null>(null);
+  $effect(() => {
+    api.GET("/api/tax-scales", {}).then(({ data }) => {
+      const inForce = (data ?? [])
+        .filter((s) => s.effective_from <= today)
+        .sort((a, b) => a.effective_from.localeCompare(b.effective_from))
+        .at(-1);
+      if (!inForce) return;
+      employerMinBps = inForce.kiwisaver_employer_min_bps;
+      // Only ever fills a blank field: someone who has already typed a figure while this was in
+      // flight has said something more specific than the statutory default.
+      untrack(() => {
+        if (!initial && f.employer_kiwisaver === "") {
+          f.employer_kiwisaver = (inForce.kiwisaver_employer_min_bps / 100).toString();
+        }
+      });
     });
   });
 
@@ -330,6 +359,11 @@
       <label class="field">
         <span class="lbl">KiwiSaver, employer %</span>
         <input class="input tabular" bind:value={f.employer_kiwisaver} />
+        {#if employerMinBps != null}
+          <span class="small faint">
+            minimum {(employerMinBps / 100).toFixed(2)}%
+          </span>
+        {/if}
       </label>
       <label class="field">
         <span class="lbl">Student loan</span>

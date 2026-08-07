@@ -37,6 +37,7 @@
     acc_cap: string;
     sl_threshold: string;
     sl_rate: string;
+    employer_min: string;
     govt_match: string;
     govt_max: string;
     govt_cap: string;
@@ -69,6 +70,7 @@
       acc_cap: s ? (s.acc_income_cap_minor / 100).toString() : "",
       sl_threshold: s ? (s.student_loan_threshold_minor / 100).toString() : "",
       sl_rate: s ? (s.student_loan_rate_bps / 100).toString() : "",
+      employer_min: s ? (s.kiwisaver_employer_min_bps / 100).toString() : "",
       govt_match: s ? (s.kiwisaver_govt_match_bps / 100).toString() : "",
       govt_max: s ? (s.kiwisaver_govt_max_minor / 100).toString() : "",
       govt_cap:
@@ -106,6 +108,7 @@
       acc_income_cap_minor: money(f.acc_cap),
       student_loan_threshold_minor: money(f.sl_threshold),
       student_loan_rate_bps: bps(f.sl_rate),
+      kiwisaver_employer_min_bps: bps(f.employer_min),
       kiwisaver_govt_match_bps: bps(f.govt_match),
       kiwisaver_govt_max_minor: money(f.govt_max),
       kiwisaver_govt_income_cap_minor: f.govt_cap.trim() === "" ? null : money(f.govt_cap),
@@ -249,6 +252,10 @@
                   </span>
                 </li>
                 <li>
+                  <span class="faint">Employer KiwiSaver, minimum</span>
+                  <span class="tabular">{(s.kiwisaver_employer_min_bps / 100).toFixed(2)}%</span>
+                </li>
+                <li>
                   <span class="faint">Government KiwiSaver</span>
                   <span class="tabular">
                     {(s.kiwisaver_govt_match_bps / 100).toFixed(0)}c per $1, max {formatMoney(
@@ -336,6 +343,19 @@
         <input class="input tabular" bind:value={f.sl_threshold} />
       </label>
     </div>
+
+    <div class="grid-fields">
+      <label class="field">
+        <span class="lbl">Employer KiwiSaver minimum %</span>
+        <input class="input tabular" bind:value={f.employer_min} />
+      </label>
+    </div>
+    <p class="small faint" style="margin:0 0 10px">
+      The least an employer may pay in — 3% until 31 March 2026, 3.5% from 1 April 2026, 4% from 1
+      April 2028. It is the figure a new income stream starts at, not a floor: a
+      total-remuneration package or a member under 18 can genuinely be below it, so what an
+      employer actually pays stays a per-job number.
+    </p>
 
     <div class="grid-fields">
       <label class="field">

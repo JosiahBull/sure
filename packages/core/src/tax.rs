@@ -101,6 +101,18 @@ pub struct TaxScale<'a> {
     /// Unlike PAYE this is a *flat* rate chosen by which bracket the employee's total lands in, not
     /// a progressive slice-by-slice calculation.
     pub esct_brackets: &'a [(i64, i64)],
+    /// The compulsory employer contribution: the least an employer may pay into a contributing
+    /// member's KiwiSaver account, in basis points of gross.
+    ///
+    /// Dated because it moves — 3% until 31 March 2026, 3.5% from 1 April 2026, 4% from 1 April
+    /// 2028 — and a rate that moves on a date is the one thing a constant cannot express.
+    ///
+    /// Read by nobody in this module: what an employer actually pays is per-job, and plenty pay
+    /// above it or (for a total-remuneration package, or a member under 18) below it, so
+    /// [`PayeInput::employer_kiwisaver_bps`] carries the real figure and this is the statutory
+    /// reference the UI offers as a default. Kept on the scale rather than beside it because it
+    /// changes on the same dates and by the same mechanism as everything else here.
+    pub kiwisaver_employer_min_bps: i64,
     /// What the government adds per dollar the *member* contributes, in basis points.
     ///
     /// Employer contributions deliberately do not count toward it — easy to miss, and it would
@@ -138,6 +150,7 @@ pub const NZ_TAX_SCALES: &[TaxScale<'static>] = &[
         student_loan_threshold_minor: 24_128_00,
         student_loan_rate_bps: 1_200,
         esct_brackets: NZ_ESCT_2025,
+        kiwisaver_employer_min_bps: 300,
         // The pre-Budget-2025 government contribution: 50c per member dollar, capped at $521.43,
         // with no income test.
         kiwisaver_govt_match_bps: 5_000,
@@ -155,6 +168,7 @@ pub const NZ_TAX_SCALES: &[TaxScale<'static>] = &[
         student_loan_threshold_minor: 24_128_00,
         student_loan_rate_bps: 1_200,
         esct_brackets: NZ_ESCT_2025,
+        kiwisaver_employer_min_bps: 300,
         kiwisaver_govt_match_bps: 2_500,
         kiwisaver_govt_max_minor: 260_72,
         kiwisaver_govt_income_cap_minor: 180_000_00,
@@ -168,6 +182,31 @@ pub const NZ_TAX_SCALES: &[TaxScale<'static>] = &[
         student_loan_threshold_minor: 24_128_00,
         student_loan_rate_bps: 1_200,
         esct_brackets: NZ_ESCT_2025,
+        // Budget 2025's second KiwiSaver change, and the one that lands on the tax-year boundary
+        // rather than mid-year: the compulsory employer contribution steps 3% -> 3.5% here.
+        kiwisaver_employer_min_bps: 350,
+        kiwisaver_govt_match_bps: 2_500,
+        kiwisaver_govt_max_minor: 260_72,
+        kiwisaver_govt_income_cap_minor: 180_000_00,
+    },
+    // The second half of Budget 2025's KiwiSaver step, legislated on the same day as the first:
+    // 3.5% -> 4%. Carried here rather than left for someone to type in 2028, because a projection
+    // run today already spans the date and would otherwise price years 2028+ at 3.5%.
+    //
+    // **Only the KiwiSaver rate is a 2028 figure.** Everything else is the 2026-27 scale carried
+    // forward unchanged, because it has not been published yet — the ACC levy and cap in
+    // particular are reset annually and will not really be these. That is the honest default (a
+    // projection has to price 2028 as *something*, and this year's rates are the least-wrong
+    // guess) but it is a carry-forward, not a source, and this comment is the difference.
+    TaxScale {
+        effective_from: "2028-04-01",
+        brackets: NZ_BRACKETS_2025,
+        acc_levy_bps: 175,
+        acc_income_cap_minor: 156_641_00,
+        student_loan_threshold_minor: 24_128_00,
+        student_loan_rate_bps: 1_200,
+        esct_brackets: NZ_ESCT_2025,
+        kiwisaver_employer_min_bps: 400,
         kiwisaver_govt_match_bps: 2_500,
         kiwisaver_govt_max_minor: 260_72,
         kiwisaver_govt_income_cap_minor: 180_000_00,
@@ -215,6 +254,8 @@ pub struct OwnedTaxScale {
     pub student_loan_threshold_minor: i64,
     pub student_loan_rate_bps: i64,
     pub esct_brackets: Vec<(Option<i64>, i64)>,
+    /// The compulsory employer contribution — see [`TaxScale::kiwisaver_employer_min_bps`].
+    pub kiwisaver_employer_min_bps: i64,
     pub kiwisaver_govt_match_bps: i64,
     pub kiwisaver_govt_max_minor: i64,
     /// `None` for "no income test", which is what [`i64::MAX`] means internally — nobody wants to
@@ -273,6 +314,9 @@ impl OwnedTaxScale {
         if !(0..=10_000).contains(&self.kiwisaver_govt_match_bps) {
             problems.push("kiwisaver_govt_match_bps must be between 0 and 100%".into());
         }
+        if !(0..=10_000).contains(&self.kiwisaver_employer_min_bps) {
+            problems.push("kiwisaver_employer_min_bps must be between 0 and 100%".into());
+        }
         if self.kiwisaver_govt_max_minor < 0 {
             problems.push("the government contribution cap cannot be negative".into());
         }
@@ -308,6 +352,7 @@ impl From<&TaxScale<'_>> for OwnedTaxScale {
             student_loan_threshold_minor: s.student_loan_threshold_minor,
             student_loan_rate_bps: s.student_loan_rate_bps,
             esct_brackets: open(s.esct_brackets),
+            kiwisaver_employer_min_bps: s.kiwisaver_employer_min_bps,
             kiwisaver_govt_match_bps: s.kiwisaver_govt_match_bps,
             kiwisaver_govt_max_minor: s.kiwisaver_govt_max_minor,
             kiwisaver_govt_income_cap_minor: (s.kiwisaver_govt_income_cap_minor != i64::MAX)
@@ -328,6 +373,7 @@ pub struct ResolvedScale {
     acc_income_cap_minor: i64,
     student_loan_threshold_minor: i64,
     student_loan_rate_bps: i64,
+    kiwisaver_employer_min_bps: i64,
     kiwisaver_govt_match_bps: i64,
     kiwisaver_govt_max_minor: i64,
     kiwisaver_govt_income_cap_minor: i64,
@@ -343,6 +389,7 @@ impl ResolvedScale {
             acc_income_cap_minor: owned.acc_income_cap_minor,
             student_loan_threshold_minor: owned.student_loan_threshold_minor,
             student_loan_rate_bps: owned.student_loan_rate_bps,
+            kiwisaver_employer_min_bps: owned.kiwisaver_employer_min_bps,
             kiwisaver_govt_match_bps: owned.kiwisaver_govt_match_bps,
             kiwisaver_govt_max_minor: owned.kiwisaver_govt_max_minor,
             kiwisaver_govt_income_cap_minor: owned
@@ -364,6 +411,7 @@ impl ResolvedScale {
             student_loan_threshold_minor: self.student_loan_threshold_minor,
             student_loan_rate_bps: self.student_loan_rate_bps,
             esct_brackets: &self.esct,
+            kiwisaver_employer_min_bps: self.kiwisaver_employer_min_bps,
             kiwisaver_govt_match_bps: self.kiwisaver_govt_match_bps,
             kiwisaver_govt_max_minor: self.kiwisaver_govt_max_minor,
             kiwisaver_govt_income_cap_minor: self.kiwisaver_govt_income_cap_minor,
@@ -415,7 +463,11 @@ pub fn builtin_scales(id: TaxScaleId) -> Vec<OwnedTaxScale> {
 /// percentage would let someone model a contribution their payroll would refuse.
 pub const KIWISAVER_EMPLOYEE_RATES_BPS: &[i64] = &[300, 350, 400, 600, 800, 1_000];
 
-/// The default employee rate, and the employer's compulsory minimum, from 1 April 2026.
+/// The default *employee* rate from 1 April 2026 — what someone is enrolled at absent an election.
+///
+/// The employer's compulsory minimum happens to be the same 3.5% today, and steps to 4% on the same
+/// date in 2028, but it is a separate statutory rate that could move on its own. It lives on the
+/// dated scale as [`TaxScale::kiwisaver_employer_min_bps`]; do not reach for this constant for it.
 pub const KIWISAVER_DEFAULT_BPS: i64 = 350;
 
 /// What one gross annual salary is subject to.
@@ -428,7 +480,9 @@ pub struct PayeInput {
     ///
     /// Not a deduction from take-home — it is money the employer adds on top — so it does not touch
     /// `net_minor`. It matters because it lands in the KiwiSaver account, which over a thirty-year
-    /// horizon is most of the balance. [`KIWISAVER_DEFAULT_BPS`] is the compulsory minimum.
+    /// horizon is most of the balance. The legal floor is
+    /// [`TaxScale::kiwisaver_employer_min_bps`], but this is not clamped to it: a total-remuneration
+    /// package, a member under 18 or over 65, and a contractor all legitimately sit below.
     pub employer_kiwisaver_bps: i64,
     /// Whether IR deducts student loan repayments from this income.
     pub student_loan: bool,
@@ -959,6 +1013,70 @@ mod tests {
         assert_eq!(after.kiwisaver_govt_match_bps, 2_500);
         assert_eq!(after.kiwisaver_govt_max_minor, 260_72);
         assert_eq!(after.kiwisaver_govt_income_cap_minor, 180_000_00);
+    }
+
+    /// The compulsory employer contribution steps 3% -> 3.5% -> 4%, each on its own date, and it is
+    /// dated so that a projection spanning a change prices each side at the rate that really
+    /// applied. Both steps are inside the horizon of any projection run today, so getting the
+    /// boundaries wrong by a day is not a theoretical error.
+    #[test]
+    fn the_compulsory_employer_contribution_steps_up_on_its_own_dates() {
+        let at = |s: &str| {
+            scale_for(TaxScaleId::NzPaye, d(s))
+                .unwrap()
+                .kiwisaver_employer_min_bps
+        };
+        assert_eq!(at("2026-03-31"), 300);
+        assert_eq!(at("2026-04-01"), 350);
+        assert_eq!(at("2028-03-31"), 350);
+        assert_eq!(at("2028-04-01"), 400);
+    }
+
+    /// The 2028 scale is the legislated KiwiSaver step plus a carry-forward of everything else,
+    /// which is a weaker claim than the published years make. Pinned so that a real 2028 ACC or
+    /// bracket figure, when it is published, replaces the carry-forward rather than landing beside
+    /// it — this test failing is the reminder.
+    #[test]
+    fn the_2028_scale_carries_this_years_non_kiwisaver_figures_forward() {
+        let published = scale_for(TaxScaleId::NzPaye, d("2026-04-01")).unwrap();
+        let projected = scale_for(TaxScaleId::NzPaye, d("2028-04-01")).unwrap();
+        assert_eq!(projected.acc_levy_bps, published.acc_levy_bps);
+        assert_eq!(
+            projected.acc_income_cap_minor,
+            published.acc_income_cap_minor
+        );
+        assert_eq!(
+            projected.student_loan_threshold_minor,
+            published.student_loan_threshold_minor
+        );
+        assert_eq!(projected.brackets, published.brackets);
+        assert_eq!(projected.esct_brackets, published.esct_brackets);
+        // The one figure that is genuinely a 2028 fact.
+        assert_ne!(
+            projected.kiwisaver_employer_min_bps,
+            published.kiwisaver_employer_min_bps
+        );
+    }
+
+    /// It is a reference figure, not a floor the arithmetic imposes: a total-remuneration package
+    /// and a member under 18 both legitimately sit below it, so clamping would overstate their
+    /// balances by an employer contribution they never receive.
+    #[test]
+    fn the_employer_minimum_does_not_clamp_what_an_employer_actually_pays() {
+        let s = scale();
+        // A real minimum is on the scale — and `paye` still reports nothing, because what the
+        // employer pays is `PayeInput`'s business. The dated figures are pinned separately.
+        assert!(s.kiwisaver_employer_min_bps > 0);
+        let b = paye(
+            s,
+            PayeInput {
+                annual_gross_minor: 100_000_00,
+                kiwisaver_bps: 350,
+                employer_kiwisaver_bps: 0,
+                student_loan: false,
+            },
+        );
+        assert_eq!(b.employer_kiwisaver_minor, 0);
     }
 
     /// The government's contribution reaches the account, so it belongs in the credited figure —

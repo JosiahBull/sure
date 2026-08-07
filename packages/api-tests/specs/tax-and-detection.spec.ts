@@ -29,6 +29,57 @@ test("the built-in tax rates are seeded on first run, with their sources recorde
   const july = data!.find((s) => s.effective_from === "2025-07-01");
   expect(july!.kiwisaver_govt_match_bps).toBe(2_500);
   expect(july!.kiwisaver_govt_income_cap_minor).toBe(180_000_00);
+  // The compulsory employer contribution stepped 3% -> 3.5% on the tax-year boundary, and each
+  // scale carries the figure that really applied to it rather than today's.
+  expect(july!.kiwisaver_employer_min_bps).toBe(300);
+  expect(
+    data!.find((s) => s.effective_from === "2026-04-01")!.kiwisaver_employer_min_bps
+  ).toBe(350);
+  // The 2028 step ships too, and says in its own note that only its KiwiSaver figure is a 2028
+  // fact — the rest is this year's scale carried forward.
+  const projected = data!.find((s) => s.effective_from === "2028-04-01");
+  expect(projected!.kiwisaver_employer_min_bps).toBe(400);
+  expect(projected!.source_note).toContain("carried forward");
+});
+
+test("the compulsory employer contribution can be changed for a future year", async ({ api }) => {
+  // The reason it is a setting at all: the rate has moved twice since 2025 and will again, and
+  // nobody should need a new binary to record the next one. The date and figure here are
+  // hypothetical — the two real steps ship as built-ins.
+  const scales = await api.GET("/api/tax-scales", {});
+  const latest = scales.data!.at(-1)!;
+  const { response, data } = await api.POST("/api/tax-scales", {
+    body: {
+      ...latest,
+      effective_from: "2031-04-01",
+      kiwisaver_employer_min_bps: 450,
+      source_note: "invented for this test",
+    },
+  });
+  expect(response.status, JSON.stringify(data)).toBe(201);
+  expect(data!.kiwisaver_employer_min_bps).toBe(450);
+
+  // …and it survives the round trip rather than only echoing back off the write.
+  const after = await api.GET("/api/tax-scales", {});
+  const added = after.data!.find((s) => s.effective_from === "2031-04-01");
+  expect(added!.kiwisaver_employer_min_bps).toBe(450);
+  // Every scale before it is untouched — that is what dating them is for.
+  expect(
+    after.data!.find((s) => s.effective_from === "2026-04-01")!.kiwisaver_employer_min_bps
+  ).toBe(350);
+  expect(
+    after.data!.find((s) => s.effective_from === "2028-04-01")!.kiwisaver_employer_min_bps
+  ).toBe(400);
+});
+
+test("an employer minimum above 100% is refused", async ({ api }) => {
+  const scales = await api.GET("/api/tax-scales", {});
+  const { response, error } = await api.PUT("/api/tax-scales/{id}", {
+    params: { path: { id: scales.data!.at(-1)!.id } },
+    body: { ...scales.data!.at(-1)!, kiwisaver_employer_min_bps: 20_000 },
+  });
+  expect(response.status).toBe(422);
+  expect(JSON.stringify(error)).toContain("kiwisaver_employer_min_bps");
 });
 
 test("editing a tax rate changes what a salary takes home", async ({ api }) => {
@@ -45,8 +96,13 @@ test("editing a tax rate changes what a salary takes home", async ({ api }) => {
 
   // Put every band at 50%. The point is that a stored rate is what the projection reads — with the
   // figures as constants this edit would have changed nothing at all.
+  //
+  // The scale *in force*, not the newest one: the built-ins run ahead of today (there is a 2028
+  // scale for the legislated KiwiSaver step), and editing one that has not taken effect yet would
+  // leave the month this asserts on priced by the scale below it.
   const scales = await api.GET("/api/tax-scales", {});
-  const latest = scales.data!.at(-1)!;
+  const today = new Date().toISOString().slice(0, 10);
+  const latest = scales.data!.filter((s) => s.effective_from <= today).at(-1)!;
   const put = await api.PUT("/api/tax-scales/{id}", {
     params: { path: { id: latest.id } },
     body: {
@@ -77,6 +133,7 @@ test("an unusable set of rates is refused with every problem named", async ({ ap
       acc_income_cap_minor: 1,
       student_loan_threshold_minor: 1,
       student_loan_rate_bps: 1_200,
+      kiwisaver_employer_min_bps: 350,
       kiwisaver_govt_match_bps: 2_500,
       kiwisaver_govt_max_minor: 260_72,
       kiwisaver_govt_income_cap_minor: null,
