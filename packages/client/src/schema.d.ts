@@ -6848,6 +6848,27 @@ export interface components {
              *     there, so what the dialog shows and what the server enforces cannot drift apart.
              */
             joint: boolean;
+            /**
+             * Format: int64
+             * @description For a mortgage or loan, the amount it was originally drawn down for, when that can be
+             *     read out of the account's own history — a suggestion for the connect dialog's
+             *     "Original amount" field, which the user can overwrite.
+             *
+             *     A feed reports the figure directly only sometimes (Akahu has
+             *     `meta.loan_details.initial_principal`, and for an ASB mortgage it is routinely absent),
+             *     and the account form demands it on *both* write paths — `AMORTISING_REQUIRED` is
+             *     enforced for a linked account too, because a mortgage without its terms cannot be
+             *     forecast. So without this the user has to type it, and it is a number people get wrong
+             *     in a particular direction: what comes to mind is the balance on the day they connected
+             *     the bank, not the advance that opened the loan.
+             *
+             *     `None` whenever the answer isn't unambiguous — an older loan whose drawdown is off the
+             *     front of the feed's window, a facility drawn in tranches, an account whose history
+             *     cannot be fetched. See `sure_app::detect::drawdown_original_amount`, which would rather
+             *     leave the field empty than prefill it wrongly: an empty field gets filled in, a wrong
+             *     one gets accepted.
+             */
+            original_amount_hint_minor?: number | null;
         };
         /** @description Metadata about an available provider kind, surfaced via `GET /provider-kinds`. */
         ProviderKind: {

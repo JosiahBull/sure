@@ -312,13 +312,78 @@ impl SyncService {
     /// been filtered out by `external_id` and the dialog's warning needed both copies
     /// present to fire. The one case it could not warn about was the one that mattered.
     pub async fn linkable_accounts(&self, kind: &str) -> AppResult<Vec<ProviderAccount>> {
-        Ok(self
+        let mut offered: Vec<ProviderAccount> = self
             .survey_accounts(kind)
             .await?
             .into_iter()
             .filter(|s| s.linked_to.is_none())
             .map(|s| s.account)
-            .collect())
+            .collect();
+        for account in &mut offered {
+            account.original_amount_hint_minor = self.drawdown_hint(kind, account).await;
+        }
+        Ok(offered)
+    }
+
+    /// What to prefill a mortgage or loan's "Original amount" with, read out of the drawdown in
+    /// its own history. `None` for every account that isn't one, and whenever the history
+    /// doesn't unambiguously contain the answer.
+    ///
+    /// Costs one extra upstream call per loan-shaped account, which is why it is scoped as
+    /// tightly as it is: only [`AccountKind::Mortgage`]/[`AccountKind::Loan`] hints, only ones
+    /// the source will give transactions for, and only on discovery — the link guard shares
+    /// `survey_accounts` but not this, so linking doesn't pay for it. A household has one or
+    /// two mortgages, and discovery is a button someone pressed.
+    ///
+    /// Best-effort throughout: an upstream that won't answer costs an empty field, not a failed
+    /// discovery, so a mortgage still appears and is still linkable by typing the number in.
+    async fn drawdown_hint(&self, kind: &str, account: &ProviderAccount) -> Option<i64> {
+        if !matches!(
+            account.kind_hint,
+            sure_core::AccountKind::Mortgage | sure_core::AccountKind::Loan
+        ) || !account.supports_transactions
+        {
+            return None;
+        }
+        let provider = self.registry.get(kind)?;
+        // The same shape a sync builds, minus a watermark: the drawdown is the *oldest* row
+        // that matters, so this has to be the full-history fetch rather than a window.
+        let config = serde_json::json!({ "external_account_id": account.external_id });
+        let fetched = provider
+            .fetch(SyncContext {
+                config: &config,
+                account_currency: &account.currency_code,
+                payload: None,
+                last_synced_at: None,
+            })
+            .await;
+        let rows = match fetched {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::debug!(
+                    external_id = %account.external_id,
+                    error = %e,
+                    "could not read a loan's history to suggest its original amount"
+                );
+                return None;
+            }
+        };
+        let movements: Vec<ImportRow> = rows
+            .into_iter()
+            .map(|t| ImportRow {
+                external_id: t.external_id,
+                posted_at: t.posted_at,
+                amount_minor: t.amount_minor,
+                currency_code: t.currency_code,
+                description: t.description,
+                merchant: t.merchant,
+                category_name: None,
+                category_group: None,
+                category_kind: None,
+                is_one_off: false,
+            })
+            .collect();
+        crate::detect::drawdown_original_amount(&movements, account.balance_minor)
     }
 
     /// Vet one account about to be linked: `Ok(true)` if it is joint, `Ok(false)` if not, and
@@ -962,6 +1027,8 @@ mod tests {
         /// Upstream accounts this provider can enumerate. Empty means it can't discover any,
         /// which is what every sync test wants.
         discoverable: Vec<ProviderAccount>,
+        /// What `fetch` answers with, for the discovery tests that read a loan's history.
+        history: Vec<ProviderTransaction>,
     }
 
     #[async_trait]
@@ -995,7 +1062,7 @@ mod tests {
                     barrier.wait().await;
                 }
             }
-            Ok(Vec::new())
+            Ok(self.history.clone())
         }
         async fn current_balance(
             &self,
@@ -1054,6 +1121,7 @@ mod tests {
                     balance,
                     gate,
                     discoverable: Vec::new(),
+                    history: Vec::new(),
                 },
             });
             let service = Arc::new(SyncService::new(
@@ -1108,6 +1176,7 @@ mod tests {
             balance_minor: 0,
             supports_transactions: true,
             joint: false,
+            original_amount_hint_minor: None,
         }
     }
 
@@ -1139,6 +1208,15 @@ mod tests {
         rows: Vec<Provider>,
         upstream: Vec<ProviderAccount>,
     ) -> (Arc<SyncService>, Arc<FakeAccounts>) {
+        discovery_service_with_history(rows, upstream, Vec::new())
+    }
+
+    /// The same, for the tests where discovery reads an account's transactions back.
+    fn discovery_service_with_history(
+        rows: Vec<Provider>,
+        upstream: Vec<ProviderAccount>,
+        history: Vec<ProviderTransaction>,
+    ) -> (Arc<SyncService>, Arc<FakeAccounts>) {
         let providers = Arc::new(FakeProviders {
             account_currency: "NZD".to_string(),
             recorded: Mutex::new(Vec::new()),
@@ -1151,6 +1229,7 @@ mod tests {
                 balance: None,
                 gate: Gate::Open,
                 discoverable: upstream,
+                history,
             },
         });
         let service = Arc::new(SyncService::new(
@@ -1224,6 +1303,76 @@ mod tests {
             .lock()
             .expect("test mutex")
             .is_empty());
+    }
+
+    /// A loan-shaped upstream account, which is what a mortgage arrives as.
+    fn upstream_loan(external_id: &str, balance_minor: i64) -> ProviderAccount {
+        ProviderAccount {
+            kind_hint: AccountKind::Mortgage,
+            balance_minor,
+            ..upstream(external_id, Some("12-3456-0000123-00"))
+        }
+    }
+
+    fn movement(posted_at: &str, amount_minor: i64, description: &str) -> ProviderTransaction {
+        ProviderTransaction {
+            external_id: format!("{posted_at}:{amount_minor}"),
+            posted_at: format!("{posted_at}T00:00:00Z"),
+            amount_minor,
+            currency_code: Some("NZD".to_string()),
+            description: description.to_string(),
+            merchant: None,
+            category: None,
+        }
+    }
+
+    /// The dialog cannot ask the user for a mortgage's original amount and also accept not
+    /// being told — `AMORTISING_REQUIRED` demands it on the link path too — so the useful thing
+    /// discovery can do is arrive with it already filled in.
+    #[tokio::test]
+    async fn a_mortgages_drawdown_is_offered_as_its_original_amount() {
+        let (service, _) = discovery_service_with_history(
+            Vec::new(),
+            vec![upstream_loan("acc_mortgage", -484_210_00)],
+            vec![
+                movement("2026-03-02", -485_000_00, "Loan drawdown"),
+                movement("2026-03-31", -2_310_00, "Interest"),
+                movement("2026-03-31", 3_100_00, "Payment received"),
+            ],
+        );
+        let offered = service.linkable_accounts("fake").await.expect("discovers");
+        assert_eq!(offered[0].original_amount_hint_minor, Some(485_000_00));
+    }
+
+    /// A mortgage older than the feed's window suggests nothing, and the row is still offered —
+    /// the field is simply empty, which is the state the user can fix.
+    #[tokio::test]
+    async fn a_mortgage_with_no_drawdown_in_view_suggests_nothing() {
+        let (service, _) = discovery_service_with_history(
+            Vec::new(),
+            vec![upstream_loan("acc_mortgage", -512_400_00)],
+            vec![
+                movement("2026-06-28", -2_290_00, "Interest"),
+                movement("2026-06-28", 3_100_00, "Payment received"),
+            ],
+        );
+        let offered = service.linkable_accounts("fake").await.expect("discovers");
+        assert_eq!(offered.len(), 1);
+        assert_eq!(offered[0].original_amount_hint_minor, None);
+    }
+
+    /// An everyday account has no such concept, and must not cost an upstream call to find
+    /// that out — a household's current accounts are most of a discovery response.
+    #[tokio::test]
+    async fn an_ordinary_account_is_never_asked_for_its_history() {
+        let (service, _) = discovery_service_with_history(
+            Vec::new(),
+            vec![upstream("acc_everyday", Some("12-3456-0000999-00"))],
+            // A drawdown-shaped history, which would be read if the kind were not checked first.
+            vec![movement("2026-03-02", -485_000_00, "Big transfer out")],
+        );
+        let offered = service.linkable_accounts("fake").await.expect("discovers");
+        assert_eq!(offered[0].original_amount_hint_minor, None);
     }
 
     /// The account number is the only thing pairing a joint account's two views: each holder's

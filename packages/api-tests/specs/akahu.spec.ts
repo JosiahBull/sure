@@ -903,3 +903,139 @@ test("one account two logins report is joint, and can only be linked once", asyn
     server.stop();
   }
 });
+
+/**
+ * Suggesting a mortgage's original amount from the drawdown in its own history.
+ *
+ * ASB's mortgages arrive through Akahu with no `meta.loan_details.initial_principal`, and the
+ * amount borrowed is demanded on *every* write path — `AMORTISING_REQUIRED` covers the link
+ * path too, because a mortgage without its terms cannot be forecast. So the field has to be
+ * answered to link at all, and until now it had to be typed: a number people reconstruct as
+ * the balance on the day they connected the bank rather than the advance that opened the loan.
+ *
+ * Out here rather than only in `sure_app`'s unit tests because the sign is the whole game and
+ * nothing in-process proves it. Akahu quotes a loan account's movements in the same signed
+ * frame this app uses — an advance grows the debt and is negative, a repayment is positive —
+ * and `map_transaction` passes the amount through unflipped. A unit test that hand-writes the
+ * row assumes that; this asserts it against the adapter that actually parses the feed.
+ */
+test("a mortgage's original amount is suggested from the drawdown in its history", async ({
+  testproxy,
+}) => {
+  const { server, api } = await configured();
+  try {
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: "^/v1/accounts$",
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        success: true,
+        // No `loan_details`, which is the premise: nothing but the history to read.
+        items: [account({ balance: -484_210.0, kind: "LOAN", name: "Prime Housing Lending" })],
+      }),
+    });
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: `^/v1/accounts/${EXTERNAL_ID}/transactions$`,
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        success: true,
+        items: [
+          // Negative: the advance grew the debt. This is the row the suggestion comes from.
+          txn({
+            id: "trans_draw01",
+            date: "2026-03-02T00:00:00.000Z",
+            description: "Loan drawdown",
+            amount: -485_000.0,
+          }),
+          txn({
+            id: "trans_int01",
+            date: "2026-03-31T00:00:00.000Z",
+            description: "Interest",
+            amount: -2_310.0,
+          }),
+          txn({
+            id: "trans_pay01",
+            date: "2026-03-31T00:00:00.000Z",
+            description: "Payment received",
+            amount: 3_100.0,
+          }),
+        ],
+        cursor: { next: null },
+      }),
+    });
+
+    const discovered = await api.GET("/api/provider-kinds/{kind}/accounts", {
+      params: { path: { kind: "akahu" } },
+    });
+    expect(discovered.response.status).toBe(200);
+    expect(discovered.data?.length).toBe(1);
+    const offered = discovered.data![0];
+    expect(offered.kind_hint).toBe("mortgage");
+    expect(offered.original_amount_hint_minor).toBe(48_500_000);
+  } finally {
+    server.stop();
+  }
+});
+
+/**
+ * The ordinary case, and the one that has to stay quiet: a feed reaches back a year or so and a
+ * mortgage runs for thirty, so the drawdown is usually off the front of the window. The largest
+ * advance left is a monthly interest charge, nowhere near the balance still owed.
+ */
+test("a mortgage whose drawdown predates the feed's window is suggested nothing", async ({
+  testproxy,
+}) => {
+  const { server, api } = await configured();
+  try {
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: "^/v1/accounts$",
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        success: true,
+        items: [account({ balance: -512_400.0, kind: "LOAN", name: "Old Lending" })],
+      }),
+    });
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: `^/v1/accounts/${EXTERNAL_ID}/transactions$`,
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        success: true,
+        items: [
+          txn({
+            id: "trans_int02",
+            date: "2026-06-28T00:00:00.000Z",
+            description: "Interest",
+            amount: -2_290.0,
+          }),
+          txn({
+            id: "trans_pay02",
+            date: "2026-06-28T00:00:00.000Z",
+            description: "Payment received",
+            amount: 3_100.0,
+          }),
+        ],
+        cursor: { next: null },
+      }),
+    });
+
+    const discovered = await api.GET("/api/provider-kinds/{kind}/accounts", {
+      params: { path: { kind: "akahu" } },
+    });
+    // Still offered, and still linkable — just with the field left for the user to answer.
+    expect(discovered.data?.length).toBe(1);
+    expect(discovered.data![0].original_amount_hint_minor).toBeFalsy();
+  } finally {
+    server.stop();
+  }
+});

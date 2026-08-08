@@ -331,8 +331,21 @@
             // Except when both holders' logins report it, which answers the question: it is the
             // household's. The select is locked to match, and the server sets it either way.
             owner: a.joint ? "joint" : defaultOwnershipKey(),
-            // The lender is the one term the feed does know.
-            meta: a.institution ? { lender: a.institution } : {},
+            // The two terms that don't have to be asked for. The lender is the institution the
+            // feed already named; the original amount is read off the drawdown in the account's
+            // own history, when it is still inside the window the feed reaches back over
+            // (`sure_app::detect::drawdown_original_amount`). Both are prefilled, not imposed —
+            // they sit in ordinary editable inputs, and a mortgage that predates the window
+            // simply arrives with the amount blank, as it always did.
+            //
+            // Divided the same way `metadataToRaw` does it: a `money` input holds major units
+            // as text, and `buildMetadata` multiplies it back up on the way out.
+            meta: {
+              ...(a.institution ? { lender: a.institution } : {}),
+              ...(a.original_amount_hint_minor
+                ? { original_amount_minor: String(a.original_amount_hint_minor / 100) }
+                : {}),
+            },
           };
         }
       }

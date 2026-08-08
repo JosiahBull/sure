@@ -344,3 +344,67 @@ test("an account both logins report is badged joint, owned by the household, and
   await expect(solo).toHaveCount(1);
   await expect(page.getByText("Linked Everyday as a joint account.")).toBeVisible();
 });
+
+test("a mortgage's original amount arrives prefilled from its drawdown", async ({ page }) => {
+  // The field is required to link at all — a mortgage without its terms cannot be forecast, so
+  // `AMORTISING_REQUIRED` is enforced on the link path too — which is exactly why prefilling it
+  // is worth doing. It is also the term people mistype: what comes to mind is the balance the
+  // day they connected the bank, not the advance that opened the loan.
+  //
+  // The server decides the number (it reads the drawdown out of the account's history); the page
+  // only has to put it in the box, in major units, and leave it editable.
+  const linked = await stubDiscovery(page, [
+    {
+      ...bankAccount("acc_mortgage", "Prime Housing Lending", "ASB", "auth_one"),
+      kind_hint: "mortgage",
+      balance_minor: -484_210_00,
+      original_amount_hint_minor: 485_000_00,
+    },
+  ]);
+  await openAkahuConnect(page);
+
+  const row = page.locator(".row-card", { hasText: "Prime Housing Lending" });
+  await row.getByRole("button", { name: "Prime Housing Lending" }).click();
+
+  const original = row.getByLabel("Original amount borrowed");
+  await expect(original).toHaveValue("485000");
+  // Prefilled, not imposed: a lender who advanced a different figure can still type over it.
+  await expect(original).toBeEnabled();
+
+  // The rest of the terms are still asked for — a feed reports a mortgage's balance, never its
+  // rate or its term, so this saves one field rather than the whole form. It is the field worth
+  // saving: the others are read off the loan document, and this one people reconstruct from
+  // memory. Floating, so the refix terms a fixed rate would also demand stay out of the way.
+  await row.getByLabel("Interest rate (%)").fill("5.49");
+  await row.getByLabel("Rate type").selectOption("floating");
+  await row.getByLabel("Overall term (months)").fill("360");
+  await row.getByLabel("Start date").fill("2026-03-02");
+
+  const link = row.getByRole("button", { name: "Link account" });
+  await expect(link).toBeEnabled();
+  await link.click();
+
+  expect(linked).toHaveLength(1);
+  expect(linked[0].postDataJSON().new_account.metadata).toMatchObject({
+    original_amount_minor: 48_500_000,
+  });
+});
+
+test("a mortgage whose drawdown is out of view is left blank, and still asks", async ({ page }) => {
+  await stubDiscovery(page, [
+    {
+      ...bankAccount("acc_mortgage", "Old Lending", "ASB", "auth_one"),
+      kind_hint: "mortgage",
+      balance_minor: -512_400_00,
+    },
+  ]);
+  await openAkahuConnect(page);
+
+  const row = page.locator(".row-card", { hasText: "Old Lending" });
+  await row.getByRole("button", { name: "Old Lending" }).click();
+
+  await expect(row.getByLabel("Original amount borrowed")).toHaveValue("");
+  // Still required, so the dialog holds the link until it is answered — an empty field the user
+  // fills in is the honest outcome when the history cannot say.
+  await expect(row.getByRole("button", { name: "Link account" })).toBeDisabled();
+});
