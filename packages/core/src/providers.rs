@@ -164,6 +164,22 @@ pub struct ProviderAccount {
     /// Whether the source can provide transaction history for this account (some upstream
     /// account types are balance-only).
     pub supports_transactions: bool,
+    /// Whether more than one connected login reports this same underlying account — which
+    /// is what a joint account looks like from here.
+    ///
+    /// **Inferred, not reported.** No feed tells us who holds an account: Akahu's
+    /// `meta.holder` is empty in practice and `/parties` needs a permission a personal app
+    /// doesn't have (see [`Self::authorisation_id`]). So this is derived from two logins
+    /// reporting the same [`Self::account_number`] at the same institution, and an account
+    /// whose co-holder has not connected their login reads as `false` — the inference can
+    /// only see the logins it has.
+    ///
+    /// **Filled in above the adapter.** An adapter maps one upstream account at a time and
+    /// cannot answer a question about the whole household, so it leaves this `false` and
+    /// `sure_app::sync::SyncService::survey_accounts` — the one place the judgement is
+    /// made — overwrites it. Both the discovery route and the link guard read it from
+    /// there, so what the dialog shows and what the server enforces cannot drift apart.
+    pub joint: bool,
 }
 
 /// Metadata about an available provider kind, surfaced via `GET /provider-kinds`.

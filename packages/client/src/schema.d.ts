@@ -3326,7 +3326,13 @@ export interface paths {
         };
         /**
          * Upstream accounts a discovery-capable provider kind can see, excluding any already
-         *     linked to a local account.
+         *     linked to a local account — including one linked through a *different* login, which is
+         *     how a joint account arrives twice. Each remaining account carries
+         *     [`ProviderAccount::joint`], so the dialog can say why it is about to force joint
+         *     ownership on it.
+         * @description The filtering and the flag both come from `sure_app`'s `survey_accounts`, which
+         *     `link` also consults before accepting anything — one definition, so what this hides and
+         *     what that refuses cannot drift apart.
          */
         get: {
             parameters: {
@@ -3442,7 +3448,12 @@ export interface paths {
          * Link an upstream account (from [`discover_accounts`]) to a local account, creating it
          *     first if `new_account` is given rather than `existing_account_id`. Triggers an
          *     immediate best-effort sync so the account isn't empty until the next scheduled poll.
-         * @description A `new_account` here is validated as `ValidationMode::Linked` (see `sure_core`): a feed
+         * @description Refused with a 422 when the household already reaches this same underlying account
+         *     through another login — see `sure_app`'s `check_linkable`. A joint account is reported
+         *     once per holder's login under a different id and nickname each time, so it is the one
+         *     duplicate the `external_id` filter on [`discover_accounts`] cannot catch by itself.
+         *
+         *     A `new_account` here is validated as `ValidationMode::Linked` (see `sure_core`): a feed
          *     reports a name, a kind and a currency, so the fields the account form insists on — a
          *     mortgage's principal, a property's city — are not demanded of it. Sync fills in whatever
          *     the upstream does report.
@@ -6819,6 +6830,24 @@ export interface components {
              *     account types are balance-only).
              */
             supports_transactions: boolean;
+            /**
+             * @description Whether more than one connected login reports this same underlying account — which
+             *     is what a joint account looks like from here.
+             *
+             *     **Inferred, not reported.** No feed tells us who holds an account: Akahu's
+             *     `meta.holder` is empty in practice and `/parties` needs a permission a personal app
+             *     doesn't have (see [`Self::authorisation_id`]). So this is derived from two logins
+             *     reporting the same [`Self::account_number`] at the same institution, and an account
+             *     whose co-holder has not connected their login reads as `false` — the inference can
+             *     only see the logins it has.
+             *
+             *     **Filled in above the adapter.** An adapter maps one upstream account at a time and
+             *     cannot answer a question about the whole household, so it leaves this `false` and
+             *     `sure_app::sync::SyncService::survey_accounts` — the one place the judgement is
+             *     made — overwrites it. Both the discovery route and the link guard read it from
+             *     there, so what the dialog shows and what the server enforces cannot drift apart.
+             */
+            joint: boolean;
         };
         /** @description Metadata about an available provider kind, surfaced via `GET /provider-kinds`. */
         ProviderKind: {

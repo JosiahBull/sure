@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use sure_core::{AppError, AppResult, Provider, ProviderSync, SyncOutcome};
+use sure_core::{AppError, AppResult, Provider, ProviderAccount, ProviderSync, SyncOutcome};
 
 use crate::ports::{
     AccountRepo, Clock, ImportRow, ProviderRegistry, ProviderRepo, SyncContext, ValuationRepo,
@@ -75,6 +75,44 @@ impl Drop for SyncSlot<'_> {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&self.provider_id);
     }
+}
+
+/// What identifies one underlying bank account across the logins that can see it.
+///
+/// The account number, qualified by the institution reporting it. Not `external_id`, which
+/// is per-authorisation and so differs between two views of the same account; not the name,
+/// which a joint account carries a different one of in each holder's login.
+///
+/// An account the feed reports no number for has no identity here at all — hence the
+/// `Option` on [`Self::of`]. That is deliberate: guessing at one would mean pairing two
+/// accounts on their name, and two accounts under a single login routinely share one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AccountIdentity {
+    /// Empty when the feed reports no institution, which buckets the connection-less
+    /// accounts together. Safe in practice because a formatted NZ account number already
+    /// begins with the bank and branch prefix, so the number is doing the work either way.
+    institution: String,
+    account_number: String,
+}
+
+impl AccountIdentity {
+    fn of(a: &ProviderAccount) -> Option<Self> {
+        Some(Self {
+            institution: a.institution.clone().unwrap_or_default(),
+            account_number: a.account_number.clone()?,
+        })
+    }
+}
+
+/// One row of a discovery response, read in the light of what the household has already
+/// linked. Produced by [`SyncService::survey_accounts`].
+pub struct SurveyedAccount {
+    /// The upstream account, with [`ProviderAccount::joint`] filled in.
+    pub account: ProviderAccount,
+    /// The local account this underlying account already feeds, if any — reached through
+    /// this row's own `external_id`, or through a different login reporting the same
+    /// account number.
+    pub linked_to: Option<i64>,
 }
 
 pub struct SyncService {
@@ -179,6 +217,167 @@ impl SyncService {
             "adopted upstream account numbers"
         );
         Ok(filled)
+    }
+
+    /// Every upstream account of `kind`, annotated with whether more than one connected
+    /// login reports it and with the local account it is already linked to, if any.
+    ///
+    /// This is the *one* place the household's view of a discovery response is worked out,
+    /// and it exists because the two callers must agree: the discovery route hides what this
+    /// says is already linked, and the link guard refuses it. When those were two
+    /// implementations they were only ever one edit from disagreeing, and a disagreement
+    /// here means a bank account silently counted twice in net worth.
+    ///
+    /// **Why `external_id` cannot do this alone.** Akahu issues a different `_id` per
+    /// authorisation for the same underlying bank account, so a joint account arrives as two
+    /// unrelated-looking rows — different id, and usually a different nickname in each
+    /// holder's login. Matching on [`ProviderAccount::account_number`] at the same
+    /// institution is what pairs them up. The consequence worth stating: an account the feed
+    /// reports no number for cannot be paired, so it is never marked joint and never hidden.
+    /// That is the safe direction to fail — the user sees a row and decides, rather than
+    /// having one silently withheld.
+    ///
+    /// **Why the numbers come from this response rather than the database.** A linked
+    /// account's number is normally in its own metadata, put there by
+    /// [`Self::adopt_account_numbers`] — but that is best-effort by contract and skips an
+    /// account that already has a hand-typed number. Reading both sides out of the same
+    /// upstream response means the pairing holds even where it never ran.
+    pub async fn survey_accounts(&self, kind: &str) -> AppResult<Vec<SurveyedAccount>> {
+        let provider = self
+            .registry
+            .get(kind)
+            .ok_or_else(|| AppError::validation(format!("unknown provider kind '{kind}'")))?;
+        // Discovery talks to the upstream, so the same leak as a failed sync applies: an
+        // Akahu deser error carries the whole response body, and a 422's message reaches the
+        // client verbatim. Bound it with the one shared cap.
+        let upstream = provider
+            .list_accounts()
+            .await
+            .map_err(|e| AppError::validation(sync_detail(&e)))?;
+
+        // Which local account each already-linked upstream id feeds.
+        let linked_by_external: HashMap<String, i64> = self
+            .providers
+            .list()
+            .await?
+            .into_iter()
+            .filter(|p| p.kind == kind)
+            .filter_map(|p| {
+                let external_id = p.config.get("external_account_id")?.as_str()?.to_string();
+                Some((external_id, p.account_id))
+            })
+            .collect();
+
+        // How many distinct logins report each underlying account, and which of those
+        // accounts the household has already linked through one of them.
+        let mut logins: HashMap<AccountIdentity, HashSet<String>> = HashMap::new();
+        let mut linked: HashMap<AccountIdentity, i64> = HashMap::new();
+        for a in &upstream {
+            let Some(identity) = AccountIdentity::of(a) else {
+                continue;
+            };
+            logins
+                .entry(identity.clone())
+                .or_default()
+                .insert(a.authorisation_id.clone().unwrap_or_default());
+            if let Some(&account_id) = linked_by_external.get(&a.external_id) {
+                linked.insert(identity, account_id);
+            }
+        }
+
+        Ok(upstream
+            .into_iter()
+            .map(|mut account| {
+                let identity = AccountIdentity::of(&account);
+                account.joint = identity
+                    .as_ref()
+                    .is_some_and(|i| logins.get(i).is_some_and(|l| l.len() > 1));
+                // This login's own row first; failing that, a different login's row for the
+                // same underlying account — the case `external_id` is blind to.
+                let linked_to = linked_by_external
+                    .get(&account.external_id)
+                    .copied()
+                    .or_else(|| identity.as_ref().and_then(|i| linked.get(i).copied()));
+                SurveyedAccount { account, linked_to }
+            })
+            .collect())
+    }
+
+    /// The upstream accounts of `kind` the household may still link, each annotated with
+    /// [`ProviderAccount::joint`]. What `GET /provider-kinds/{kind}/accounts` serves.
+    ///
+    /// An account already linked is dropped rather than shown disabled — including the twin
+    /// of one linked through a *different* login, which is the whole point: before this, the
+    /// second copy stayed in the list with nothing marking it, because the first copy had
+    /// been filtered out by `external_id` and the dialog's warning needed both copies
+    /// present to fire. The one case it could not warn about was the one that mattered.
+    pub async fn linkable_accounts(&self, kind: &str) -> AppResult<Vec<ProviderAccount>> {
+        Ok(self
+            .survey_accounts(kind)
+            .await?
+            .into_iter()
+            .filter(|s| s.linked_to.is_none())
+            .map(|s| s.account)
+            .collect())
+    }
+
+    /// Vet one account about to be linked: `Ok(true)` if it is joint, `Ok(false)` if not, and
+    /// an error — refusing the link — if the household already reaches it through another
+    /// login.
+    ///
+    /// The check has to be here and not only in the dialog: the list a browser is holding goes
+    /// stale the moment another tab links something, and `POST /api/providers/link` takes any
+    /// id a caller kept.
+    ///
+    /// **Fails open, deliberately.** If the upstream can't be reached, or doesn't report this
+    /// id at all, this allows the link rather than refusing it. Linking must not require a
+    /// second successful round-trip to a third party: a provider that is down, rate-limiting,
+    /// or not configured would otherwise block *every* link, including attaching a CSV
+    /// provider to an existing account — a much larger and more common failure than the
+    /// duplicate this guards against. What is lost by failing open is narrow: the duplicate is
+    /// caught whenever discovery works, which is the same call the user just linked *from*.
+    pub async fn check_linkable(&self, kind: &str, external_id: &str) -> AppResult<bool> {
+        let surveyed = match self.survey_accounts(kind).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(
+                    kind,
+                    external_id,
+                    error = %e,
+                    "could not check whether this account is already linked; allowing the link"
+                );
+                return Ok(false);
+            }
+        };
+        let Some(found) = surveyed
+            .into_iter()
+            .find(|s| s.account.external_id == external_id)
+        else {
+            // Not an error: a payload-based kind reports no accounts at all, and a feed is
+            // free to stop listing one. Neither is a reason to refuse.
+            return Ok(false);
+        };
+        match found.linked_to {
+            None => Ok(found.account.joint),
+            // Named, not just refused: the row the user is looking at carries the *other*
+            // login's nickname for the account, so a bare "already linked" reads as the app
+            // being wrong rather than as a description of what happened.
+            Some(account_id) => {
+                let existing = self.accounts.get(account_id).await.map(|a| a.name).ok();
+                Err(AppError::validation(match existing {
+                    Some(name) => format!(
+                        "'{}' is the same account as '{name}', which is already linked — a joint \
+                         account is visible from both holders' logins. Link it once.",
+                        found.account.name
+                    ),
+                    None => format!(
+                        "'{}' is already linked to an account here — a joint account is visible \
+                         from both holders' logins. Link it once.",
+                        found.account.name
+                    ),
+                }))
+            }
+        }
     }
 
     /// Fetch upstream transactions for one provider, import the new ones (dedupe on
@@ -908,6 +1107,21 @@ mod tests {
             kind_hint: AccountKind::Bank,
             balance_minor: 0,
             supports_transactions: true,
+            joint: false,
+        }
+    }
+
+    /// The same, as one named login sees it — what a joint account needs two of.
+    fn upstream_via(
+        external_id: &str,
+        number: Option<&str>,
+        login: &str,
+        name: &str,
+    ) -> ProviderAccount {
+        ProviderAccount {
+            name: name.to_string(),
+            authorisation_id: Some(login.to_string()),
+            ..upstream(external_id, number)
         }
     }
 
@@ -1010,6 +1224,151 @@ mod tests {
             .lock()
             .expect("test mutex")
             .is_empty());
+    }
+
+    /// The account number is the only thing pairing a joint account's two views: each holder's
+    /// login reports it under its own `external_id` and its own nickname.
+    #[tokio::test]
+    async fn one_account_two_logins_report_is_marked_joint() {
+        let (service, _) = discovery_service(
+            Vec::new(),
+            vec![
+                upstream_via("acc_hers", Some("12-3456-0000123-00"), "auth_a", "Everyday"),
+                upstream_via(
+                    "acc_his",
+                    Some("12-3456-0000123-00"),
+                    "auth_b",
+                    "Joint acct",
+                ),
+                upstream_via("acc_solo", Some("12-3456-0000999-00"), "auth_a", "Savings"),
+            ],
+        );
+        let linkable = service.linkable_accounts("fake").await.expect("discovers");
+
+        let joint: Vec<_> = linkable
+            .iter()
+            .filter(|a| a.joint)
+            .map(|a| a.external_id.as_str())
+            .collect();
+        assert_eq!(
+            joint,
+            vec!["acc_hers", "acc_his"],
+            "both views of the shared account are joint, and the one-login account is not"
+        );
+        assert_eq!(
+            linkable.len(),
+            3,
+            "nothing is linked yet, so nothing is hidden"
+        );
+    }
+
+    /// The case the dialog's old client-side warning structurally could not catch: once one
+    /// copy is linked the API filtered it out by `external_id`, leaving the *other* login's
+    /// copy alone in the list with nothing left to compare it against.
+    #[tokio::test]
+    async fn the_twin_of_a_linked_account_is_not_offered_again() {
+        let (service, _) = discovery_service(
+            vec![linked(1, 501, "acc_hers")],
+            vec![
+                upstream_via("acc_hers", Some("12-3456-0000123-00"), "auth_a", "Everyday"),
+                upstream_via(
+                    "acc_his",
+                    Some("12-3456-0000123-00"),
+                    "auth_b",
+                    "Joint acct",
+                ),
+                upstream_via("acc_solo", Some("12-3456-0000999-00"), "auth_b", "Savings"),
+            ],
+        );
+        let offered: Vec<_> = service
+            .linkable_accounts("fake")
+            .await
+            .expect("discovers")
+            .into_iter()
+            .map(|a| a.external_id)
+            .collect();
+        assert_eq!(
+            offered,
+            vec!["acc_solo"],
+            "the linked copy and its twin are both gone; the unrelated account stays"
+        );
+    }
+
+    /// Hiding the row is not the guarantee — the browser's list goes stale the moment another
+    /// tab links something, and the endpoint takes any id a caller kept.
+    #[tokio::test]
+    async fn linking_the_twin_of_a_linked_account_is_refused() {
+        let (service, _) = discovery_service(
+            vec![linked(1, 501, "acc_hers")],
+            vec![
+                upstream_via("acc_hers", Some("12-3456-0000123-00"), "auth_a", "Everyday"),
+                upstream_via(
+                    "acc_his",
+                    Some("12-3456-0000123-00"),
+                    "auth_b",
+                    "Joint acct",
+                ),
+            ],
+        );
+        let refused = service
+            .check_linkable("fake", "acc_his")
+            .await
+            .expect_err("a second copy of one account must not link");
+        let message = refused.to_string();
+        assert!(
+            message.contains("Joint acct") && message.contains("Everyday"),
+            "name both sides, or 'already linked' reads as the app being wrong: {message}"
+        );
+    }
+
+    /// Linking must not need a second successful round-trip to a third party. A provider that
+    /// is down, rate-limited or unconfigured would otherwise block every link there is —
+    /// including attaching a CSV provider to an account that has nothing to do with a feed.
+    #[tokio::test]
+    async fn an_upstream_that_cannot_be_reached_does_not_block_linking() {
+        // No discoverable accounts at all, which is what an unconfigured provider looks like.
+        let (service, _) = discovery_service(vec![linked(1, 501, "acc_hers")], Vec::new());
+        assert!(
+            !service
+                .check_linkable("fake", "acc_hers")
+                .await
+                .expect("an unanswerable check allows the link"),
+            "and nothing it cannot verify is claimed to be joint"
+        );
+    }
+
+    /// The number is what pairs two views, so an account the feed reports none for cannot be
+    /// paired. It must stay offered rather than be withheld on a guess — the user can see the
+    /// row and decide; they cannot see one that was never sent.
+    #[tokio::test]
+    async fn an_account_with_no_number_is_never_paired_or_hidden() {
+        let (service, _) = discovery_service(
+            vec![linked(1, 501, "acc_linked")],
+            vec![
+                upstream_via("acc_linked", None, "auth_a", "Wallet"),
+                upstream_via("acc_other", None, "auth_b", "Wallet"),
+            ],
+        );
+        let offered = service.linkable_accounts("fake").await.expect("discovers");
+        assert_eq!(
+            offered
+                .iter()
+                .map(|a| a.external_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acc_other"],
+            "only the exact external_id match is hidden"
+        );
+        assert!(
+            !offered[0].joint,
+            "two numberless accounts sharing a name are not evidence of one account"
+        );
+        assert!(
+            !service
+                .check_linkable("fake", "acc_other")
+                .await
+                .expect("and it is still linkable"),
+            "a numberless account is never claimed to be joint"
+        );
     }
 
     /// W-22: a provider balance quoted in another currency is wrong by an exchange rate the

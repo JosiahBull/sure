@@ -116,6 +116,12 @@ const ALLOWED = new Set([
   // The `-92` sibling a loan facility posts its interest and principal to, in the
   // `LOAN INT`/`LOAN PRIN` fixtures. Same invented account digits, new suffix.
   "12-3136-0000123-92",
+  // The joint-account fixtures: one number two logins both report (`sure_app::sync`'s survey
+  // tests, provider-linking.spec.ts, akahu.spec.ts), and the single-login control that has to
+  // stay unpaired beside it — a test asserting "these two are one account" says nothing unless
+  // something in the same response is left alone. Same `12-3456-…` fake bank/branch as above.
+  "12-3456-0000123-00",
+  "12-3456-0000999-00",
   "012-345-678",
   "FC02-1234-0000001-00",
   "FC12-3456-0000002-00",

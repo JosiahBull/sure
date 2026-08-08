@@ -236,7 +236,12 @@ unit-tested against in-memory fakes:
 - `RuleService` — the `zen-expression` evaluation loop that turns transaction contexts
   into decided category/merchant/one-off changes.
 - `SyncService` — the fetch → dedupe → persist → audit → revalue flow shared by the manual
-  sync route and `ProviderPollTask`.
+  sync route and `ProviderPollTask`. Also owns `survey_accounts`, the single reading of a
+  discovery response the household is entitled to: which upstream accounts are already
+  linked, and which are *joint* — reported by more than one connected login. Discovery hides
+  the ones already linked and `link` refuses them, both from that one function, because a
+  joint account arrives once per holder's login with a different `external_id` and nickname
+  in each, and linking both counts one bank account twice in net worth.
 - `ForecastService` — resolves each asset/investment/liability account's and each
   top-level income/expense category's growth/volatility/dividend-yield assumption
   (override → an existing enabled cron's rate → derived from history, or a deterministic

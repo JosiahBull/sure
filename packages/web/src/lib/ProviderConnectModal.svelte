@@ -225,34 +225,36 @@
   const showLoginGroups = $derived(loginGroups.length > 1);
 
   /**
-   * External ids of accounts the *same* real account is exposed under twice — a joint
-   * account is visible from both holders' logins, with its own nickname in each. Linking
-   * both would sync one bank account into two Sure accounts and double it in net worth,
-   * which is worth a warning rather than a discovery.
+   * Drop every row that is the account just linked — including the *other* holder's view of
+   * it, which carries a different `external_id` and usually a different nickname.
+   *
+   * Only to keep the visible list honest until the next discovery: the server already
+   * refuses a second link and omits the twin from the next response, and it — not this — is
+   * what decides that two rows are one account. Matching here is on the account number the
+   * feed reported, so this prunes what the server would prune without re-deciding anything.
    */
-  const sharedExternalIds = $derived.by(() => {
-    const byNumber = new Map<string, Schemas["ProviderAccount"][]>();
-    for (const a of discovered) {
-      if (!a.account_number) continue;
-      const key = `${a.institution ?? ""}:${a.account_number}`;
-      byNumber.set(key, [...(byNumber.get(key) ?? []), a]);
-    }
-    const shared = new Set<string>();
-    for (const rows of byNumber.values()) {
-      if (new Set(rows.map((r) => r.authorisation_id ?? "")).size > 1) {
-        for (const r of rows) shared.add(r.external_id);
-      }
-    }
-    return shared;
-  });
+  function forgetLinked(a: Schemas["ProviderAccount"]) {
+    discovered = discovered.filter((d) => {
+      if (d.external_id === a.external_id) return false;
+      if (!a.joint || !a.account_number) return true;
+      return !(d.account_number === a.account_number && d.institution === a.institution);
+    });
+  }
 
-  /** Apply one owner to every not-yet-linked row in a login group, in one click. */
+  /**
+   * Apply one owner to every not-yet-linked row in a login group, in one click.
+   *
+   * Joint rows are skipped: the group control is a shortcut for "these are all so-and-so's",
+   * and an account both logins report is the one case that is already settled.
+   */
   function setGroupOwner(g: LoginGroup, owner: string) {
     for (const a of g.singles) {
+      if (a.joint) continue;
       const f = linkForms[a.external_id];
       if (f) f.owner = owner;
     }
     for (const bg of g.brokerage) {
+      if (bg.members.some((m) => m.joint)) continue;
       const f = groupForms[bg.key];
       if (f) f.owner = owner;
     }
@@ -313,7 +315,7 @@
             name: a.institution ?? a.name,
             currency: baseCurrency,
             institution: a.institution ?? "",
-            owner: defaultOwnershipKey(),
+            owner: a.joint ? "joint" : defaultOwnershipKey(),
           };
         } else {
           linkForms[a.external_id] ??= {
@@ -325,7 +327,10 @@
             // Whose account this is, is the one thing a feed can never tell us — and linking a
             // partner's newly-connected accounts is the case this whole flow exists for, so it
             // is asked here rather than left to a follow-up edit.
-            owner: defaultOwnershipKey(),
+            //
+            // Except when both holders' logins report it, which answers the question: it is the
+            // household's. The select is locked to match, and the server sets it either way.
+            owner: a.joint ? "joint" : defaultOwnershipKey(),
             // The lender is the one term the feed does know.
             meta: a.institution ? { lender: a.institution } : {},
           };
@@ -367,9 +372,9 @@
     if (e) {
       error = apiErrorMessage(e, "Failed to link account.");
     } else {
-      discovered = discovered.filter((d) => d.external_id !== a.external_id);
+      forgetLinked(a);
       openRow = null;
-      onchanged(`Linked ${a.name}.`);
+      onchanged(a.joint ? `Linked ${a.name} as a joint account.` : `Linked ${a.name}.`);
     }
     busy = null;
   }
@@ -403,8 +408,8 @@
     if (e) {
       error = apiErrorMessage(e, "Failed to link brokerage account.");
     } else {
-      const ids = new Set(g.members.map((m) => m.external_id));
-      discovered = discovered.filter((d) => !ids.has(d.external_id));
+      // Each member in turn, so a joint wallet takes the other login's view of it with it.
+      for (const m of g.members) forgetLinked(m);
       openRow = null;
       onchanged(
         `Linked ${g.members.length} wallet${g.members.length === 1 ? "" : "s"} into one brokerage account.`,
@@ -522,10 +527,15 @@
           {#each lg.brokerage as g (g.key)}
             {@const f = groupForms[g.key]}
             {@const open = openRow === g.key}
+            <!-- The wallets are one real account, so one joint member makes the group joint. -->
+            {@const groupJoint = g.members.some((m) => m.joint)}
             <div class="row-card" class:open>
               <button class="row-head" onclick={() => toggleRow(g.key)} aria-expanded={open}>
                 <span class="col" style="min-width:0;gap:3px;text-align:left">
-                  <span class="name ell">{brokerageLabel(g)}</span>
+                  <span class="row-title">
+                    <span class="name ell">{brokerageLabel(g)}</span>
+                    {#if groupJoint}<span class="badge joint">Joint</span>{/if}
+                  </span>
                   <span class="meta">
                     Brokerage · {g.members.length} wallet{g.members.length === 1 ? "" : "s"}
                   </span>
@@ -566,9 +576,14 @@
                       </label>
                       <label class="field">
                         Owner
-                        <select class="select" bind:value={f.owner}>
+                        <!-- Same rule as a single row; a group's wallets are one real account,
+                             so one joint member makes the account joint. -->
+                        <select class="select" bind:value={f.owner} disabled={groupJoint}>
                           {#each ownershipOptions() as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
                         </select>
+                        {#if groupJoint}
+                          <span class="small faint">Seen from both logins.</span>
+                        {/if}
                       </label>
                     {/if}
                   </div>
@@ -592,7 +607,10 @@
             <div class="row-card" class:open>
               <button class="row-head" onclick={() => toggleRow(a.external_id)} aria-expanded={open}>
                 <span class="col" style="min-width:0;gap:3px;text-align:left">
-                  <span class="name ell">{a.name}</span>
+                  <span class="row-title">
+                    <span class="name ell">{a.name}</span>
+                    {#if a.joint}<span class="badge joint">Joint</span>{/if}
+                  </span>
                   <span class="meta ell">
                     {[
                       a.institution,
@@ -604,9 +622,9 @@
                       .filter(Boolean)
                       .join(" · ")}
                   </span>
-                  {#if sharedExternalIds.has(a.external_id)}
+                  {#if a.joint}
                     <span class="shared-flag">
-                      Also visible from another login — the same account. Link it once.
+                      Both logins report this account, so it is linked once, to the household.
                     </span>
                   {/if}
                 </span>
@@ -644,9 +662,16 @@
                       </label>
                       <label class="field">
                         Owner
-                        <select class="select" bind:value={f.owner}>
+                        <!-- Settled, not offered: an account both holders' logins report is the
+                             household's, and the server attributes it that way regardless of
+                             what this sends. Shown disabled rather than hidden so the rule is
+                             legible at the moment it applies. -->
+                        <select class="select" bind:value={f.owner} disabled={a.joint}>
                           {#each ownershipOptions() as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
                         </select>
+                        {#if a.joint}
+                          <span class="small faint">Seen from both logins.</span>
+                        {/if}
                       </label>
                       {#if showsInstitution(f.kind)}
                         <label class="field">
@@ -902,12 +927,26 @@
     font-size: 12px;
     min-width: 170px;
   }
-  /* A joint account shows up under both holders' logins; linking both would sync one bank
-     account into two, and count it twice in net worth. */
+  .row-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  /* Outlined rather than filled, matching the ownership badge on the Accounts page: joint is
+     the one ownership with no person's colour behind it. */
+  .badge.joint {
+    flex: none;
+    border: 1px solid var(--border);
+    background: transparent;
+  }
+  /* A joint account shows up under both holders' logins, and linking both would sync one bank
+     account into two and count it twice in net worth. Stated, not warned about: the twin is
+     no longer offered and the second link is refused, so this describes what the app has
+     already done rather than asking the user to be careful. */
   .shared-flag {
     font-size: 12px;
-    color: var(--negative);
-    font-weight: 600;
+    color: var(--text-muted);
   }
   .cta {
     flex: none;

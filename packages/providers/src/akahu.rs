@@ -465,6 +465,10 @@ fn map_account(a: akahu_client::Account) -> anyhow::Result<ProviderAccount> {
             .attributes
             .iter()
             .any(|attr| matches!(attr, Attribute::Transactions)),
+        // Not this layer's to answer: whether a second login also reports this account is a
+        // question about the whole household's connections, not about the one account being
+        // mapped here. `sure_app::sync::SyncService::survey_accounts` fills it in.
+        joint: false,
     })
 }
 
