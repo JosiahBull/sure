@@ -918,6 +918,44 @@ mod tests {
         assert!(!matches(AccountKind::Mortgage, "IRD:TAX ON INTEREST"));
     }
 
+    /// The expression migration 0031 ships. 0026 already means to cover StudyLink, but looks
+    /// for the scheme's wording ("living costs", "course related costs"); ASB writes the
+    /// initials, so every payment fell through. The reference numbers here are invented — the
+    /// abbreviation and the run-together "PAYMENTREF" are the shape that matters.
+    #[test]
+    fn the_shipped_studylink_rule_matches_the_abbreviations_a_statement_uses() {
+        const SHIPPED: &str = "contains(lower(description), 'studylink') and \
+                               (contains(lower(description), 'lc paym') \
+                               or contains(lower(description), 'crc paym'))";
+        validate_expression(SHIPPED).expect("the shipped expression must be valid");
+
+        let matches = |description: &str| {
+            let mut row = ctx(1, 30_000, None);
+            row.description = description.to_string();
+            let cur = Current::of(&row);
+            zen_expression::evaluate_expression(
+                SHIPPED,
+                Value::Object(build_context(&row, &cur)).into(),
+            )
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        };
+
+        assert!(matches(
+            "D/C FROM STUDYLINK (MSD) LC PAYMENT REF:00000 SSV000000000"
+        ));
+        assert!(matches("D/C FROM STUDYLINK (MSD) CRC PAYMENT REF:00000"));
+        // One real variant runs the fields together, which is why the token stops at "paym".
+        assert!(matches("STUDYLINK (MSD) LC PAYMENTREF:000000SSV000000000"));
+        // A Student Allowance is a grant, not a drawdown — genuine income, and not this rule's.
+        // This is what the `and contains('studylink')` half cannot do on its own.
+        assert!(!matches("D/C FROM STUDYLINK (MSD) ALLOWANCE REF:00000"));
+        // Neither half is safe alone: the abbreviation is short enough to appear in ordinary
+        // text, and must not classify anything on its own.
+        assert!(!matches("BLC PAYMENTS LTD"));
+    }
+
     #[test]
     fn an_empty_expression_is_rejected() {
         assert!(validate_expression("").is_err());
