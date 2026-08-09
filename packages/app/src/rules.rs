@@ -997,6 +997,42 @@ mod tests {
         }
     }
 
+    /// The expression migration 0033 leaves behind. A university is an employer as readily as
+    /// it is somewhere you pay fees, so 0026's rule — which looked only at the wording — filed
+    /// three real "UNI OF AUCKLAND SALARY" credits as tertiary-education *expenses*, taking a
+    /// bite out of income and adding one to spending from the same rows.
+    #[test]
+    fn the_shipped_university_rule_ignores_money_coming_in() {
+        const SHIPPED: &str = "(contains(lower(description), 'uni of auckl') \
+                               or contains(lower(description), 'university o') \
+                               or contains(lower(description), 'ak uni') \
+                               or contains(lower(description), 'academic dre') \
+                               or contains(lower(description), 'uoa') \
+                               or contains(lower(description), 'canterbury u') \
+                               or contains(lower(description), 'language tra')) and is_expense";
+        validate_expression(SHIPPED).expect("the shipped expression must be valid");
+
+        let matches = |amount_minor: i64, description: &str| {
+            let mut row = ctx(1, amount_minor, None);
+            row.description = description.to_string();
+            let cur = Current::of(&row);
+            zen_expression::evaluate_expression(
+                SHIPPED,
+                Value::Object(build_context(&row, &cur)).into(),
+            )
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        };
+
+        // Paying the university is still education spending — the whole rule must survive.
+        assert!(matches(-1_250_00, "UNI OF AUCKLAND TUITION"));
+        assert!(matches(-450_00, "UNIVERSITY OF CANTERBURY"));
+        // Being paid *by* one is not.
+        assert!(!matches(1_487_20, "UNI OF AUCKLAND SALARY"));
+        assert!(!matches(612_35, "UNI OF AUCKLAND SALARY"));
+    }
+
     #[test]
     fn an_empty_expression_is_rejected() {
         assert!(validate_expression("").is_err());
