@@ -1035,10 +1035,20 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List an account's valuations, newest first. */
+        /**
+         * List an account's valuations, newest first, optionally narrowed by source.
+         * @description The narrowing is not a nicety: a provider- or brokerage-linked account gains one row per
+         *     day forever, so a client after the handful someone entered by hand would otherwise download
+         *     thousands to find them.
+         */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    /** @description `manual` | `cron` | `provider` | `brokerage` | `equity`. */
+                    source?: string | null;
+                    /** @description At most this many, newest first. */
+                    limit?: number | null;
+                };
                 header?: never;
                 path: {
                     id: number;
@@ -1053,6 +1063,14 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["Valuation"][];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
             };

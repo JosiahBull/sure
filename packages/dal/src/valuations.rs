@@ -1,5 +1,5 @@
 use sure_core::{AppError, AppResult};
-pub use sure_core::{NewValuation, Valuation, ValuationSource};
+pub use sure_core::{NewValuation, Valuation, ValuationQuery, ValuationSource};
 
 use crate::Db;
 
@@ -40,15 +40,32 @@ impl TryFrom<ValuationRow> for Valuation {
     }
 }
 
-/// List an account's valuations, newest first.
+/// List an account's valuations, newest first, narrowed by `q`.
+///
+/// Both filters are bind values inside one checked statement rather than a second query:
+/// `?2 IS NULL OR source = ?2` for the source and SQLite's `LIMIT -1` ("no limit") for the
+/// count, so the macro still sees a literal string. A singular `source` rather than a list is
+/// deliberate — a variable-length `IN (…)` would need `QueryBuilder` and would put this on the
+/// short list of unchecked SQL this crate keeps deliberately short.
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn list_for_account(db: &Db, account_id: i64) -> AppResult<Vec<Valuation>> {
+pub async fn list_for_account(
+    db: &Db,
+    account_id: i64,
+    q: ValuationQuery,
+) -> AppResult<Vec<Valuation>> {
+    let source = q.source.map(ValuationSource::as_str);
+    let limit = q.limit;
     sqlx::query_as!(
         ValuationRow,
         r#"SELECT id AS "id!", account_id, as_of, value_minor, currency_code, source, note,
                   created_at
-             FROM valuations WHERE account_id=?1 ORDER BY as_of DESC, id DESC"#,
-        account_id
+             FROM valuations
+            WHERE account_id=?1 AND (?2 IS NULL OR source = ?2)
+            ORDER BY as_of DESC, id DESC
+            LIMIT COALESCE(?3, -1)"#,
+        account_id,
+        source,
+        limit
     )
     .fetch_all(db)
     .await?
@@ -248,7 +265,9 @@ mod tests {
         assert_eq!(second.id, first.id);
         assert_eq!(second.value_minor, -55_360_000);
 
-        let all = list_for_account(&db, account_id).await.unwrap();
+        let all = list_for_account(&db, account_id, Default::default())
+            .await
+            .unwrap();
         assert_eq!(all.len(), 1);
     }
 
@@ -274,6 +293,71 @@ mod tests {
             .unwrap();
 
         // Distinct rows: the partial unique index only constrains source='provider'.
-        assert_eq!(list_for_account(&db, account_id).await.unwrap().len(), 2);
+        assert_eq!(
+            list_for_account(&db, account_id, Default::default())
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // …and the source filter separates them, which is what lets a client ask for the
+        // handful someone entered by hand without downloading a daily provider series to
+        // find them.
+        let manual = list_for_account(
+            &db,
+            account_id,
+            ValuationQuery {
+                source: Some(ValuationSource::Manual),
+                limit: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(manual.len(), 1);
+        assert_eq!(manual[0].source, ValuationSource::Manual);
+    }
+
+    /// `LIMIT COALESCE(?3, -1)` is easy to get backwards — `-1` is SQLite's "no limit", so a
+    /// wrong default silently returns one row or none. Pin both directions, and the ordering,
+    /// since "newest first" is what makes a limit meaningful at all.
+    #[tokio::test]
+    async fn a_limit_takes_the_newest_and_no_limit_takes_everything() {
+        let db = test_db().await;
+        let account_id = test_account(&db).await;
+        for day in ["2026-07-01", "2026-07-02", "2026-07-03"] {
+            create(
+                &db,
+                account_id,
+                NewValuation {
+                    as_of: IsoDate::parse(day).unwrap(),
+                    value_minor: Money::new(-1).unwrap(),
+                    currency_code: None,
+                    note: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let all = list_for_account(&db, account_id, Default::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3, "no limit means every row, not zero rows");
+        assert_eq!(all[0].as_of.to_string(), "2026-07-03", "newest first");
+
+        let newest = list_for_account(
+            &db,
+            account_id,
+            ValuationQuery {
+                source: None,
+                limit: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(newest.len(), 2);
+        assert_eq!(newest[0].as_of.to_string(), "2026-07-03");
+        assert_eq!(newest[1].as_of.to_string(), "2026-07-02");
     }
 }

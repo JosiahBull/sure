@@ -23,6 +23,23 @@ pub enum ValuationSource {
     Equity,
 }
 
+/// How much of an account's valuation history to read.
+///
+/// A domain type, not a wire one — the HTTP layer parses its own params into this, so the
+/// `source` here is already the enum rather than the text a query string carries (rule 1).
+///
+/// It exists because the series is unbounded: `upsert_from_provider` and
+/// `upsert_from_brokerage` each write one row per account per day, forever, so a single
+/// brokerage account can hold thousands. A caller that wants the handful a person actually
+/// set should not have to download the rest to find them.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ValuationQuery {
+    /// Only valuations written by this source. `None` means every source.
+    pub source: Option<ValuationSource>,
+    /// At most this many, newest first. `None` means no limit.
+    pub limit: Option<i64>,
+}
+
 impl ValuationSource {
     /// The stored/wire representation (snake_case) — matches
     /// `#[serde(rename_all = "snake_case")]`. Used by the DAL to bind this as a plain

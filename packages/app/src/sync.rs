@@ -1007,7 +1007,11 @@ mod tests {
 
     #[async_trait]
     impl ValuationRepo for FakeValuations {
-        async fn list_for_account(&self, _account_id: i64) -> AppResult<Vec<Valuation>> {
+        async fn list_for_account(
+            &self,
+            _account_id: i64,
+            _q: sure_core::ValuationQuery,
+        ) -> AppResult<Vec<Valuation>> {
             unreachable!("SyncService never lists valuations")
         }
         async fn create(&self, _account_id: i64, _input: NewValuation) -> AppResult<Valuation> {

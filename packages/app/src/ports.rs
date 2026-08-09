@@ -26,7 +26,8 @@ use sure_core::{
     SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent,
     SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
     SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
-    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
+    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
+    VestingStatus,
 };
 
 // ---- Clock ------------------------------------------------------------------
@@ -744,7 +745,14 @@ pub trait StockPriceCacheRepo: Send + Sync {
 
 #[async_trait]
 pub trait ValuationRepo: Send + Sync {
-    async fn list_for_account(&self, account_id: i64) -> AppResult<Vec<Valuation>>;
+    /// An account's valuations, newest first, narrowed by `q`. Unfiltered (`Default`) is the
+    /// right call for anything deriving movements from the series — see
+    /// `crate::tasks::balance_delta`, which needs every row or it derives the wrong deltas.
+    async fn list_for_account(
+        &self,
+        account_id: i64,
+        q: ValuationQuery,
+    ) -> AppResult<Vec<Valuation>>;
     async fn create(&self, account_id: i64, input: NewValuation) -> AppResult<Valuation>;
     async fn delete(&self, id: i64) -> AppResult<()>;
     async fn upsert_from_brokerage(

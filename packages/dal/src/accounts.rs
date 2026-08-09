@@ -1724,10 +1724,12 @@ mod tests {
         let account = create(&db, valid("Sharesies", AccountKind::Brokerage))
             .await
             .unwrap();
-        assert!(crate::valuations::list_for_account(&db, account.id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            crate::valuations::list_for_account(&db, account.id, Default::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1760,10 +1762,12 @@ mod tests {
         assert_eq!(txs[0].amount_minor, 250_000);
         assert_eq!(txs[0].description, "Opening balance");
         assert!(txs[0].is_one_off);
-        assert!(crate::valuations::list_for_account(&db, account.id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            crate::valuations::list_for_account(&db, account.id, Default::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1780,7 +1784,7 @@ mod tests {
         .await
         .unwrap();
 
-        let vals = crate::valuations::list_for_account(&db, account.id)
+        let vals = crate::valuations::list_for_account(&db, account.id, Default::default())
             .await
             .unwrap();
         assert_eq!(vals.len(), 1);
@@ -1808,10 +1812,12 @@ mod tests {
         .await
         .unwrap()
         .is_empty());
-        assert!(crate::valuations::list_for_account(&db, account.id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            crate::valuations::list_for_account(&db, account.id, Default::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1854,7 +1860,7 @@ mod tests {
             assert_eq!(txs[0].amount_minor, -56_000_00);
             assert_eq!(txs[0].description, "Opening balance");
             assert!(
-                crate::valuations::list_for_account(&db, account.id)
+                crate::valuations::list_for_account(&db, account.id, Default::default())
                     .await
                     .unwrap()
                     .is_empty(),
@@ -1889,7 +1895,7 @@ mod tests {
             .await
             .unwrap_or_else(|e| panic!("{kind:?} should be accepted: {e:?}"));
 
-            let vals = crate::valuations::list_for_account(&db, account.id)
+            let vals = crate::valuations::list_for_account(&db, account.id, Default::default())
                 .await
                 .unwrap();
             assert_eq!(vals.len(), 1, "{kind:?} should seed a valuation");
@@ -2128,7 +2134,7 @@ mod tests {
         .await
         .unwrap();
 
-        let vals = crate::valuations::list_for_account(&db, house.id)
+        let vals = crate::valuations::list_for_account(&db, house.id, Default::default())
             .await
             .unwrap();
         assert_eq!(vals.len(), 1);
@@ -2144,10 +2150,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(crate::valuations::list_for_account(&db, house.id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            crate::valuations::list_for_account(&db, house.id, Default::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -2157,10 +2165,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(crate::valuations::list_for_account(&db, account.id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            crate::valuations::list_for_account(&db, account.id, Default::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     // --- ticker discovery ---------------------------------------------------

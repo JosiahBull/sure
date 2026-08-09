@@ -88,4 +88,4 @@ pub use types::{
     RateType, RepaymentFrequency, SaveAccount, SetExcludedFromNetWorth, SetSecuredBy, SharesMeta,
     StudentLoanMeta, TaxTreatment, ValidationMode, VehicleMeta,
 };
-pub use valuations::{NewValuation, Valuation, ValuationSource};
+pub use valuations::{NewValuation, Valuation, ValuationQuery, ValuationSource};

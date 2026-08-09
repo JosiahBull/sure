@@ -27,7 +27,8 @@ use sure_core::{
     SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent,
     SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
     SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
-    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, VestingStatus,
+    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
+    VestingStatus,
 };
 
 use crate::Db;
@@ -362,8 +363,12 @@ impl StockPriceCacheRepo for SqliteStore {
 
 #[async_trait]
 impl ValuationRepo for SqliteStore {
-    async fn list_for_account(&self, account_id: i64) -> AppResult<Vec<Valuation>> {
-        crate::valuations::list_for_account(&self.db, account_id).await
+    async fn list_for_account(
+        &self,
+        account_id: i64,
+        q: ValuationQuery,
+    ) -> AppResult<Vec<Valuation>> {
+        crate::valuations::list_for_account(&self.db, account_id, q).await
     }
 
     async fn create(&self, account_id: i64, input: NewValuation) -> AppResult<Valuation> {

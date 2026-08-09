@@ -44,7 +44,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use serde_json::Value;
-use sure_core::{AccountClass, AppResult, Provider, Valuation, ValuationSource};
+use sure_core::{AccountClass, AppResult, Provider, Valuation, ValuationQuery, ValuationSource};
 use sure_scheduler::{ScheduledTask, TaskRun};
 use tokio_util::sync::CancellationToken;
 
@@ -86,7 +86,10 @@ impl BalanceDeltaTask {
         let account = self.accounts.get(provider.account_id).await?;
         let valuations = self
             .valuations
-            .list_for_account(provider.account_id)
+            // Unfiltered on purpose: this differences consecutive valuations to derive the
+            // movements between them, so a filtered series would produce deltas that span the
+            // rows it dropped.
+            .list_for_account(provider.account_id, ValuationQuery::default())
             .await?;
         let rows = derive_rows(
             &valuations,
