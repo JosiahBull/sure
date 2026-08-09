@@ -2486,6 +2486,12 @@ export interface paths {
          * @description Idempotent — re-uploading the same file imports nothing new, so overlapping download windows
          *     are free. A zip spanning several accounts is reported account by account, and anything the
          *     routing tiers can't place is described rather than guessed at.
+         *
+         *     **One thing in an upload cannot fail the upload.** An item nothing could place, and an item
+         *     whose target account has a conflict to resolve (`blocked`), are both reported in `items` with
+         *     nothing written for them, while every other item imports. A 422 is reserved for what makes the
+         *     whole request unanswerable: an unreadable blob, an upload over the size cap, or an `?assign=`
+         *     naming an account that doesn't exist or can't take this file.
          */
         post: {
             parameters: {
@@ -2504,8 +2510,23 @@ export interface paths {
                      * @description Which Sure account each thing in the upload belongs to, as
                      *     `12-3456-0000123-50:8,12-3456-0000123-51:12`. Overrides whatever the routing tiers would
                      *     have worked out, and is how the UI commits exactly what its preview showed.
+                     *
+                     *     `12-3456-0000123-51:skip` imports nothing of that one. That is a statement, not the
+                     *     absence of one: leaving an item out of this parameter only means the assignment tier has
+                     *     nothing to say about it, and the evidence tiers below go on to place it anyway.
                      */
                     assign?: string;
+                    /**
+                     * @description The date a feed that has **never posted** owns from, per thing in the upload, as
+                     *     `12-3456-0000123-50:2026-08-01`. The third way out of an `unsynced_feed` block, for when
+                     *     syncing the feed and disabling it are both wrong — only the person importing can know when
+                     *     a silent feed will start posting from.
+                     *
+                     *     Ignored wherever the cutover can be derived, which is what stops it widening an import:
+                     *     an account whose feeds have posted, or whose balance-derived connection states its own
+                     *     start date, keeps the window they establish and the item says so in its warnings.
+                     */
+                    cutover?: string;
                     /**
                      * @description Read the upload as this source instead of sniffing it. The escape hatch for a file the
                      *     sniff gets wrong — and what the UI offers after a failed detect.
@@ -5330,6 +5351,16 @@ export interface components {
             p90_minor: number;
         };
         /**
+         * @description A feed standing between one item and its account, named *with its id* so a UI can offer to
+         *     sync or disable it in place. The message has always named these; without the id the reader
+         *     had to go and find them by name in another screen.
+         */
+        BlockingFeed: {
+            /** Format: int64 */
+            provider_id: number;
+            name: string;
+        };
+        /**
          * @description A rolling 30-days-to-`as_of` cash-movement summary for a brokerage account.
          *
          *     `trades` (buy/sell lot count) is an exact count. `contributions_minor`/
@@ -6016,6 +6047,27 @@ export interface components {
             provider?: string | null;
             created_at: string;
         };
+        /** @description One item's unresolved conflict: nothing of it was written, and here is what it would take. */
+        ImportBlock: {
+            reason: components["schemas"]["ImportBlockReason"];
+            /** @description The sentence to put in front of the reader, built where the specifics are known. */
+            message: string;
+            /** @description The feeds waiting to post. Empty for every reason but [`ImportBlockReason::UnsyncedFeed`]. */
+            feeds: components["schemas"]["BlockingFeed"][];
+        };
+        /**
+         * @description Why one thing in an upload could not be imported, where the obstacle is a conflict that has
+         *     to be *resolved* rather than an account nobody could identify.
+         *
+         *     A block is per item, and that is the whole point of it existing. These conditions are
+         *     properties of one target account — a feed pending on it, a bad row already on it — and an
+         *     upload is routinely a zip of a household's exports going to a dozen accounts. Failing the
+         *     request threw away eleven good imports to report a twelfth's problem, and left the reader no
+         *     way to act on it: the preview never rendered, so the "skip this one" control that was already
+         *     on screen for every other reason was unreachable for this one.
+         * @enum {string}
+         */
+        ImportBlockReason: "unsynced_feed" | "unreadable_ledger_date";
         /**
          * @description Non-transaction records one item wrote. Only the Sharesies source produces any; the field
          *     is empty rather than absent for every other source, so the UI has one shape to render.
@@ -6083,6 +6135,7 @@ export interface components {
             /** @description The cutover the rows were withheld from, if any feed set one. */
             cutover?: string | null;
             reconciliation?: null | components["schemas"]["Reconciliation"];
+            blocked?: null | components["schemas"]["ImportBlock"];
             /** @description Non-transaction records written. Empty for every source but Sharesies. */
             extras: components["schemas"]["ImportExtra"][];
             /**
@@ -6096,7 +6149,7 @@ export interface components {
          *     it pre-selected one, and so a guess is visibly a guess.
          * @enum {string}
          */
-        ImportMatch: "assigned" | "previous_import" | "account_number" | "account_name" | "only_candidate" | "transaction_history";
+        ImportMatch: "assigned" | "previous_import" | "account_number" | "account_name" | "only_candidate" | "account_owner" | "transaction_history";
         /**
          * @description One recorded import: what an upload did to one account, and when.
          *

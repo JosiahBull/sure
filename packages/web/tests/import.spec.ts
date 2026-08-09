@@ -66,7 +66,12 @@ test("the Import page reads a dropped bank export and previews where it is going
   // Choosing one re-runs the preview, because the row count depends on the *target* account's
   // cutover — until an account is chosen the count can only be "all of them", and picking one can
   // only reduce it. The number on the button has to be the number the commit imports.
-  await row.locator("select").selectOption({ label: "Everyday" });
+  // By the option's text, not its exact label: the picker appends the owner to every account, so
+  // matching "Everyday" outright breaks on a change that has nothing to do with this assertion.
+  const select = row.locator("select");
+  await select.selectOption({
+    label: await select.locator("option", { hasText: "Everyday" }).first().innerText(),
+  });
   await expect(row).toContainText("you chose it");
   const commit = page.getByRole("button", { name: /^Import \d+/ });
   await expect(commit).toBeEnabled();
@@ -92,6 +97,118 @@ test("several files picked at once arrive as one upload, described account by ac
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(0)).toContainText("chequing.csv");
   await expect(rows.nth(1)).toContainText("savings.csv");
+});
+
+/**
+ * Skipping one file has to reach the server as a decision, and the row has to read as one.
+ *
+ * The bug: "skip this one" and "nothing matched yet" were the same value, so a skip sent *no*
+ * assignment at all — which only silences the top routing tier and leaves the five below it to
+ * place the file anyway. The row read as skipped and imported regardless.
+ */
+test("skipping one file zeroes it and says so on the wire, not just on screen", async ({
+  page,
+}) => {
+  await goto(page, "/settings/import");
+  const assigns: string[] = [];
+  // Watched rather than stubbed: the preview itself is real, and what is being asserted is the
+  // parameter the panel sends when a row is skipped.
+  page.on("request", (r) => {
+    if (r.url().includes("/api/import?")) assigns.push(new URL(r.url()).search);
+  });
+
+  await fileInput(page).setInputFiles([
+    csvFile("chequing.csv", asbCsv("0000123-50", "95.00", ONE_ROW)),
+    csvFile("savings.csv", asbCsv("0000123-51", "500.00", ONE_ROW)),
+  ]);
+  const rows = page.locator(".import tbody tr");
+  await expect(rows).toHaveCount(2);
+
+  // Matched on the option's text rather than its exact label: the picker names the owner beside
+  // the account, and this test is about the skip, not about how a target is spelled.
+  const target = rows.nth(0).locator("select");
+  await target.selectOption({
+    label: await target.locator("option", { hasText: "Everyday" }).first().innerText(),
+  });
+  await expect(rows.nth(0)).toContainText("you chose it");
+  await rows.nth(1).locator("select").selectOption("skip");
+  await expect(rows.nth(1)).toContainText("skipped");
+
+  // The one that matters: `:skip` is on the request, so the server's evidence tiers can't place
+  // the file behind the reader's back.
+  await expect(() => {
+    expect(assigns.at(-1)).toContain("12-3136-0000123-51%3Askip");
+  }).toPass();
+  // …and the button counts one account, not two.
+  await expect(page.getByRole("button", { name: /^Import \d+ into 1 account$/ })).toBeEnabled();
+});
+
+/**
+ * The whole point of the change: one file's conflict is one file's problem. This used to be a 422
+ * that took the preview with it — no table, no picker, and the only advice pointing at another
+ * screen. Stubbed, because reaching it for real needs an unsynced feed on a seeded account, and
+ * this suite shares its database with the visual baselines.
+ */
+test("a held-up file states its conflict in its own row and leaves the rest importable", async ({
+  page,
+}) => {
+  const item = (sourceAccount: string, accountId: number, blocked: unknown) => ({
+    source_account: sourceAccount,
+    account_id: accountId,
+    account_name: "Everyday",
+    matched_by: "assigned",
+    sources: ["export.csv"],
+    label: "Streamline",
+    covered_from: "2026-07-27",
+    covered_to: "2026-07-28",
+    rows_total: 2,
+    would_import: blocked ? 0 : 2,
+    imported: 0,
+    skipped: 0,
+    held_back: 0,
+    cutover: null,
+    reconciliation: null,
+    blocked,
+    extras: [],
+    warnings: [],
+  });
+  await page.route("**/api/import?**", (route) =>
+    route.fulfill({
+      json: {
+        dry_run: true,
+        source: "asb_csv",
+        items: [
+          item("12-3136-0000123-50", 1, {
+            reason: "unsynced_feed",
+            message:
+              "Emergency Fund is connected to Akahu — Emergency Fund, which has not posted a " +
+              "transaction yet, so this import cannot tell which period belongs to it.",
+            feeds: [{ provider_id: 77, name: "Akahu — Emergency Fund" }],
+          }),
+          item("12-3136-0000123-51", 2, null),
+        ],
+        warnings: [],
+      },
+    })
+  );
+
+  await goto(page, "/settings/import");
+  await fileInput(page).setInputFiles(
+    csvFile("export.csv", asbCsv("0000123-50", "95.00", TWO_ROWS))
+  );
+
+  const held = page.locator(".import tbody tr").first();
+  // The conflict is in the row, not in a page-level banner that killed the table.
+  await expect(held.locator(".blocked")).toContainText("has not posted a transaction yet");
+  await expect(held).toContainText("held up");
+  // All three ways out, in the row: skip it, sync the feed by name, or say what it owns from.
+  await expect(held.getByRole("button", { name: "Skip this file" })).toBeEnabled();
+  await expect(held.getByRole("button", { name: "Sync Akahu — Emergency Fund" })).toBeEnabled();
+  await expect(held.locator("input[type=date]")).toBeVisible();
+
+  // And the rest of the upload is still importable — which is the whole complaint this fixes.
+  await expect(page.getByText(/1 file above is held up and won't be imported/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Import 2 into 1 account$/ })).toBeEnabled();
 });
 
 test("a file that is no export at all is refused, and offers the source picker", async ({

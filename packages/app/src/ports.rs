@@ -543,6 +543,15 @@ pub struct ParsedItem {
     pub source_account: String,
     /// The source's own label for it, where it has one — ASB's product name.
     pub label: Option<String>,
+    /// Whose the source says it is, where the source says so at all. Distinct from
+    /// [`Self::label`] even where an adapter fills both from one value: this one is *matched*
+    /// against the household roster (see `crate::import::routing::match_by_holder`), so a
+    /// product name must never be put here.
+    ///
+    /// Only myIR sets it today, and only because it has to: an SLS account id appears nowhere
+    /// in Sure, so with two student loans in a household nothing else in the file tells them
+    /// apart.
+    pub holder: Option<String>,
     /// The file(s) in the upload these rows came from.
     pub sources: Vec<String>,
     /// Every row, ids assigned, before anything is held back. The pipeline does the holding

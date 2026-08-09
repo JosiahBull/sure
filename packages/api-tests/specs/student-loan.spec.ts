@@ -1,5 +1,5 @@
 import { test, expect } from "../fixtures";
-import { createAccount, makeZip, postOversized } from "../helpers";
+import { createAccount, createPerson, makeZip, postOversized } from "../helpers";
 
 // Akahu reports an IR student loan's balance but no transactions, so the ledger behind the
 // cutover is uploaded from myIR "TAP SLS Transactions" exports. These specs cover what the
@@ -54,9 +54,18 @@ function xlsxFromGrid(grid: string[][]): ArrayBuffer {
  * number-formatted serials — the parser accepts both, and the serial path (what a real
  * export uses) is covered by its unit tests.
  */
-function xlsx(accountId: string, from: string, to: string, rows: Row[]): ArrayBuffer {
+function xlsx(
+  accountId: string,
+  from: string,
+  to: string,
+  rows: Row[],
+  holder = HOLDER
+): ArrayBuffer {
   return xlsxFromGrid([
     ["Account ID:", accountId],
+    // A real export names the borrower here, and with two loans in a household it is the only
+    // thing in the file that says which is which — so every fixture carries it.
+    ["Name:", holder],
     ["From:", from],
     ["To:", to],
     ["Period ending", "Account type", "Date", "Transaction", "Amount"],
@@ -65,6 +74,8 @@ function xlsx(accountId: string, from: string, to: string, rows: Row[]): ArrayBu
 }
 
 const SLS = "012-345-678-SLS004";
+/** IR's `Surname, Given Names` shape with a middle initial. Invented — CLAUDE.md rule 3. */
+const HOLDER = "Reed, Ari K";
 
 /**
  * One loan's import, through the one import endpoint. `assign` names the account outright — the
@@ -94,6 +105,96 @@ async function only(res: Promise<Response> | Response) {
   const body = await (await res).json();
   return { ...body, ...(body.items?.[0] ?? {}) };
 }
+
+/**
+ * Two loans, no assignment, and nothing else in the file to go on: the SLS id matches no Sure
+ * field, both accounts are called the same thing, and neither holds a transaction yet. The
+ * `Name:` preamble is the whole answer, and this is the case the feature exists for.
+ */
+test("routes a myIR export to its owner's loan when the household has two", async ({
+  api,
+  server,
+}) => {
+  const ari = await createPerson(api, "Ari");
+  const sam = await createPerson(api, "Sam");
+  const arisLoan = await createAccount(api, "Student loan", "student_loan", "NZD", {
+    ownership: { kind: "person", person_id: ari.id },
+  });
+  const samsLoan = await createAccount(api, "Student loan", "student_loan", "NZD", {
+    ownership: { kind: "person", person_id: sam.id },
+  });
+
+  // No `assign`, so every tier has to answer for itself.
+  const send = (holder: string) =>
+    fetch(`${server.baseURL}/api/import?${new URLSearchParams({ source: "myir_sls" })}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip" },
+      body: xlsx(
+        SLS,
+        "2024-07-31",
+        "2026-07-31",
+        [["2025-04-14", "Repayment deduction", "-400.00"]],
+        holder
+      ),
+    });
+
+  // The household writes "Sam"; IR writes "Reed, Sam J". The name has to be found *inside*.
+  const sams = await only(send("Reed, Sam J"));
+  expect(sams.account_id).toBe(samsLoan.id);
+  expect(sams.matched_by).toBe("account_owner");
+  expect(sams.imported).toBe(1);
+
+  // The other partner's export lands on the other loan, on the same evidence — not on the one
+  // that now has history, which is the mistake this replaces.
+  const aris = await only(send(HOLDER));
+  expect(aris.account_id).toBe(arisLoan.id);
+  expect(aris.matched_by).toBe("account_owner");
+  expect(aris.imported).toBe(1);
+
+  // A name the household doesn't answer to routes nowhere rather than to the nearest loan.
+  const stranger = await only(send("Nguyen, Toni"));
+  expect(stranger.account_id).toBe(null);
+  expect(stranger.imported).toBe(0);
+  expect(stranger.warnings.join(" ")).toContain("no account was matched");
+});
+
+/**
+ * The mirror: one loan in Sure, and an export that positively names the *other* partner. "It's
+ * the only one there is" stops being an answer — importing someone else's whole repayment
+ * history onto your own balance reads as a successful import and is not recoverable.
+ */
+test("a myIR export naming someone else is not routed to the only loan there is", async ({
+  api,
+  server,
+}) => {
+  const ari = await createPerson(api, "Ari");
+  await createPerson(api, "Sam");
+  await createAccount(api, "Student loan", "student_loan", "NZD", {
+    ownership: { kind: "person", person_id: ari.id },
+  });
+
+  const send = (holder: string) =>
+    fetch(`${server.baseURL}/api/import?${new URLSearchParams({ source: "myir_sls" })}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip" },
+      body: xlsx(
+        SLS,
+        "2024-07-31",
+        "2026-07-31",
+        [["2025-04-14", "Repayment deduction", "-400.00"]],
+        holder
+      ),
+    });
+
+  const theirs = await only(send("Reed, Sam J"));
+  expect(theirs.account_id).toBe(null);
+  expect(theirs.imported).toBe(0);
+
+  // …and the owner's own export still routes there, by the tier that was vetoed above.
+  const mine = await only(send(HOLDER));
+  expect(mine.matched_by).toBe("account_owner");
+  expect(mine.imported).toBe(1);
+});
 
 test("imports a myIR export, flipping IR's sign for a liability", async ({ api, server }) => {
   const acc = await createAccount(api, "Student loan", "student_loan");

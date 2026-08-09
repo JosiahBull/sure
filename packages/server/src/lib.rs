@@ -80,6 +80,7 @@ fn build_state(
         store.clone(),
         store.clone(),
         store.clone(),
+        store.clone(),
         registry.clone(),
         reports.clone(),
     ));

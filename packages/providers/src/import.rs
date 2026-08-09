@@ -112,6 +112,7 @@ impl ImportAdapter for AsbAdapter {
                 .map(|mut export| ParsedItem {
                     source_account: export.account.clone(),
                     label: export.product.clone(),
+                    holder: None,
                     sources: export.sources.clone(),
                     covered_from: export.covered_from.clone(),
                     covered_to: export.covered_to.clone(),
@@ -177,7 +178,10 @@ impl ImportAdapter for MyIrAdapter {
             source: self.source(),
             items: vec![ParsedItem {
                 source_account: export.account_id,
-                label: None,
+                // Both from the one preamble row, and both wanted: the preview shows whose
+                // loan the file says it is, and the routing matches it to the household.
+                label: export.holder.clone(),
+                holder: export.holder,
                 // A loan's exports are the whole upload, so the file names add nothing a
                 // preview would show; the window is what says which downloads these were.
                 sources: Vec::new(),
@@ -286,6 +290,7 @@ impl ImportAdapter for SharesiesAdapter {
             items: vec![ParsedItem {
                 source_account: SHARESIES_ACCOUNT.to_string(),
                 label: None,
+                holder: None,
                 sources: Vec::new(),
                 covered_from: None,
                 covered_to: None,
@@ -348,6 +353,7 @@ impl ImportAdapter for CsvUploadAdapter {
             items: vec![ParsedItem {
                 source_account: CSV_ACCOUNT.to_string(),
                 label: None,
+                holder: None,
                 sources: Vec::new(),
                 covered_from: dates().min().map(str::to_string),
                 covered_to: dates().max().map(str::to_string),

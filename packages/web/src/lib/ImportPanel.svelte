@@ -13,6 +13,7 @@
   // was on screen is exactly what runs.
   import { onMount } from "svelte";
   import { api, formatMoney, type Schemas } from "./api";
+  import { ensureLoaded as ensurePeople, ownershipLabel } from "./people.svelte";
   import { uploadBody } from "./zip";
 
   let {
@@ -32,6 +33,7 @@
     account_number: "matches the stored account number",
     account_name: "the number appears in the account name",
     only_candidate: "the only account this can go to",
+    account_owner: "the export names its owner",
     transaction_history: "its transactions match this account's",
   };
 
@@ -42,15 +44,28 @@
     csv_upload: "transaction CSV",
   };
 
-  let busy = $state<null | "preview" | "refresh" | "import" | "undo">(null);
+  let busy = $state<null | "preview" | "refresh" | "import" | "undo" | "sync">(null);
   let error = $state<string | null>(null);
   let preview = $state<Result | null>(null);
   let done = $state<Result | null>(null);
   let pending = $state<File[]>([]);
   let fileInput = $state<HTMLInputElement | null>(null);
   let dragging = $state(false);
-  /** Chosen account per source account, keyed so a re-render can't lose it. */
-  let chosen = $state<Record<string, number | null>>({});
+  /**
+   * Chosen account per source account, keyed so a re-render can't lose it.
+   *
+   * Three states, and the third is not a spelling of the second. `null` is *undecided* — nothing
+   * matched and nobody has said what to do — and is sent as no assignment at all, leaving the
+   * server's evidence tiers to answer. `"skip"` is a decision, and is sent as one: omitting it
+   * would let those same tiers place the file anyway, which is exactly what "skip this one" used
+   * to do.
+   */
+  let chosen = $state<Record<string, number | "skip" | null>>({});
+  /**
+   * The date a pending feed owns from, per source account, where the person importing has stated
+   * one. The third way out of an `unsynced_feed` block — see the row's own explanation.
+   */
+  let statedCutover = $state<Record<string, string>>({});
   let accounts = $state<Schemas["Account"][]>([]);
   // On by default, matching the endpoint: without it an imported history starts from nothing,
   // because an account reads as 0 before its earliest transaction.
@@ -69,6 +84,10 @@
       api.GET("/api/imports", {
         params: { query: accountId === undefined ? {} : { account_id: accountId } },
       }),
+      // Needed before the targets are drawn: two people's student loans are routinely both
+      // called "Student loan", and without the owner beside it the picker offers two
+      // identical options.
+      ensurePeople(),
     ]);
     accounts = (a.data ?? []).filter((x) => !x.archived);
     history = h.data ?? [];
@@ -79,7 +98,7 @@
    * A binary upload doesn't fit the JSON client (openapi-fetch serialises bodies), so post the
    * bytes straight to the same-origin API — dev proxies `/api` to the backend.
    */
-  async function post(files: File[], dryRun: boolean, assign?: string) {
+  async function post(files: File[], dryRun: boolean, assign?: string, cutover?: string) {
     const built = await uploadBody(files);
     if ("error" in built) throw new Error(built.error);
 
@@ -88,6 +107,7 @@
       opening_balance: String(openingBalance),
     });
     if (assign) params.set("assign", assign);
+    if (cutover) params.set("cutover", cutover);
     if (sourceOverride) params.set("source", sourceOverride);
     const res = await fetch(`/api/import?${params}`, {
       method: "POST",
@@ -142,7 +162,7 @@
     if (pending.length === 0 || busy === "refresh" || busy === "import") return;
     busy = "refresh";
     try {
-      preview = await post(pending, true, assignments);
+      preview = await post(pending, true, assignments, cutovers);
     } catch (e) {
       error = e instanceof Error ? e.message : "Could not re-read that file.";
     }
@@ -154,7 +174,7 @@
     busy = "import";
     error = null;
     try {
-      done = await post(pending, false, assignments);
+      done = await post(pending, false, assignments, cutovers);
       cancel();
       await load();
       onchange?.();
@@ -164,10 +184,40 @@
     busy = null;
   }
 
+  /**
+   * Sync a feed that is holding one file up, then re-preview.
+   *
+   * The recommended way out of an `unsynced_feed` block, and the reason the block carries its
+   * feeds by id: the advice used to be "sync it, then import again", which meant leaving this
+   * screen, finding the connection, syncing it, and picking the files a second time. A failed
+   * sync is reported and changes nothing — the block simply stands.
+   */
+  async function syncFeed(providerId: number) {
+    busy = "sync";
+    error = null;
+    notice = null;
+    const { error: e } = await api.POST("/api/providers/{id}/sync", {
+      params: { path: { id: providerId } },
+      body: {},
+    });
+    busy = null;
+    if (e) {
+      error =
+        (e as { error?: { message?: string } })?.error?.message ??
+        "That feed could not be synced, so it still owns a period this import can't see.";
+      return;
+    }
+    notice = "Synced. Re-reading the files against what it posted…";
+    await refresh();
+    // Only meaningful until the next thing happens, and the refreshed table says the rest.
+    notice = null;
+  }
+
   function cancel() {
     preview = null;
     pending = [];
     sourceOverride = "";
+    statedCutover = {};
   }
 
   async function undo(source: Source) {
@@ -205,15 +255,44 @@
     choose([...(e.dataTransfer?.files ?? [])]);
   }
 
-  /** Every assignment on screen, so the commit can't drift from the preview. */
+  /**
+   * Every assignment on screen, so the commit can't drift from the preview — `skip` included,
+   * because that is a decision the server has to be told. Only *undecided* rows are left out.
+   */
   const assignments = $derived(
     Object.entries(chosen)
       .filter(([, id]) => id !== null)
       .map(([source, id]) => `${source}:${id}`)
       .join(","),
   );
-  const ready = $derived(Object.values(chosen).filter((id) => id !== null).length);
-  const rowsFor = (x: Item) => (chosen[x.source_account] === null ? 0 : x.would_import);
+  /**
+   * Every stated cutover, for the rows whose feed hasn't posted yet. Sent on the preview too, so
+   * the row count on the button is the count a date actually produces rather than a promise.
+   */
+  const cutovers = $derived(
+    Object.entries(statedCutover)
+      .filter(([, date]) => date)
+      .map(([source, date]) => `${source}:${date}`)
+      .join(","),
+  );
+  /**
+   * Items that will actually import: an account chosen, and no unresolved block standing in the
+   * way. A blocked one is deliberately not counted — the button would otherwise promise "into 2
+   * accounts" while one of them takes nothing.
+   */
+  const ready = $derived(
+    (preview?.items ?? []).filter(
+      (x) => typeof chosen[x.source_account] === "number" && !x.blocked,
+    ).length,
+  );
+  const rowsFor = (x: Item) =>
+    typeof chosen[x.source_account] === "number" ? x.would_import : 0;
+  /** The items whose target account has a conflict, still unresolved on the last preview. */
+  const blocked = $derived(
+    (preview?.items ?? []).filter(
+      (x) => x.blocked && typeof chosen[x.source_account] === "number",
+    ),
+  );
   const totalRows = $derived((preview?.items ?? []).reduce((n, x) => n + rowsFor(x), 0));
   /** Only worth asking about when a source in this upload can actually offer one. */
   const offersOpening = $derived(
@@ -227,12 +306,32 @@
 
   const money = (minor: number | null | undefined, ccy: string) =>
     minor === null || minor === undefined ? "—" : formatMoney(minor, ccy);
-  const currencyOf = (id: number | null) =>
+  const currencyOf = (id: number | "skip" | null) =>
     accounts.find((a) => a.id === id)?.currency_code ?? currency;
+  /**
+   * The default date to offer for a pending feed: today. The file's history is the past, and a
+   * feed nobody has synced yet has posted nothing — so "it owns from today" imports everything
+   * on hand and leaves the future to it. It is only a default; the input is there because the
+   * person may know better, and the row says what the risk is if they don't.
+   */
+  const today = () => new Date().toISOString().slice(0, 10);
   const nameOf = (id: number) => accounts.find((a) => a.id === id)?.name ?? `account ${id}`;
   /** The accounts a source can legitimately go to, so the picker can't offer a wrong one. */
   const targetsFor = (source: Source) =>
     accounts.filter((a) => ACCEPTS[source](a.kind));
+  /**
+   * An account as the picker names it. The owner is always appended, not just when two names
+   * collide: a household's two student loans are both "Student loan", and a label that only
+   * disambiguates *sometimes* is one you can't trust the rest of the time.
+   */
+  const optionLabel = (a: Schemas["Account"]) => `${a.name} · ${ownershipLabel(a.ownership)}`;
+  /** The full label of what's currently picked — the closed `<select>` truncates it. */
+  const chosenLabel = (sourceAccount: string) => {
+    const id = chosen[sourceAccount];
+    if (typeof id !== "number") return undefined;
+    const account = accounts.find((a) => a.id === id);
+    return account && optionLabel(account);
+  };
   const BANK_KINDS = ["cash", "bank", "savings", "credit_card", "revolving_credit"];
   const ACCEPTS: Record<Source, (kind: string) => boolean> = {
     asb_csv: (k) => BANK_KINDS.includes(k),
@@ -285,7 +384,14 @@
           {#each done.items as x}
             <tr>
               <td class="mono small">{x.source_account}</td>
-              <td>{x.account_name ?? "— not imported"}</td>
+              <td>
+                {x.account_name ?? "— not imported"}
+                <!-- Named here too, because the commit no longer stops for it: the reader needs
+                     to see which file is still waiting once the rest have landed. -->
+                {#if x.blocked}
+                  <div class="small warn-text">still held up — {x.blocked.message}</div>
+                {/if}
+              </td>
               <td class="num tabular">{x.imported}</td>
               <td class="num tabular faint">{x.skipped}</td>
               <td class="num tabular faint">{x.held_back}</td>
@@ -294,7 +400,11 @@
         </tbody>
       </table>
     </div>
-    {#each attributed(done.items) as w}<div class="warn-banner">{w}</div>{/each}
+    <!-- A blocked item's reason is already in its row; repeating it as a banner reads as a second
+         problem. -->
+    {#each attributed(done.items.filter((x) => !x.blocked)) as w}
+      <div class="warn-banner">{w}</div>
+    {/each}
     <div class="row" style="gap:8px;justify-content:flex-end;margin-top:10px">
       <button class="btn btn-sm" onclick={() => (done = null)}>Done</button>
     </div>
@@ -349,10 +459,18 @@
                   bind:value={chosen[x.source_account]}
                   onchange={refresh}
                   disabled={busy !== null || accountId !== undefined}
+                  title={chosenLabel(x.source_account)}
                 >
-                  <option value={null}>— skip this one —</option>
+                  <!-- `null` is undecided and stays unlabelled; "skip" is a choice, and is one
+                       the server is told about so its evidence tiers don't place the file
+                       anyway. The two used to be the same value, which is why skipping a row
+                       zeroed it on screen and imported it regardless. -->
+                  {#if chosen[x.source_account] === null}
+                    <option value={null}>— choose an account —</option>
+                  {/if}
+                  <option value="skip">— skip this one —</option>
                   {#each targetsFor(preview.source) as a}
-                    <option value={a.id}>{a.name}</option>
+                    <option value={a.id}>{optionLabel(a)}</option>
                   {/each}
                 </select>
                 {#if x.matched_by && chosen[x.source_account] === x.account_id}
@@ -360,9 +478,68 @@
                 {:else if !x.matched_by && chosen[x.source_account] === null}
                   <div class="small warn-text">nothing matched — choose one</div>
                 {/if}
+
+                <!-- The conflict, and every way out of it, in the row it belongs to. This used
+                     to be a 422 that took the whole upload with it: no table, no picker, and
+                     the only advice ("sync it, then import again") pointing at another screen. -->
+                {#if x.blocked && typeof chosen[x.source_account] === "number"}
+                  {@const block = x.blocked}
+                  <div class="blocked">
+                    <div class="small">{block.message}</div>
+                    <div class="row wrap" style="gap:6px;align-items:center;margin-top:6px">
+                      <!-- Only where the picker above can undo it. Pre-scoped to one account the
+                           picker is disabled, so a skip would be a one-way door — and there
+                           "import nothing of the only file" is what Cancel already does. -->
+                      {#if accountId === undefined}
+                        <button
+                          class="btn btn-sm"
+                          onclick={() => {
+                            chosen[x.source_account] = "skip";
+                            refresh();
+                          }}
+                          disabled={busy !== null}
+                        >
+                          Skip this file
+                        </button>
+                      {/if}
+                      {#each block.feeds as feed}
+                        <button
+                          class="btn btn-sm"
+                          onclick={() => syncFeed(feed.provider_id)}
+                          disabled={busy !== null}
+                        >
+                          {busy === "sync" ? "Syncing…" : `Sync ${feed.name}`}
+                        </button>
+                      {/each}
+                      {#if block.reason === "unsynced_feed"}
+                        <label class="small faint" style="display:flex;gap:4px;align-items:center">
+                          or it owns from
+                          <input
+                            class="input"
+                            type="date"
+                            style="width:15ch"
+                            value={statedCutover[x.source_account] ?? today()}
+                            onchange={(e) => {
+                              statedCutover[x.source_account] = (
+                                e.currentTarget as HTMLInputElement
+                              ).value;
+                              refresh();
+                            }}
+                            disabled={busy !== null}
+                          />
+                        </label>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
               </td>
               <td class="num">
                 <div class="tabular">{rowsFor(x)}</div>
+                {#if x.blocked && typeof chosen[x.source_account] === "number"}
+                  <div class="small warn-text">held up</div>
+                {:else if chosen[x.source_account] === "skip"}
+                  <div class="small faint">skipped</div>
+                {/if}
                 {#if x.held_back > 0}
                   <div class="small faint">
                     {x.held_back} held back{x.cutover ? ` from ${x.cutover}` : ""}
@@ -404,9 +581,13 @@
       </table>
     </div>
 
-    <!-- Only for items that are actually going somewhere: a skipped row's own "nothing matched"
-         hint already says the rest, and a dozen copies of it is noise. -->
-    {#each attributed(preview.items.filter((x) => chosen[x.source_account] !== null)) as w}
+    <!-- Only for items that are actually going somewhere: a skipped row's own hint already says
+         the rest, and a dozen copies of it is noise. A blocked row is excluded too — its
+         conflict is stated in the row, beside the buttons that resolve it, and repeating it down
+         here would read as a second, separate problem. -->
+    {#each attributed(
+      preview.items.filter((x) => typeof chosen[x.source_account] === "number" && !x.blocked),
+    ) as w}
       <div class="warn-banner">{w}</div>
     {/each}
 
@@ -427,7 +608,16 @@
       {:else}
         <span></span>
       {/if}
-      <div class="row" style="gap:8px">
+      <div class="row wrap" style="gap:8px;align-items:center">
+        <!-- Said before the button, not after the import: one unresolved file no longer stops the
+             others, and the reader should know that is what they are about to do. -->
+        {#if blocked.length && ready > 0}
+          <span class="small warn-text" style="max-width:38ch">
+            {blocked.length} file{blocked.length === 1 ? "" : "s"} above {blocked.length === 1
+              ? "is"
+              : "are"} held up and won't be imported. The rest will.
+          </span>
+        {/if}
         <button class="btn btn-sm" onclick={cancel} disabled={busy !== null}>Cancel</button>
         <button
           class="btn btn-sm btn-primary"
@@ -597,6 +787,16 @@
   .warn-text {
     color: var(--warn);
   }
+  /* Inside the row it belongs to, and wide enough to read: the whole point is that one file's
+     conflict is one file's problem, so it must not look like a page-level failure. */
+  .blocked {
+    margin-top: 6px;
+    padding: 8px;
+    border: 1px solid color-mix(in srgb, var(--warn) 38%, transparent);
+    background: color-mix(in srgb, var(--warn) 8%, transparent);
+    border-radius: var(--r);
+    max-width: 46ch;
+  }
   .opening {
     display: flex;
     gap: 6px;
@@ -613,8 +813,10 @@
   .num {
     text-align: right;
   }
+  /* Wide enough for "<account> · <owner>", which is the whole point of the label — the closed
+     control still truncates for a long pair, so it also carries a `title`. */
   .import :global(.select) {
-    max-width: 22ch;
+    max-width: 28ch;
   }
   .confirm {
     margin-top: 10px;

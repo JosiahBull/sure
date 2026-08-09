@@ -55,7 +55,20 @@ pub struct ImportQuery {
     /// Which Sure account each thing in the upload belongs to, as
     /// `12-3456-0000123-50:8,12-3456-0000123-51:12`. Overrides whatever the routing tiers would
     /// have worked out, and is how the UI commits exactly what its preview showed.
+    ///
+    /// `12-3456-0000123-51:skip` imports nothing of that one. That is a statement, not the
+    /// absence of one: leaving an item out of this parameter only means the assignment tier has
+    /// nothing to say about it, and the evidence tiers below go on to place it anyway.
     pub assign: Option<String>,
+    /// The date a feed that has **never posted** owns from, per thing in the upload, as
+    /// `12-3456-0000123-50:2026-08-01`. The third way out of an `unsynced_feed` block, for when
+    /// syncing the feed and disabling it are both wrong — only the person importing can know when
+    /// a silent feed will start posting from.
+    ///
+    /// Ignored wherever the cutover can be derived, which is what stops it widening an import:
+    /// an account whose feeds have posted, or whose balance-derived connection states its own
+    /// start date, keeps the window they establish and the item says so in its warnings.
+    pub cutover: Option<String>,
     /// Read the upload as this source instead of sniffing it. The escape hatch for a file the
     /// sniff gets wrong — and what the UI offers after a failed detect.
     pub source: Option<String>,
@@ -69,6 +82,7 @@ impl ImportQuery {
             // and the preview shows the figure before anything is written.
             opening_balance: self.opening_balance.unwrap_or(true),
             assign: self.assign.clone(),
+            cutover: self.cutover.clone(),
             source: self.source.as_deref().map(parse_source).transpose()?,
         })
     }
@@ -93,6 +107,12 @@ fn parse_source(raw: &str) -> AppResult<ImportSource> {
 /// Idempotent — re-uploading the same file imports nothing new, so overlapping download windows
 /// are free. A zip spanning several accounts is reported account by account, and anything the
 /// routing tiers can't place is described rather than guessed at.
+///
+/// **One thing in an upload cannot fail the upload.** An item nothing could place, and an item
+/// whose target account has a conflict to resolve (`blocked`), are both reported in `items` with
+/// nothing written for them, while every other item imports. A 422 is reserved for what makes the
+/// whole request unanswerable: an unreadable blob, an upload over the size cap, or an `?assign=`
+/// naming an account that doesn't exist or can't take this file.
 #[utoipa::path(post, path = "/api/import", tag = "transactions",
     params(ImportQuery),
     request_body(content = Vec<u8>, description = "An export file, or a .zip of them", content_type = "application/octet-stream"),

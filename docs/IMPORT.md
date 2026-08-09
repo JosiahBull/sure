@@ -91,12 +91,46 @@ would both produce a silent `None`, which imports the file whole. So
 
 | Rule | Sources | On a connected but silent feed |
 | --- | --- | --- |
-| `Strict` | ASB, plain CSV | **Refuse.** One re-upload against a doubled ledger nobody notices. |
+| `Strict` | ASB, plain CSV | **Block that item.** One re-upload against a doubled ledger nobody notices. |
 | `Lenient` | myIR | Take it at face value: IR posts no transactions, so nothing is waiting. |
 | `Never` | Sharesies | No cutover at all — nothing else posts a wallet, a lot, or a dividend. |
 
-Refusing myIR would give advice ("sync it, then import again") that can never come true, which is
+Blocking myIR would give advice ("sync it, then import again") that can never come true, which is
 the whole reason the rule is a property of the source rather than one behaviour for all of them.
+
+**A block is one item's, never the upload's.** It is a fact about one target account, and an upload
+is routinely a zip bound for a dozen of them, so the item carries an
+[`ImportBlock`](../packages/core/src/import.rs) — `reason`, the sentence to show, and the feeds by
+id — with `would_import: 0` and nothing written, while every other item imports. It was an `Err`
+out of the service until 2026-08-08, which made one pending feed fail the whole request: eleven
+good imports thrown away to report a twelfth's problem, and the preview died with it, so the "skip
+this one" control that would have resolved it never rendered.
+
+Three ways out, all of them in the row that reported it:
+
+* **Sync the feed** — then its posted rows establish the cutover the ordinary way. The ids in
+  `feeds` are what let the panel offer this in place rather than sending the reader to another
+  screen.
+* **Disable it** — nothing will ever post, so there is no window to hold back.
+* **State the date it owns from**, per item, as `?cutover=<source account>:<YYYY-MM-DD>`. Only the
+  person importing can know when a feed that has never spoken will start. This is the *one* input
+  to the cutover, and it stays consistent with the heading above by being consulted **only** where
+  the derivation is blocked and the reason is one a date can answer
+  (`ImportBlockReason::resolvable_by_stating_cutover` — an unreadable ledger date is not, because
+  the read a date would be checked against is the broken thing). Where the feeds do establish a
+  window, theirs wins and the item's warnings say the stated date went unused. So a caller cannot
+  widen an import by passing a later date; they can only answer a question nothing else can.
+
+An unreadable `posted_at` on the account blocks the same way (`unreadable_ledger_date`): it is
+`MIN()` under SQLite's BINARY collation, where a non-ISO date sorts ahead of every ISO one, so that
+single row is exactly the one that would have decided the window.
+
+### Skipping one thing in an upload
+
+`?assign=<source account>:skip` imports nothing of that item. It has to be a statement rather than
+an omission: leaving an item out of `assign` only silences the top routing tier, and the five below
+it go on to place the file anyway. The UI's "skip this one" *was* that omission until 2026-08-08 —
+it zeroed the row on screen and imported it regardless.
 
 ### Routing an upload to an account
 
@@ -115,7 +149,16 @@ order of how much each tier *proves*, and only an unambiguous answer counts:
    Sharesies export that names nothing). *Not* for a bank export: that carries an account number
    the tiers above already tried, so if they found nothing the honest reading is "that account
    isn't in Sure yet", not "it must be the one that is".
-5. **The transactions the account already holds** — matching the export's rows against them.
+5. **Whose the export says it is** — a myIR preamble carries a `Name:` beside the SLS id, and Sure
+   already knows who owns which account. The household's name has to be found *inside* the
+   export's, not equal it, because IR writes `Surname, Given Names` with a middle initial that a
+   roster of "Ari" and "Sam" will never carry; single-letter tokens are dropped from both sides so
+   an initial can't match on its own. One person and one of their accounts, or it declines. This
+   is the only tier that separates a household's two student loans on a *first* import — the SLS
+   id matches no Sure field, and there is no history to infer from yet — and it runs *before*
+   content matching because it is still an identifier the source stated. It also vetoes tier 4:
+   an export naming Sam must not land on the one loan there happens to be when that loan is Ari's.
+6. **The transactions the account already holds** — matching the export's rows against them.
    Signed amounts and one day's tolerance, because a feed and the bank disagree about *when* far
    more than about what (exact dates matched 1 row in 161 across one account's overlapping year;
    one day's slack matched 161 of 161). At least 10 matched rows and 80% of the overlapping
@@ -131,7 +174,7 @@ number — which is a thing to say, not to quietly route around.
 | Source | File | Names an account? | Cutover | Reconciles | Extras |
 | --- | --- | --- | --- | --- | --- |
 | `asb_csv` | ASB "Export transactions" `.csv`, either shape, or a `.zip` spanning accounts | yes, its number | `Strict` | yes, stated closing balance | — |
-| `myir_sls` | myIR "TAP SLS Transactions" `.xlsx`, or a `.zip` of them | an SLS id | `Lenient` | no | — |
+| `myir_sls` | myIR "TAP SLS Transactions" `.xlsx`, or a `.zip` of them | an SLS id, and the borrower's name | `Lenient` | no | — |
 | `sharesies_zip` | a Sharesies export `.zip` | no | `Never` | no | holdings, dividends |
 | `csv_upload` | any `.csv` with `date` and `amount` | no | `Strict` | no | — |
 

@@ -250,6 +250,11 @@ pub enum ImportMatch {
     /// one thing (one student loan, one brokerage) and there is one candidate; never used
     /// where two accounts could both be meant.
     OnlyCandidate,
+    /// The export names a person, exactly one household member answers to that name, and
+    /// exactly one account this source accepts is theirs. The tier that tells two student
+    /// loans apart, where the file's own identifier (an SLS account id) matches no Sure
+    /// field and [`Self::OnlyCandidate`] has to decline.
+    AccountOwner,
     /// The item's own rows match the transactions this account already holds, over the
     /// window both cover. The last resort, for an account whose number nothing recorded —
     /// but evidence-rich when it fires: a busy account's run of dated amounts is close to a
@@ -267,9 +272,76 @@ impl ImportMatch {
             AccountNumber => "account_number",
             AccountName => "account_name",
             OnlyCandidate => "only_candidate",
+            AccountOwner => "account_owner",
             TransactionHistory => "transaction_history",
         }
     }
+}
+
+/// Why one thing in an upload could not be imported, where the obstacle is a conflict that has
+/// to be *resolved* rather than an account nobody could identify.
+///
+/// A block is per item, and that is the whole point of it existing. These conditions are
+/// properties of one target account — a feed pending on it, a bad row already on it — and an
+/// upload is routinely a zip of a household's exports going to a dozen accounts. Failing the
+/// request threw away eleven good imports to report a twelfth's problem, and left the reader no
+/// way to act on it: the preview never rendered, so the "skip this one" control that was already
+/// on screen for every other reason was unreachable for this one.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportBlockReason {
+    /// A connected, enabled feed on the target account has posted nothing yet, so the period it
+    /// owns cannot be derived from the ledger and this source may not guess — see
+    /// [`CutoverRule::Strict`]. Resolvable three ways: sync the feed, disable it, or state the
+    /// date it owns from.
+    UnsyncedFeed,
+    /// A `posted_at` already on the account won't parse, and under SQLite's BINARY collation a
+    /// non-ISO date sorts ahead of every ISO one — so that single row is exactly the one
+    /// `MIN(posted_at)` would have derived the cutover from. Correcting the row is the only
+    /// resolution; a stated date would be built on the same broken read.
+    UnreadableLedgerDate,
+}
+
+impl ImportBlockReason {
+    /// The wire representation (snake_case) — matches `#[serde(rename_all = "snake_case")]`.
+    pub fn as_str(self) -> &'static str {
+        use ImportBlockReason::*;
+        match self {
+            UnsyncedFeed => "unsynced_feed",
+            UnreadableLedgerDate => "unreadable_ledger_date",
+        }
+    }
+
+    /// Whether stating the cutover date outright is a legitimate way out of this block. Only the
+    /// person importing can know when a feed that has never spoken will start posting from, so
+    /// for [`Self::UnsyncedFeed`] their answer is the best evidence there is. An unreadable row
+    /// is the opposite: the read the date would be checked against is the broken thing.
+    pub fn resolvable_by_stating_cutover(self) -> bool {
+        use ImportBlockReason::*;
+        match self {
+            UnsyncedFeed => true,
+            UnreadableLedgerDate => false,
+        }
+    }
+}
+
+/// A feed standing between one item and its account, named *with its id* so a UI can offer to
+/// sync or disable it in place. The message has always named these; without the id the reader
+/// had to go and find them by name in another screen.
+#[derive(Debug, Clone, Serialize, ToSchema, PartialEq, Eq)]
+pub struct BlockingFeed {
+    pub provider_id: i64,
+    pub name: String,
+}
+
+/// One item's unresolved conflict: nothing of it was written, and here is what it would take.
+#[derive(Debug, Clone, Serialize, ToSchema, PartialEq, Eq)]
+pub struct ImportBlock {
+    pub reason: ImportBlockReason,
+    /// The sentence to put in front of the reader, built where the specifics are known.
+    pub message: String,
+    /// The feeds waiting to post. Empty for every reason but [`ImportBlockReason::UnsyncedFeed`].
+    pub feeds: Vec<BlockingFeed>,
 }
 
 /// Which kind of record an [`ImportExtra`] counts — the things a source writes that aren't
@@ -357,6 +429,10 @@ pub struct ImportItem {
     /// Present only for a source whose export states a balance to check — see
     /// [`Reconciliation`].
     pub reconciliation: Option<Reconciliation>,
+    /// Set when a conflict on the target account stopped *this item* — nothing of it was
+    /// written, whatever the rest of the upload did. `Some` and `imported > 0` is a
+    /// contradiction: the block is decided before the only write.
+    pub blocked: Option<ImportBlock>,
     /// Non-transaction records written. Empty for every source but Sharesies.
     pub extras: Vec<ImportExtra>,
     /// Non-fatal observations — an unfamiliar transaction type, rows held back, a balance

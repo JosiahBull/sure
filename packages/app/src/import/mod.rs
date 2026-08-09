@@ -29,18 +29,20 @@
 
 pub mod routing;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::NaiveDate;
 use sure_core::{
-    Account, AppError, AppResult, CutoverRule, ImportExtra, ImportExtraKind, ImportItem,
-    ImportMatch, ImportRecord, ImportResult, ImportSource, ImportUndoResult, Provider,
-    Reconciliation,
+    Account, AppError, AppResult, BlockingFeed, CutoverRule, ImportBlock, ImportBlockReason,
+    ImportExtra, ImportExtraKind, ImportItem, ImportMatch, ImportRecord, ImportResult,
+    ImportSource, ImportUndoResult, Provider, Reconciliation,
 };
 
 use crate::ports::{
     AccountRepo, BrokerageRepo, ImportHistoryRepo, ImportRegistry, ImportRow, NewImport,
-    ParsedExtras, ParsedItem, ParsedUpload, ProviderRegistry, ProviderRepo, TransactionRepo,
+    ParsedExtras, ParsedItem, ParsedUpload, PersonRepo, ProviderRegistry, ProviderRepo,
+    TransactionRepo,
 };
 use crate::reports::{ReportQuery, ReportService};
 
@@ -54,9 +56,15 @@ pub struct ImportOptions {
     /// account reads as 0 before its earliest transaction. Ignored by sources whose exports
     /// state no closing balance to work back from.
     pub opening_balance: bool,
-    /// `<source account>:<account id>` pairs, already parsed. Overrides every other routing
-    /// tier, and is how a UI commits exactly what its preview showed.
+    /// `<source account>:<account id>` pairs, or `<source account>:skip`. Overrides every other
+    /// routing tier, and is how a UI commits exactly what its preview showed — including the
+    /// decision to leave one thing in the upload alone.
     pub assign: Option<String>,
+    /// `<source account>:<YYYY-MM-DD>` pairs: the date a feed that has never posted owns from,
+    /// stated by the person importing. Consulted **only** where the derivation is blocked and
+    /// the block is one a stated date can resolve — a feed that has posted still decides its own
+    /// window (see [`routing::parse_cutovers`]).
+    pub cutover: Option<String>,
     /// The source to read the blob as, when the caller knows better than the sniffer.
     pub source: Option<ImportSource>,
 }
@@ -80,6 +88,7 @@ pub struct Imported {
 pub struct ImportService {
     registry: Arc<dyn ImportRegistry>,
     accounts: Arc<dyn AccountRepo>,
+    people: Arc<dyn PersonRepo>,
     transactions: Arc<dyn TransactionRepo>,
     providers: Arc<dyn ProviderRepo>,
     brokerage: Arc<dyn BrokerageRepo>,
@@ -93,6 +102,7 @@ impl ImportService {
     pub fn new(
         registry: Arc<dyn ImportRegistry>,
         accounts: Arc<dyn AccountRepo>,
+        people: Arc<dyn PersonRepo>,
         transactions: Arc<dyn TransactionRepo>,
         providers: Arc<dyn ProviderRepo>,
         brokerage: Arc<dyn BrokerageRepo>,
@@ -103,6 +113,7 @@ impl ImportService {
         Self {
             registry,
             accounts,
+            people,
             transactions,
             providers,
             brokerage,
@@ -183,18 +194,32 @@ impl ImportService {
             &prior,
         )
         .await?;
+        // The household, for the sources that name whose an export is (myIR does; nothing
+        // else does yet). Two rows, read once per upload rather than per item.
+        let people = self.people.list().await?;
+        let sole = routing::only_candidate(source, &upload.items, &accounts, &people);
         let table = routing::Routing {
             assigned,
             prior,
             by_history,
+            people,
         };
-        let sole = routing::only_candidate(source, upload.items.len(), &accounts);
+
+        let stated = routing::parse_cutovers(opts.cutover.as_deref())?;
 
         let mut items = Vec::new();
         let mut follow_up = None;
         for item in upload.items {
-            let target = routing::resolve(&item.source_account, &accounts, &table).or(sole);
-            let (one, next) = self.import_one(source, item, target, opts).await?;
+            // An explicit skip is answered here rather than by handing `resolve` a `None` target,
+            // so the report says what happened. "Nothing matched this export" and "you told me
+            // not to import this one" are different sentences, and the second one is not a
+            // problem to be fixed.
+            if table.assigned.get(&item.source_account) == Some(&routing::Assignment::Skip) {
+                items.push(describe_skipped(&item));
+                continue;
+            }
+            let target = routing::resolve(&item, &accounts, &table).or(sole);
+            let (one, next) = self.import_one(source, item, target, opts, &stated).await?;
             follow_up = follow_up.or(next);
             items.push(one);
         }
@@ -218,12 +243,21 @@ impl ImportService {
     /// skipped: reporting "we don't know where this goes" is the only honest option, since
     /// putting a savings account's history into a chequing account is not a recoverable
     /// mistake.
+    ///
+    /// **Every refusal in here is this item's**, never the upload's. An unresolved cutover, a
+    /// wrong account, an unreadable ledger date: each is a fact about one target account, and an
+    /// upload is routinely a zip of a household's exports bound for a dozen of them. Returning
+    /// `Err` for one of these threw away every other item's import to report a problem with
+    /// this one — and took the preview with it, so the "skip this one" control that would have
+    /// resolved it never rendered. What survives as an `Err` is what genuinely stops the whole
+    /// request: a database that won't answer.
     async fn import_one(
         &self,
         source: ImportSource,
         mut item: ParsedItem,
         target: Option<(&Account, ImportMatch)>,
         opts: &ImportOptions,
+        stated_cutovers: &HashMap<String, NaiveDate>,
     ) -> AppResult<(ImportItem, Option<FollowUp>)> {
         let mut warnings = std::mem::take(&mut item.warnings);
         let Some((account, matched_by)) = target else {
@@ -239,14 +273,54 @@ impl ImportService {
         // Counted before anything is held back, so "rows in the file" means what it says.
         let rows_total = item.rows.len() as i64;
         let provider_tag = source.provider_tag(account.id);
-        let cutover = self.cutover_for(source, account, &provider_tag).await?;
+        let stated = stated_cutovers.get(&item.source_account).copied();
+        let cutover = match self
+            .cutover_for(source, account, &provider_tag, stated)
+            .await?
+        {
+            Cutover::Whole => None,
+            Cutover::From(date) => {
+                if let Some(stated) = stated.filter(|s| *s != date) {
+                    // The derivation answered, so the account's own feeds decided the window and
+                    // the stated date was not used. Silence here would leave someone believing a
+                    // date they chose is holding rows back that it isn't.
+                    warnings.push(format!(
+                        "the cutover you gave ({stated}) was not used: {}'s own feeds already \
+                         establish that they own everything from {date}, which is the date this \
+                         import held back from",
+                        account.name
+                    ));
+                }
+                Some(date)
+            }
+            Cutover::Blocked(block) => {
+                // This item only. Nothing of it is written, the reason travels with it, and the
+                // rest of the upload carries on to its own accounts.
+                let mut out =
+                    describe(&item, rows_total, Some(account), Some(matched_by), warnings);
+                out.would_import = 0;
+                out.blocked = Some(block);
+                return Ok((out, None));
+            }
+        };
         let held_back = hold_back(&mut item, cutover);
         if let (Some(cutover), true) = (cutover, held_back > 0) {
-            warnings.push(format!(
-                "{held_back} row(s) from {cutover} onward were held back: a connected feed \
-                 already covers that period, and importing them again would count the same money \
-                 twice"
-            ));
+            // Two different claims, and they must not be confused. A derived cutover is a fact —
+            // the feed has posted from there. A stated one is a prediction the person made, and
+            // the risk it carries is theirs to see.
+            warnings.push(if stated == Some(cutover) {
+                format!(
+                    "{held_back} row(s) from {cutover} onward were held back, because that is the \
+                     date you said the feed owns from. If it turns out to post earlier than that, \
+                     the overlap will be counted twice"
+                )
+            } else {
+                format!(
+                    "{held_back} row(s) from {cutover} onward were held back: a connected feed \
+                     already covers that period, and importing them again would count the same \
+                     money twice"
+                )
+            });
         }
 
         let account_balance_minor = self.latest_balance(account).await;
@@ -490,34 +564,48 @@ impl ImportService {
     }
 
     /// The date from which another feed already owns this account's movements — everything from
-    /// it is that feed's to post, and this import stops there. `None` only when nothing else
-    /// posts to the account at all.
+    /// it is that feed's to post, and this import stops there.
     ///
     /// Reads the provider list and then the ledger, because neither alone can tell "nothing
     /// else posts here" from "we couldn't tell": see [`decide_cutover`], which makes the
     /// decision.
+    ///
+    /// `stated` is the date the caller supplied for this item, and it is consulted in exactly one
+    /// situation: the derivation came back [`Cutover::Blocked`] for a reason a stated date can
+    /// answer. That keeps [`CutoverRule`]'s "it is never a parameter" true where it has to be —
+    /// an account whose feeds *do* establish a window keeps it, and a caller cannot widen their
+    /// import by passing a later date.
     async fn cutover_for(
         &self,
         source: ImportSource,
         account: &Account,
         provider_tag: &str,
-    ) -> AppResult<Option<NaiveDate>> {
+        stated: Option<NaiveDate>,
+    ) -> AppResult<Cutover> {
         if source.cutover_rule() == CutoverRule::Never {
-            return Ok(None);
+            return Ok(Cutover::Whole);
         }
         let providers = self.providers.list().await?;
         let earliest = self
             .transactions
             .earliest_posted_at_from_other_feed(account.id, provider_tag)
             .await?;
-        decide_cutover(
+        let decided = decide_cutover(
             source,
             account.id,
             &account.name,
             earliest.as_deref(),
             &providers,
             |kind| self.provider_registry.get(kind).is_some(),
-        )
+        );
+        Ok(match (decided, stated) {
+            (Cutover::Blocked(block), Some(date))
+                if block.reason.resolvable_by_stating_cutover() =>
+            {
+                Cutover::From(date)
+            }
+            (decided, _) => decided,
+        })
     }
 
     /// The account's current balance, if it has one, as the balances report derives it: its
@@ -614,9 +702,47 @@ fn describe(
                 opening_balance_as_of: None,
                 ledger_sum_minor: None,
             }),
+        blocked: None,
         extras: Vec::new(),
         warnings,
     }
+}
+
+/// One thing in the upload the caller said to leave alone — reported, because a preview that
+/// silently omits a file cannot be checked against the files that were picked.
+///
+/// Not routed at all, so no account is named: whichever account this *would* have gone to is not
+/// a fact about an import that isn't happening, and naming one would put a row in the table
+/// implying otherwise.
+fn describe_skipped(item: &ParsedItem) -> ImportItem {
+    let rows_total = item.rows.len() as i64;
+    let mut warnings = item.warnings.clone();
+    // Said outright, so a caller that isn't the UI — which knows, having asked — can tell this
+    // apart from an item nothing could place. The two have the same empty `account_id`.
+    warnings.push(
+        "you chose to skip this one, so nothing from it was imported and nothing about it \
+         changed"
+            .to_string(),
+    );
+    let mut out = describe(item, rows_total, None, None, warnings);
+    out.would_import = 0;
+    out
+}
+
+/// How much of one account another feed owns, as far as this import can tell.
+///
+/// Three answers, and the third is the one that had nowhere to go before: *we could not tell*.
+/// It used to be an `Err` out of the service, which made one account's unresolved feed the whole
+/// upload's failure — see [`ImportService::import_one`]. It is a value now, so the item carries
+/// it and the upload continues.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Cutover {
+    /// Nothing else posts here. Import the file whole.
+    Whole,
+    /// Another feed owns everything from this date; the import stops there.
+    From(NaiveDate),
+    /// Neither could be established, and this source may not guess — see [`CutoverRule::Strict`].
+    Blocked(ImportBlock),
 }
 
 /// The cutover decision, from what the ledger and the provider list say. Pure, so both ways of
@@ -630,11 +756,11 @@ fn describe(
 /// states its own start date outright — a better answer than the ledger read, which can only
 /// see what has already been derived.
 ///
-/// Under [`CutoverRule::Strict`], neither way of failing may return `None`. `None` means "no
-/// other feed owns any of this account", which holds nothing back and imports the file whole —
-/// and the only warning on this path fires on rows that *were* held back, so a failure to
-/// establish the cutover would be entirely silent. Both are therefore refused before anything
-/// is written:
+/// Under [`CutoverRule::Strict`], neither way of failing may return [`Cutover::Whole`]. `Whole`
+/// means "no other feed owns any of this account", which holds nothing back and imports the file
+/// whole — and the only warning on this path fires on rows that *were* held back, so a failure to
+/// establish the cutover would be entirely silent. Both are therefore [`Cutover::Blocked`], and
+/// nothing of that item is written:
 ///
 /// * A connected, enabled feed with no rows yet. A link whose first sync failed is deliberately
 ///   kept, so this is also the state for the seconds after linking and for as long as
@@ -653,7 +779,7 @@ fn decide_cutover(
     earliest_from_other_feed: Option<&str>,
     providers: &[Provider],
     supplies_transactions: impl Fn(&str) -> bool,
-) -> AppResult<Option<NaiveDate>> {
+) -> Cutover {
     let mine = |p: &&Provider| p.account_id == account_id && p.enabled;
 
     // A feed that only reports a balance says where its derived half begins. That statement
@@ -674,41 +800,57 @@ fn decide_cutover(
                 .and_then(|s| NaiveDate::parse_from_str(s.get(..10).unwrap_or(s), "%Y-%m-%d").ok())
         })
         .min();
-    if derived.is_some() {
-        return Ok(derived);
+    if let Some(date) = derived {
+        return Cutover::From(date);
     }
 
     if let Some(at) = earliest_from_other_feed {
         // Stored as a full timestamp; the cutover is a whole day.
         return match NaiveDate::parse_from_str(at.get(..10).unwrap_or(at), "%Y-%m-%d") {
-            Ok(date) => Ok(Some(date)),
-            Err(_) => Err(AppError::validation(format!(
-                "{account_name}'s earliest transaction from another feed is dated '{at}', which is \
-                 not a date this import can read, so it cannot tell which period that feed owns — \
-                 correct that row's date, then import again"
-            ))),
+            Ok(date) => Cutover::From(date),
+            Err(_) => Cutover::Blocked(ImportBlock {
+                reason: ImportBlockReason::UnreadableLedgerDate,
+                message: format!(
+                    "{account_name}'s earliest transaction from another feed is dated '{at}', \
+                     which is not a date this import can read, so it cannot tell which period \
+                     that feed owns — correct that row's date, then import again"
+                ),
+                feeds: Vec::new(),
+            }),
         };
     }
 
-    let waiting: Vec<&str> = providers
+    let waiting: Vec<BlockingFeed> = providers
         .iter()
         .filter(mine)
         .filter(|p| supplies_transactions(&p.kind))
-        .map(|p| p.name.as_str())
+        .map(|p| BlockingFeed {
+            provider_id: p.id,
+            name: p.name.clone(),
+        })
         .collect();
     if waiting.is_empty() {
-        return Ok(None);
+        return Cutover::Whole;
     }
     match source.cutover_rule() {
         // Nothing is held back for this source at all; `cutover_for` returned before reaching
         // here, and reaching it anyway would mean the two disagreed.
-        CutoverRule::Never | CutoverRule::Lenient => Ok(None),
-        CutoverRule::Strict => Err(AppError::validation(format!(
-            "{account_name} is connected to {}, which has not posted a transaction yet, so this \
-             import cannot tell which period belongs to it — importing now would count that \
-             period twice once it syncs. Sync it (or disable it), then import again",
-            waiting.join(", ")
-        ))),
+        CutoverRule::Never | CutoverRule::Lenient => Cutover::Whole,
+        CutoverRule::Strict => Cutover::Blocked(ImportBlock {
+            reason: ImportBlockReason::UnsyncedFeed,
+            message: format!(
+                "{account_name} is connected to {}, which has not posted a transaction yet, so \
+                 this import cannot tell which period belongs to it — importing now would count \
+                 that period twice once it syncs. Sync it, disable it, or say which date it owns \
+                 from; everything else in this upload is unaffected",
+                waiting
+                    .iter()
+                    .map(|f| f.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            feeds: waiting,
+        }),
     }
 }
 
@@ -743,7 +885,7 @@ mod tests {
         true
     }
 
-    fn decide(earliest: Option<&str>, providers: &[Provider]) -> AppResult<Option<NaiveDate>> {
+    fn decide(earliest: Option<&str>, providers: &[Provider]) -> Cutover {
         decide_cutover(
             ImportSource::AsbCsv,
             8,
@@ -754,49 +896,94 @@ mod tests {
         )
     }
 
-    fn refused(earliest: Option<&str>, providers: &[Provider]) -> String {
-        let err = decide(earliest, providers).expect_err("the import should have been refused");
-        // A 422, not a 500: the upload is wrong (or premature), not the server.
-        assert!(
-            matches!(err, AppError::Validation(_)),
-            "expected a validation error, got {err:?}"
-        );
-        err.to_string()
+    /// The date a decision landed on — `None` where nothing else posts to the account. Panics
+    /// naming the block where the decision was blocked, so a test that regresses says which of
+    /// the two it got.
+    fn date_of(got: Cutover, why: &str) -> Option<NaiveDate> {
+        match got {
+            Cutover::Whole => None,
+            Cutover::From(date) => Some(date),
+            Cutover::Blocked(block) => panic!("{why}, but it was blocked: {}", block.message),
+        }
+    }
+
+    /// The block a decision produced, for the two states that have no answer.
+    fn refused(earliest: Option<&str>, providers: &[Provider]) -> ImportBlock {
+        match decide(earliest, providers) {
+            Cutover::Blocked(block) => block,
+            // Not an `Err` any more, and that is the point: it is one item's problem, carried on
+            // that item, while the rest of the upload imports.
+            other @ (Cutover::Whole | Cutover::From(_)) => {
+                panic!("the item should have been blocked, got {other:?}")
+            }
+        }
     }
 
     #[test]
     fn a_timestamp_from_another_feed_becomes_a_whole_day_cutover() {
-        let got = decide(Some("2022-01-01T12:00:00+00:00"), &[])
-            .expect("a parseable date is not a refusal");
+        let got = date_of(
+            decide(Some("2022-01-01T12:00:00+00:00"), &[]),
+            "a parseable date is an answer",
+        );
         assert_eq!(got, NaiveDate::from_ymd_opt(2022, 1, 1));
     }
 
     #[test]
     fn an_account_nothing_else_posts_to_has_no_cutover() {
-        let got = decide(None, &[]).expect("no other feed is a legitimate answer, not a refusal");
+        let got = date_of(decide(None, &[]), "no other feed is a legitimate answer");
         assert_eq!(got, None);
     }
 
     #[test]
-    fn an_enabled_feed_that_has_posted_nothing_yet_refuses_the_import() {
+    fn an_enabled_feed_that_has_posted_nothing_yet_blocks_the_item() {
         // The state after a link whose first sync failed (the link is kept deliberately), and
         // the one where importing the file whole doubles every row that feed later posts for
         // the same period.
-        let msg = refused(None, &[provider("Akahu", "akahu", 8, true)]);
+        let block = refused(None, &[provider("Akahu", "akahu", 8, true)]);
+        assert_eq!(block.reason, ImportBlockReason::UnsyncedFeed);
+        let msg = &block.message;
         assert!(msg.contains("Akahu"), "the feed to sync is named: {msg}");
         assert!(msg.contains("Everyday"), "the account is named: {msg}");
     }
 
+    /// The ids are what let a UI offer to sync or disable the feed in place. Named alone, the
+    /// reader has to go and find it in another screen — which is where this refusal used to
+    /// leave them, with the whole upload already thrown away.
+    #[test]
+    fn a_block_carries_the_feeds_by_id_and_not_only_by_name() {
+        let mut akahu = provider("Akahu", "akahu", 8, true);
+        akahu.id = 42;
+        let block = refused(None, &[akahu]);
+        assert_eq!(
+            block.feeds,
+            vec![BlockingFeed {
+                provider_id: 42,
+                name: "Akahu".to_string()
+            }]
+        );
+    }
+
+    /// Nothing to sync, so there is nothing to offer — and a UI that rendered a Sync button here
+    /// would be offering to fix an account's history from an import screen.
+    #[test]
+    fn an_unreadable_ledger_date_names_no_feed_to_sync() {
+        let block = refused(Some("03/07/2019"), &[provider("Akahu", "akahu", 8, true)]);
+        assert_eq!(block.reason, ImportBlockReason::UnreadableLedgerDate);
+        assert!(block.feeds.is_empty());
+    }
+
     #[test]
     fn every_waiting_feed_is_named_so_the_user_syncs_all_of_them() {
-        let msg = refused(
+        let block = refused(
             None,
             &[
                 provider("Akahu", "akahu", 8, true),
                 provider("Statements", "csv", 8, true),
             ],
         );
+        let msg = &block.message;
         assert!(msg.contains("Akahu") && msg.contains("Statements"), "{msg}");
+        assert_eq!(block.feeds.len(), 2);
     }
 
     #[test]
@@ -805,7 +992,10 @@ mod tests {
             provider("Akahu", "akahu", 8, false),
             provider("Akahu", "akahu", 9, true),
         ];
-        let got = decide(None, &providers).expect("neither of these posts to account 8");
+        let got = date_of(
+            decide(None, &providers),
+            "neither of these posts to account 8",
+        );
         assert_eq!(got, None);
     }
 
@@ -813,24 +1003,26 @@ mod tests {
     fn a_feed_whose_kind_is_no_longer_registered_is_not_waiting() {
         // Nothing can sync it, so it has no window pending and must not block the import.
         let providers = [provider("Retired", "decommissioned", 8, true)];
-        let got = decide_cutover(
-            ImportSource::AsbCsv,
-            8,
-            "Everyday",
-            None,
-            &providers,
-            |_| false,
-        )
-        .expect("an unregistered kind posts nothing");
+        let got = date_of(
+            decide_cutover(
+                ImportSource::AsbCsv,
+                8,
+                "Everyday",
+                None,
+                &providers,
+                |_| false,
+            ),
+            "an unregistered kind posts nothing",
+        );
         assert_eq!(got, None);
     }
 
     #[test]
-    fn a_posted_at_that_is_not_a_date_refuses_the_import() {
+    fn a_posted_at_that_is_not_a_date_blocks_the_item() {
         // A CSV provider stores the date cell verbatim, and `MIN()` under SQLite's BINARY
         // collation sorts a `0`-leading day ahead of every ISO date — so this one row is
         // exactly the one that decides the window, and it can't.
-        let msg = refused(Some("03/07/2019"), &[]);
+        let msg = refused(Some("03/07/2019"), &[]).message;
         assert!(
             msg.contains("03/07/2019"),
             "the offending value is quoted: {msg}"
@@ -838,15 +1030,26 @@ mod tests {
     }
 
     #[test]
-    fn a_posted_at_too_short_to_hold_a_date_refuses_rather_than_panics() {
-        assert!(refused(Some("2019-07"), &[]).contains("2019-07"));
+    fn a_posted_at_too_short_to_hold_a_date_blocks_rather_than_panics() {
+        assert!(refused(Some("2019-07"), &[]).message.contains("2019-07"));
     }
 
     #[test]
-    fn a_posted_at_with_no_char_boundary_at_ten_refuses_rather_than_panics() {
+    fn a_posted_at_with_no_char_boundary_at_ten_blocks_rather_than_panics() {
         // `str::get` returns `None` mid-codepoint rather than panicking the way slicing would;
-        // the point of this test is that the decision stays a 422 either way.
-        assert!(!refused(Some("2019-07-0\u{1f600}3"), &[]).is_empty());
+        // the point of this test is that the decision is still a block either way.
+        assert!(!refused(Some("2019-07-0\u{1f600}3"), &[]).message.is_empty());
+    }
+
+    /// Only the person importing can know when a silent feed will start posting, so their answer
+    /// is the best evidence there is — and it is the third way out of this block, beside syncing
+    /// the feed and disabling it.
+    #[test]
+    fn a_stated_date_resolves_an_unsynced_feed_but_not_an_unreadable_one() {
+        assert!(ImportBlockReason::UnsyncedFeed.resolvable_by_stating_cutover());
+        // The read a stated date would be checked against is the broken thing, so stating one
+        // would build the same double-count on a different number.
+        assert!(!ImportBlockReason::UnreadableLedgerDate.resolvable_by_stating_cutover());
     }
 
     // ---- the rules that let every source share one cutover ------------------------------
@@ -864,18 +1067,22 @@ mod tests {
     /// exist yet — which is exactly the case the ledger read cannot answer. It therefore wins.
     #[test]
     fn a_feed_that_derives_from_a_balance_states_its_own_cutover() {
-        let got = decide(None, &[deriving(Some("2024-03-01"))])
-            .expect("a stated derive date is an answer, not a refusal");
+        let got = date_of(
+            decide(None, &[deriving(Some("2024-03-01"))]),
+            "a stated derive date is an answer",
+        );
         assert_eq!(got, NaiveDate::from_ymd_opt(2024, 3, 1));
     }
 
     #[test]
     fn a_stated_derive_date_wins_over_what_the_ledger_shows() {
-        let got = decide(
-            Some("2025-01-01T00:00:00+00:00"),
-            &[deriving(Some("2024-03-01"))],
-        )
-        .expect("both are available");
+        let got = date_of(
+            decide(
+                Some("2025-01-01T00:00:00+00:00"),
+                &[deriving(Some("2024-03-01"))],
+            ),
+            "both are available",
+        );
         assert_eq!(
             got,
             NaiveDate::from_ymd_opt(2024, 3, 1),
@@ -889,33 +1096,37 @@ mod tests {
     #[test]
     fn a_lenient_source_takes_a_silent_feed_at_face_value() {
         let providers = [provider("Akahu", "akahu", 8, true)];
-        let got = decide_cutover(
-            ImportSource::MyirSls,
-            8,
-            "Student loan",
-            None,
-            &providers,
-            registered,
-        )
-        .expect("a silent feed is not a refusal for this source");
+        let got = date_of(
+            decide_cutover(
+                ImportSource::MyirSls,
+                8,
+                "Student loan",
+                None,
+                &providers,
+                registered,
+            ),
+            "a silent feed is not a block for this source",
+        );
         assert_eq!(got, None);
-        // …while the strict source, on the same facts, refuses.
-        assert!(decide(None, &providers).is_err());
+        // …while the strict source, on the same facts, blocks the item.
+        assert!(matches!(decide(None, &providers), Cutover::Blocked(_)));
     }
 
     /// A lenient source still holds back where there *is* something to hold back from — being
     /// lenient about silence is not the same as ignoring a feed that has spoken.
     #[test]
     fn a_lenient_source_still_holds_back_from_a_feed_that_has_posted() {
-        let got = decide_cutover(
-            ImportSource::MyirSls,
-            8,
-            "Student loan",
-            Some("2024-06-01T00:00:00+00:00"),
-            &[],
-            registered,
-        )
-        .expect("a parseable date is not a refusal");
+        let got = date_of(
+            decide_cutover(
+                ImportSource::MyirSls,
+                8,
+                "Student loan",
+                Some("2024-06-01T00:00:00+00:00"),
+                &[],
+                registered,
+            ),
+            "a parseable date is an answer",
+        );
         assert_eq!(got, NaiveDate::from_ymd_opt(2024, 6, 1));
     }
 
@@ -925,11 +1136,13 @@ mod tests {
     #[test]
     fn a_deriving_feed_with_no_start_date_falls_through_to_the_other_tiers() {
         assert!(
-            refused(None, &[deriving(None)]).contains("Akahu"),
-            "with nothing else to go on, a strict source must refuse"
+            refused(None, &[deriving(None)]).message.contains("Akahu"),
+            "with nothing else to go on, a strict source must block the item"
         );
-        let got = decide(Some("2025-01-01T00:00:00+00:00"), &[deriving(None)])
-            .expect("the ledger can still answer");
+        let got = date_of(
+            decide(Some("2025-01-01T00:00:00+00:00"), &[deriving(None)]),
+            "the ledger can still answer",
+        );
         assert_eq!(got, NaiveDate::from_ymd_opt(2025, 1, 1));
     }
 
@@ -954,6 +1167,7 @@ mod tests {
         ParsedItem {
             source_account: "12-3456-0000123-50".to_string(),
             label: None,
+            holder: None,
             sources: vec![],
             rows,
             covered_from: None,

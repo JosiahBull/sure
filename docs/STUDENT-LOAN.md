@@ -61,6 +61,23 @@ result reports how many rows were new, how many were already there, the SLS acco
 were for, and the window they cover. Re-uploading is free and expected — the
 import dedupes on a content-derived id, so overlapping windows cost nothing.
 
+### Two loans in one household
+
+Both partners' loans are usually called "Student loan", and the SLS account id the export names
+(`012-345-678-SLS004`) matches nothing Sure stores — so on a first import there is no identifier
+to route by and no history to infer from. The preamble's `Name:` row is what breaks the tie: the
+parser carries it out as `MyIrExport::holder`, and `routing::match_by_holder` finds the one
+household member whose name appears inside it and the one account of theirs that takes this
+source. IR writes `Surname, Given Names` with a middle initial, so "Ari" matches "Reed, Ari K"
+while "Sam" does not; a one-letter name is dropped rather than matched on the initial. It also
+refuses the only-candidate tier when the file names someone whose loan is *not* the one account
+there is — importing a partner's whole repayment history onto your own balance reads as success.
+
+If your household names don't resemble IR's spelling, nothing matches and nothing is misrouted;
+the picker just asks. Its options carry the owner (`Student loan · Ari`) for exactly this case,
+and the preview's "From" column shows the name the file states beneath the SLS id, so you can
+check the two agree before importing.
+
 ### What the parser refuses
 
 All fatal, all in `sure_providers::myir`, all describing a failure that would otherwise be

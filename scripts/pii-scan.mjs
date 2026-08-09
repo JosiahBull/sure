@@ -123,6 +123,12 @@ const ALLOWED = new Set([
   "12-3456-0000123-00",
   "12-3456-0000999-00",
   "012-345-678",
+  // The second borrower, for the tests that route two student loans in one household apart
+  // (`routing::match_by_holder`, and the only-candidate tier declining when a two-item upload
+  // names someone else's loan). Those tests say nothing with one IRD number, and this is the
+  // digits of the established fake above reversed — invented, and deliberately not a near-miss
+  // of it, so a grep for either cannot pick up the other.
+  "098-765-432",
   "FC02-1234-0000001-00",
   "FC12-3456-0000002-00",
   "CARD 1111",

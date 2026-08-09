@@ -73,6 +73,10 @@ mod limits {
 struct Workbook {
     name: String,
     account_id: String,
+    /// The `Name:` preamble row — the borrower, as IR writes it (`Surname, Given Names`).
+    /// Optional: it is not load-bearing for a single-loan household, and an export shape
+    /// that omitted it should still import.
+    holder: Option<String>,
     window_from: NaiveDate,
     window_to: NaiveDate,
     by_day: BTreeMap<NaiveDate, Vec<Row>>,
@@ -106,6 +110,10 @@ pub struct MyIrExport {
     pub transactions: Vec<ProviderTransaction>,
     /// The SLS account the exports are for, for display.
     pub account_id: String,
+    /// Whose loan it is, as IR names them (`Surname, Given Names`) — the only thing in the
+    /// file that distinguishes one household member's loan from another's, since the SLS
+    /// account id appears nowhere in Sure. Routed on by `sure_app::import::routing`.
+    pub holder: Option<String>,
     /// The union of every export's window — what this ledger is complete for.
     pub covered_from: Option<String>,
     pub covered_to: Option<String>,
@@ -172,6 +180,7 @@ pub fn parse_export(bytes: &[u8]) -> anyhow::Result<MyIrExport> {
     Ok(MyIrExport {
         transactions,
         account_id: first.account_id.clone(),
+        holder: first.holder.clone(),
         covered_from: workbooks.iter().map(|w| w.window_from).min().map(iso),
         covered_to: workbooks.iter().map(|w| w.window_to).max().map(iso),
         warnings,
@@ -293,6 +302,12 @@ fn read_workbook(name: &str, bytes: &[u8]) -> anyhow::Result<Workbook> {
             .ok_or_else(|| anyhow::anyhow!("{name}: preamble is missing '{key}'"))
     };
     let account_id = cell_text(Some(label("account id")?));
+    // Not `label(..)?`: a missing name costs one routing tier, not the import. `account id`,
+    // `from` and `to` are all load-bearing and stay required.
+    let holder = labels
+        .get("name")
+        .map(|v| cell_text(Some(v)))
+        .filter(|s| !s.is_empty());
     let window_from = parse_cell_day(Some(label("from")?), name, "preamble 'From'")?;
     let window_to = parse_cell_day(Some(label("to")?), name, "preamble 'To'")?;
     if window_to < window_from {
@@ -347,6 +362,7 @@ fn read_workbook(name: &str, bytes: &[u8]) -> anyhow::Result<Workbook> {
     Ok(Workbook {
         name: name.to_string(),
         account_id,
+        holder,
         window_from,
         window_to,
         by_day,
@@ -634,8 +650,23 @@ mod tests {
 
     /// One export: preamble, header, then `(date, transaction, ir_amount)` rows.
     fn export(account: &str, from: &str, to: &str, rows: &[(&str, &str, &str)]) -> Vec<u8> {
-        let mut grid = vec![
-            vec![t("Account ID:"), t(account)],
+        export_for(account, Some(HOLDER), from, to, rows)
+    }
+
+    /// As [`export`], but says who the borrower is — `None` omits the `Name:` row entirely,
+    /// which is the shape the holder tier has to tolerate rather than fail on.
+    fn export_for(
+        account: &str,
+        holder: Option<&str>,
+        from: &str,
+        to: &str,
+        rows: &[(&str, &str, &str)],
+    ) -> Vec<u8> {
+        let mut grid = vec![vec![t("Account ID:"), t(account)]];
+        if let Some(holder) = holder {
+            grid.push(vec![t("Name:"), t(holder)]);
+        }
+        grid.extend([
             // Date cells, not text: a real export number-formats these, so calamine hands
             // them over as serials.
             vec![t("From:"), Cell::Date(d(from))],
@@ -651,7 +682,7 @@ mod tests {
                 t("Transaction"),
                 t("Amount"),
             ],
-        ];
+        ]);
         for (date, txn, amount) in rows {
             grid.push(vec![
                 t("2026-03-31"),
@@ -680,6 +711,9 @@ mod tests {
     }
 
     const ACCT: &str = "012-345-678-SLS004";
+    /// Surname-first with a middle initial, the way IR writes it — the shape the household
+    /// matcher has to cope with, not any real person's name.
+    const HOLDER: &str = "Reed, Ari K";
 
     /// The headline transformation: IR signs a debt increase positive, Sure signs a
     /// liability's balance negative, so every row is negated. Get this backwards and years
@@ -710,6 +744,22 @@ mod tests {
         assert_eq!(by_desc["Living costs"], -222_00);
         assert_eq!(out.account_id, ACCT);
         assert_eq!(out.covered_from.as_deref(), Some("2024-07-31"));
+    }
+
+    /// The `Name:` preamble is the only thing in a myIR export that says *whose* loan it is —
+    /// the SLS account id matches no Sure field — so it is carried out of the parser rather
+    /// than dropped with the rest of the preamble.
+    #[test]
+    fn the_borrower_is_read_off_the_preamble() {
+        let rows = [("2025-04-14", "Repayment deduction", "-400.00")];
+        let out = parse_export(&export(ACCT, "2024-07-31", "2026-07-31", &rows)).unwrap();
+        assert_eq!(out.holder.as_deref(), Some(HOLDER));
+
+        // …and an export without one still imports: it costs a routing tier, not the upload.
+        let bare = export_for(ACCT, None, "2024-07-31", "2026-07-31", &rows);
+        let out = parse_export(&bare).unwrap();
+        assert_eq!(out.holder, None);
+        assert_eq!(out.transactions.len(), 1);
     }
 
     /// A bare workbook and a zip of workbooks are both valid uploads, and an .xlsx is

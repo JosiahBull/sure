@@ -43,8 +43,9 @@ pub use equity::{
 pub use error::{AppError, AppResult, ErrorBody, ErrorDetail};
 pub use forecast::{ForecastAssumption, ForecastTargetType, SaveForecastAssumption};
 pub use import::{
-    CutoverRule, ImportExtra, ImportExtraKind, ImportItem, ImportMatch, ImportRecord, ImportResult,
-    ImportSource, ImportUndoResult, Reconciliation, MAX_UPLOAD_BYTES,
+    BlockingFeed, CutoverRule, ImportBlock, ImportBlockReason, ImportExtra, ImportExtraKind,
+    ImportItem, ImportMatch, ImportRecord, ImportResult, ImportSource, ImportUndoResult,
+    Reconciliation, MAX_UPLOAD_BYTES,
 };
 pub use income::{
     IncomeBasis, IncomeStream, IncomeStreamStep, PayFrequency, PayStep, SaveIncomeStream,

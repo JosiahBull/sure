@@ -16,7 +16,9 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::NaiveDate;
-use sure_core::{Account, AccountMetadata, AppError, AppResult, ImportMatch, ImportSource};
+use sure_core::{
+    Account, AccountMetadata, AppError, AppResult, ImportMatch, ImportSource, Ownership, Person,
+};
 
 use crate::ports::{ImportAdapter, ParsedItem, TransactionRepo};
 
@@ -44,32 +46,68 @@ pub mod history_match {
     pub const MAX_ROWS_READ: i64 = 200_000;
 }
 
+/// The wire spelling of "leave this one alone" — see [`Assignment::Skip`].
+pub const SKIP: &str = "skip";
+
+/// What the request said to do with one thing in the upload. Two answers, and the second one is
+/// why this is an enum rather than an `i64`: *omitting* an item is not a decision, it only means
+/// this tier has nothing to say and the tiers below should carry on. Saying `skip` is a decision,
+/// and it outranks every tier there is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Assignment {
+    /// Import it into this account, whatever the evidence tiers would have concluded.
+    Account(i64),
+    /// Import nothing of it. The one instruction no tier may override — which is the difference
+    /// between the UI's "skip this one" doing what it says and doing nothing at all.
+    Skip,
+}
+
+impl Assignment {
+    /// The account named, where one is. `None` for a skip, which names none — so an account is
+    /// never counted as claimed by an item that isn't going there.
+    pub fn account_id(self) -> Option<i64> {
+        match self {
+            Assignment::Account(id) => Some(id),
+            Assignment::Skip => None,
+        }
+    }
+}
+
 /// Everything the resolver knows before it looks at any one item, gathered once per upload.
 pub struct Routing {
     /// What the request said outright.
-    pub assigned: HashMap<String, i64>,
+    pub assigned: HashMap<String, Assignment>,
     /// What a previous import of the same source account settled on.
     pub prior: HashMap<String, i64>,
     /// What the rows themselves suggest, for the items nothing above could place.
     pub by_history: HashMap<String, i64>,
+    /// The household, for the items whose source names whose they are.
+    pub people: Vec<Person>,
 }
 
 /// Which Sure account a source account belongs to, and on what evidence. In priority order:
 /// what the request said, then a previous import of that same source account, then the
-/// account's stored number, then its name, then the one candidate if there is exactly one,
-/// then the transactions the account already holds.
+/// account's stored number, then its name, then whose the export says it is, then the
+/// transactions the account already holds. (The one-candidate tier sits outside this, in
+/// [`only_candidate`], because it is a fact about the whole upload rather than one item.)
 pub fn resolve<'a>(
-    source_account: &str,
+    item: &ParsedItem,
     accounts: &'a [Account],
     routing: &Routing,
 ) -> Option<(&'a Account, ImportMatch)> {
+    let source_account = item.source_account.as_str();
     let by_id = |id: i64, how: ImportMatch| accounts.iter().find(|a| a.id == id).map(|a| (a, how));
-    if let Some(found) = routing
-        .assigned
-        .get(source_account)
-        .and_then(|id| by_id(*id, ImportMatch::Assigned))
-    {
-        return Some(found);
+    // Exhaustive, and the `Skip` arm returns rather than falls through: a skip that merely
+    // failed to name an account would be indistinguishable from silence here, and the five
+    // tiers below would go on to place the item the caller just said not to import.
+    match routing.assigned.get(source_account) {
+        Some(Assignment::Skip) => return None,
+        Some(Assignment::Account(id)) => {
+            if let Some(found) = by_id(*id, ImportMatch::Assigned) {
+                return Some(found);
+            }
+        }
+        None => {}
     }
     if let Some(found) = routing
         .prior
@@ -91,10 +129,74 @@ pub fn resolve<'a>(
             return Some((found, ImportMatch::AccountName));
         }
     }
+    // Above the history tier because it is still an identifier the *source* stated, rather
+    // than an inference from the rows — and because on a first import there is no history to
+    // infer from, which is exactly when two loans are impossible to tell apart.
+    if let Some(found) = match_by_holder(item.holder.as_deref(), accounts, &routing.people) {
+        return Some((found, ImportMatch::AccountOwner));
+    }
     routing
         .by_history
         .get(source_account)
         .and_then(|id| by_id(*id, ImportMatch::TransactionHistory))
+}
+
+/// The account belonging to the person the export names, when that is a single answer at
+/// both steps: one household member answering to the name, and one of the candidate accounts
+/// being theirs.
+///
+/// The only tier that can separate two student loans on a *first* import. A myIR export names
+/// `012-345-678-SLS004`, which is an IRD number Sure stores nowhere and a suffix that means
+/// nothing to it, so every identifier tier above returns nothing — but the same preamble also
+/// carries the borrower's name, and Sure already knows who owns which account.
+///
+/// Matching is deliberately one-directional: IR writes `Surname, Given Names` with a middle
+/// initial, so the household's name has to be found *inside* the export's, not the other way
+/// round. "Ari" matches "Reed, Ari K"; "Ari Reed" matches it too; "Sam" does not. Anything
+/// short of exactly one person and exactly one of their accounts declines — a misrouted loan
+/// is years of someone else's repayments on the wrong balance.
+fn match_by_holder<'a>(
+    holder: Option<&str>,
+    accounts: &'a [Account],
+    people: &[Person],
+) -> Option<&'a Account> {
+    let person = person_named(holder, people)?;
+    only_match(accounts, |a| {
+        a.ownership
+            == Ownership::Person {
+                person_id: person.id,
+            }
+    })
+}
+
+/// The one household member an export's stated name can mean, or `None` if none or several
+/// could. Separate from [`match_by_holder`] because "which person is this?" and "which of
+/// their accounts is this?" fail differently: a name nobody answers to is a name Sure doesn't
+/// recognise, while a person with no account of this kind is a positive statement that the
+/// file belongs to *someone else* — which is what lets [`only_candidate`] refuse.
+fn person_named<'a>(holder: Option<&str>, people: &'a [Person]) -> Option<&'a Person> {
+    let stated = name_tokens(holder?);
+    if stated.is_empty() {
+        return None;
+    }
+    let mut named = people.iter().filter(|p| {
+        let theirs = name_tokens(&p.name);
+        !theirs.is_empty() && theirs.is_subset(&stated)
+    });
+    let person = named.next()?;
+    // Two household members answering to one name — picking would be guessing.
+    named.next().is_none().then_some(person)
+}
+
+/// A name reduced to the parts worth comparing: lowercased, split on anything that isn't a
+/// letter (so `O'Brien` and `Mary-Jane` break the same way on both sides), and single letters
+/// dropped — IR's middle initial is noise, and a one-letter household name would otherwise be
+/// a subset of every export there is.
+fn name_tokens(name: &str) -> HashSet<String> {
+    name.split(|c: char| !c.is_alphabetic())
+        .filter(|part| part.chars().count() > 1)
+        .map(str::to_lowercase)
+        .collect()
 }
 
 /// The sole account this source could mean, when the upload describes exactly one thing and
@@ -106,15 +208,34 @@ pub fn resolve<'a>(
 /// returns nothing and the upload would be reported as unroutable while the answer is the only
 /// one there is. Both conditions are load-bearing — with two loans it declines, because then
 /// picking would be guessing with someone's money.
-pub fn only_candidate(
+///
+/// "The only one there is" stops being an answer when the file says whose it is and that isn't
+/// whose the account is. A household that has added one partner's loan and not the other's
+/// would otherwise have the second export land silently on the first loan, which reads as a
+/// successful import and is years of the wrong person's repayments. A holder that names
+/// *nobody* in the household is not a contradiction — an unfamiliar spelling shouldn't refuse
+/// an import the tier would otherwise get right — so only a positive mismatch vetoes.
+pub fn only_candidate<'a>(
     source: ImportSource,
-    items: usize,
-    accounts: &[Account],
-) -> Option<(&Account, ImportMatch)> {
-    if items != 1 || !source.routes_by_sole_candidate() {
+    items: &[ParsedItem],
+    accounts: &'a [Account],
+    people: &[Person],
+) -> Option<(&'a Account, ImportMatch)> {
+    let [item] = items else {
+        return None;
+    };
+    if !source.routes_by_sole_candidate() {
         return None;
     }
-    only_match(accounts, |a| source.accepts(a.kind)).map(|a| (a, ImportMatch::OnlyCandidate))
+    let sole = only_match(accounts, |a| source.accepts(a.kind))?;
+    // A joint account contradicts nobody — it is everyone's — so only an account owned by a
+    // *different* named person vetoes.
+    if let Some(person) = person_named(item.holder.as_deref(), people) {
+        if sole.ownership.person_id().is_some_and(|id| id != person.id) {
+            return None;
+        }
+    }
+    Some((sole, ImportMatch::OnlyCandidate))
 }
 
 /// Refuse an assignment that names an account this upload cannot go to.
@@ -126,13 +247,15 @@ pub fn only_candidate(
 ///
 /// `accounts` is every account, not just the accepting ones, so "that isn't the right kind of
 /// account" can be told apart from "there is no such account".
+/// A skip names no account, so there is nothing here to check: it is refused by nothing and
+/// imports nothing.
 pub fn check_assignments(
     source: ImportSource,
-    assigned: &HashMap<String, i64>,
+    assigned: &HashMap<String, Assignment>,
     accounts: &[Account],
 ) -> AppResult<()> {
-    for id in assigned.values() {
-        let Some(account) = accounts.iter().find(|a| a.id == *id) else {
+    for id in assigned.values().filter_map(|a| a.account_id()) {
+        let Some(account) = accounts.iter().find(|a| a.id == id) else {
             return Err(AppError::NotFound("account"));
         };
         if !source.accepts(account.kind) {
@@ -162,16 +285,18 @@ pub async fn match_by_history(
     transactions: &dyn TransactionRepo,
     items: &[ParsedItem],
     accounts: &[Account],
-    assigned: &HashMap<String, i64>,
+    assigned: &HashMap<String, Assignment>,
     prior: &HashMap<String, i64>,
 ) -> AppResult<HashMap<String, i64>> {
     // Anything an identifier already placed is out of the running on both sides: its item
-    // needs no guess, and its account is taken.
+    // needs no guess, and its account is taken. A skipped item claims no account — it names
+    // none — so an account a skip merely mentions stays available to the item that wants it.
     let placed: HashSet<i64> = accounts
         .iter()
         .filter(|a| {
             let claimed = |m: &HashMap<String, i64>| m.values().any(|id| *id == a.id);
-            claimed(assigned) || claimed(prior) || stored_number(a).is_some()
+            let assigned_here = assigned.values().any(|x| x.account_id() == Some(a.id));
+            assigned_here || claimed(prior) || stored_number(a).is_some()
         })
         .map(|a| a.id)
         .collect();
@@ -308,19 +433,57 @@ fn stored_number(account: &Account) -> Option<&str> {
     }
 }
 
-/// `12-3456-0000123-50:8,12-3456-0000123-51:12` → the pairs it names.
-pub fn parse_assignments(raw: Option<&str>) -> AppResult<HashMap<String, i64>> {
+/// `12-3456-0000123-50:8,12-3456-0000123-51:skip` → the pairs it names.
+///
+/// `skip` is not a spelling of "no account". It is a statement, and it has to be one: without
+/// it, leaving an item unassigned only means *this* tier has nothing to say, and the tiers below
+/// — a previous import, a stored account number, the account's name, its transaction history —
+/// go on to place the item anyway. The UI's "skip this one" was exactly that omission, so it
+/// zeroed the row on screen and then imported it regardless.
+pub fn parse_assignments(raw: Option<&str>) -> AppResult<HashMap<String, Assignment>> {
     let mut out = HashMap::new();
     for pair in raw.unwrap_or_default().split(',').filter(|p| !p.is_empty()) {
-        let (source_account, id) = pair.rsplit_once(':').ok_or_else(|| {
+        let (source_account, value) = pair.rsplit_once(':').ok_or_else(|| {
             AppError::validation(format!(
-                "'{pair}' is not an assignment — expected <source account>:<account id>"
+                "'{pair}' is not an assignment — expected <source account>:<account id> or \
+                 <source account>:skip"
             ))
         })?;
-        let id: i64 = id.trim().parse().map_err(|_| {
-            AppError::validation(format!("'{id}' in '{pair}' is not an account id"))
+        let assignment = match value.trim() {
+            SKIP => Assignment::Skip,
+            id => Assignment::Account(id.parse().map_err(|_| {
+                AppError::validation(format!(
+                    "'{id}' in '{pair}' is not an account id, and is not 'skip'"
+                ))
+            })?),
+        };
+        out.insert(source_account.trim().to_string(), assignment);
+    }
+    Ok(out)
+}
+
+/// `12-3456-0000123-50:2026-08-01` → the dates it names.
+///
+/// Only ever consulted where the cutover derivation is *blocked* (see
+/// [`ImportBlockReason::resolvable_by_stating_cutover`]), which is what keeps
+/// [`CutoverRule`](sure_core::CutoverRule)'s "it is never a parameter" true where it matters: a
+/// feed that has posted, or that states its own derive-from date, still decides the window
+/// itself and this is ignored.
+pub fn parse_cutovers(raw: Option<&str>) -> AppResult<HashMap<String, NaiveDate>> {
+    let mut out = HashMap::new();
+    for pair in raw.unwrap_or_default().split(',').filter(|p| !p.is_empty()) {
+        let (source_account, date) = pair.rsplit_once(':').ok_or_else(|| {
+            AppError::validation(format!(
+                "'{pair}' is not a cutover — expected <source account>:<YYYY-MM-DD>"
+            ))
         })?;
-        out.insert(source_account.trim().to_string(), id);
+        let date = NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d").map_err(|_| {
+            AppError::validation(format!(
+                "'{}' in '{pair}' is not a date — expected YYYY-MM-DD",
+                date.trim()
+            ))
+        })?;
+        out.insert(source_account.trim().to_string(), date);
     }
     Ok(out)
 }
@@ -374,10 +537,31 @@ mod tests {
         }
     }
 
+    /// An account owned outright by one person, rather than the household.
+    fn owned_by(id: i64, name: &str, kind: AccountKind, person_id: i64) -> Account {
+        Account {
+            ownership: Ownership::Person { person_id },
+            ..account(id, name, kind, None)
+        }
+    }
+
+    fn person(id: i64, name: &str) -> Person {
+        Person {
+            id,
+            name: name.to_string(),
+            color: None,
+            sort_order: id,
+            placeholder: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
     fn item(source_account: &str, rows: Vec<(&str, i64)>) -> ParsedItem {
         ParsedItem {
             source_account: source_account.to_string(),
             label: None,
+            holder: None,
             sources: vec![],
             rows: rows
                 .into_iter()
@@ -408,7 +592,113 @@ mod tests {
             assigned: HashMap::new(),
             prior: HashMap::new(),
             by_history: HashMap::new(),
+            people: vec![],
         }
+    }
+
+    /// An item a source stated the owner of, the way a myIR export does.
+    fn held_by(source_account: &str, holder: &str) -> ParsedItem {
+        ParsedItem {
+            holder: Some(holder.to_string()),
+            ..item(source_account, vec![])
+        }
+    }
+
+    /// The shape this whole tier exists for: two student loans, and an export whose only
+    /// distinguishing mark is the name in its preamble. Every identifier tier is blind here —
+    /// an SLS account id is stored nowhere, and on a first import there is no history either.
+    #[test]
+    fn two_student_loans_are_told_apart_by_who_the_export_names() {
+        let accounts = vec![
+            owned_by(1, "Student loan", AccountKind::StudentLoan, 10),
+            owned_by(2, "Student loan", AccountKind::StudentLoan, 20),
+        ];
+        let routing = Routing {
+            people: vec![person(10, "Ari"), person(20, "Sam")],
+            ..empty()
+        };
+        // IR writes `Surname, Given Names` with a middle initial; the household writes "Sam".
+        let it = held_by("012-345-678-SLS004", "Reed, Sam J");
+        let (found, how) = resolve(&it, &accounts, &routing).unwrap();
+        assert_eq!(found.id, 2);
+        assert_eq!(how, ImportMatch::AccountOwner);
+
+        // The other partner's export goes to the other loan, on the same evidence.
+        let theirs = held_by("098-765-432-SLS004", "Reed, Ari K");
+        assert_eq!(resolve(&theirs, &accounts, &routing).unwrap().0.id, 1);
+    }
+
+    /// A full name still matches: the household's name has to be found *inside* the export's,
+    /// not equal it, because IR's version carries a surname and an initial the roster won't.
+    #[test]
+    fn a_household_name_is_matched_inside_the_exports_longer_one() {
+        let accounts = vec![owned_by(1, "Loan", AccountKind::StudentLoan, 10)];
+        let people = vec![person(10, "Ari Reed"), person(20, "Sam")];
+        assert_eq!(
+            match_by_holder(Some("Reed, Ari K"), &accounts, &people).map(|a| a.id),
+            Some(1)
+        );
+        // …and a name that isn't in there at all matches nobody, rather than the nearest one.
+        assert!(match_by_holder(Some("Nguyen, Toni"), &accounts, &people).is_none());
+        // A one-letter roster name would be a subset of every export there is, so it is dropped
+        // along with IR's middle initial rather than matching "Reed, Ari K" on its initial.
+        assert!(match_by_holder(Some("Reed, Ari K"), &accounts, &[person(10, "K")]).is_none());
+    }
+
+    /// Ambiguity declines at both steps, the same way every other tier does.
+    #[test]
+    fn an_ambiguous_owner_resolves_to_nothing() {
+        // Two household members answering to one export name.
+        let accounts = vec![owned_by(1, "Loan", AccountKind::StudentLoan, 10)];
+        let two = vec![person(10, "Ari"), person(20, "Ari Reed")];
+        assert!(match_by_holder(Some("Reed, Ari K"), &accounts, &two).is_none());
+
+        // …and one person with two accounts this source accepts: the name says whose, not which.
+        let both = vec![
+            owned_by(1, "Loan (IR)", AccountKind::StudentLoan, 10),
+            owned_by(2, "Loan (overseas)", AccountKind::StudentLoan, 10),
+        ];
+        assert!(match_by_holder(Some("Reed, Ari K"), &both, &[person(10, "Ari")]).is_none());
+    }
+
+    /// The mirror of the tier: an export that positively names someone else must not land on
+    /// the one loan there happens to be. Importing a partner's whole repayment history onto
+    /// your own balance reads as a success and is not a recoverable mistake.
+    #[test]
+    fn the_only_candidate_is_refused_when_the_export_names_someone_else() {
+        let accounts = vec![owned_by(1, "Student loan", AccountKind::StudentLoan, 10)];
+        let people = vec![person(10, "Ari"), person(20, "Sam")];
+        let theirs = [held_by("012-345-678-SLS004", "Reed, Sam J")];
+        assert!(only_candidate(ImportSource::MyirSls, &theirs, &accounts, &people).is_none());
+
+        // The owner's own export still routes there, and so does one naming nobody Sure knows —
+        // an unfamiliar spelling shouldn't refuse an import this tier would otherwise get right.
+        for holder in ["Reed, Ari K", "Nguyen, Toni"] {
+            let mine = [held_by("012-345-678-SLS004", holder)];
+            let (found, how) =
+                only_candidate(ImportSource::MyirSls, &mine, &accounts, &people).unwrap();
+            assert_eq!((found.id, how), (1, ImportMatch::OnlyCandidate));
+        }
+    }
+
+    /// A joint account is everyone's, so it contradicts no name — the veto is for an account
+    /// owned by a *different* individual, not for any account that isn't the named one's.
+    #[test]
+    fn a_joint_account_is_not_contradicted_by_a_named_holder() {
+        let accounts = vec![account(1, "Student loan", AccountKind::StudentLoan, None)];
+        let people = vec![person(10, "Ari"), person(20, "Sam")];
+        let it = [held_by("012-345-678-SLS004", "Reed, Sam J")];
+        assert!(only_candidate(ImportSource::MyirSls, &it, &accounts, &people).is_some());
+    }
+
+    /// A source that names nobody loses only this tier. Every other source sets `holder: None`,
+    /// so nothing about an ASB or Sharesies upload changes.
+    #[test]
+    fn a_source_that_names_no_owner_is_unaffected() {
+        let accounts = vec![owned_by(1, "Loan", AccountKind::StudentLoan, 10)];
+        let people = vec![person(10, "Ari")];
+        assert!(match_by_holder(None, &accounts, &people).is_none());
+        assert!(match_by_holder(Some("   "), &accounts, &people).is_none());
     }
 
     /// A held date and a bank's own export disagree by a day far more often than they agree
@@ -507,11 +797,12 @@ mod tests {
             account(2, "Savings", AccountKind::Savings, None),
         ];
         let routing = Routing {
-            assigned: HashMap::from([("12-3456-0000123-50".to_string(), 2)]),
+            assigned: HashMap::from([("12-3456-0000123-50".to_string(), Assignment::Account(2))]),
             prior: HashMap::from([("12-3456-0000123-50".to_string(), 1)]),
-            by_history: HashMap::new(),
+            ..empty()
         };
-        let (found, how) = resolve("12-3456-0000123-50", &accounts, &routing).unwrap();
+        let it = item("12-3456-0000123-50", vec![]);
+        let (found, how) = resolve(&it, &accounts, &routing).unwrap();
         assert_eq!(found.id, 2);
         assert_eq!(how, ImportMatch::Assigned);
     }
@@ -522,7 +813,8 @@ mod tests {
             account(1, "Everyday", AccountKind::Bank, Some("12-3456-0000123-50")),
             account(2, "Savings (0000123-50)", AccountKind::Savings, None),
         ];
-        let (found, how) = resolve("12-3456-0000123-50", &accounts, &empty()).unwrap();
+        let it = item("12-3456-0000123-50", vec![]);
+        let (found, how) = resolve(&it, &accounts, &empty()).unwrap();
         assert_eq!(found.id, 1);
         assert_eq!(how, ImportMatch::AccountNumber);
     }
@@ -534,7 +826,7 @@ mod tests {
             account(1, "One", AccountKind::Bank, Some("12-3456-0000123-50")),
             account(2, "Two", AccountKind::Savings, Some("12-3456-0000123-50")),
         ];
-        assert!(resolve("12-3456-0000123-50", &accounts, &empty()).is_none());
+        assert!(resolve(&item("12-3456-0000123-50", vec![]), &accounts, &empty()).is_none());
     }
 
     /// The tier that replaces having the account in the URL: one loan, one export, one answer.
@@ -544,7 +836,8 @@ mod tests {
             account(1, "Everyday", AccountKind::Bank, None),
             account(2, "Student loan", AccountKind::StudentLoan, None),
         ];
-        let (found, how) = only_candidate(ImportSource::MyirSls, 1, &accounts).unwrap();
+        let one = [item("012-345-678-SLS004", vec![])];
+        let (found, how) = only_candidate(ImportSource::MyirSls, &one, &accounts, &[]).unwrap();
         assert_eq!(found.id, 2);
         assert_eq!(how, ImportMatch::OnlyCandidate);
     }
@@ -555,7 +848,8 @@ mod tests {
             account(1, "Loan A", AccountKind::StudentLoan, None),
             account(2, "Loan B", AccountKind::StudentLoan, None),
         ];
-        assert!(only_candidate(ImportSource::MyirSls, 1, &accounts).is_none());
+        let one = [item("012-345-678-SLS004", vec![])];
+        assert!(only_candidate(ImportSource::MyirSls, &one, &accounts, &[]).is_none());
     }
 
     /// …and it never fires for an upload describing several things, where "the only account"
@@ -563,18 +857,81 @@ mod tests {
     #[test]
     fn a_multi_item_upload_declines_the_only_candidate_tier() {
         let accounts = vec![account(2, "Student loan", AccountKind::StudentLoan, None)];
-        assert!(only_candidate(ImportSource::MyirSls, 2, &accounts).is_none());
+        let two = [
+            item("012-345-678-SLS004", vec![]),
+            item("098-765-432-SLS004", vec![]),
+        ];
+        assert!(only_candidate(ImportSource::MyirSls, &two, &accounts, &[]).is_none());
     }
 
     #[test]
     fn assignments_parse_and_malformed_ones_are_refused() {
         let parsed =
             parse_assignments(Some("12-3456-0000123-50:8, 12-3456-0000123-51:12")).unwrap();
-        assert_eq!(parsed.get("12-3456-0000123-50"), Some(&8));
-        assert_eq!(parsed.get("12-3456-0000123-51"), Some(&12));
+        assert_eq!(
+            parsed.get("12-3456-0000123-50"),
+            Some(&Assignment::Account(8))
+        );
+        assert_eq!(
+            parsed.get("12-3456-0000123-51"),
+            Some(&Assignment::Account(12))
+        );
         assert!(parse_assignments(Some("nonsense")).is_err());
         assert!(parse_assignments(Some("12-3456-0000123-50:notanid")).is_err());
         assert!(parse_assignments(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn skip_parses_as_a_decision_of_its_own() {
+        let parsed = parse_assignments(Some("12-3456-0000123-50:8,12-3456-0000123-51:skip"))
+            .expect("both halves are legal");
+        assert_eq!(parsed.get("12-3456-0000123-51"), Some(&Assignment::Skip));
+        // …and it claims no account, so the account it *would* have gone to stays available to
+        // whatever item genuinely wants it.
+        assert_eq!(Assignment::Skip.account_id(), None);
+        assert_eq!(Assignment::Account(8).account_id(), Some(8));
+    }
+
+    /// The bug this exists to prevent: the UI's "skip this one" sent nothing at all, so the
+    /// assignment tier had nothing to say and the *five tiers below it* went on to place the item
+    /// anyway. The row read as skipped on screen and imported regardless.
+    #[test]
+    fn a_skip_outranks_every_tier_that_would_have_placed_the_item() {
+        let accounts = vec![account(
+            1,
+            "Everyday",
+            AccountKind::Bank,
+            Some("12-3456-0000123-50"),
+        )];
+        let it = item("12-3456-0000123-50", vec![]);
+        // The stored-number tier would place this, and a previous import would too.
+        let placed = Routing {
+            prior: HashMap::from([("12-3456-0000123-50".to_string(), 1)]),
+            ..empty()
+        };
+        assert!(
+            resolve(&it, &accounts, &placed).is_some(),
+            "without the skip"
+        );
+
+        let skipped = Routing {
+            assigned: HashMap::from([("12-3456-0000123-50".to_string(), Assignment::Skip)]),
+            ..placed
+        };
+        assert!(resolve(&it, &accounts, &skipped).is_none());
+    }
+
+    #[test]
+    fn cutovers_parse_and_a_bad_date_is_refused() {
+        let parsed = parse_cutovers(Some("12-3456-0000123-50:2026-08-01")).unwrap();
+        assert_eq!(
+            parsed.get("12-3456-0000123-50"),
+            NaiveDate::from_ymd_opt(2026, 8, 1).as_ref()
+        );
+        assert!(parse_cutovers(Some("12-3456-0000123-50:01/08/2026")).is_err());
+        assert!(parse_cutovers(Some("12-3456-0000123-50:today")).is_err());
+        assert!(parse_cutovers(Some("nonsense")).is_err());
+        assert!(parse_cutovers(None).unwrap().is_empty());
     }
 
     /// `ParsedUpload` is constructed in one place per adapter; keep the test helper honest

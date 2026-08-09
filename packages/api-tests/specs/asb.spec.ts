@@ -285,8 +285,11 @@ test("a hand-entered row does not set the cutover", async ({ api, server }) => {
  * here" and "a feed owns a period it hasn't written yet" look identical from the ledger.
  * Importing into it would double every row the feed later posts, because dedupe is
  * `(provider, external_id)` and cannot see across `asb#N` and `csv#M`.
+ *
+ * So the item is *blocked* — 200, nothing written, the reason on the item. Not a 422: the
+ * refusal is a fact about this one account, and this upload is routinely one of a dozen.
  */
-test("an unsynced feed refuses the import rather than importing over its window", async ({
+test("an unsynced feed blocks its own item rather than importing over its window", async ({
   api,
   server,
 }) => {
@@ -297,18 +300,174 @@ test("an unsynced feed refuses the import rather than importing over its window"
   });
   expect(link.response.status).toBe(201);
 
-  const res = await upload(server.baseURL, acc.id, exportFile(HISTORY));
-  expect(res.status).toBe(422);
-  const message = (await res.json()).error.message;
-  // Names the offending feed, so the reader knows which one to sync or disable.
-  expect(message).toContain("Unsynced bank feed");
-  expect(message).toContain("has not posted a transaction yet");
+  const r = await only(upload(server.baseURL, acc.id, exportFile(HISTORY)));
+  expect(r.imported).toBe(0);
+  expect(r.would_import).toBe(0);
+  expect(r.blocked?.reason).toBe("unsynced_feed");
+  // Names the offending feed, so the reader knows which one to sync or disable…
+  expect(r.blocked?.message).toContain("Unsynced bank feed");
+  expect(r.blocked?.message).toContain("has not posted a transaction yet");
+  // …and carries its id, so the panel can offer to sync it in place.
+  expect(r.blocked?.feeds).toEqual([{ provider_id: link.data!.id, name: "Unsynced bank feed" }]);
 
-  // Refused before anything was written.
+  // Blocked before anything was written.
   const { data: txns } = await api.GET("/api/transactions", {
     params: { query: { account_id: acc.id } },
   });
   expect(txns?.some((t) => t.provider === `asb#${acc.id}`)).toBe(false);
+});
+
+/**
+ * The fix, and the reason the block is per item. One account's pending feed used to fail the
+ * whole request, so a zip of a household's exports imported *nothing* — and the preview died
+ * with it, leaving no way to skip the one file that was the problem.
+ */
+test("one account's pending feed does not stop the other accounts importing", async ({
+  api,
+  server,
+}) => {
+  const held = await createAccount(api, "Emergency Fund", "savings", "NZD");
+  const fine = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
+  const link = await api.POST("/api/providers", {
+    body: { name: "Akahu — Emergency Fund", kind: "csv", account_id: held.id, enabled: true },
+  });
+  expect(link.response.status).toBe(201);
+
+  const other = "12-3136-0000123-51";
+  const zip = zipOf(
+    { "held.csv": HISTORY, "fine.csv": HISTORY },
+    { "held.csv": { account: "0000123-50" }, "fine.csv": { account: "0000123-51" } }
+  );
+  const q = new URLSearchParams({
+    dry_run: "false",
+    opening_balance: "false",
+    assign: `${ASB_ACCOUNT}:${held.id},${other}:${fine.id}`,
+  });
+  const res = await fetch(`${server.baseURL}/api/import?${q}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/zip" },
+    body: zip,
+  });
+  expect(res.status).toBe(200);
+  const items: Array<Record<string, any>> = (await res.json()).items;
+
+  const blocked = items.find((x) => x.source_account === ASB_ACCOUNT)!;
+  expect(blocked.blocked?.reason).toBe("unsynced_feed");
+  expect(blocked.imported).toBe(0);
+
+  const imported = items.find((x) => x.source_account === other)!;
+  expect(imported.blocked).toBeFalsy();
+  expect(imported.imported).toBe(3);
+
+  // …and the write really happened for the one that wasn't held up, while the held-up account
+  // is untouched.
+  const { data: ok } = await api.GET("/api/transactions", {
+    params: { query: { account_id: fine.id } },
+  });
+  expect(ok?.length).toBe(3);
+  const { data: none } = await api.GET("/api/transactions", {
+    params: { query: { account_id: held.id } },
+  });
+  expect(none?.length).toBe(0);
+});
+
+/**
+ * The first of the three ways out, and the one the UI reaches for first. `skip` has to be a
+ * statement rather than an omission: leaving an item out of `assign` only silences the top
+ * routing tier, and the five below it would place the file anyway.
+ */
+test("skipping an item imports nothing of it, whatever the other tiers would have concluded", async ({
+  api,
+  server,
+}) => {
+  const acc = await createAccount(api, "Chequing", "bank", "NZD", {
+    institution: "ASB",
+    metadata: { profile: "depository", account_number: ASB_ACCOUNT },
+  });
+
+  // The stored account number would place this on its own, so an omitted assignment imports it.
+  const r = await only(
+    upload(server.baseURL, acc.id, exportFile(HISTORY), false, false, `${ASB_ACCOUNT}:skip`)
+  );
+  expect(r.imported).toBe(0);
+  expect(r.would_import).toBe(0);
+  expect(r.account_id).toBeNull();
+  expect(r.warnings.join(" ")).toContain("you chose to skip this one");
+
+  const { data: txns } = await api.GET("/api/transactions", {
+    params: { query: { account_id: acc.id } },
+  });
+  expect(txns?.length).toBe(0);
+});
+
+/**
+ * The third way out (after syncing the feed and disabling it): state the date the silent feed
+ * owns from. Only the person importing can know it, so their answer is the best evidence there
+ * is — and everything before it imports.
+ */
+test("a stated cutover resolves the block and holds back from exactly that date", async ({
+  api,
+  server,
+}) => {
+  const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
+  const link = await api.POST("/api/providers", {
+    body: { name: "Unsynced bank feed", kind: "csv", account_id: acc.id, enabled: true },
+  });
+  expect(link.response.status).toBe(201);
+
+  const q = new URLSearchParams({
+    dry_run: "false",
+    opening_balance: "false",
+    assign: `${ASB_ACCOUNT}:${acc.id}`,
+    cutover: `${ASB_ACCOUNT}:2022-01-01`,
+  });
+  const r = await only(
+    fetch(`${server.baseURL}/api/import?${q}`, {
+      method: "POST",
+      headers: { "Content-Type": "text/csv" },
+      body: exportFile(HISTORY),
+    })
+  );
+  expect(r.blocked).toBeFalsy();
+  expect(r.cutover).toBe("2022-01-01");
+  // The 2020 and 2021 rows are ours; the 2022 one is the feed's by that statement.
+  expect(r.imported).toBe(2);
+  expect(r.held_back).toBe(1);
+  // And the risk the person took is stated back to them rather than left implicit.
+  expect(r.warnings.join(" ")).toContain("that is the date you said the feed owns from");
+});
+
+/**
+ * The guard that keeps `CutoverRule`'s "it is never a parameter" true where it has to be. A feed
+ * that *has* posted establishes the window itself, and a later date passed in must not widen the
+ * import over rows that feed already owns.
+ */
+test("a stated cutover cannot widen an import past a feed that has already posted", async ({
+  api,
+  server,
+}) => {
+  const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
+  // The feed posts a row dated 2021-06-01, so it owns everything from then.
+  await feed(api, acc.id, "date,amount,description,external_id\n2021-06-01,-42.00,Feed row,f1\n");
+
+  const q = new URLSearchParams({
+    dry_run: "false",
+    opening_balance: "false",
+    assign: `${ASB_ACCOUNT}:${acc.id}`,
+    // A date past the end of the export, which would import all three rows if it were honoured.
+    cutover: `${ASB_ACCOUNT}:2030-01-01`,
+  });
+  const r = await only(
+    fetch(`${server.baseURL}/api/import?${q}`, {
+      method: "POST",
+      headers: { "Content-Type": "text/csv" },
+      body: exportFile(HISTORY),
+    })
+  );
+  expect(r.cutover).toBe("2021-06-01");
+  expect(r.imported).toBe(1);
+  expect(r.held_back).toBe(2);
+  expect(r.warnings.join(" ")).toContain("was not used");
 });
 
 test("a disabled feed that never posted does not block the import", async ({ api, server }) => {
