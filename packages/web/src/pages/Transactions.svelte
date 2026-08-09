@@ -6,6 +6,7 @@
   import { resolvedTheme } from "../lib/theme.svelte";
   import { ICONS } from "../lib/icons";
   import { RANGES, activeRange, attributionParam, filters, type RangeKey } from "../lib/state.svelte";
+  import ValuationPanel from "../lib/ValuationPanel.svelte";
   import { router } from "../lib/router.svelte";
   import Icon from "../lib/Icon.svelte";
   import {
@@ -50,11 +51,15 @@
   const paramTab = params.get("tab");
 
   type Tx = Schemas["Transaction"];
+  type Val = Schemas["Valuation"];
   type Account = Schemas["Account"];
   type Category = Schemas["Category"];
   type Merchant = Schemas["Merchant"];
 
   let txns = $state<Tx[]>([]);
+  let valuations = $state<Val[]>([]);
+  let showAllValuations = $state(false);
+  let showValuation = $state(false);
   let accounts = $state<Account[]>([]);
   let categories = $state<Category[]>([]);
   let merchants = $state<Merchant[]>([]);
@@ -142,6 +147,15 @@
   });
 
   const accountName = $derived(new Map(accounts.map((a) => [a.id, a.name])));
+  const accountClass = $derived(new Map(accounts.map((a) => [a.id, a.class])));
+  // Exhaustive by type: a new `ValuationSource` variant is a compile error here.
+  const VALUATION_SOURCE_LABEL: Record<Schemas["ValuationSource"], string> = {
+    manual: "manual",
+    cron: "scheduled",
+    provider: "synced",
+    brokerage: "from holdings",
+    equity: "from grant",
+  };
   const accountOwnership = $derived(new Map(accounts.map((a) => [a.id, a.ownership])));
   /**
    * Who a transaction belongs to: its own override, or — the usual case — its account's
@@ -261,19 +275,57 @@
   const PAGE_SIZES = [10, 20, 30, 50, 100];
   let pageSize = $state(paramPerPage && PAGE_SIZES.includes(paramPerPage) ? paramPerPage : 50);
   let page = $state(paramPage && paramPage > 0 ? paramPage : 1); // 1-indexed
-  const pageCount = $derived(Math.max(1, Math.ceil(sortedFiltered.length / pageSize)));
-  const paged = $derived(sortedFiltered.slice((page - 1) * pageSize, page * pageSize));
+  // A valuation is a *level*, not a movement, so it deliberately never reaches `sortedFiltered`
+  // — which every sum on this page (`stats`, `dayGroups`, `statCurrency`) derives from. Merging
+  // only at the pagination boundary keeps those correct by construction rather than by
+  // remembering a guard at each one.
+  type HistoryRow =
+    | { kind: "tx"; key: string; date: string; tx: Tx }
+    | { kind: "val"; key: string; date: string; val: Val };
+
+  const visibleValuations = $derived.by(() => {
+    if (accountId === "") return [];
+    const { from, to } = activeRange();
+    return valuations.filter((v) => (!from || v.as_of >= from) && (!to || v.as_of <= to));
+  });
+
+  const historyRows = $derived.by<HistoryRow[]>(() => {
+    const txRows: HistoryRow[] = sortedFiltered.map((t) => ({
+      kind: "tx",
+      key: `tx-${t.id}`,
+      date: t.posted_at.slice(0, 10),
+      tx: t,
+    }));
+    // Only under a date sort: a valuation has no description, category or amount, so it has no
+    // position in an ordering over those columns.
+    if (sortKey !== "date" || visibleValuations.length === 0) return txRows;
+    const valRows: HistoryRow[] = visibleValuations.map((v) => ({
+      kind: "val",
+      key: `val-${v.id}`,
+      date: v.as_of,
+      val: v,
+    }));
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...txRows, ...valRows].sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? -dir : dir;
+      // Within a day: the movements, then the level they landed at.
+      if (a.kind !== b.kind) return a.kind === "tx" ? -1 : 1;
+      return a.kind === "tx" && b.kind === "tx" ? a.tx.id - b.tx.id : 0;
+    });
+  });
+
+  const pageCount = $derived(Math.max(1, Math.ceil(historyRows.length / pageSize)));
+  const paged = $derived(historyRows.slice((page - 1) * pageSize, page * pageSize));
   // The reference nests each day as its own two-tier card (a subtle outer wrapper holding a
   // brighter inner card of rows) — bucket the current page's rows into contiguous same-day runs
   // to render that. Only meaningful when `grouped` (paged is already date-desc, so same-day rows
   // are always contiguous); otherwise rows render flat with no day wrapper.
   const renderGroups = $derived.by(() => {
-    const out: { dateKey: string; rows: Tx[] }[] = [];
-    for (const t of paged) {
-      const dk = t.posted_at.slice(0, 10);
+    const out: { dateKey: string; rows: HistoryRow[] }[] = [];
+    for (const r of paged) {
       const last = out[out.length - 1];
-      if (last && last.dateKey === dk) last.rows.push(t);
-      else out.push({ dateKey: dk, rows: [t] });
+      if (last && last.dateKey === r.date) last.rows.push(r);
+      else out.push({ dateKey: r.date, rows: [r] });
     }
     return out;
   });
@@ -314,7 +366,9 @@
     if (sortDir !== DEFAULT_DIR[sortKey]) p.set("dir", sortDir);
     if (pageSize !== 50) p.set("per_page", String(pageSize));
     if (page > 1) p.set("page", String(page));
-    const anchorTx = paged[0]?.id;
+    // Still a transaction id: `?at=` is a shared-link contract, and the rules audit log
+    // deep-links `?tx=` into the same resolution.
+    const anchorTx = paged.find((r) => r.kind === "tx")?.tx.id;
     if (anchorTx != null) p.set("at", String(anchorTx));
     const base = router.path.split("?")[0];
     const qs = p.toString();
@@ -325,11 +379,12 @@
   // it refers to has loaded — lands on whichever page contains that transaction.
   let didInitPage = false;
   $effect(() => {
-    if (didInitPage || sortedFiltered.length === 0) return;
+    if (didInitPage || historyRows.length === 0) return;
     didInitPage = true;
     const initial = highlightId ?? paramAnchor;
     if (initial != null) {
-      const idx = sortedFiltered.findIndex((t) => t.id === initial);
+      // Pagination is over the merged list now, so the index has to come from it.
+      const idx = historyRows.findIndex((r) => r.kind === "tx" && r.tx.id === initial);
       if (idx >= 0) page = Math.floor(idx / pageSize) + 1;
     }
   });
@@ -450,6 +505,28 @@
     if (accounts.length && !form.account_id) form.account_id = accounts[0].id;
   }
 
+  /**
+   * An account's manual valuations, shown as rows in its history so a balance somebody set by
+   * hand is visible where they'd look for it — and so a back-dated one is obvious.
+   *
+   * Only in the single-account view: a valuation is a level for *one* account, and interleaving
+   * levels from six of them into a movement stream says nothing. Only `manual` by default,
+   * because a linked account gains a synced row every day and would bury its own history.
+   */
+  async function loadValuations() {
+    if (accountId === "") {
+      valuations = [];
+      return;
+    }
+    const { data } = await api.GET("/api/accounts/{id}/valuations", {
+      params: {
+        path: { id: Number(accountId) },
+        query: showAllValuations ? {} : { source: "manual" },
+      },
+    });
+    valuations = data ?? [];
+  }
+
   async function loadTx() {
     loading = true;
     error = null;
@@ -476,6 +553,14 @@
     filters.range;
     filters.custom;
     loadTx();
+  });
+  // Separate from `loadTx`: valuations are not date-filtered server-side (there are few once
+  // `source=manual` applies), so `visibleValuations` windows them client-side and only the
+  // account or the source toggle needs a refetch.
+  $effect(() => {
+    accountId;
+    showAllValuations;
+    loadValuations();
   });
 
   // Once the page containing a `?tx=` deep-link has rendered, flash-scroll it into view. A
@@ -665,6 +750,12 @@
       <Icon name="download" size={16} />
       Import
     </a>
+    {#if accountId !== ""}
+      <!-- Where you already are when you decide to correct a balance. -->
+      <button class="btn btn-sm" onclick={() => (showValuation = !showValuation)}>
+        {showValuation ? "Close" : "Set value"}
+      </button>
+    {/if}
     <button class="btn btn-primary btn-sm new-tx-btn" onclick={() => (showAdd = !showAdd)}>
       {#if showAdd}Close{:else}<Icon name="plus" size={16} />New transaction{/if}
     </button>
@@ -672,6 +763,21 @@
 </div>
 
 {#if error}<div class="error-banner" style="margin-bottom:12px">{error}</div>{/if}
+
+{#if showValuation && accountId !== ""}
+  <section class="card" style="margin-bottom:14px">
+    <ValuationPanel
+      accountId={Number(accountId)}
+      accountClass={accountClass.get(Number(accountId)) ?? "asset"}
+      currency={statCurrency}
+      hasTransactions={txns.length > 0}
+      onchange={() => {
+        loadValuations();
+        loadTx();
+      }}
+    />
+  </section>
+{/if}
 
 {#if showAdd}
   <section class="card" style="margin-bottom:14px">
@@ -822,8 +928,11 @@
 
   {#if loading && txns.length === 0}
     <div class="row" style="justify-content:center;padding:30px"><span class="spinner"></span></div>
-  {:else if sortedFiltered.length === 0}
-    <div class="empty">No transactions.</div>
+  {:else if historyRows.length === 0}
+    <!-- `historyRows`, not `sortedFiltered`: an account can have no transactions and still have
+         a history worth showing. A property or a loan whose balance is only ever recorded as a
+         valuation would otherwise say "No transactions." over the top of its own history. -->
+    <div class="empty">Nothing to show.</div>
   {:else}
     <!-- One row style for every sort order — re-sorting only ever toggles the day-group
          headers on/off (they only make sense over the default newest-first date order,
@@ -857,39 +966,56 @@
       {#if grouped}
         {#each renderGroups as g (g.dateKey)}
           {@const day = dayGroups.get(g.dateKey)}
+          {@const txRows = g.rows.flatMap((r) => (r.kind === "tx" ? [r.tx] : []))}
           <div class="day-group">
             <div class="day-head">
               <div class="day-head-left">
-                <span class="tx-check">
-                  <input
-                    type="checkbox"
-                    aria-label="Select this day's transactions"
-                    checked={g.rows.every((t) => selected.has(t.id))}
-                    onchange={(e) => {
-                      const on = e.currentTarget.checked;
-                      const next = new Set(selected);
-                      for (const t of g.rows) on ? next.add(t.id) : next.delete(t.id);
-                      selected = next;
-                    }}
-                  />
+                <!-- `[].every(...)` is `true`, so a day holding only a valuation would render a
+                     ticked box that selects nothing. No transactions, no checkbox. -->
+                {#if txRows.length > 0}
+                  <span class="tx-check">
+                    <input
+                      type="checkbox"
+                      aria-label="Select this day's transactions"
+                      checked={txRows.every((t) => selected.has(t.id))}
+                      onchange={(e) => {
+                        const on = e.currentTarget.checked;
+                        const next = new Set(selected);
+                        for (const t of txRows) on ? next.add(t.id) : next.delete(t.id);
+                        selected = next;
+                      }}
+                    />
+                  </span>
+                {/if}
+                <span class="day-date">
+                  {formatDateLong(g.dateKey)}{day ? ` · ${day.count}` : ""}
                 </span>
-                <span class="day-date">{formatDateLong(g.rows[0].posted_at)} · {day?.count ?? 0}</span>
               </div>
-              <span class="day-total tabular" class:pos={(day?.net ?? 0) >= 0}>
-                {formatMoney(day?.net ?? 0, statCurrency)}
-              </span>
+              <!-- A day's net is a sum of movements. A level is not one, so a day that holds
+                   only a valuation states no total rather than claiming $0.00. -->
+              {#if day}
+                <span class="day-total tabular" class:pos={day.net >= 0}>
+                  {formatMoney(day.net, statCurrency)}
+                </span>
+              {/if}
             </div>
             <div class="day-rows">
-              {#each g.rows as t (t.id)}
-                {@render row(t)}
+              {#each g.rows as r (r.key)}
+                {#if r.kind === "tx"}{@render row(r.tx)}{:else}{@render valuationRow(r.val)}{/if}
               {/each}
             </div>
           </div>
         {/each}
       {:else}
-        {#each paged as t (t.id)}
-          {@render row(t)}
+        {#each paged as r (r.key)}
+          {#if r.kind === "tx"}{@render row(r.tx)}{:else}{@render valuationRow(r.val)}{/if}
         {/each}
+      {/if}
+      {#if sortKey !== "date" && visibleValuations.length > 0}
+        <div class="small faint" style="padding:10px 16px">
+          {visibleValuations.length} value {visibleValuations.length === 1 ? "update" : "updates"}
+          hidden — sort by date to see {visibleValuations.length === 1 ? "it" : "them"}.
+        </div>
       {/if}
     </div>
     </div>
@@ -908,6 +1034,38 @@
         {label}
         <span class="caret" aria-hidden="true">{sortKey !== key ? "↕" : sortDir === "asc" ? "▲" : "▼"}</span>
       </button>
+    {/snippet}
+
+    <!-- A valuation is a *level*, not a movement: it has no counterparty, no category and no
+         +/- delta, so it reads as `= $X` where a transaction reads `+$40.00`, and it carries no
+         checkbox because it can never be part of a bulk edit. -->
+    {#snippet valuationRow(v: Val)}
+      {@const label =
+        accountClass.get(v.account_id) === "liability" ? "Balance set" : "Value set"}
+      <div class="tx-row val-row">
+        <div class="tx-name-cell">
+          <span class="tx-check" aria-hidden="true"></span>
+          <span class="val-icon" aria-hidden="true">=</span>
+          <div class="tx-main">
+            <div class="tx-name-row">
+              <span class="tx-name">{label}</span>
+              <span class="badge">{VALUATION_SOURCE_LABEL[v.source]}</span>
+            </div>
+            <div class="tx-sub">
+              {v.note ? v.note + " • " : ""}{accountName.get(v.account_id) ?? ""} · {formatDate(v.as_of)}
+            </div>
+          </div>
+        </div>
+        <div class="cat-cell"></div>
+        <span
+          class="amt-cell tabular val-amount"
+          aria-label="{label} to {formatMoney(v.value_minor, v.currency_code)} on {formatDate(
+            v.as_of
+          )}"
+        >
+          = {formatMoney(v.value_minor, v.currency_code)}
+        </span>
+      </div>
     {/snippet}
 
     {#snippet row(t: Tx)}
@@ -1453,6 +1611,25 @@
   }
   .tx-row:hover {
     background: var(--hover);
+  }
+  .val-row {
+    border-left: 2px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
+  }
+  .val-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    color: var(--text-muted);
+    font-size: 15px;
+    flex: none;
+  }
+  .val-amount {
+    color: var(--text-muted);
   }
   .owner-chip {
     position: relative;

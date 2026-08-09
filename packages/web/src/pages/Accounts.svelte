@@ -12,6 +12,7 @@
   import AccountForm from "../lib/AccountForm.svelte";
   import EquityPanel from "../lib/EquityPanel.svelte";
   import PropertyPanel from "../lib/PropertyPanel.svelte";
+  import ValuationPanel from "../lib/ValuationPanel.svelte";
   import BrokeragePanel from "../lib/BrokeragePanel.svelte";
   import StudentLoanPanel from "../lib/StudentLoanPanel.svelte";
   import ImportPanel from "../lib/ImportPanel.svelte";
@@ -285,19 +286,19 @@
                   <button class="btn btn-sm" onclick={() => ((editing = editing === a.account_id ? null : a.account_id), (showAdd = false))}>
                     {editing === a.account_id ? "Close" : "Edit"}
                   </button>
-                  {#if a.kind === "shares_private" || a.kind === "brokerage" || a.kind === "crypto" || a.kind === "student_loan" || takesBankCsv(a.kind) || a.class === "asset"}
-                    <button class="btn btn-sm" onclick={() => (expanded = expanded === a.account_id ? null : a.account_id)}>
-                      {expanded === a.account_id
-                        ? "Hide"
-                        : a.kind === "brokerage"
-                          ? "Holdings"
-                          : a.kind === "crypto"
-                            ? "Value"
-                            : a.kind === "student_loan" || takesBankCsv(a.kind)
-                              ? "Import"
-                              : "Equity"}
-                    </button>
-                  {/if}
+                  <button class="btn btn-sm" onclick={() => (expanded = expanded === a.account_id ? null : a.account_id)}>
+                    {expanded === a.account_id
+                      ? "Hide"
+                      : a.kind === "brokerage"
+                        ? "Holdings"
+                        : a.kind === "crypto"
+                          ? "Value"
+                          : a.kind === "student_loan" || takesBankCsv(a.kind)
+                            ? "Import"
+                            : a.kind === "shares_private" || a.class === "asset"
+                              ? "Equity"
+                              : "Value"}
+                  </button>
                   <button class="btn btn-sm btn-danger" aria-label="Delete {a.name}" onclick={() => askDelete(a.account_id)}>✕</button>
                 </div>
               </div>
@@ -324,8 +325,16 @@
                 <StudentLoanPanel accountId={a.account_id} onchange={load} />
               {:else if takesBankCsv(a.kind)}
                 <ImportPanel accountId={a.account_id} currency={a.currency_code} onchange={load} />
-              {:else}
+              {:else if a.class === "asset"}
                 <PropertyPanel accountId={a.account_id} onchange={load} />
+              {/if}
+              {#if a.class !== "asset" && a.kind !== "brokerage" && a.kind !== "shares_private"}
+                <ValuationPanel
+                  accountId={a.account_id}
+                  accountClass={a.class}
+                  currency={a.currency_code}
+                  onchange={load}
+                />
               {/if}
             {/if}
           {/each}

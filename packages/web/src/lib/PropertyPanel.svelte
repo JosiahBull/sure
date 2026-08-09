@@ -1,14 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, formatMoney, type Schemas } from "./api";
+  import ValuationPanel from "./ValuationPanel.svelte";
 
   let { accountId, onchange }: { accountId: number; onchange?: () => void } = $props();
 
   let position = $state<Schemas["EquityPosition"] | null>(null);
   let accounts = $state<Schemas["Account"][]>([]);
-  let valueInput = $state("");
   let linkId = $state<number | "">("");
-  let busy = $state(false);
 
   async function load() {
     const [p, a] = await Promise.all([
@@ -26,20 +25,6 @@
   );
   const ccy = $derived(position?.currency ?? "NZD");
   const pct = $derived(Math.round(position?.paid_off_pct ?? 0));
-
-  async function setValue() {
-    const major = parseFloat(valueInput.replace(/[^0-9.-]/g, ""));
-    if (isNaN(major)) return;
-    busy = true;
-    await api.POST("/api/accounts/{id}/valuations", {
-      params: { path: { id: accountId } },
-      body: { as_of: new Date().toISOString().slice(0, 10), value_minor: Math.round(major * 100) },
-    });
-    valueInput = "";
-    await load();
-    onchange?.();
-    busy = false;
-  }
 
   async function link(id: number) {
     await api.PUT("/api/accounts/{id}/secured-by", {
@@ -68,9 +53,15 @@
     </div>
     <div class="bar"><span style="width:{pct}%"></span></div>
 
-    <div class="row wrap" style="gap:8px;margin:12px 0">
-      <input class="input tabular grow" style="min-width:120px" placeholder="Set home value (e.g. 850000)" bind:value={valueInput} />
-      <button class="btn btn-sm" onclick={setValue} disabled={busy || !valueInput.trim()}>Set value</button>
+    <!-- Replaces a "Set value" box that hardcoded today's date and sent no note: the same
+         POST, but back-datable, and it lists what is already there. -->
+    <div style="margin:12px 0">
+      <ValuationPanel
+        {accountId}
+        accountClass="asset"
+        currency={ccy}
+        onchange={() => { load(); onchange?.(); }}
+      />
     </div>
 
     <div class="small muted" style="margin-bottom:4px">Secured loans</div>
