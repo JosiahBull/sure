@@ -758,3 +758,284 @@ test("group-linking every wallet of a brokerage platform creates one account", a
   expect(created?.kind).toBe("brokerage");
   expect(created?.name).toBe("Sharesies");
 });
+
+/**
+ * A joint account, which is the one duplicate `external_id` cannot catch.
+ *
+ * Akahu issues an id per *authorisation*, so an account both holders' logins can see arrives as
+ * two rows that share nothing an id-based filter can compare: different `_id`, different
+ * `_authorisation`, and — because each holder nicknames it themselves — usually a different
+ * name. Only `formatted_account` pairs them.
+ *
+ * Linking both is not a cosmetic mistake. Each row becomes its own `providers` row against its
+ * own account, both sweep the same upstream transactions, and the balance is counted twice in
+ * net worth — with nothing in the UI to suggest the two accounts are one. The dialog used to
+ * warn about it and let you do it anyway; worse, the warning needed both rows present to fire,
+ * so once one copy was linked the API filtered it out and the survivor sat there unmarked.
+ *
+ * Three things are asserted here because each fails independently: the rows are *flagged*, the
+ * twin is *withheld* after one is linked, and the link endpoint *refuses* it even when asked
+ * directly — the last being the only one that holds against a stale page or a script.
+ */
+test("one account two logins report is joint, and can only be linked once", async ({
+  testproxy,
+}) => {
+  const SHARED_NUMBER = "12-3456-0000123-00";
+  const HERS = "acc_joint01";
+  const HIS = "acc_joint02";
+
+  /** The same bank account as one login sees it. */
+  function view(id: string, authorisation: string, name: string, number: string) {
+    return {
+      ...account({ balance: 2410.55, name }),
+      _id: id,
+      _authorisation: authorisation,
+      formatted_account: number,
+    };
+  }
+
+  const { server, api } = await configured();
+  try {
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: "^/v1/accounts$",
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        success: true,
+        items: [
+          view(HERS, "auth_hers", "Everyday", SHARED_NUMBER),
+          view(HIS, "auth_his", "Joint acct", SHARED_NUMBER),
+          // A third account only one login reports — the control. If this ever came back
+          // joint, the pairing would be matching on something every row shares.
+          view("acc_solo01", "auth_hers", "Savings", "12-3456-0000999-00"),
+        ],
+      }),
+    });
+    // The link triggers an initial sync of whichever row is linked; both are stubbed so the
+    // test never depends on which one it picked.
+    for (const id of [HERS, HIS]) {
+      await testproxy.stub({
+        upstream: "akahu",
+        method: "GET",
+        path_pattern: `^/v1/accounts/${id}/transactions$`,
+        status: 200,
+        response_headers: { "content-type": "application/json" },
+        body: JSON.stringify({ success: true, items: [], cursor: { next: null } }),
+      });
+      await testproxy.stub({
+        upstream: "akahu",
+        method: "GET",
+        path_pattern: `^/v1/accounts/${id}$`,
+        status: 200,
+        response_headers: { "content-type": "application/json" },
+        body: JSON.stringify({ success: true, item: view(id, "auth_hers", "Everyday", SHARED_NUMBER) }),
+      });
+    }
+
+    const discovered = await api.GET("/api/provider-kinds/{kind}/accounts", {
+      params: { path: { kind: "akahu" } },
+    });
+    expect(discovered.response.status).toBe(200);
+    const byId = new Map(discovered.data!.map((a) => [a.external_id, a]));
+    expect(byId.get(HERS)?.joint).toBe(true);
+    expect(byId.get(HIS)?.joint).toBe(true);
+    expect(byId.get("acc_solo01")?.joint).toBe(false);
+
+    // Deliberately asking for one person's: the server decides ownership for a joint account,
+    // so what the client sent must not survive.
+    const linked = await api.POST("/api/providers/link", {
+      body: {
+        kind: "akahu",
+        external_id: HERS,
+        name: "Akahu — Everyday",
+        new_account: {
+          name: "Everyday",
+          kind: "bank",
+          currency_code: "NZD",
+          archived: false,
+          sort_order: 0,
+          ownership: { kind: "person", person_id: 1 },
+        },
+      },
+    });
+    expect(linked.response.status).toBe(201);
+
+    const accounts = await api.GET("/api/accounts", {});
+    const created = accounts.data?.find((a) => a.id === linked.data!.account_id);
+    expect(created?.ownership).toEqual({ kind: "joint" });
+
+    // The twin goes with it. This is the assertion the old client-side warning could not make:
+    // its pair had been filtered out, so there was nothing left to compare against.
+    const after = await api.GET("/api/provider-kinds/{kind}/accounts", {
+      params: { path: { kind: "akahu" } },
+    });
+    expect(after.data?.map((a) => a.external_id)).toEqual(["acc_solo01"]);
+
+    // And asking for it anyway — the case a stale page or a kept id produces — is refused
+    // rather than quietly creating the second copy.
+    const twin = await api.POST("/api/providers/link", {
+      body: {
+        kind: "akahu",
+        external_id: HIS,
+        name: "Akahu — Joint acct",
+        new_account: {
+          name: "Joint acct",
+          kind: "bank",
+          currency_code: "NZD",
+          archived: false,
+          sort_order: 0,
+          ownership: { kind: "joint" },
+        },
+      },
+    });
+    expect(twin.response.status).toBe(422);
+    // Both names, so the message describes what happened rather than just forbidding it.
+    const refusal = (twin.error as { error?: { message?: string } })?.error?.message ?? "";
+    expect(refusal).toContain("Joint acct");
+    expect(refusal).toContain("Everyday");
+
+    // Nothing was created by the refusal — the point of refusing before the write.
+    const finalAccounts = await api.GET("/api/accounts", {});
+    expect(finalAccounts.data?.filter((a) => a.name === "Joint acct").length).toBe(0);
+  } finally {
+    server.stop();
+  }
+});
+
+/**
+ * Suggesting a mortgage's original amount from the drawdown in its own history.
+ *
+ * ASB's mortgages arrive through Akahu with no `meta.loan_details.initial_principal`, and the
+ * amount borrowed is demanded on *every* write path — `AMORTISING_REQUIRED` covers the link
+ * path too, because a mortgage without its terms cannot be forecast. So the field has to be
+ * answered to link at all, and until now it had to be typed: a number people reconstruct as
+ * the balance on the day they connected the bank rather than the advance that opened the loan.
+ *
+ * Out here rather than only in `sure_app`'s unit tests because the sign is the whole game and
+ * nothing in-process proves it. Akahu quotes a loan account's movements in the same signed
+ * frame this app uses — an advance grows the debt and is negative, a repayment is positive —
+ * and `map_transaction` passes the amount through unflipped. A unit test that hand-writes the
+ * row assumes that; this asserts it against the adapter that actually parses the feed.
+ */
+test("a mortgage's original amount is suggested from the drawdown in its history", async ({
+  testproxy,
+}) => {
+  const { server, api } = await configured();
+  try {
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: "^/v1/accounts$",
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        success: true,
+        // No `loan_details`, which is the premise: nothing but the history to read.
+        items: [account({ balance: -484_210.0, kind: "LOAN", name: "Prime Housing Lending" })],
+      }),
+    });
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: `^/v1/accounts/${EXTERNAL_ID}/transactions$`,
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        success: true,
+        items: [
+          // Negative: the advance grew the debt. This is the row the suggestion comes from.
+          txn({
+            id: "trans_draw01",
+            date: "2026-03-02T00:00:00.000Z",
+            description: "Loan drawdown",
+            amount: -485_000.0,
+          }),
+          txn({
+            id: "trans_int01",
+            date: "2026-03-31T00:00:00.000Z",
+            description: "Interest",
+            amount: -2_310.0,
+          }),
+          txn({
+            id: "trans_pay01",
+            date: "2026-03-31T00:00:00.000Z",
+            description: "Payment received",
+            amount: 3_100.0,
+          }),
+        ],
+        cursor: { next: null },
+      }),
+    });
+
+    const discovered = await api.GET("/api/provider-kinds/{kind}/accounts", {
+      params: { path: { kind: "akahu" } },
+    });
+    expect(discovered.response.status).toBe(200);
+    expect(discovered.data?.length).toBe(1);
+    const offered = discovered.data![0];
+    expect(offered.kind_hint).toBe("mortgage");
+    expect(offered.original_amount_hint_minor).toBe(48_500_000);
+  } finally {
+    server.stop();
+  }
+});
+
+/**
+ * The ordinary case, and the one that has to stay quiet: a feed reaches back a year or so and a
+ * mortgage runs for thirty, so the drawdown is usually off the front of the window. The largest
+ * advance left is a monthly interest charge, nowhere near the balance still owed.
+ */
+test("a mortgage whose drawdown predates the feed's window is suggested nothing", async ({
+  testproxy,
+}) => {
+  const { server, api } = await configured();
+  try {
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: "^/v1/accounts$",
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        success: true,
+        items: [account({ balance: -512_400.0, kind: "LOAN", name: "Old Lending" })],
+      }),
+    });
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: `^/v1/accounts/${EXTERNAL_ID}/transactions$`,
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        success: true,
+        items: [
+          txn({
+            id: "trans_int02",
+            date: "2026-06-28T00:00:00.000Z",
+            description: "Interest",
+            amount: -2_290.0,
+          }),
+          txn({
+            id: "trans_pay02",
+            date: "2026-06-28T00:00:00.000Z",
+            description: "Payment received",
+            amount: 3_100.0,
+          }),
+        ],
+        cursor: { next: null },
+      }),
+    });
+
+    const discovered = await api.GET("/api/provider-kinds/{kind}/accounts", {
+      params: { path: { kind: "akahu" } },
+    });
+    // Still offered, and still linkable — just with the field left for the user to answer.
+    expect(discovered.data?.length).toBe(1);
+    expect(discovered.data![0].original_amount_hint_minor).toBeFalsy();
+  } finally {
+    server.stop();
+  }
+});

@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::error::{AppError, AppResult};
 use crate::extract::Json;
 use crate::state::AppState;
@@ -9,8 +7,8 @@ use axum::routing::{get, post};
 use axum::Router;
 
 pub use sure_core::{
-    LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderAccount,
-    ProviderKind, ProviderSync, SaveProvider, SyncOutcome, SyncRequest,
+    LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Ownership, Provider, ProviderAccount,
+    ProviderKind, ProviderSync, SaveAccount, SaveProvider, SyncOutcome, SyncRequest,
 };
 
 // OTEL span names for this module's handlers.
@@ -39,7 +37,14 @@ pub async fn kinds(State(st): State<AppState>) -> Json<Vec<ProviderKind>> {
 }
 
 /// Upstream accounts a discovery-capable provider kind can see, excluding any already
-/// linked to a local account.
+/// linked to a local account — including one linked through a *different* login, which is
+/// how a joint account arrives twice. Each remaining account carries
+/// [`ProviderAccount::joint`], so the dialog can say why it is about to force joint
+/// ownership on it.
+///
+/// The filtering and the flag both come from `sure_app`'s `survey_accounts`, which
+/// `link` also consults before accepting anything — one definition, so what this hides and
+/// what that refuses cannot drift apart.
 #[utoipa::path(get, path = "/api/provider-kinds/{kind}/accounts", tag = "providers",
     params(("kind" = String, Path,)),
     responses((status = 200, body = [ProviderAccount]), (status = 422, body = crate::error::ErrorBody)))]
@@ -55,39 +60,7 @@ pub async fn discover_accounts(
     State(st): State<AppState>,
     Path(kind): Path<String>,
 ) -> AppResult<Json<Vec<ProviderAccount>>> {
-    let provider = st
-        .provider_registry
-        .get(&kind)
-        .ok_or_else(|| AppError::validation(format!("unknown provider kind '{kind}'")))?;
-
-    // Discovery talks to the upstream too, so the same leak as a failed sync applies: an
-    // Akahu deser error carries the whole response body, and a 422's message reaches the
-    // client verbatim. Bound it with the one shared cap.
-    let discovered = provider
-        .list_accounts()
-        .await
-        .map_err(|e| AppError::validation(sure_app::sync::sync_detail(&e)))?;
-
-    let already_linked: HashSet<String> = st
-        .providers
-        .list()
-        .await?
-        .into_iter()
-        .filter(|p| p.kind == kind)
-        .filter_map(|p| {
-            p.config
-                .get("external_account_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-        .collect();
-
-    Ok(Json(
-        discovered
-            .into_iter()
-            .filter(|a| !already_linked.contains(&a.external_id))
-            .collect(),
-    ))
+    Ok(Json(st.sync.linkable_accounts(&kind).await?))
 }
 
 #[utoipa::path(get, path = "/api/providers", tag = "providers", responses((status = 200, body = [Provider])))]
@@ -124,9 +97,30 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(st.providers.create(input).await?)))
 }
 
+/// Attribute a to-be-created account to the household when the feed shows it is joint.
+///
+/// Enforced here rather than left to the dialog's locked `<select>`: an account two people's
+/// logins both report is not one person's money, and a client is free to send whatever it
+/// likes. The dialog locks the control so the rule is visible; this is what makes it true.
+///
+/// Only ever applied to a `new_account`. Attaching a joint feed to an account that already
+/// exists leaves that account's ownership alone — it is an account the user already
+/// attributed deliberately, and silently re-attributing it would be a side effect of a
+/// request that never mentioned ownership.
+fn force_joint_ownership(joint: bool, new_account: Option<&mut SaveAccount>) {
+    if let (true, Some(account)) = (joint, new_account) {
+        account.ownership = Ownership::Joint;
+    }
+}
+
 /// Link an upstream account (from [`discover_accounts`]) to a local account, creating it
 /// first if `new_account` is given rather than `existing_account_id`. Triggers an
 /// immediate best-effort sync so the account isn't empty until the next scheduled poll.
+///
+/// Refused with a 422 when the household already reaches this same underlying account
+/// through another login — see `sure_app`'s `check_linkable`. A joint account is reported
+/// once per holder's login under a different id and nickname each time, so it is the one
+/// duplicate the `external_id` filter on [`discover_accounts`] cannot catch by itself.
 ///
 /// A `new_account` here is validated as `ValidationMode::Linked` (see `sure_core`): a feed
 /// reports a name, a kind and a currency, so the fields the account form insists on — a
@@ -143,7 +137,7 @@ pub async fn create(
 )]
 pub async fn link(
     State(st): State<AppState>,
-    Json(input): Json<LinkProviderAccount>,
+    Json(mut input): Json<LinkProviderAccount>,
 ) -> AppResult<(StatusCode, Json<Provider>)> {
     if st.provider_registry.get(&input.kind).is_none() {
         return Err(AppError::validation(format!(
@@ -151,6 +145,16 @@ pub async fn link(
             input.kind
         )));
     }
+    // Refuses an account the household already reaches through another login, and tells us
+    // whether this one is joint. Both before anything is written: a duplicate link is not
+    // something to undo afterwards, because the second copy syncs the same transactions into
+    // a second account and counts the balance twice in net worth.
+    let joint = st
+        .sync
+        .check_linkable(&input.kind, &input.external_id)
+        .await?;
+    force_joint_ownership(joint, input.new_account.as_mut());
+
     let kind = input.kind.clone();
     let provider = st.providers.link(input).await?;
 
@@ -188,7 +192,7 @@ pub async fn link(
 )]
 pub async fn link_group(
     State(st): State<AppState>,
-    Json(input): Json<LinkProviderGroup>,
+    Json(mut input): Json<LinkProviderGroup>,
 ) -> AppResult<(StatusCode, Json<Vec<Provider>>)> {
     if st.provider_registry.get(&input.kind).is_none() {
         return Err(AppError::validation(format!(
@@ -196,6 +200,18 @@ pub async fn link_group(
             input.kind
         )));
     }
+    // Every member, before any of them is written — the group is created in one transaction
+    // and a member the household already has would double that account just as a single link
+    // would. A group is joint if any member is: they are wallets of one real account.
+    let mut joint = false;
+    for member in &input.members {
+        joint |= st
+            .sync
+            .check_linkable(&input.kind, &member.external_id)
+            .await?;
+    }
+    force_joint_ownership(joint, input.new_account.as_mut());
+
     let kind = input.kind.clone();
     let providers = st.providers.link_group(input).await?;
 

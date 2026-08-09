@@ -40,29 +40,37 @@ function wallet(
     currency_code: currency,
     institution,
     authorisation_id: authorisation,
-    // Left null on purpose: a platform wallet has no bank account number, and two of them
-    // sharing one would trip the "same account from two logins" warning instead.
+    // Left null on purpose: a platform wallet has no bank account number.
     account_number: null,
     kind_hint: "brokerage",
     balance_minor: 1_00,
     supports_transactions: true,
+    // The server decides this now (`sure_app`'s `survey_accounts`), so a stub states it
+    // rather than the page inferring it from the rows it happens to have been given.
+    joint: false,
   };
 }
 
 /** An ordinary discovered bank account, the kind that links one row at a time. */
-function bankAccount(externalId: string, name: string, institution: string, authorisation: string) {
+function bankAccount(
+  externalId: string,
+  name: string,
+  institution: string,
+  authorisation: string,
+  extra: { account_number?: string; joint?: boolean } = {},
+) {
   return {
     external_id: externalId,
     name,
     currency_code: "NZD",
     institution,
     authorisation_id: authorisation,
-    // Null, not a number: two rows sharing one would trip the "same account from two logins"
-    // warning, and these tests are about ordering, not deduplication.
     account_number: null,
     kind_hint: "bank",
     balance_minor: 1_00,
     supports_transactions: true,
+    joint: false,
+    ...extra,
   };
 }
 
@@ -288,4 +296,115 @@ test("rows are alphabetical within a login, whatever order discovery answered in
     "Savings 2",
     "Savings 10",
   ]);
+});
+
+test("an account both logins report is badged joint, owned by the household, and linked once", async ({
+  page,
+}) => {
+  // The shape of the thing: one bank account, two logins, a different `external_id` and a
+  // different nickname in each — so nothing but the account number pairs them, and the server
+  // is what does the pairing. The page is handed the answer and has to act on it: badge the
+  // rows, refuse to let the owner be anyone, and — the part that used to go wrong — take the
+  // *other* login's copy out of the list when either one is linked. Before, linking one left
+  // the twin sitting there looking like a separate account, with the old warning gone because
+  // the row it compared against had been filtered out of the response.
+  const number = "12-3456-0000123-00";
+  const linked = await stubDiscovery(page, [
+    bankAccount("acc_hers", "Everyday", "ASB", "auth_hers", { account_number: number, joint: true }),
+    bankAccount("acc_his", "Joint acct", "ASB", "auth_his", { account_number: number, joint: true }),
+    bankAccount("acc_solo", "Savings", "ASB", "auth_hers", { account_number: "12-3456-0000999-00" }),
+  ]);
+  await openAkahuConnect(page);
+
+  const hers = page.locator(".row-card", { hasText: "Everyday" });
+  const his = page.locator(".row-card", { hasText: "Joint acct" });
+  const solo = page.locator(".row-card", { hasText: "Savings" });
+
+  // Both views carry the badge; the account only one login can see does not.
+  await expect(hers.locator(".badge.joint")).toHaveText("Joint");
+  await expect(his.locator(".badge.joint")).toHaveText("Joint");
+  await expect(solo.locator(".badge.joint")).toHaveCount(0);
+
+  await hers.getByRole("button", { name: "Everyday" }).click();
+  // Settled rather than asked: the control is visible, so the rule is legible, and disabled,
+  // so it cannot be answered differently.
+  const owner = hers.getByLabel("Owner");
+  await expect(owner).toBeDisabled();
+  await expect(owner).toHaveValue("joint");
+
+  await hers.getByRole("button", { name: "Link account" }).click();
+
+  expect(linked).toHaveLength(1);
+  expect(linked[0].postDataJSON().new_account.ownership).toEqual({ kind: "joint" });
+
+  // The row that was linked, and the other holder's view of the same account, both go. The
+  // unrelated account stays — this prunes one account, not a login.
+  await expect(hers).toHaveCount(0);
+  await expect(his).toHaveCount(0);
+  await expect(solo).toHaveCount(1);
+  await expect(page.getByText("Linked Everyday as a joint account.")).toBeVisible();
+});
+
+test("a mortgage's original amount arrives prefilled from its drawdown", async ({ page }) => {
+  // The field is required to link at all — a mortgage without its terms cannot be forecast, so
+  // `AMORTISING_REQUIRED` is enforced on the link path too — which is exactly why prefilling it
+  // is worth doing. It is also the term people mistype: what comes to mind is the balance the
+  // day they connected the bank, not the advance that opened the loan.
+  //
+  // The server decides the number (it reads the drawdown out of the account's history); the page
+  // only has to put it in the box, in major units, and leave it editable.
+  const linked = await stubDiscovery(page, [
+    {
+      ...bankAccount("acc_mortgage", "Prime Housing Lending", "ASB", "auth_one"),
+      kind_hint: "mortgage",
+      balance_minor: -484_210_00,
+      original_amount_hint_minor: 485_000_00,
+    },
+  ]);
+  await openAkahuConnect(page);
+
+  const row = page.locator(".row-card", { hasText: "Prime Housing Lending" });
+  await row.getByRole("button", { name: "Prime Housing Lending" }).click();
+
+  const original = row.getByLabel("Original amount borrowed");
+  await expect(original).toHaveValue("485000");
+  // Prefilled, not imposed: a lender who advanced a different figure can still type over it.
+  await expect(original).toBeEnabled();
+
+  // The rest of the terms are still asked for — a feed reports a mortgage's balance, never its
+  // rate or its term, so this saves one field rather than the whole form. It is the field worth
+  // saving: the others are read off the loan document, and this one people reconstruct from
+  // memory. Floating, so the refix terms a fixed rate would also demand stay out of the way.
+  await row.getByLabel("Interest rate (%)").fill("5.49");
+  await row.getByLabel("Rate type").selectOption("floating");
+  await row.getByLabel("Overall term (months)").fill("360");
+  await row.getByLabel("Start date").fill("2026-03-02");
+
+  const link = row.getByRole("button", { name: "Link account" });
+  await expect(link).toBeEnabled();
+  await link.click();
+
+  expect(linked).toHaveLength(1);
+  expect(linked[0].postDataJSON().new_account.metadata).toMatchObject({
+    original_amount_minor: 48_500_000,
+  });
+});
+
+test("a mortgage whose drawdown is out of view is left blank, and still asks", async ({ page }) => {
+  await stubDiscovery(page, [
+    {
+      ...bankAccount("acc_mortgage", "Old Lending", "ASB", "auth_one"),
+      kind_hint: "mortgage",
+      balance_minor: -512_400_00,
+    },
+  ]);
+  await openAkahuConnect(page);
+
+  const row = page.locator(".row-card", { hasText: "Old Lending" });
+  await row.getByRole("button", { name: "Old Lending" }).click();
+
+  await expect(row.getByLabel("Original amount borrowed")).toHaveValue("");
+  // Still required, so the dialog holds the link until it is answered — an empty field the user
+  // fills in is the honest outcome when the history cannot say.
+  await expect(row.getByRole("button", { name: "Link account" })).toBeDisabled();
 });
