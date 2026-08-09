@@ -956,6 +956,47 @@ mod tests {
         assert!(!matches("BLC PAYMENTS LTD"));
     }
 
+    /// The expression migration 0032 ships, and the one property that makes the pair safe:
+    /// 0026 shipped only the credit half, and a bank writes the charge identically with one
+    /// letter changed, so the two rules must not be able to claim each other's rows.
+    #[test]
+    fn the_shipped_debit_interest_rule_cannot_claim_the_credit_half() {
+        const CHARGED: &str =
+            "(contains(lower(description), 'dr.int') or contains(lower(description), 'debit int'))";
+        // The sibling from 0026, quoted so the disjointness below is asserted about the real
+        // pair rather than about this rule alone.
+        const EARNED: &str = "(contains(lower(description), 'cr.int') \
+                              or contains(lower(description), 'credit int') \
+                              or contains(lower(description), 'reward interest') \
+                              or contains(lower(description), 'interest earned'))";
+        validate_expression(CHARGED).expect("the shipped expression must be valid");
+
+        let matches = |expression: &str, description: &str| {
+            let mut row = ctx(1, -12_499, None);
+            row.description = description.to_string();
+            let cur = Current::of(&row);
+            zen_expression::evaluate_expression(
+                expression,
+                Value::Object(build_context(&row, &cur)).into(),
+            )
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        };
+
+        for charge in ["DR.INT TO 01/02/2026", "ASB BANK - DEBIT INT TO 01/02/2026"] {
+            assert!(matches(CHARGED, charge), "must claim {charge}");
+            assert!(!matches(EARNED, charge), "earned must not claim {charge}");
+        }
+        for credit in [
+            "CR.INT TO 01/02/2026",
+            "ASB BANK - INTEREST CR.INT TO 01/02",
+        ] {
+            assert!(!matches(CHARGED, credit), "must not claim {credit}");
+            assert!(matches(EARNED, credit), "earned must still claim {credit}");
+        }
+    }
+
     #[test]
     fn an_empty_expression_is_rejected() {
         assert!(validate_expression("").is_err());
