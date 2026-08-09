@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use zen_expression::{expression::Standard, vm::VM, Expression};
 
@@ -17,6 +18,21 @@ use sure_core::{
 };
 
 use crate::ports::{PlannedApplication, RuleRepo, TxCtx};
+
+/// Classifying whatever has just landed — the only thing an import or a provider sync asks
+/// of the rule engine.
+///
+/// A trait rather than an `Arc<RuleService>` for the usual reason: [`crate::import::ImportService`]
+/// and [`crate::sync::SyncService`] are tested against in-memory fakes, and taking the concrete
+/// service would make every one of those tests build a twelve-method [`RuleRepo`] fake to
+/// exercise a step they don't care about. The implementation that matters is
+/// [`RuleService::categorize_new`].
+#[async_trait]
+pub trait AutoCategorize: Send + Sync {
+    /// Apply the enabled rules to everything still uncategorised. `Ok(None)` means there was
+    /// nothing to do and nothing was written.
+    async fn categorize_new(&self) -> AppResult<Option<RunResult>>;
+}
 
 /// Mutable per-transaction state, updated as successive rules apply within a run.
 struct Current {
@@ -39,6 +55,13 @@ impl Current {
 
 pub struct RuleService {
     rules: Arc<dyn RuleRepo>,
+}
+
+#[async_trait]
+impl AutoCategorize for RuleService {
+    async fn categorize_new(&self) -> AppResult<Option<RunResult>> {
+        RuleService::categorize_new(self).await
+    }
 }
 
 impl RuleService {
@@ -105,6 +128,49 @@ impl RuleService {
         self.rules
             .persist_run(rule_id, kind, matched, applications)
             .await
+    }
+
+    /// Apply every enabled rule to the transactions that have no category yet.
+    ///
+    /// The unattended counterpart to [`Self::run`], made after an import or a provider sync
+    /// puts new rows on the ledger — rules used to apply only when someone pressed "run", so
+    /// an untouched install accumulated uncategorised transactions indefinitely while a
+    /// perfectly good rule set sat there matching them.
+    ///
+    /// Two things separate it from a plain `run` over the enabled set, and both exist because
+    /// this one happens without anyone watching:
+    ///
+    /// - **It only sees uncategorised rows** ([`RuleRepo::load_uncategorized_contexts`]). That
+    ///   makes it incapable of replacing a category — a provider's enrichment, a rule's own
+    ///   earlier verdict, or a correction someone typed — rather than merely disinclined to.
+    ///   `overwrite_manual` would not be enough on its own: it is a per-rule flag, and a rule
+    ///   set anyone can edit should not be able to arrange for a background pass to overwrite
+    ///   the ledger. It also keeps the cost proportional to the backlog instead of to the
+    ///   whole history, which matters when a provider poll syncs a dozen feeds at a time.
+    /// - **It writes nothing when it changes nothing.** A run row per sync per provider would
+    ///   bury the audit log — the one place a person looks to see what a rule actually did —
+    ///   under a standing stream of empty entries.
+    ///
+    /// Returns `None` in that second case, and otherwise the persisted run, which is undoable
+    /// from the rules page like any other.
+    pub async fn categorize_new(&self) -> AppResult<Option<RunResult>> {
+        let rules = self.rules.enabled_rules().await?;
+        if rules.is_empty() {
+            return Ok(None);
+        }
+        let rows = self.rules.load_uncategorized_contexts().await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let (matched, applications) = plan_run(&rules, &rows);
+        if applications.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.rules
+                .persist_run(None, RuleRunKind::Auto, matched, applications)
+                .await?,
+        ))
     }
 
     /// Preview which transactions an expression would match, without changing anything.
@@ -492,30 +558,47 @@ mod tests {
     #[derive(Default)]
     struct FakeRules {
         contexts: Vec<TxCtx>,
+        /// What `enabled_rules` answers — only `categorize_new` asks, since `run` is handed
+        /// its rules by the caller.
+        enabled: Vec<Rule>,
+        /// Every `persist_run` this fake was asked to make, so a test can assert that one
+        /// did *not* happen as readily as that one did.
+        persisted: std::sync::Mutex<Vec<(RuleRunKind, i64)>>,
     }
     #[async_trait]
     impl RuleRepo for FakeRules {
         async fn load_contexts(&self) -> AppResult<Vec<TxCtx>> {
             Ok(self.contexts.clone())
         }
+        async fn load_uncategorized_contexts(&self) -> AppResult<Vec<TxCtx>> {
+            // The real query's `WHERE category_id IS NULL`, in memory.
+            Ok(self
+                .contexts
+                .iter()
+                .filter(|c| c.category_id.is_none())
+                .cloned()
+                .collect())
+        }
         async fn persist_run(
             &self,
             rule_id: Option<i64>,
-            _kind: RuleRunKind,
+            kind: RuleRunKind,
             matched: i64,
             applications: Vec<PlannedApplication>,
         ) -> AppResult<RunResult> {
+            let changed = applications.len() as i64;
+            self.persisted.lock().unwrap().push((kind, changed));
             Ok(RunResult {
                 run_id: rule_id.unwrap_or(0),
                 matched,
-                changed: applications.len() as i64,
+                changed,
             })
         }
         async fn list(&self) -> AppResult<Vec<Rule>> {
             unreachable!("RuleService.run/preview never list rules")
         }
         async fn enabled_rules(&self) -> AppResult<Vec<Rule>> {
-            unreachable!("RuleService.run/preview never list rules")
+            Ok(self.enabled.clone())
         }
         async fn get(&self, _id: i64) -> AppResult<Rule> {
             unreachable!("RuleService.run/preview never fetch a rule by id")
@@ -544,6 +627,7 @@ mod tests {
     async fn a_matching_rule_categorizes_an_uncategorized_transaction() {
         let repo = Arc::new(FakeRules {
             contexts: vec![ctx(1, -450, None), ctx(2, 500, None)],
+            ..Default::default()
         });
         let svc = RuleService::new(repo);
         let r = rule(1, "merchant == \"The Roastery\"", 42);
@@ -558,6 +642,7 @@ mod tests {
     async fn a_manual_category_is_protected_unless_overwrite_is_set() {
         let repo = Arc::new(FakeRules {
             contexts: vec![ctx(1, -450, Some(7))], // manually categorized already
+            ..Default::default()
         });
         let svc = RuleService::new(repo);
         let mut r = rule(1, "merchant == \"The Roastery\"", 42);
@@ -710,6 +795,127 @@ mod tests {
         assert!(apps[1].new_one_off);
         assert_eq!(apps[1].new_merchant_id, Some(5));
         assert_eq!(apps[2].new_category_id, Some(99));
+    }
+
+    // ---- the unattended pass ------------------------------------------------------
+
+    /// The property the whole design rests on: the automatic pass cannot reach a transaction
+    /// that already has a category, however the rule is configured. `overwrite_manual` is set
+    /// here precisely because it is the flag that *would* let a deliberate `run` replace it.
+    #[tokio::test]
+    async fn categorize_new_never_touches_an_already_categorized_transaction() {
+        let mut overwriting = rule(1, "merchant == \"The Roastery\"", 42);
+        overwriting.overwrite_manual = true;
+        let repo = Arc::new(FakeRules {
+            contexts: vec![ctx(1, -450, Some(7)), ctx(2, -450, None)],
+            enabled: vec![overwriting],
+            ..Default::default()
+        });
+        let svc = RuleService::new(repo.clone());
+
+        let result = svc.categorize_new().await.unwrap().expect("row 2 changed");
+
+        assert_eq!(result.matched, 1, "only the uncategorised row is evaluated");
+        assert_eq!(result.changed, 1);
+        let persisted = repo.persisted.lock().unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].0, RuleRunKind::Auto, "recorded as automatic");
+    }
+
+    /// Running after every sync of every provider means the common case is "nothing new
+    /// matched" — and that case must not write an audit row, or the log fills with entries
+    /// describing no change.
+    #[tokio::test]
+    async fn categorize_new_writes_nothing_when_it_changes_nothing() {
+        let repo = Arc::new(FakeRules {
+            contexts: vec![ctx(1, -450, None)],
+            enabled: vec![rule(1, "merchant == \"Somewhere Else\"", 42)],
+            ..Default::default()
+        });
+        let svc = RuleService::new(repo.clone());
+
+        assert!(svc.categorize_new().await.unwrap().is_none());
+        assert!(
+            repo.persisted.lock().unwrap().is_empty(),
+            "an empty run must not reach the audit log"
+        );
+    }
+
+    /// Second run over the same ledger: the rows the first pass categorised are now excluded
+    /// by the loader, so there is nothing left to do and nothing left to record. This is what
+    /// makes it safe on a schedule.
+    #[tokio::test]
+    async fn categorize_new_is_idempotent() {
+        let repo = Arc::new(FakeRules {
+            contexts: vec![ctx(1, -450, None)],
+            enabled: vec![rule(1, "merchant == \"The Roastery\"", 42)],
+            ..Default::default()
+        });
+        let svc = RuleService::new(repo.clone());
+        assert!(svc.categorize_new().await.unwrap().is_some());
+
+        // The fake's contexts are fixed, so re-running would find the same row again. Stand in
+        // the post-run ledger — the row now carries the category the run gave it.
+        let after = Arc::new(FakeRules {
+            contexts: vec![ctx(1, -450, Some(42))],
+            enabled: vec![rule(1, "merchant == \"The Roastery\"", 42)],
+            ..Default::default()
+        });
+        let svc = RuleService::new(after.clone());
+
+        assert!(svc.categorize_new().await.unwrap().is_none());
+        assert!(after.persisted.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn categorize_new_does_nothing_with_no_enabled_rules() {
+        let repo = Arc::new(FakeRules {
+            contexts: vec![ctx(1, -450, None)],
+            ..Default::default()
+        });
+        let svc = RuleService::new(repo.clone());
+
+        assert!(svc.categorize_new().await.unwrap().is_none());
+        assert!(repo.persisted.lock().unwrap().is_empty());
+    }
+
+    /// The expression migration 0030 ships, pinned here because a `mortgage`'s own feed posts
+    /// its monthly interest as one row reading "Interest of $1083.51 Principal" — wording the
+    /// two loan rules in 0026 both miss, since neither the words "loan repayment" nor a
+    /// separate principal row ever appear. Amounts are invented; the shape is what matters.
+    #[test]
+    fn the_shipped_loan_interest_rule_matches_a_loan_feeds_own_wording() {
+        const SHIPPED: &str =
+            "account_kind in ['mortgage', 'loan'] and startsWith(lower(description), 'interest of')";
+        validate_expression(SHIPPED).expect("the shipped expression must be valid");
+
+        let matches = |kind: AccountKind, description: &str| {
+            let mut row = ctx(1, 108_351, None);
+            row.account_kind = kind;
+            row.description = description.to_string();
+            let cur = Current::of(&row);
+            zen_expression::evaluate_expression(
+                SHIPPED,
+                Value::Object(build_context(&row, &cur)).into(),
+            )
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        };
+
+        assert!(matches(
+            AccountKind::Mortgage,
+            "Interest of $1083.51 Principal"
+        ));
+        assert!(matches(AccountKind::Loan, "Interest of $6.59 Principal"));
+        // The same words on a savings account are interest *earned*, and belong to the rule
+        // that already covers that — this one must not claim them.
+        assert!(!matches(
+            AccountKind::Savings,
+            "Interest of $12.00 Principal"
+        ));
+        // And it must not widen into every mention of interest on a loan.
+        assert!(!matches(AccountKind::Mortgage, "IRD:TAX ON INTEREST"));
     }
 
     #[test]

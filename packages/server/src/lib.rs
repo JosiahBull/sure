@@ -55,12 +55,17 @@ fn build_state(
         clock.clone(),
     ));
     let rules = Arc::new(RuleService::new(store.clone()));
+    // The same `RuleService` the rules routes drive, handed to the two services that land new
+    // transactions so a row is classified when it arrives rather than when someone next
+    // presses "run all". It is passed as `dyn AutoCategorize` — the one method either of them
+    // needs — so neither can reach the rest of the rule surface.
     let sync = Arc::new(SyncService::new(
         store.clone(),
         store.clone(),
         store.clone(),
         registry.clone(),
         clock.clone(),
+        rules.clone(),
     ));
     let forecast = Arc::new(ForecastService::new(
         store.clone(),
@@ -83,6 +88,7 @@ fn build_state(
         store.clone(),
         registry.clone(),
         reports.clone(),
+        rules.clone(),
     ));
 
     sure_api::State {
@@ -166,12 +172,17 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         // clones of the same pool, so there's nothing to share).
         let store = Arc::new(SqliteStore::new(pool.clone()));
         let clock = Arc::new(SystemClock);
+        // The poll's own `RuleService`, for the same reason the store and clock beside it are
+        // separate instances: both are stateless wrappers around clones of one pool. This is
+        // the path that most needs the automatic pass — a 6-hourly poll lands transactions
+        // when nobody is looking at the app at all.
         let sync = Arc::new(SyncService::new(
             store.clone(),
             store.clone(),
             store.clone(),
             registry.clone(),
             clock.clone(),
+            Arc::new(RuleService::new(store.clone())),
         ));
 
         scheduler.register(Box::new(

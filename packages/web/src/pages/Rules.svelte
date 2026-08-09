@@ -400,7 +400,11 @@
               <span class="run-when">{formatDate(run.created_at)}</span>
             </td>
             <td>
+              <!-- An automatic run has no rule_id (it evaluates the whole enabled set), so it
+                   has to be named before the rule_id branch below — otherwise it falls through
+                   to "Deleted rule", which is what a run of a since-deleted single rule is. -->
               {#if run.kind === "all"}All rules
+              {:else if run.kind === "auto"}Automatic, after new transactions
               {:else if run.rule_id != null}{ruleName.get(run.rule_id) ?? `Rule #${run.rule_id}`}
               {:else}Deleted rule{/if}
             </td>

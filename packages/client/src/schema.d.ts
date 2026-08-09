@@ -7123,11 +7123,11 @@ export interface components {
             created_at: string;
         };
         /**
-         * @description Whether a run evaluated one rule or every enabled rule. Stored as `rule_runs.kind`
-         *     (plain `TEXT`).
+         * @description What triggered a run, and how much of the rule set it evaluated. Stored as
+         *     `rule_runs.kind` (plain `TEXT`).
          * @enum {string}
          */
-        RuleRunKind: "single" | "all";
+        RuleRunKind: "single" | "all" | "auto";
         RunResult: {
             /** Format: int64 */
             run_id: number;

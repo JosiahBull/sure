@@ -45,6 +45,7 @@ use crate::ports::{
     TransactionRepo,
 };
 use crate::reports::{ReportQuery, ReportService};
+use crate::rules::AutoCategorize;
 
 /// What one upload asked for.
 #[derive(Debug, Clone, Default)]
@@ -95,6 +96,8 @@ pub struct ImportService {
     history: Arc<dyn ImportHistoryRepo>,
     provider_registry: Arc<dyn ProviderRegistry>,
     reports: Arc<ReportService>,
+    /// Applies the rule set to what the upload just wrote — see the end of [`Self::commit`].
+    categorize: Arc<dyn AutoCategorize>,
 }
 
 impl ImportService {
@@ -109,6 +112,7 @@ impl ImportService {
         history: Arc<dyn ImportHistoryRepo>,
         provider_registry: Arc<dyn ProviderRegistry>,
         reports: Arc<ReportService>,
+        categorize: Arc<dyn AutoCategorize>,
     ) -> Self {
         Self {
             registry,
@@ -120,6 +124,7 @@ impl ImportService {
             history,
             provider_registry,
             reports,
+            categorize,
         }
     }
 
@@ -222,6 +227,27 @@ impl ImportService {
             let (one, next) = self.import_one(source, item, target, opts, &stated).await?;
             follow_up = follow_up.or(next);
             items.push(one);
+        }
+
+        // Classify what the upload just put on the ledger, once for the whole upload rather
+        // than per item: an ASB zip is a dozen accounts, and the pass considers the whole
+        // uncategorised backlog whichever item triggers it. A dry run has written nothing, and
+        // an upload whose every item was skipped or unrouted has nothing new to classify.
+        if !opts.dry_run && items.iter().any(|i| i.imported > 0) {
+            match self.categorize.categorize_new().await {
+                Ok(Some(run)) => tracing::info!(
+                    run_id = run.run_id,
+                    changed = run.changed,
+                    "categorized new transactions after import"
+                ),
+                Ok(None) => {}
+                // Best-effort, exactly as in `SyncService::categorize_imported`: the rows are
+                // committed and reported by the time this runs, and an import the caller has
+                // to repeat is a worse outcome than a category they can fill in later.
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not categorize new transactions after import")
+                }
+            }
         }
 
         Ok(Imported {

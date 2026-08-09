@@ -4,13 +4,19 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Whether a run evaluated one rule or every enabled rule. Stored as `rule_runs.kind`
-/// (plain `TEXT`).
+/// What triggered a run, and how much of the rule set it evaluated. Stored as
+/// `rule_runs.kind` (plain `TEXT`).
 #[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleRunKind {
     Single,
     All,
+    /// Every enabled rule, over the transactions that are still uncategorised, run
+    /// unattended after an import or a provider sync landed new rows. Distinct from
+    /// [`RuleRunKind::All`] because the two answer different questions in the audit log:
+    /// nobody pressed a button for this one, and it could only ever have *added* a
+    /// category, never replaced one. See `sure_app::rules::RuleService::categorize_new`.
+    Auto,
 }
 
 impl RuleRunKind {
@@ -21,6 +27,7 @@ impl RuleRunKind {
         match self {
             RuleRunKind::Single => "single",
             RuleRunKind::All => "all",
+            RuleRunKind::Auto => "auto",
         }
     }
 }
@@ -32,6 +39,7 @@ impl std::str::FromStr for RuleRunKind {
         Ok(match s {
             "single" => RuleRunKind::Single,
             "all" => RuleRunKind::All,
+            "auto" => RuleRunKind::Auto,
             other => return Err(format!("unknown rule run kind '{other}'")),
         })
     }

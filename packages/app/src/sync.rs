@@ -11,6 +11,7 @@ use sure_core::{AppError, AppResult, Provider, ProviderAccount, ProviderSync, Sy
 use crate::ports::{
     AccountRepo, Clock, ImportRow, ProviderRegistry, ProviderRepo, SyncContext, ValuationRepo,
 };
+use crate::rules::AutoCategorize;
 
 /// How much of a provider's error text [`sync_detail`] keeps.
 ///
@@ -121,6 +122,11 @@ pub struct SyncService {
     valuations: Arc<dyn ValuationRepo>,
     registry: Arc<dyn ProviderRegistry>,
     clock: Arc<dyn Clock>,
+    /// Applies the rule set to whatever the sync just imported. Held here rather than left
+    /// to the caller because every caller would otherwise have to remember: the manual sync
+    /// route, the initial sync after linking, and the 6-hourly poll all land new rows, and a
+    /// row that arrives uncategorised stays that way until someone notices.
+    categorize: Arc<dyn AutoCategorize>,
     /// Provider ids with a sync in flight right now — the single-flight set
     /// [`Self::sync_provider`] claims from. Deliberately a `std::sync::Mutex`: every
     /// critical section is one `HashSet` insert or remove with no `.await` inside, so an
@@ -144,6 +150,7 @@ impl SyncService {
         valuations: Arc<dyn ValuationRepo>,
         registry: Arc<dyn ProviderRegistry>,
         clock: Arc<dyn Clock>,
+        categorize: Arc<dyn AutoCategorize>,
     ) -> Self {
         Self {
             providers,
@@ -151,6 +158,7 @@ impl SyncService {
             valuations,
             registry,
             clock,
+            categorize,
             in_flight: Mutex::new(HashSet::new()),
         }
     }
@@ -516,6 +524,14 @@ impl SyncService {
             .import_transactions(provider.account_id, &account_ccy, &provider_tag, &rows)
             .await?;
 
+        // Classify what just landed. Only when something actually landed: a sync that
+        // imported nothing new — the overwhelmingly common outcome of a 6-hourly poll — has
+        // given the rule set nothing to consider, and scanning the backlog again for it would
+        // be pure cost on a schedule.
+        if imported > 0 {
+            self.categorize_imported().await;
+        }
+
         // Anything the balance handling below made us refuse, carried onto the sync row so
         // the refusal is visible in `GET /api/providers/{id}/syncs` and in the sync-now
         // response instead of living only in a server log line nobody reads.
@@ -658,6 +674,29 @@ impl SyncService {
         self.providers
             .record_sync(id, imported, skipped, SyncOutcome::Ok, refused.as_deref())
             .await
+    }
+
+    /// Run the rule set over what is still uncategorised, and never let it fail the sync.
+    ///
+    /// Best-effort by contract, like the balance refresh above it: by the time this runs the
+    /// transactions are committed, which is the part the caller asked for and the part
+    /// `imported`/`skipped` describe. A rule with a category someone has since deleted, or a
+    /// write that lost a race for SQLite's single writer, must not turn a successful sync
+    /// into a 500 and send the caller back to retry an import that already happened. The next
+    /// sync — or the button on the rules page — picks up whatever this pass missed, because
+    /// the rows it would have categorised are exactly the rows it looks for.
+    async fn categorize_imported(&self) {
+        match self.categorize.categorize_new().await {
+            Ok(Some(run)) => tracing::info!(
+                run_id = run.run_id,
+                changed = run.changed,
+                "categorized new transactions after sync"
+            ),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "could not categorize new transactions after sync")
+            }
+        }
     }
 }
 
@@ -1085,17 +1124,48 @@ mod tests {
         }
     }
 
+    /// Counts the automatic categorisation passes a sync asked for, and can be told to fail
+    /// one — the whole point of the step being best-effort is that a failing one changes
+    /// nothing about the sync's result.
+    #[derive(Default)]
+    struct FakeCategorize {
+        calls: AtomicUsize,
+        fails: bool,
+    }
+
+    #[async_trait]
+    impl AutoCategorize for FakeCategorize {
+        async fn categorize_new(&self) -> AppResult<Option<sure_core::RunResult>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fails {
+                return Err(AppError::Internal(anyhow::anyhow!("categorization failed")));
+            }
+            Ok(Some(sure_core::RunResult {
+                run_id: 1,
+                matched: 1,
+                changed: 1,
+            }))
+        }
+    }
+
     struct Harness {
         service: Arc<SyncService>,
         providers: Arc<FakeProviders>,
         accounts: Arc<FakeAccounts>,
         valuations: Arc<FakeValuations>,
         fetches: Arc<AtomicUsize>,
+        categorize: Arc<FakeCategorize>,
     }
 
     impl Harness {
         fn new(account_ccy: &str, balance: Option<ProviderBalance>, gate: Gate) -> Self {
-            Self::of_kind(None, account_ccy, balance, gate)
+            Self::of_kind(None, account_ccy, balance, gate, Vec::new())
+        }
+
+        /// A sync whose upstream actually has something to hand over — the only shape in which
+        /// the post-import categorisation pass can run at all.
+        fn importing(history: Vec<ProviderTransaction>) -> Self {
+            Self::of_kind(None, "NZD", None, Gate::Open, history)
         }
 
         fn of_kind(
@@ -1103,6 +1173,7 @@ mod tests {
             account_ccy: &str,
             balance: Option<ProviderBalance>,
             gate: Gate,
+            history: Vec<ProviderTransaction>,
         ) -> Self {
             let fetches = Arc::new(AtomicUsize::new(0));
             let providers = Arc::new(FakeProviders {
@@ -1121,15 +1192,17 @@ mod tests {
                     balance,
                     gate,
                     discoverable: Vec::new(),
-                    history: Vec::new(),
+                    history,
                 },
             });
+            let categorize = Arc::new(FakeCategorize::default());
             let service = Arc::new(SyncService::new(
                 providers.clone(),
                 accounts.clone(),
                 valuations.clone(),
                 registry,
                 Arc::new(FixedClock(today())),
+                categorize.clone(),
             ));
             Self {
                 service,
@@ -1137,6 +1210,7 @@ mod tests {
                 accounts,
                 valuations,
                 fetches,
+                categorize,
             }
         }
 
@@ -1238,6 +1312,7 @@ mod tests {
             Arc::new(FakeValuations::default()),
             registry,
             Arc::new(FixedClock(today())),
+            Arc::new(FakeCategorize::default()),
         ));
         (service, accounts)
     }
@@ -1594,6 +1669,7 @@ mod tests {
             "NZD",
             Some(balance("AUD")),
             Gate::Open,
+            Vec::new(),
         );
 
         let sync = h
@@ -1673,6 +1749,87 @@ mod tests {
 
         assert_eq!(sync.detail, None);
         assert_eq!(h.valuations.rows.lock().expect("test mutex").len(), 1);
+    }
+
+    // ---------------------------------------- categorising what a sync just imported
+
+    /// The gap this closes: rules used to apply only when someone opened the rules page and
+    /// pressed "run", so every transaction a feed brought in sat uncategorised until they did.
+    #[tokio::test]
+    async fn a_sync_that_imports_rows_categorizes_them() {
+        let h = Harness::importing(vec![
+            movement("2026-02-01", -4_50, "COUNTDOWN ALBANY"),
+            movement("2026-02-02", -12_00, "Z ALBANY"),
+        ]);
+
+        let sync = h
+            .service
+            .sync_provider(provider_row(1), None)
+            .await
+            .expect("sync succeeds");
+
+        assert_eq!(sync.imported, 2);
+        assert_eq!(
+            h.categorize.calls.load(Ordering::SeqCst),
+            1,
+            "the rule set must be applied to what the sync just landed"
+        );
+    }
+
+    /// The overwhelmingly common outcome of a 6-hourly poll is that the feed has nothing new.
+    /// Scanning the uncategorised backlog for that is pure cost, once per provider per poll.
+    #[tokio::test]
+    async fn a_sync_that_imports_nothing_does_not_categorize() {
+        let h = Harness::new("NZD", None, Gate::Open);
+
+        let sync = h
+            .service
+            .sync_provider(provider_row(1), None)
+            .await
+            .expect("sync succeeds");
+
+        assert_eq!(sync.imported, 0);
+        assert_eq!(h.categorize.calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// Best-effort, and this is what that has to mean: the transactions are committed by the
+    /// time the pass runs, so a failure in it must leave the sync successful and its counts
+    /// intact. Failing the request instead would send the caller back to retry an import that
+    /// already happened, to fix a category they could set by hand.
+    #[tokio::test]
+    async fn a_failing_categorization_does_not_fail_the_sync() {
+        let mut h = Harness::importing(vec![movement("2026-02-01", -4_50, "COUNTDOWN ALBANY")]);
+        // Rebuilt with a failing categorizer; everything else about the harness is unchanged.
+        let categorize = Arc::new(FakeCategorize {
+            calls: AtomicUsize::new(0),
+            fails: true,
+        });
+        h.service = Arc::new(SyncService::new(
+            h.providers.clone(),
+            h.accounts.clone(),
+            h.valuations.clone(),
+            Arc::new(FakeRegistry {
+                provider: FakeProvider {
+                    fetches: h.fetches.clone(),
+                    balance: None,
+                    gate: Gate::Open,
+                    discoverable: Vec::new(),
+                    history: vec![movement("2026-02-01", -4_50, "COUNTDOWN ALBANY")],
+                },
+            }),
+            Arc::new(FixedClock(today())),
+            categorize.clone(),
+        ));
+
+        let sync = h
+            .service
+            .sync_provider(provider_row(1), None)
+            .await
+            .expect("a failed categorization must not fail the sync");
+
+        assert_eq!(categorize.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(sync.status, SyncOutcome::Ok);
+        assert_eq!(sync.imported, 1, "the import itself still stands");
     }
 
     /// W-26: two concurrent syncs of one provider are N times the outbound load on an

@@ -321,6 +321,32 @@ pub async fn load_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
     .collect()
 }
 
+/// Load the evaluation context of every transaction that has no category yet — the rows
+/// the automatic post-import/post-sync pass considers.
+///
+/// Deliberately a second query rather than a `WHERE` bolted onto [`load_contexts`] with a
+/// flag: `query_as!` checks its SQL as a literal, so a runtime-assembled predicate would
+/// have to give that up, and the two callers want genuinely different row sets.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn load_uncategorized_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
+    sqlx::query_as!(
+        TxCtxRow,
+        r#"SELECT t.id AS "id!", t.account_id, t.posted_at, t.amount_minor, t.currency_code,
+                  cur.decimal_places, t.description, t.merchant, t.merchant_id, t.notes,
+                  t.category_id, t.is_one_off AS "is_one_off!: bool", t.categorized_by_rule_id,
+                  a.name AS account_name, a.kind AS account_kind
+             FROM transactions t
+             JOIN accounts a ON a.id = t.account_id
+             JOIN currencies cur ON cur.code = t.currency_code
+            WHERE t.category_id IS NULL"#
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(TxCtx::try_from)
+    .collect()
+}
+
 /// Persist a run: insert the run row, apply each decided change (updating the
 /// transaction and writing the audit row), and record the counts. `matched` is the
 /// number of rule matches the evaluator saw (including no-ops); `changed` is derived

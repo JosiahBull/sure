@@ -177,9 +177,62 @@ test("a transfer row is categorised as a transfer, so reports exclude it", async
   const { data: cats } = await api.GET("/api/categories", {});
   expect(cats!.find((c) => c.id === transfer.category_id)?.kind).toBe("transfer");
 
-  // The card and salary rows carry no hint, so they stay for the user's own rules.
-  expect(txns!.find((t) => t.amount_minor === -1250)?.category_id).toBe(null);
+  // The card row carries no hint from the export, but the shipped rule set runs itself once
+  // the import commits, and "NEW WORLD METRO" is a supermarket. Before that pass existed this
+  // row stayed null until someone opened the rules page and pressed run.
+  const eftpos = txns!.find((t) => t.amount_minor === -1250)!;
+  expect(eftpos.category_id).not.toBe(null);
+  expect(cats!.find((c) => c.id === eftpos.category_id)?.name).toBe(
+    "Supermarkets and grocery stores",
+  );
+
+  // The salary row matches no shipped rule — a payer's name is rule 3 material, so none ships
+  // — and stays uncategorised for the user's own rules.
   expect(txns!.find((t) => t.amount_minor === 150_000)?.category_id).toBe(null);
+});
+
+test("the automatic pass after an import is recorded as such, and is undoable", async ({
+  api,
+  server,
+}) => {
+  const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
+  await upload(server.baseURL, acc.id, exportFile(HISTORY));
+
+  // Recorded as `auto`, not `all`: nobody pressed a button, and it could only ever have added
+  // a category. It carries no rule_id because it evaluated the whole enabled set.
+  const { data: runs } = await api.GET("/api/rules/runs", {});
+  expect(runs!.length).toBe(1);
+  expect(runs![0].kind).toBe("auto");
+  expect(runs![0].rule_id).toBe(null);
+  expect(runs![0].changed).toBeGreaterThan(0);
+
+  // Undoable like any other run — which is the safety net for a rule that files something
+  // wrongly while nobody is watching.
+  const undo = await api.POST("/api/rules/runs/{run_id}/undo", {
+    params: { path: { run_id: runs![0].id } },
+  });
+  expect(undo.data?.changed).toBe(runs![0].changed);
+
+  const { data: after } = await api.GET("/api/transactions", {
+    params: { query: { account_id: acc.id } },
+  });
+  expect(after!.find((t) => t.amount_minor === -1250)?.category_id).toBe(null);
+});
+
+test("a re-upload that imports nothing new leaves no automatic run behind", async ({
+  api,
+  server,
+}) => {
+  const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
+  await upload(server.baseURL, acc.id, exportFile(HISTORY));
+  const before = await api.GET("/api/rules/runs", {});
+
+  // Same file again: every row dedupes on external id, so nothing lands and there is nothing
+  // to classify. A run row per upload would bury the audit log under empty entries.
+  await upload(server.baseURL, acc.id, exportFile(HISTORY));
+
+  const after = await api.GET("/api/rules/runs", {});
+  expect(after.data!.length).toBe(before.data!.length);
 });
 
 test("a dry run reports what a commit would do and writes nothing", async ({ api, server }) => {

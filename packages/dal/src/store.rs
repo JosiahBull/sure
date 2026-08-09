@@ -422,29 +422,43 @@ impl FxRatesRepo for SqliteStore {
     }
 }
 
+/// The DAL's row shape for a rule evaluation context, as the port's. One function for both
+/// loaders, so a field added to `TxCtx` cannot reach one of them and not the other.
+fn tx_ctx(r: crate::rules::TxCtx) -> TxCtx {
+    TxCtx {
+        id: r.id,
+        account_id: r.account_id,
+        posted_at: r.posted_at,
+        amount_minor: r.amount_minor,
+        currency_code: r.currency_code,
+        decimal_places: r.decimal_places,
+        description: r.description,
+        merchant: r.merchant,
+        merchant_id: r.merchant_id,
+        notes: r.notes,
+        category_id: r.category_id,
+        is_one_off: r.is_one_off,
+        categorized_by_rule_id: r.categorized_by_rule_id,
+        account_name: r.account_name,
+        account_kind: r.account_kind, // already `sure_core::AccountKind`, parsed in the DAL
+    }
+}
+
 #[async_trait]
 impl RuleRepo for SqliteStore {
     async fn load_contexts(&self) -> AppResult<Vec<TxCtx>> {
         Ok(crate::rules::load_contexts(&self.db)
             .await?
             .into_iter()
-            .map(|r| TxCtx {
-                id: r.id,
-                account_id: r.account_id,
-                posted_at: r.posted_at,
-                amount_minor: r.amount_minor,
-                currency_code: r.currency_code,
-                decimal_places: r.decimal_places,
-                description: r.description,
-                merchant: r.merchant,
-                merchant_id: r.merchant_id,
-                notes: r.notes,
-                category_id: r.category_id,
-                is_one_off: r.is_one_off,
-                categorized_by_rule_id: r.categorized_by_rule_id,
-                account_name: r.account_name,
-                account_kind: r.account_kind, // already `sure_core::AccountKind`, parsed in the DAL
-            })
+            .map(tx_ctx)
+            .collect())
+    }
+
+    async fn load_uncategorized_contexts(&self) -> AppResult<Vec<TxCtx>> {
+        Ok(crate::rules::load_uncategorized_contexts(&self.db)
+            .await?
+            .into_iter()
+            .map(tx_ctx)
             .collect())
     }
 

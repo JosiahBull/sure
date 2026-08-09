@@ -766,6 +766,17 @@ pub trait FxRatesRepo: Send + Sync {
 #[async_trait]
 pub trait RuleRepo: Send + Sync {
     async fn load_contexts(&self) -> AppResult<Vec<TxCtx>>;
+    /// The same, narrowed to transactions that have no category yet.
+    ///
+    /// What the unattended pass after an import or a sync evaluates
+    /// (`sure_app::rules::RuleService::categorize_new`). Narrowing it in SQL rather than
+    /// filtering [`Self::load_contexts`] is the whole point: that one materialises every
+    /// transaction ever recorded, and this runs on every sync of every provider.
+    ///
+    /// A row already carrying a category is excluded rather than merely left unchanged, so
+    /// the automatic pass has no way to reach one — see `categorize_new` for why that
+    /// bound, and not `overwrite_manual`, is what makes running it unattended safe.
+    async fn load_uncategorized_contexts(&self) -> AppResult<Vec<TxCtx>>;
     async fn persist_run(
         &self,
         rule_id: Option<i64>,
