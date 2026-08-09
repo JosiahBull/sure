@@ -1,5 +1,6 @@
 import { type Page } from "@playwright/test";
 
+import { DEMO_TODAY } from "./demo-date";
 import { test, expect } from "./fixtures";
 
 async function goto(page: Page, route: string) {
@@ -232,4 +233,53 @@ test.describe("money flow at desktop width", () => {
     expect(Math.abs(transport.x - housing.x)).toBeLessThan(2);
     expect(power.x).toBeGreaterThan(transport.x + 100);
   });
+});
+
+// The uncategorised bucket is the one slice whose identity isn't a category id: the report
+// gives it the sentinel key 0 (`UNCATEGORISED` in reports.rs) and the API renders that back
+// as `category_id: null`. Kept last in the file because it is the only test here that writes.
+test("the uncategorised slice and node open the transactions that have no category", async ({ page }) => {
+  // The seed leaves nothing uncategorised that a spend report can see — its only category-less
+  // rows are transfers, which `load_spend` drops — so the bucket has to be created here, and
+  // removed again so the totals every later test reads are still the seeded ones.
+  const accounts = (await (await page.request.get("/api/accounts")).json()) as Array<{ id: number; kind: string }>;
+  const account = accounts.find((a) => a.kind === "credit_card") ?? accounts[0];
+  const created = await page.request.post("/api/transactions", {
+    data: {
+      account_id: account.id,
+      posted_at: DEMO_TODAY,
+      // Big enough to be its own sankey node. Below `MIN_VISIBLE_PX`'s floor it would be too
+      // thin to draw, and — Bank fees being the seed's other tiny root — the two would fold
+      // into an "Other (2)" bucket, which is deliberately not clickable. That is the chart
+      // behaving correctly, so the fixture clears the floor rather than the test working
+      // around it. A real pile of uncategorised imports is this size anyway.
+      amount_minor: -500_000,
+      description: "Uncategorised probe",
+      category_id: null,
+      is_one_off: false,
+    },
+  });
+  expect(created.ok(), "created an uncategorised expense").toBe(true);
+  const txId = ((await created.json()) as { id: number }).id;
+
+  try {
+    await goto(page, "/");
+    const pie = page.locator(".card", { hasText: "Where money went" });
+    await pie.locator('svg .seg[aria-label="Uncategorised"]').dispatchEvent("click");
+    // `category=none`, not an omitted param: the slice stands for the rows whose category is
+    // null, which no id can name — omitting it lands on every expense instead of these.
+    await expect(page).toHaveURL(/#\/transactions\?category=none&type=expense&range=last_12m/);
+    await expect(page.locator(".tx-row").first()).toBeVisible();
+    for (const c of await page.locator(".tx-row .cat-pill > .ell").allInnerTexts())
+      expect(c.trim()).toBe("Uncategorised");
+
+    // The sankey's node goes through the same builder, so it lands in the same place. Its
+    // `data-node-id` carries the report's raw sentinel key rather than a category id.
+    await goto(page, "/");
+    await node(page, "out:0").dispatchEvent("click");
+    await expect(page).toHaveURL(/#\/transactions\?category=none&type=expense&range=last_12m/);
+    await expect(page.locator(".tx-row").first()).toBeVisible();
+  } finally {
+    expect((await page.request.delete(`/api/transactions/${txId}`)).ok(), "cleaned up").toBe(true);
+  }
 });

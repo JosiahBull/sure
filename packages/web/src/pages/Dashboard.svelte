@@ -236,12 +236,18 @@
   let hovered = $state<(number | null)[]>([null, null]);
 
   // Jump to the transactions page filtered to this category (its whole subtree) over the
-  // overview's current range. A null id (the uncategorised slice) filters by range only —
-  // `kind` still narrows it to income or outgoings, since a null category alone can't tell
-  // an uncategorised income transaction from an uncategorised expense one.
-  function goToCategory(categoryId: number | null | undefined, kind?: "income" | "expense") {
+  // overview's current range. Shared by the pie arcs, their legend rows and the Sankey, so
+  // all three open the same slice the same way.
+  //
+  // A null id is the uncategorised bucket — every source of one means that specific slice,
+  // never "no category filter" (`reports.rs` gives it the sentinel key 0 and the API renders
+  // that back as `category_id: null`). So it maps to the transactions page's own `none`
+  // filter, not to an omitted param, which would land on *every* transaction instead of the
+  // handful the user clicked. `kind` still narrows it to income or outgoings, since a null
+  // category alone can't tell an uncategorised income transaction from an expense one.
+  function goToCategory(categoryId: number | null, kind?: "income" | "expense") {
     const p = new URLSearchParams();
-    if (categoryId != null) p.set("category", String(categoryId));
+    p.set("category", categoryId == null ? "none" : String(categoryId));
     if (kind) p.set("type", kind);
     p.set("range", filters.range);
     navigate(`/transactions?${p.toString()}`);

@@ -83,6 +83,82 @@ test("transactions list renders, preferring a transaction's merchant name over i
   await expect(page).toHaveScreenshot("transactions.png", { fullPage: true });
 });
 
+test("every column header sorts the transactions list", async ({ page }) => {
+  await goto(page, "/transactions");
+  await expect(page.locator(".tx-row").first()).toBeVisible();
+  // Read out of the DOM rather than off the model: these assertions are about the order the
+  // page actually renders, which is the thing a frozen sort key used to get wrong silently.
+  const amounts = () =>
+    page
+      .locator(".tx-row .amt-cell")
+      .evaluateAll((els) => els.map((el) => parseFloat((el.textContent ?? "").replace(/[^0-9.-]/g, ""))));
+  const texts = async (sel: string) => (await page.locator(sel).allInnerTexts()).map((s) => s.trim().toLowerCase());
+  const header = (name: string) => page.getByRole("button", { name: new RegExp(`^${name} —`) });
+
+  // The default is date/newest-first, the one order the day-grouped cards are valid for.
+  await expect(page.locator(".day-group").first()).toBeVisible();
+
+  // Amount's first click is descending — biggest income first — and the day cards give way to
+  // the flat list, since a day heading assumes consecutive rows share a day.
+  await header("Amount").click();
+  await expect(page.locator(".day-group")).toHaveCount(0);
+  const desc = await amounts();
+  expect(desc.length).toBeGreaterThan(1);
+  expect(desc).toEqual([...desc].sort((a, b) => b - a));
+  // ...and the sorted view is a shareable link, like every other filter on this page.
+  expect(page.url()).toContain("sort=amount");
+
+  // Clicking the column that's already active flips it, so both directions are one click away.
+  await header("Amount").click();
+  expect(await amounts()).toEqual([...(await amounts())].sort((a, b) => a - b));
+  expect(page.url()).toContain("dir=asc");
+
+  // Names sort A→Z on the name the row actually shows (merchant-preferred), not the raw
+  // description behind it. Plain string order, matching the comparison `sortValue` feeds.
+  await header("transaction").click();
+  const names = await texts(".tx-row .tx-name");
+  expect(names).toEqual([...names].sort());
+
+  // Categories sort A→Z with uncategorised rows clustered at the front rather than filed
+  // under "U" — the empty-string sort key in `sortValue`.
+  await header("Category label").click();
+  const cats = await texts(".tx-row .cat-pill > .ell");
+  const named = cats.filter((c) => c !== "uncategorised");
+  expect(cats.slice(0, cats.length - named.length).every((c) => c === "uncategorised")).toBe(true);
+  expect(named).toEqual([...named].sort());
+
+  // Date brings the grouped view back, so it is never a dead end.
+  await header("date").click();
+  await expect(page.locator(".day-group").first()).toBeVisible();
+});
+
+test("the category filter can select the rows that have no category", async ({ page }) => {
+  await goto(page, "/transactions");
+  await expect(page.locator(".tx-row").first()).toBeVisible();
+  const pills = () => page.locator(".tx-row .cat-pill > .ell");
+  // The seed leaves some rows uncategorised, and not every row is — otherwise the filter
+  // below would be indistinguishable from no filter at all.
+  const before = await pills().allInnerTexts();
+  expect(before.some((c) => c.trim() === "Uncategorised")).toBe(true);
+  expect(before.some((c) => c.trim() !== "Uncategorised")).toBe(true);
+
+  await page.getByRole("button", { name: "Filter" }).click();
+  await page.getByLabel("Filter by category").selectOption("none");
+
+  // Only uncategorised rows survive, and at least one does.
+  await expect(pills().first()).toBeVisible();
+  for (const c of await pills().allInnerTexts()) expect(c.trim()).toBe("Uncategorised");
+  // It gets a removable chip like every other filter, and round-trips through the URL.
+  await expect(page.locator(".chip", { hasText: "Uncategorised" })).toBeVisible();
+  expect(page.url()).toContain("category=none");
+
+  // Reloading the shared link restores the filter rather than dropping to "all categories".
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  await expect(pills().first()).toBeVisible();
+  for (const c of await pills().allInnerTexts()) expect(c.trim()).toBe("Uncategorised");
+});
+
 test("merchants settings page lists seeded merchants", async ({ page }) => {
   await goto(page, "/settings/merchants");
   await expect(page.getByRole("heading", { name: "Merchants", exact: true })).toBeVisible();

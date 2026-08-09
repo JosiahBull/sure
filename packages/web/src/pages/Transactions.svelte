@@ -31,7 +31,9 @@
   type TypeFilter = "" | "income" | "expense";
   const isTypeFilter = (v: string | null): v is Exclude<TypeFilter, ""> => v === "income" || v === "expense";
   const highlightId = num(params.get("tx"));
-  const paramCategory = num(params.get("category"));
+  // `?category=` carries either an id or the literal `none` — see `categoryId` below for the
+  // three states it selects between.
+  const paramCategory = params.get("category") === "none" ? "none" : num(params.get("category"));
   const paramAccount = num(params.get("account"));
   const paramType = params.get("type");
   const paramRange = params.get("range");
@@ -60,7 +62,12 @@
   let error = $state<string | null>(null);
 
   let accountId = $state<number | "">(paramAccount ?? "");
-  let categoryId = $state<number | "">(paramCategory ?? "");
+  // Three states: "" is every category, "none" is only the rows that have no category at all
+  // (the ones the list shows as "Uncategorised"), and an id is that category and its subtree.
+  // "none" is a filter no category id can express — a row's `category_id` is null, not a
+  // sentinel row in the table — so it needs its own value here rather than a magic id.
+  type CategoryFilter = number | "" | "none";
+  let categoryId = $state<CategoryFilter>(paramCategory ?? "");
   let typeFilter = $state<TypeFilter>(isTypeFilter(paramType) ? paramType : "");
   // Whose transactions to show — an `ownershipKey` ("person:3" / "joint"), or "" for the
   // whole household. Filtered on the server, since "effective attribution" needs the
@@ -71,11 +78,36 @@
   if (paramOwner !== null) filters.attributedTo = paramOwner;
   let search = $state(paramSearch);
 
-  // The list only renders in its default newest-first date order now (the reference's grouped
-  // view); the sort keys stay fixed at date/desc, which keeps the day-group headers valid.
+  // Every column label in the header bar is a sort control. The default — date, newest first —
+  // is the reference's grouped view; any other key or direction renders the flat list instead
+  // (see `grouped` below), since a day heading assumes consecutive rows share a day.
   type SortKey = "date" | "description" | "category" | "amount";
-  const sortKey = $state<SortKey>("date");
-  const sortDir = $state<"asc" | "desc">("desc");
+  const SORT_KEYS = ["date", "description", "category", "amount"] as const;
+  const isSortKey = (v: string | null): v is SortKey => SORT_KEYS.some((k) => k === v);
+  // A column's *first* click sorts it the way that column is actually useful — newest dates
+  // and biggest amounts first, names A→Z. Clicking the column that's already active flips it,
+  // so both directions stay one click away.
+  const DEFAULT_DIR: Record<SortKey, "asc" | "desc"> = {
+    date: "desc",
+    description: "asc",
+    category: "asc",
+    amount: "desc",
+  };
+  const paramSort = params.get("sort");
+  const paramDir = params.get("dir");
+  let sortKey = $state<SortKey>(isSortKey(paramSort) ? paramSort : "date");
+  let sortDir = $state<"asc" | "desc">(
+    paramDir === "asc" || paramDir === "desc" ? paramDir : DEFAULT_DIR[isSortKey(paramSort) ? paramSort : "date"],
+  );
+  function setSort(key: SortKey) {
+    if (sortKey === key) sortDir = sortDir === "asc" ? "desc" : "asc";
+    else {
+      sortKey = key;
+      sortDir = DEFAULT_DIR[key];
+    }
+  }
+  const sortLabel = (key: SortKey) =>
+    sortKey !== key ? "not sorted" : sortDir === "asc" ? "sorted ascending" : "sorted descending";
   // Time range / one-off are the header's shared filters (App.svelte), not page-local —
   // deep links still get to steer them, though: an explicit `?range=` wins, and a
   // deep-linked transaction/account (which implies "show me everything relevant", not
@@ -128,23 +160,41 @@
   function sortValue(t: Tx, key: SortKey) {
     switch (key) {
       case "date":
-        return t.posted_at;
+        // Date-only, matching both the server's `date(t.posted_at)` ordering and the day-group
+        // key below. `posted_at` is a bare `YYYY-MM-DD` for a hand-entered row but a full
+        // RFC-3339 datetime for an imported one, so comparing the raw strings would sort every
+        // manual entry ahead of every import within the same day and defeat the id tiebreak.
+        return t.posted_at.slice(0, 10);
       case "description":
-        return (t.description ?? "").toLowerCase();
+        // The name the row actually shows (merchant-preferred, same expression as `row`'s
+        // `title`) — sorting a column by a value it isn't displaying just reads as broken.
+        return (t.description || txName(t) || "").toLowerCase();
       case "category":
+        // Uncategorised sorts as "", clustering those rows at one end rather than scattering
+        // them under whatever letter the word "Uncategorised" happens to land on.
         return (categoryName.get(t.category_id ?? -1) ?? "").toLowerCase();
       case "amount":
+        // Signed, so descending reads biggest-income-first and ascending biggest-expense-first.
+        // Across currencies this compares raw minor units — the same deliberate approximation
+        // the stat bar and day totals below make, and for the same reason.
         return t.amount_minor;
     }
   }
 
   // The selected category plus all its descendants. The reports roll spend up the tree, so
-  // filtering by a parent must include its children's transactions to agree with them.
-  const categorySubtree = $derived(categoryId === "" ? null : subtreeIds(categories, categoryId));
+  // filtering by a parent must include its children's transactions to agree with them. Null
+  // for both of the states that name no category — "" and "none" — which `sortedFiltered`
+  // tells apart itself.
+  const categorySubtree = $derived(
+    categoryId === "" || categoryId === "none" ? null : subtreeIds(categories, categoryId),
+  );
 
   const sortedFiltered = $derived.by(() => {
     const filtered = txns.filter((t) => {
-      if (categorySubtree && !(t.category_id != null && categorySubtree.has(t.category_id))) return false;
+      if (categoryId === "none") {
+        if (t.category_id != null) return false;
+      } else if (categorySubtree && !(t.category_id != null && categorySubtree.has(t.category_id)))
+        return false;
       // Income/outgoings is the same sign-of-amount split the stat bar below uses — not a
       // separate server-side concept, just a client-side view over the same rows.
       if (typeFilter === "income" && t.amount_minor < 0) return false;
@@ -166,9 +216,10 @@
   });
 
   // The reference's date-grouped, stat-headed layout only reads correctly while the list is
-  // in its natural newest-first order; any other sort falls back to the flat, fully-sortable
-  // table. Clicking a column header from the grouped view re-sorts (switching to that flat
-  // table); re-selecting Date returns here — so no sort column is ever unreachable.
+  // in its natural newest-first order; any other sort falls back to the flat list, where each
+  // row carries its own date in the sub-line instead. Clicking a column header from the grouped
+  // view re-sorts (switching to that flat list); clicking Date returns here — so the grouped
+  // view is never a dead end, and no sort column is ever unreachable.
   const grouped = $derived(sortKey === "date" && sortDir === "desc");
 
   const catById = $derived(new Map(categories.map((c) => [c.id, c])));
@@ -256,6 +307,11 @@
     }
     if (search.trim()) p.set("q", search.trim());
     if (activeTab !== "transactions") p.set("tab", activeTab);
+    // Only the non-default half of the sort is worth carrying: `sort` when it isn't date, and
+    // `dir` when it isn't that column's own default — so the plain newest-first view still
+    // produces a clean URL, and `?sort=amount` alone means "amount, the useful way round".
+    if (sortKey !== "date") p.set("sort", sortKey);
+    if (sortDir !== DEFAULT_DIR[sortKey]) p.set("dir", sortDir);
     if (pageSize !== 50) p.set("per_page", String(pageSize));
     if (page > 1) p.set("page", String(page));
     const anchorTx = paged[0]?.id;
@@ -282,7 +338,7 @@
   $effect(() => {
     // Depend on the full filter/paging surface so the shareable URL tracks every change.
     page;
-    void [categoryId, accountId, typeFilter, filters.attributedTo, filters.custom?.from, filters.custom?.to, search, activeTab, pageSize];
+    void [categoryId, accountId, typeFilter, filters.attributedTo, filters.custom?.from, filters.custom?.to, search, activeTab, pageSize, sortKey, sortDir];
     if (didInitPage) syncUrl();
   });
 
@@ -323,7 +379,7 @@
       // Qualified, so a nested "Power" chip says which branch it filtered to.
       chips.push({
         key: "category",
-        label: qualifiedName(categories, categoryId) || "Category",
+        label: categoryId === "none" ? "Uncategorised" : qualifiedName(categories, categoryId) || "Category",
         clear: () => (categoryId = ""),
       });
     if (accountId !== "")
@@ -723,6 +779,10 @@
           <label class="field">Category
             <select class="select" aria-label="Filter by category" bind:value={categoryId}>
               <option value="">All categories</option>
+              <!-- Above the list, not filed in it alphabetically: it selects the absence of a
+                   category rather than one of them, and it's the filter you reach for when
+                   tidying up after an import. -->
+              <option value="none">Uncategorised</option>
               {#each categoryOptions(categories) as o}<option value={o.id}>{o.label}</option>{/each}
             </select>
           </label>
@@ -784,10 +844,14 @@
             onchange={toggleAll}
           />
         </span>
-        <span class="col-label">transaction</span>
+        <!-- Date shares the transaction column because that is where a date is rendered: in
+             the day heading when grouped, on the row's sub-line when not. It has no cell of
+             its own to head. -->
+        {@render sortHeader("description", "transaction", "")}
+        {@render sortHeader("date", "date", "th-date")}
       </div>
-      <span class="th-cat col-label">Category label</span>
-      <span class="th-amt col-label">Amount</span>
+      {@render sortHeader("category", "Category label", "th-cat")}
+      {@render sortHeader("amount", "Amount", "th-amt")}
     </div>
     <div class="tx-list" class:grouped>
       {#if grouped}
@@ -829,6 +893,22 @@
       {/if}
     </div>
     </div>
+
+    <!-- A column label that sorts by its column. Not a <table>, so `aria-sort` (which needs a
+         real columnheader inside a real table/grid) would be invalid here — the state goes in
+         the accessible name instead, which reads correctly wherever the button is announced. -->
+    {#snippet sortHeader(key: SortKey, label: string, cls: string)}
+      <button
+        type="button"
+        class="col-label sort-btn {cls}"
+        class:active={sortKey === key}
+        aria-label={`${label} — ${sortLabel(key)}. Click to sort by ${label}.`}
+        onclick={() => setSort(key)}
+      >
+        {label}
+        <span class="caret" aria-hidden="true">{sortKey !== key ? "↕" : sortDir === "asc" ? "▲" : "▼"}</span>
+      </button>
+    {/snippet}
 
     {#snippet row(t: Tx)}
       {@const title = t.description || txName(t) || "—"}
@@ -1050,6 +1130,9 @@
     padding: 4px;
     border-radius: var(--r-sm);
     background: var(--surface-2);
+    /* Symmetric with the bottom margin — the stat card above carries no margin of its own
+       (its padding lives on the cells), so without this the tab bar sits flush against it. */
+    margin-top: 16px;
     margin-bottom: 16px;
   }
   .tab-btn {
@@ -1274,6 +1357,48 @@
     font-weight: 500;
     text-transform: uppercase;
     white-space: nowrap;
+  }
+  /* Sortable column labels. Styled as the labels they replaced — the affordance is the caret
+     and the hover, not a button chrome that would turn the header bar into a row of buttons. */
+  .sort-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    /* The negative margin cancels the padding, so the label's leading edge (and, for the
+       right-aligned Amount, its trailing edge) sits exactly where the plain <span> sat and
+       still lines up with the rows beneath. The hover background is what bleeds outward. */
+    padding: 2px 6px;
+    margin: -2px -6px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: none;
+    font-family: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+  .sort-btn:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .sort-btn.active {
+    color: var(--text);
+  }
+  /* The idle "↕" is a hint, not a state — kept faint so four of them don't read as four
+     active sorts, and brought up on hover so the column announces that it's clickable. */
+  .caret {
+    font-size: 9px;
+    opacity: 0.35;
+  }
+  .sort-btn:hover .caret,
+  .sort-btn.active .caret {
+    opacity: 1;
+  }
+  /* Date has no cell of its own — it rides along in the transaction column. Enough clear air
+     from the "transaction" label (whose own -6px margin would otherwise close the flex gap to
+     4px) that the two read as two controls rather than one phrase. */
+  .th-date {
+    margin-left: 12px;
   }
 
   .tx-list {
