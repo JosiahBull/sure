@@ -164,7 +164,11 @@ export function groupByOwner(
   accounts: Schemas["AccountBalance"][],
   tab: PanelTab
 ): { groups: OwnerGroup[]; totalMinor: number } {
-  const rows = accounts.filter((a) => inTab(a, tab));
+  // Excluded accounts are dropped here, unlike in `groupByKind`/`groupByClass`: this grouping
+  // renders directly beneath the net-worth chart under a net-worth-by-owner heading, so
+  // keeping them would put two figures that disagree on one screen. The kind/class groupings
+  // are inventories and keep listing them.
+  const rows = accounts.filter((a) => inTab(a, tab) && !a.excluded_from_net_worth);
   const totalMinor = rows.reduce((sum, a) => sum + a.value_minor, 0);
 
   const byOwner = new Map<string, Schemas["AccountBalance"][]>();

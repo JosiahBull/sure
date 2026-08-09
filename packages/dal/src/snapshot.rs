@@ -121,6 +121,10 @@ pub struct AccountRow {
     pub institution: Option<String>,
     pub metadata: String,
     pub archived: bool,
+    /// Defaulted for the same reason `ownership` is: a snapshot taken before 0034 has no
+    /// such column, and `false` is exactly the state that database was in.
+    #[serde(default)]
+    pub excluded_from_net_worth: bool,
     pub sort_order: i64,
     pub secured_by_account_id: Option<i64>,
     // Ownership travels as its two stored columns rather than the `Ownership` enum: a
@@ -513,7 +517,9 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
         "accounts",
         AccountRow,
         r#"SELECT id AS "id!", name, kind, currency_code, institution, metadata,
-                  archived AS "archived!: bool", sort_order, secured_by_account_id,
+                  archived AS "archived!: bool",
+                  excluded_from_net_worth AS "excluded_from_net_worth!: bool",
+                  sort_order, secured_by_account_id,
                   ownership AS "ownership?", person_id, created_at, updated_at
              FROM accounts ORDER BY id"#
     );
@@ -702,7 +708,9 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         accounts: sqlx::query_as!(
             AccountRow,
             r#"SELECT id AS "id!", name, kind, currency_code, institution, metadata,
-                      archived AS "archived!: bool", sort_order, secured_by_account_id,
+                      archived AS "archived!: bool",
+                      excluded_from_net_worth AS "excluded_from_net_worth!: bool",
+                      sort_order, secured_by_account_id,
                       ownership AS "ownership?", person_id, created_at, updated_at
                  FROM accounts ORDER BY id"#
         )
@@ -1013,9 +1021,10 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         let (ownership, person_id) = a.ownership_columns(placeholder_id);
         sqlx::query!(
             "INSERT INTO accounts
-                (id, name, kind, currency_code, institution, metadata, archived, sort_order,
+                (id, name, kind, currency_code, institution, metadata, archived,
+                 excluded_from_net_worth, sort_order,
                  secured_by_account_id, ownership, person_id, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             a.id,
             a.name,
             a.kind,
@@ -1023,6 +1032,7 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             a.institution,
             a.metadata,
             a.archived,
+            a.excluded_from_net_worth,
             a.sort_order,
             a.secured_by_account_id,
             ownership,

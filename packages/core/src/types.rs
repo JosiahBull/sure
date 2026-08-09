@@ -1007,6 +1007,14 @@ pub struct Account {
     /// Typed, kind-specific configuration (discriminated by `profile`).
     pub metadata: AccountMetadata,
     pub archived: bool,
+    /// Keep this account's balance out of the household's net worth without hiding it.
+    ///
+    /// The flag is about the *pot*, not the movements: an excluded account leaves the
+    /// net-worth series, the balances roll-up and the forecast's projection, but its
+    /// transactions still count in the spend and category reports, because money you spent
+    /// is money you spent whoever the balance belongs to. Distinct from [`Self::archived`],
+    /// which removes the account from the app altogether.
+    pub excluded_from_net_worth: bool,
     pub sort_order: i64,
     /// For a liability, the asset account it is secured against (e.g. a mortgage's home).
     pub secured_by_account_id: Option<i64>,
@@ -1060,6 +1068,18 @@ pub struct SaveAccount {
 pub struct SetSecuredBy {
     /// The asset account this (liability) account is secured against; `null` to unlink.
     pub secured_by_account_id: Option<i64>,
+}
+
+/// Body of `PUT /api/accounts/{id}/excluded-from-net-worth`.
+///
+/// Its own endpoint rather than a field on [`SaveAccount`], deliberately: that DTO is a
+/// full replace sent by the account form, the seed script, the api-tests helper and the
+/// provider-link path, and any one of them omitting the field would silently clear the
+/// user's setting. Kept off it, the flag survives a form save by construction — the same
+/// arrangement [`SetSecuredBy`] has.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetExcludedFromNetWorth {
+    pub excluded_from_net_worth: bool,
 }
 
 #[cfg(test)]

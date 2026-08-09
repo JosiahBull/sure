@@ -433,6 +433,7 @@ mod tests {
             institution: Some("Sharesies".to_string()),
             metadata: AccountMetadata::Brokerage(BrokerageMeta::default()),
             archived: false,
+            excluded_from_net_worth: false,
             sort_order: 0,
             secured_by_account_id: None,
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
@@ -463,6 +464,9 @@ mod tests {
         }
         async fn set_secured_by(&self, _id: i64, _target: Option<i64>) -> AppResult<Account> {
             unreachable!("BrokerageService never mutates account metadata")
+        }
+        async fn set_excluded_from_net_worth(&self, _id: i64, _x: bool) -> AppResult<Account> {
+            unreachable!("BrokerageService never changes net-worth inclusion")
         }
         async fn set_ownership(&self, _id: i64, _ownership: Ownership) -> AppResult<Account> {
             unreachable!("BrokerageService never attributes accounts")

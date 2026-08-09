@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "UPDATE accounts SET ownership=?2, person_id=?3,\n              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           WHERE id=?1\n           RETURNING id AS \"id!\", name, kind, currency_code, institution, metadata,\n                     archived AS \"archived!: bool\", sort_order, secured_by_account_id, ownership,\n                     person_id, created_at, updated_at",
+  "query": "SELECT id AS \"id!\", name, kind, currency_code, institution, metadata,\n                  archived AS \"archived!: bool\",\n                  excluded_from_net_worth AS \"excluded_from_net_worth!: bool\",\n                  sort_order, secured_by_account_id, ownership,\n                  person_id, created_at, updated_at\n             FROM accounts WHERE id = ?1",
   "describe": {
     "columns": [
       {
@@ -39,38 +39,43 @@
         "type_info": "Integer"
       },
       {
-        "name": "sort_order",
+        "name": "excluded_from_net_worth!: bool",
         "ordinal": 7,
         "type_info": "Integer"
       },
       {
-        "name": "secured_by_account_id",
+        "name": "sort_order",
         "ordinal": 8,
         "type_info": "Integer"
       },
       {
-        "name": "ownership",
+        "name": "secured_by_account_id",
         "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "ownership",
+        "ordinal": 10,
         "type_info": "Text"
       },
       {
         "name": "person_id",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Integer"
       },
       {
         "name": "created_at",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text"
       },
       {
         "name": "updated_at",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Text"
       }
     ],
     "parameters": {
-      "Right": 3
+      "Right": 1
     },
     "nullable": [
       false,
@@ -82,11 +87,12 @@
       false,
       false,
       false,
+      true,
       false,
       true,
       false,
       false
     ]
   },
-  "hash": "d8779a95617990b2a4586de40780502cdc169bb08f55d7cde38ae575e5f1ca6a"
+  "hash": "c91ee8c84b220196b619714a13311677be71ce03003f551aa840727f38e1beb6"
 }

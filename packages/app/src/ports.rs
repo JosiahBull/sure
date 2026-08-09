@@ -351,6 +351,10 @@ pub struct AccountCurrency {
     pub id: i64,
     pub currency_code: String,
     pub ownership: Ownership,
+    /// Carried, never applied here. Dropping the account is the *report's* decision — see
+    /// [`crate::reports::ReportService`], which filters at its three call sites so each can
+    /// answer differently (net worth omits it, balances lists it without totalling it).
+    pub excluded_from_net_worth: bool,
 }
 
 /// A non-archived account, for the current-balances report.
@@ -361,6 +365,8 @@ pub struct ActiveAccount {
     pub kind: AccountKind,
     pub currency_code: String,
     pub ownership: Ownership,
+    /// The balances report lists this row either way; only the roll-up leaves it out.
+    pub excluded_from_net_worth: bool,
 }
 
 /// A single asset account, for the equity-position report.
@@ -634,6 +640,9 @@ pub trait AccountRepo: Send + Sync {
     async fn set_secured_by(&self, id: i64, target: Option<i64>) -> AppResult<Account>;
     /// Attribute one account to a household member (or to the household, or to nobody).
     async fn set_ownership(&self, id: i64, ownership: Ownership) -> AppResult<Account>;
+    /// Keep an account's balance out of the household's net worth, or put it back. Its own
+    /// method rather than a field on `SaveAccount` — see `sure_core::SetExcludedFromNetWorth`.
+    async fn set_excluded_from_net_worth(&self, id: i64, excluded: bool) -> AppResult<Account>;
     /// The same, for many accounts at once; returns how many were changed.
     async fn set_ownership_bulk(&self, ids: &[i64], ownership: Ownership) -> AppResult<u64>;
     /// Single-ticker shares accounts (see `SharesMeta`).
@@ -798,6 +807,9 @@ pub trait RuleRepo: Send + Sync {
 #[async_trait]
 pub trait ReportRepo: Send + Sync {
     async fn base_currency(&self) -> AppResult<String>;
+    /// Every account, archived **and** excluded-from-net-worth included. The exclusion is a
+    /// fact carried on the row rather than applied here, so a caller that wants the household
+    /// total must drop them itself — which is what `net_worth_inputs` does.
     async fn account_currencies(&self) -> AppResult<Vec<AccountCurrency>>;
     /// The transactions needed to value every account on any date from `from` onwards.
     ///

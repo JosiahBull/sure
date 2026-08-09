@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO accounts\n              (name, kind, currency_code, institution, metadata, archived, sort_order,\n               ownership, person_id)\n           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)\n           RETURNING id AS \"id!\", name, kind, currency_code, institution, metadata,\n                     archived AS \"archived!: bool\", sort_order, secured_by_account_id, ownership,\n                     person_id, created_at, updated_at",
+  "query": "SELECT id AS \"id!\", name, kind, currency_code, institution, metadata,\n                      archived AS \"archived!: bool\",\n                      excluded_from_net_worth AS \"excluded_from_net_worth!: bool\",\n                      sort_order, secured_by_account_id,\n                      ownership AS \"ownership?\", person_id, created_at, updated_at\n                 FROM accounts ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -39,45 +39,51 @@
         "type_info": "Integer"
       },
       {
-        "name": "sort_order",
+        "name": "excluded_from_net_worth!: bool",
         "ordinal": 7,
         "type_info": "Integer"
       },
       {
-        "name": "secured_by_account_id",
+        "name": "sort_order",
         "ordinal": 8,
         "type_info": "Integer"
       },
       {
-        "name": "ownership",
+        "name": "secured_by_account_id",
         "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "ownership?",
+        "ordinal": 10,
         "type_info": "Text"
       },
       {
         "name": "person_id",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Integer"
       },
       {
         "name": "created_at",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text"
       },
       {
         "name": "updated_at",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Text"
       }
     ],
     "parameters": {
-      "Right": 9
+      "Right": 0
     },
     "nullable": [
+      false,
+      false,
+      false,
+      false,
       true,
       false,
-      false,
-      false,
-      true,
       false,
       false,
       false,
@@ -88,5 +94,5 @@
       false
     ]
   },
-  "hash": "92cc3ab103eaf84277ce450eb07cddc80d5f2f2fad541f61170a4aca24c253f9"
+  "hash": "6f5748fc02b823ef2a6374b1f1ffc746195b4eab0a93000617b9de091f5c429d"
 }

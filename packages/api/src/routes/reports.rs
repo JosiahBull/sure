@@ -272,6 +272,9 @@ pub struct AccountBalance {
     pub currency_code: String,
     pub value_minor: i64,
     pub ownership: Ownership,
+    /// Listed, but outside `BalancesReport::total_minor` — the household has said this
+    /// account is not part of what it is worth.
+    pub excluded_from_net_worth: bool,
 }
 
 impl From<sure_app::reports::AccountBalance> for AccountBalance {
@@ -284,6 +287,7 @@ impl From<sure_app::reports::AccountBalance> for AccountBalance {
             class: a.class,
             currency_code: a.currency_code,
             value_minor: a.value_minor,
+            excluded_from_net_worth: a.excluded_from_net_worth,
         }
     }
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", currency_code, ownership, person_id FROM accounts",
+  "query": "SELECT id AS \"id!\", currency_code, ownership, person_id,\n                  excluded_from_net_worth AS \"excluded_from_net_worth!: bool\"\n             FROM accounts",
   "describe": {
     "columns": [
       {
@@ -22,6 +22,11 @@
         "name": "person_id",
         "ordinal": 3,
         "type_info": "Integer"
+      },
+      {
+        "name": "excluded_from_net_worth!: bool",
+        "ordinal": 4,
+        "type_info": "Integer"
       }
     ],
     "parameters": {
@@ -31,8 +36,9 @@
       false,
       false,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "ff9af0dcc1b762a522250b4f7c9576c3363ffd3503d944494eea10571700340a"
+  "hash": "bdbfd198253d22b9146c330b4c25bb3d598008fe4a6f933d546764ca0e7e3aa3"
 }

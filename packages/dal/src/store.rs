@@ -71,6 +71,10 @@ impl AccountRepo for SqliteStore {
         crate::accounts::set_secured_by(&self.db, id, target).await
     }
 
+    async fn set_excluded_from_net_worth(&self, id: i64, excluded: bool) -> AppResult<Account> {
+        crate::accounts::set_excluded_from_net_worth(&self.db, id, excluded).await
+    }
+
     async fn set_ownership(&self, id: i64, ownership: Ownership) -> AppResult<Account> {
         crate::accounts::set_ownership(&self.db, id, ownership).await
     }
@@ -538,6 +542,7 @@ impl ReportRepo for SqliteStore {
                 id: a.id,
                 currency_code: a.currency_code,
                 ownership: a.ownership,
+                excluded_from_net_worth: a.excluded_from_net_worth,
             })
             .collect())
     }
@@ -621,6 +626,7 @@ impl ReportRepo for SqliteStore {
                 name: a.name,
                 kind: a.kind, // already `sure_core::AccountKind`, parsed in the DAL
                 currency_code: a.currency_code,
+                excluded_from_net_worth: a.excluded_from_net_worth,
             })
             .collect())
     }

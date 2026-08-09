@@ -918,6 +918,7 @@ mod tests {
                 institution: None,
                 metadata: AccountMetadata::default_for(kind),
                 archived: false,
+                excluded_from_net_worth: false,
                 sort_order: 0,
                 secured_by_account_id: None,
                 created_at: "2026-01-01T00:00:00.000Z".to_string(),
@@ -936,6 +937,9 @@ mod tests {
         }
         async fn set_secured_by(&self, _id: i64, _target: Option<i64>) -> AppResult<Account> {
             unreachable!("SyncService never re-secures an account")
+        }
+        async fn set_excluded_from_net_worth(&self, _id: i64, _x: bool) -> AppResult<Account> {
+            unreachable!("SyncService never changes net-worth inclusion")
         }
         async fn set_ownership(&self, _id: i64, _ownership: Ownership) -> AppResult<Account> {
             unreachable!("SyncService never attributes accounts")

@@ -95,6 +95,7 @@ pub struct AccountCurrencyRow {
     pub currency_code: String,
     pub ownership: String,
     pub person_id: Option<i64>,
+    pub excluded_from_net_worth: bool,
 }
 
 /// An account and its currency, plus who it belongs to — the net-worth series filters the
@@ -104,6 +105,9 @@ pub struct AccountCurrency {
     pub id: i64,
     pub currency_code: String,
     pub ownership: Ownership,
+    /// Carried, not applied. The report decides what to do with it — see
+    /// `sure_app::reports::ReportService::net_worth_inputs`.
+    pub excluded_from_net_worth: bool,
 }
 
 impl TryFrom<AccountCurrencyRow> for AccountCurrency {
@@ -114,6 +118,7 @@ impl TryFrom<AccountCurrencyRow> for AccountCurrency {
             ownership: parse_ownership(r.ownership, r.person_id)?,
             id: r.id,
             currency_code: r.currency_code,
+            excluded_from_net_worth: r.excluded_from_net_worth,
         })
     }
 }
@@ -127,6 +132,7 @@ struct ActiveAccountRow {
     currency_code: String,
     ownership: String,
     person_id: Option<i64>,
+    excluded_from_net_worth: bool,
 }
 
 /// A non-archived account, for the current-balances report.
@@ -137,6 +143,8 @@ pub struct ActiveAccount {
     pub kind: AccountKind,
     pub currency_code: String,
     pub ownership: Ownership,
+    /// The row is still listed when this is set — only the roll-up leaves it out.
+    pub excluded_from_net_worth: bool,
 }
 
 impl TryFrom<ActiveAccountRow> for ActiveAccount {
@@ -149,6 +157,7 @@ impl TryFrom<ActiveAccountRow> for ActiveAccount {
             id: r.id,
             name: r.name,
             currency_code: r.currency_code,
+            excluded_from_net_worth: r.excluded_from_net_worth,
         })
     }
 }
@@ -332,7 +341,9 @@ pub async fn currency_decimals(db: &Db) -> AppResult<Vec<CurrencyDecimals>> {
 pub async fn account_currencies(db: &Db) -> AppResult<Vec<AccountCurrency>> {
     sqlx::query_as!(
         AccountCurrencyRow,
-        r#"SELECT id AS "id!", currency_code, ownership, person_id FROM accounts"#
+        r#"SELECT id AS "id!", currency_code, ownership, person_id,
+                  excluded_from_net_worth AS "excluded_from_net_worth!: bool"
+             FROM accounts"#
     )
     .fetch_all(db)
     .await?
@@ -346,7 +357,8 @@ pub async fn account_currencies(db: &Db) -> AppResult<Vec<AccountCurrency>> {
 pub async fn active_accounts(db: &Db) -> AppResult<Vec<ActiveAccount>> {
     sqlx::query_as!(
         ActiveAccountRow,
-        r#"SELECT id AS "id!", name, kind, currency_code, ownership, person_id
+        r#"SELECT id AS "id!", name, kind, currency_code, ownership, person_id,
+                  excluded_from_net_worth AS "excluded_from_net_worth!: bool"
              FROM accounts WHERE archived=0 ORDER BY sort_order, name"#
     )
     .fetch_all(db)

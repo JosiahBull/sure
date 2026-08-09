@@ -35,6 +35,9 @@ pub struct AccountRow {
     pub institution: Option<String>,
     pub metadata: String,
     pub archived: bool,
+    // Positioned immediately after `archived` to match every SELECT list above: `query_as!`
+    // maps columns to fields positionally, not by name.
+    pub excluded_from_net_worth: bool,
     pub sort_order: i64,
     pub secured_by_account_id: Option<i64>,
     pub ownership: String,
@@ -70,6 +73,7 @@ impl TryFrom<AccountRow> for Account {
             currency_code: r.currency_code,
             institution: r.institution,
             archived: r.archived,
+            excluded_from_net_worth: r.excluded_from_net_worth,
             sort_order: r.sort_order,
             secured_by_account_id: r.secured_by_account_id,
             ownership,
@@ -91,7 +95,9 @@ pub async fn list(db: &Db, include_archived: bool) -> AppResult<Vec<Account>> {
     let rows = sqlx::query_as!(
         AccountRow,
         r#"SELECT id AS "id!", name, kind, currency_code, institution, metadata,
-                  archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                  archived AS "archived!: bool",
+                  excluded_from_net_worth AS "excluded_from_net_worth!: bool",
+                  sort_order, secured_by_account_id, ownership,
                   person_id, created_at, updated_at
              FROM accounts
             WHERE ?1 OR archived = 0
@@ -165,7 +171,9 @@ pub async fn get(db: &Db, id: i64) -> AppResult<Account> {
     let row = sqlx::query_as!(
         AccountRow,
         r#"SELECT id AS "id!", name, kind, currency_code, institution, metadata,
-                  archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                  archived AS "archived!: bool",
+                  excluded_from_net_worth AS "excluded_from_net_worth!: bool",
+                  sort_order, secured_by_account_id, ownership,
                   person_id, created_at, updated_at
              FROM accounts WHERE id = ?1"#,
         id
@@ -395,7 +403,9 @@ pub(crate) async fn insert(
                ownership, person_id)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
            RETURNING id AS "id!", name, kind, currency_code, institution, metadata,
-                     archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                     archived AS "archived!: bool",
+                     excluded_from_net_worth AS "excluded_from_net_worth!: bool",
+                     sort_order, secured_by_account_id, ownership,
                      person_id, created_at, updated_at"#,
         name,
         kind,
@@ -567,7 +577,9 @@ pub async fn update(db: &Db, id: i64, input: SaveAccount) -> AppResult<Account> 
               updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE id=?1
            RETURNING id AS "id!", name, kind, currency_code, institution, metadata,
-                     archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                     archived AS "archived!: bool",
+                     excluded_from_net_worth AS "excluded_from_net_worth!: bool",
+                     sort_order, secured_by_account_id, ownership,
                      person_id, created_at, updated_at"#,
         id,
         name,
@@ -631,7 +643,9 @@ pub async fn set_secured_by(db: &Db, id: i64, target: Option<i64>) -> AppResult<
               updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE id=?1
            RETURNING id AS "id!", name, kind, currency_code, institution, metadata,
-                     archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                     archived AS "archived!: bool",
+                     excluded_from_net_worth AS "excluded_from_net_worth!: bool",
+                     sort_order, secured_by_account_id, ownership,
                      person_id, created_at, updated_at"#,
         id,
         target
@@ -657,11 +671,45 @@ pub async fn set_ownership(db: &Db, id: i64, ownership: Ownership) -> AppResult<
               updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE id=?1
            RETURNING id AS "id!", name, kind, currency_code, institution, metadata,
-                     archived AS "archived!: bool", sort_order, secured_by_account_id, ownership,
+                     archived AS "archived!: bool",
+                     excluded_from_net_worth AS "excluded_from_net_worth!: bool",
+                     sort_order, secured_by_account_id, ownership,
                      person_id, created_at, updated_at"#,
         id,
         ownership,
         person_id
+    )
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("account"))?;
+    row.try_into()
+}
+
+/// Keep an account's balance out of the household's net worth, or put it back.
+///
+/// Separate from `update` for the same reason `set_secured_by` and `set_ownership` are: it is
+/// a single-field change the SPA makes from a row's own control, and routing it through the
+/// full-replace PUT would mean re-sending — and re-validating — an entire account to flip one
+/// switch. Re-validating is not hypothetical here: `validate` re-runs `INSTITUTION_REQUIRED`
+/// and `metadata.validate_for`, so an account created before those rules tightened would 422
+/// on a net-worth toggle that has nothing to do with either.
+///
+/// It also keeps the column off [`SaveAccount`], which is what makes "a form save preserves
+/// the flag" true by construction rather than by every caller remembering to send it back.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn set_excluded_from_net_worth(db: &Db, id: i64, excluded: bool) -> AppResult<Account> {
+    let row = sqlx::query_as!(
+        AccountRow,
+        r#"UPDATE accounts SET excluded_from_net_worth=?2,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id AS "id!", name, kind, currency_code, institution, metadata,
+                     archived AS "archived!: bool",
+                     excluded_from_net_worth AS "excluded_from_net_worth!: bool",
+                     sort_order, secured_by_account_id, ownership,
+                     person_id, created_at, updated_at"#,
+        id,
+        excluded
     )
     .fetch_optional(db)
     .await?

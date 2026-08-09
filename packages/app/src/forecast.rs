@@ -461,7 +461,10 @@ impl ForecastService {
         overrides: &HashMap<(ForecastTargetType, i64), ForecastAssumption>,
         fx: &Fx,
     ) -> AppResult<Vec<ResolvedAssumption>> {
-        let accounts = self.accounts.list(false).await?;
+        let mut accounts = self.accounts.list(false).await?;
+        // Nothing projects an account the household has taken out of its net worth, so the
+        // assumptions tab must not offer a growth-rate control for one.
+        accounts.retain(|a| !a.excluded_from_net_worth);
         let crons = self.crons.list().await?;
         let (tx_by_acct, val_by_acct) = reports::load_ledger(self.reports.as_ref()).await?;
 
@@ -878,7 +881,19 @@ impl ForecastService {
             .collect();
         let events = self.forecast.list_events().await?;
 
-        let accounts = self.accounts.list(false).await?;
+        let mut accounts = self.accounts.list(false).await?;
+        // Filtered at the load, not inside the loop below, because this one vector feeds two
+        // consumers: `account_sims` here and `cash_start` further down. Cash never reaches
+        // `account_sims` at all (the `continue` below skips it), so filtering in the loop
+        // would leave an excluded *bank* account fully inside the projection.
+        //
+        // Out of net worth has to mean out of the *projection* of net worth: the Forecast page
+        // draws its history from `/api/reports/net-worth` and its projection from here, on one
+        // axis meeting at today. Filter only one and the seam becomes a step exactly the size
+        // of the excluded account — the mirror image of the defect recorded further down, where
+        // leaving an account out of both made the projection start above today's reported
+        // net worth.
+        accounts.retain(|a| !a.excluded_from_net_worth);
         let (tx_by_acct, val_by_acct) = reports::load_ledger(self.reports.as_ref()).await?;
 
         let mut account_sims = Vec::new();
@@ -4002,6 +4017,9 @@ mod tests {
             async fn set_secured_by(&self, _id: i64, _target: Option<i64>) -> AppResult<Account> {
                 unreachable!()
             }
+            async fn set_excluded_from_net_worth(&self, _id: i64, _x: bool) -> AppResult<Account> {
+                unreachable!("ForecastService never changes net-worth inclusion")
+            }
             async fn set_ownership(&self, _id: i64, _ownership: Ownership) -> AppResult<Account> {
                 unreachable!()
             }
@@ -4286,6 +4304,7 @@ mod tests {
                 institution: None,
                 metadata: AM::Generic(GenericMeta::default()),
                 archived: false,
+                excluded_from_net_worth: false,
                 sort_order: 0,
                 secured_by_account_id: None,
                 created_at: "2020-01-01T00:00:00Z".into(),
@@ -4329,6 +4348,7 @@ mod tests {
                     id: a.id,
                     currency_code: a.currency_code.clone(),
                     ownership: sure_core::Ownership::Joint,
+                    excluded_from_net_worth: a.excluded_from_net_worth,
                 })
                 .collect();
             ForecastService::new(
@@ -4701,6 +4721,95 @@ mod tests {
                     m.as_of
                 );
             }
+        }
+
+        /// Out of net worth has to mean out of the *projection* of net worth. The Forecast page
+        /// draws its history from `/api/reports/net-worth` and its projection from here, on one
+        /// axis meeting at today — so an account excluded from the first and kept in the second
+        /// puts a step at the seam exactly the size of that account.
+        ///
+        /// An *appreciating* account, so that leaving it in would diverge further every month
+        /// rather than only offsetting month zero.
+        #[test]
+        fn an_excluded_account_is_out_of_the_projection() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let yesterday = today - chrono::Duration::days(1);
+            let build = |excluded: bool| {
+                let mut house = account(2, AK::RealEstate, "NZD");
+                house.excluded_from_net_worth = excluded;
+                make_service(
+                    vec![account(1, AK::Bank, "NZD"), house],
+                    vec![
+                        valued(1, yesterday, 10_000_00),
+                        valued(2, yesterday, 800_000_00),
+                    ],
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    today,
+                )
+            };
+            let params = SimulationParams {
+                horizon_months: 12,
+                simulations: 100,
+                currency: None,
+                seed: Some(7),
+            };
+            let with = rt.block_on(build(false).simulate(&params)).unwrap();
+            let without = rt.block_on(build(true).simulate(&params)).unwrap();
+
+            // Month zero is the seam with the reports, so it must move by the house exactly.
+            assert_eq!(
+                with.months[0].net_worth.median_minor - without.months[0].net_worth.median_minor,
+                800_000_00
+            );
+            // And the house must not be growing inside the excluded projection at all.
+            assert!(
+                with.months[11].net_worth.median_minor - without.months[11].net_worth.median_minor
+                    >= 800_000_00,
+                "the excluded house must contribute nothing, including its growth"
+            );
+        }
+
+        /// The same, for a *cash* account — which never reaches `account_sims` at all (the
+        /// class check skips it) and is instead pooled into `cash_start`. A fix applied only
+        /// to the simulation loop would pass the test above and silently fail this one.
+        #[test]
+        fn an_excluded_cash_account_is_out_of_the_starting_cash_pool() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let yesterday = today - chrono::Duration::days(1);
+            let build = |excluded: bool| {
+                let mut savings = account(2, AK::Savings, "NZD");
+                savings.excluded_from_net_worth = excluded;
+                make_service(
+                    vec![account(1, AK::Bank, "NZD"), savings],
+                    vec![
+                        valued(1, yesterday, 10_000_00),
+                        valued(2, yesterday, 50_000_00),
+                    ],
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    today,
+                )
+            };
+            let params = SimulationParams {
+                horizon_months: 6,
+                simulations: 50,
+                currency: None,
+                seed: Some(11),
+            };
+            let with = rt.block_on(build(false).simulate(&params)).unwrap();
+            let without = rt.block_on(build(true).simulate(&params)).unwrap();
+
+            assert_eq!(
+                with.months[0].net_worth.median_minor - without.months[0].net_worth.median_minor,
+                50_000_00
+            );
         }
 
         /// Servicing a mortgage costs real money. The debt shrinking while no cash leaves
@@ -5119,6 +5228,7 @@ mod tests {
                             id: a.id,
                             currency_code: a.currency_code.clone(),
                             ownership: sure_core::Ownership::Joint,
+                            excluded_from_net_worth: a.excluded_from_net_worth,
                         })
                         .collect(),
                     valuations: vec![valued(1, today - chrono::Duration::days(1), 500_000_00)],

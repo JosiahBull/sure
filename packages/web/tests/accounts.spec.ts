@@ -89,3 +89,40 @@ test("Edit and Delete on an account row don't trigger the transactions jump", as
   await expect(page).toHaveURL(/#\/settings\/accounts$/);
   await page.getByRole("button", { name: "Cancel" }).click();
 });
+
+/**
+ * The toggle and the "Net worth" figure sit inches apart on this page, and the figure comes
+ * from a different report than the net-worth chart does. Assert they move together, or the
+ * switch reads as broken.
+ *
+ * Restores the account afterwards: this spec shares the seeded database with every other one.
+ */
+test("excluding an account drops it out of the Net worth figure, but keeps it listed", async ({
+  page,
+}) => {
+  await goto(page, "/settings/accounts");
+  const header = page.locator(".muted", { hasText: "Net worth" });
+  const figure = async () =>
+    Number((await header.locator("strong").innerText()).replace(/[^0-9.-]/g, ""));
+
+  const row = page.locator(".acct", { hasText: "Family Home" });
+  const before = await figure();
+  // The input is `opacity: 0` behind its track, so click the label — which is what a person
+  // does anyway. Assertions still read the checkbox, since that is the state that matters.
+  const toggle = row.getByRole("checkbox", { name: "Count Family Home toward net worth" });
+  const label = row.locator("label.switch");
+  await expect(toggle).toBeChecked();
+
+  await label.click();
+  await expect(toggle).not.toBeChecked();
+  await expect(row.getByText("not in net worth")).toBeVisible();
+  // Still listed, with its balance — hiding an account is what archiving is for.
+  await expect(row).toContainText("836,319");
+  // It left the total by exactly its own value.
+  await expect.poll(async () => before - (await figure())).toBeCloseTo(836_319.07, 1);
+
+  await label.click();
+  await expect(toggle).toBeChecked();
+  await expect(row.getByText("not in net worth")).toHaveCount(0);
+  await expect.poll(figure).toBe(before);
+});

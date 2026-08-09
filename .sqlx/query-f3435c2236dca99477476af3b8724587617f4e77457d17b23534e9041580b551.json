@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name, kind, currency_code, ownership, person_id\n             FROM accounts WHERE archived=0 ORDER BY sort_order, name",
+  "query": "SELECT id AS \"id!\", name, kind, currency_code, ownership, person_id,\n                  excluded_from_net_worth AS \"excluded_from_net_worth!: bool\"\n             FROM accounts WHERE archived=0 ORDER BY sort_order, name",
   "describe": {
     "columns": [
       {
@@ -32,6 +32,11 @@
         "name": "person_id",
         "ordinal": 5,
         "type_info": "Integer"
+      },
+      {
+        "name": "excluded_from_net_worth!: bool",
+        "ordinal": 6,
+        "type_info": "Integer"
       }
     ],
     "parameters": {
@@ -43,8 +48,9 @@
       false,
       false,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "ab34e3461132c8c722ae9862d2dd4deebc3e832fb94686daf16debbf7893921c"
+  "hash": "f3435c2236dca99477476af3b8724587617f4e77457d17b23534e9041580b551"
 }

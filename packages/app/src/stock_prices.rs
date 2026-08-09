@@ -490,6 +490,9 @@ mod tests {
         async fn set_secured_by(&self, _id: i64, _target: Option<i64>) -> AppResult<Account> {
             unreachable!("StockPriceTask never mutates account metadata")
         }
+        async fn set_excluded_from_net_worth(&self, _id: i64, _x: bool) -> AppResult<Account> {
+            unreachable!("StockPriceTask never changes net-worth inclusion")
+        }
         async fn set_ownership(&self, _id: i64, _ownership: Ownership) -> AppResult<Account> {
             unreachable!("StockPriceTask never attributes accounts")
         }

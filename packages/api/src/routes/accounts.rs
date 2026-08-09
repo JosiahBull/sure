@@ -13,8 +13,8 @@ use crate::state::AppState;
 pub use sure_core::{
     Account, AccountClass, AccountKind, AccountMetadata, AreaUnit, BrokerageMeta, BulkResult,
     CryptoMeta, DepositoryMeta, GenericMeta, LoanMeta, MileageUnit, MortgageMeta, Ownership,
-    PropertyMeta, RateType, RepaymentFrequency, SaveAccount, SetOwnership, SetOwnershipBulk,
-    SetSecuredBy, SharesMeta, StudentLoanMeta, TaxTreatment, VehicleMeta,
+    PropertyMeta, RateType, RepaymentFrequency, SaveAccount, SetExcludedFromNetWorth, SetOwnership,
+    SetOwnershipBulk, SetSecuredBy, SharesMeta, StudentLoanMeta, TaxTreatment, VehicleMeta,
 };
 
 // OTEL span names for this module's handlers.
@@ -26,6 +26,7 @@ const ACCOUNTS_DELETE: &str = "accounts.delete";
 const ACCOUNTS_SET_SECURED_BY: &str = "accounts.set_secured_by";
 const ACCOUNTS_SET_OWNERSHIP: &str = "accounts.set_ownership";
 const ACCOUNTS_SET_OWNERSHIP_BULK: &str = "accounts.set_ownership_bulk";
+const ACCOUNTS_SET_EXCLUDED_FROM_NET_WORTH: &str = "accounts.set_excluded_from_net_worth";
 
 /// Query params for `GET /accounts`.
 #[derive(Debug, Deserialize, Default)]
@@ -178,6 +179,34 @@ pub async fn set_ownership(
     Ok(Json(st.accounts.set_ownership(id, input.ownership).await?))
 }
 
+/// Keep an account's balance out of the household's net worth, or put it back.
+///
+/// Its own endpoint rather than a field on `SaveAccount`: that body is a full replace, so a
+/// caller that omitted the field would silently clear the setting. See
+/// `sure_core::SetExcludedFromNetWorth`.
+#[utoipa::path(put, path = "/api/accounts/{id}/excluded-from-net-worth", tag = "accounts",
+    params(("id" = i64, Path,)), request_body = SetExcludedFromNetWorth,
+    responses((status = 200, body = Account), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = ACCOUNTS_SET_EXCLUDED_FROM_NET_WORTH,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn set_excluded_from_net_worth(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<SetExcludedFromNetWorth>,
+) -> AppResult<Json<Account>> {
+    Ok(Json(
+        st.accounts
+            .set_excluded_from_net_worth(id, input.excluded_from_net_worth)
+            .await?,
+    ))
+}
+
 /// Attribute several accounts at once. All-or-nothing: an id that doesn't exist fails the
 /// whole batch rather than leaving the caller to work out which half moved.
 #[utoipa::path(post, path = "/api/accounts/ownership", tag = "accounts",
@@ -216,6 +245,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/accounts/{id}/secured-by",
             axum::routing::put(set_secured_by),
+        )
+        .route(
+            "/accounts/{id}/excluded-from-net-worth",
+            axum::routing::put(set_excluded_from_net_worth),
         )
         .route(
             "/accounts/{id}/ownership",

@@ -116,6 +116,20 @@
     confirmDelete = null;
     delError = null;
   }
+  // Restate nothing: this is its own endpoint precisely so a single switch doesn't have to
+  // re-send (and re-validate) a whole account. Reload rather than patch local state, so the
+  // "Net worth" figure in the header comes from the server that computed it.
+  async function toggleNetWorth(accountId: number, excluded: boolean) {
+    const { error: e } = await api.PUT("/api/accounts/{id}/excluded-from-net-worth", {
+      params: { path: { id: accountId } },
+      body: { excluded_from_net_worth: excluded },
+    });
+    if (e) {
+      delError = "Couldn't change whether this account counts toward net worth.";
+      return;
+    }
+    load();
+  }
   async function del(id: number) {
     delError = null;
     const { error: e } = await api.DELETE("/api/accounts/{id}", { params: { path: { id } } });
@@ -224,6 +238,9 @@
                 <div class="row" style="gap:8px;min-width:0">
                   <span class="ell">{a.name}</span>
                   <span class="badge">{kindLabel(a.kind)}</span>
+                  {#if a.excluded_from_net_worth}
+                    <span class="badge">not in net worth</span>
+                  {/if}
                   {#if full && people.list.length > 0}
                     {@const color = ownershipColor(full.ownership)}
                     {@const isPlaceholder =
@@ -254,6 +271,17 @@
                   <span class="small faint tabular">{Math.round(paidOffPct)}% repaid</span>
                 {/if}
                 <div class="row" style="gap:6px">
+                  <!-- Stored as the exclusion, rendered as the inclusion: a switch that is on
+                       when the thing is off reads backwards. `checked` = counted. -->
+                  <label class="switch" title="Count this account toward net worth">
+                    <input
+                      type="checkbox"
+                      checked={!a.excluded_from_net_worth}
+                      onchange={() => toggleNetWorth(a.account_id, !a.excluded_from_net_worth)}
+                      aria-label="Count {a.name} toward net worth"
+                    />
+                    <span class="track"></span>
+                  </label>
                   <button class="btn btn-sm" onclick={() => ((editing = editing === a.account_id ? null : a.account_id), (showAdd = false))}>
                     {editing === a.account_id ? "Close" : "Edit"}
                   </button>

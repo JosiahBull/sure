@@ -180,6 +180,10 @@ pub struct AccountBalance {
     /// person in the client — it already regroups by kind and class the same way — rather
     /// than the report growing a per-person variant of itself.
     pub ownership: Ownership,
+    /// This row is listed but sits outside [`BalancesReport::total_minor`]. Carried so the
+    /// client can mark it, and so any subtotal it computes itself can agree with the total
+    /// the server sent rather than quietly disagreeing with it.
+    pub excluded_from_net_worth: bool,
 }
 
 #[derive(Debug)]
@@ -1144,6 +1148,12 @@ impl ReportService {
         if let Some(owner) = q.attributed_to {
             accounts.retain(|a| a.ownership == owner);
         }
+        // Unconditional, unlike the filter above: `attributed_to` answers a question the
+        // request asked, whereas this is a standing fact about the account, so it applies to
+        // every net-worth answer. Dropping the id entirely rather than valuing it at zero also
+        // keeps it out of `unconverted` — an account nobody is counting should not be reported
+        // as one the report failed to convert.
+        accounts.retain(|a| !a.excluded_from_net_worth);
 
         // Resolve the reporting window *before* reading any ledger row, because the window is
         // now what bounds that read. The default start used to be the minimum date over the
@@ -1532,9 +1542,14 @@ impl ReportService {
                 continue;
             };
             // The row is listed either way — its own-currency balance is a true figure. Only
-            // the base-currency roll-up has to leave it out when no rate reaches it.
-            if let Some(base_major) = fx.try_to_base_major(value_minor, &ccy) {
-                total += base_major;
+            // the base-currency roll-up has to leave it out: when no rate reaches it, and when
+            // the household has said this account is not part of what it is worth. Listing it
+            // is the point — an account you cannot see is `archived`, which is a different
+            // thing — so this is an `if` around the total, never a `continue`.
+            if !a.excluded_from_net_worth {
+                if let Some(base_major) = fx.try_to_base_major(value_minor, &ccy) {
+                    total += base_major;
+                }
             }
             out.push(AccountBalance {
                 ownership: a.ownership,
@@ -1544,6 +1559,7 @@ impl ReportService {
                 class: a.kind.class(),
                 currency_code: ccy,
                 value_minor,
+                excluded_from_net_worth: a.excluded_from_net_worth,
             });
         }
 
@@ -2219,6 +2235,7 @@ mod tests {
             LedgerTx, LedgerValuation, ReportCategory, SecuredLiabilityAccount,
         };
         use async_trait::async_trait;
+        use std::collections::HashSet;
 
         const BANK: i64 = 1;
         const MORTGAGE: i64 = 2;
@@ -2242,6 +2259,8 @@ mod tests {
             txns: Vec<LedgerTx>,
             vals: Vec<LedgerValuation>,
             spend: Vec<SpendTransaction>,
+            /// Accounts the household has taken out of its net worth.
+            excluded: HashSet<i64>,
         }
 
         /// The whole fixture ledger, in both tables.
@@ -2307,7 +2326,15 @@ mod tests {
                     txns,
                     vals,
                     spend: spend_rows(),
+                    excluded: HashSet::new(),
                 }
+            }
+
+            /// The same fixture with one account kept out of the household's net worth.
+            fn excluding(mode: Mode, account_id: i64) -> Self {
+                let mut me = Self::new(mode);
+                me.excluded.insert(account_id);
+                me
             }
         }
 
@@ -2382,6 +2409,7 @@ mod tests {
                         id,
                         currency_code: "NZD".to_string(),
                         ownership: Ownership::Joint,
+                        excluded_from_net_worth: self.excluded.contains(&id),
                     })
                     .collect())
             }
@@ -2444,6 +2472,7 @@ mod tests {
                         kind: AccountKind::Bank,
                         currency_code: "NZD".to_string(),
                         ownership: Ownership::Joint,
+                        excluded_from_net_worth: self.excluded.contains(&BANK),
                     },
                     ActiveAccount {
                         id: MORTGAGE,
@@ -2451,6 +2480,7 @@ mod tests {
                         kind: AccountKind::Mortgage,
                         currency_code: "NZD".to_string(),
                         ownership: Ownership::Joint,
+                        excluded_from_net_worth: self.excluded.contains(&MORTGAGE),
                     },
                     ActiveAccount {
                         id: HOUSE,
@@ -2458,6 +2488,7 @@ mod tests {
                         kind: AccountKind::RealEstate,
                         currency_code: "NZD".to_string(),
                         ownership: Ownership::Joint,
+                        excluded_from_net_worth: self.excluded.contains(&HOUSE),
                     },
                 ])
             }
@@ -2507,12 +2538,106 @@ mod tests {
             )
         }
 
+        fn service_excluding(mode: Mode, account_id: i64) -> ReportService {
+            ReportService::new(
+                Arc::new(FakeReports::excluding(mode, account_id)),
+                Arc::new(FakeFx),
+                Arc::new(crate::test_clock::FixedClock(d("2026-08-04"))),
+            )
+        }
+
         fn window(from: &str, to: &str) -> ReportQuery {
             ReportQuery {
                 from: Some(from.to_string()),
                 to: Some(to.to_string()),
                 ..Default::default()
             }
+        }
+
+        /// Excluding an account moves net worth by exactly that account's value and by nothing
+        /// else — at *every* sample, not just the last, since the flag is a standing fact and
+        /// not a window.
+        #[test]
+        fn an_excluded_account_leaves_net_worth_by_exactly_its_value() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let q = NetWorthQuery {
+                from: Some("2026-01-01".to_string()),
+                to: Some("2026-03-31".to_string()),
+                ..Default::default()
+            };
+
+            let all = rt
+                .block_on(service(Mode::Everything).net_worth(&q))
+                .unwrap();
+            let without = rt
+                .block_on(service_excluding(Mode::Everything, HOUSE).net_worth(&q))
+                .unwrap();
+
+            assert_eq!(all.points.len(), without.points.len());
+            for (a, b) in all.points.iter().zip(&without.points) {
+                assert_eq!(a.as_of, b.as_of);
+                // The house is valued at $770,000 across this whole window.
+                assert_eq!(
+                    a.net_worth_minor - b.net_worth_minor,
+                    770_000_00,
+                    "on {}",
+                    a.as_of
+                );
+                assert_eq!(a.liabilities_minor, b.liabilities_minor, "on {}", a.as_of);
+            }
+        }
+
+        /// The flag is about the *pot*, not the movements: money you spent is money you spent
+        /// whoever the balance belongs to. If this ever starts failing, the exclusion has leaked
+        /// out of the net-worth family of reports and into the spend ones.
+        #[test]
+        fn an_excluded_account_still_counts_in_the_spend_reports() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let q = window("2026-01-01", "2026-03-31");
+
+            let all = rt
+                .block_on(service(Mode::Everything).category_breakdown(&q))
+                .unwrap();
+            let without = rt
+                .block_on(service_excluding(Mode::Everything, HOUSE).category_breakdown(&q))
+                .unwrap();
+
+            let totals = |r: &CategoryBreakdown| {
+                let mut v: Vec<(Option<i64>, i64)> = r
+                    .expense
+                    .iter()
+                    .chain(&r.income)
+                    .map(|c| (c.category_id, c.total_minor))
+                    .collect();
+                v.sort();
+                v
+            };
+            assert_eq!(totals(&all), totals(&without));
+        }
+
+        /// Listed, not hidden. An account you cannot see is `archived`; this one you can still
+        /// read a balance for, which is the only way to decide to put it back. A future
+        /// refactor reaching for `continue` inside the balances loop breaks exactly this.
+        #[test]
+        fn an_excluded_account_is_still_listed_but_out_of_the_total() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let q = window("2026-01-01", "2026-02-01");
+
+            let all = rt.block_on(service(Mode::Everything).balances(&q)).unwrap();
+            let without = rt
+                .block_on(service_excluding(Mode::Everything, HOUSE).balances(&q))
+                .unwrap();
+
+            let house = without
+                .accounts
+                .iter()
+                .find(|a| a.account_id == HOUSE)
+                .expect("the excluded account is still listed");
+            assert_eq!(house.value_minor, 770_000_00, "with its real balance");
+            assert!(house.excluded_from_net_worth, "and marked as excluded");
+            assert_eq!(without.accounts.len(), all.accounts.len());
+
+            assert_eq!(all.total_minor - without.total_minor, 770_000_00);
         }
 
         /// A balance sheet mid-window: the seeded read must give the same three balances, and

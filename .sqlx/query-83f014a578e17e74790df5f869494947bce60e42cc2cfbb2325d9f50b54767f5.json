@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "UPDATE accounts SET name=?2, kind=?3, currency_code=?4, institution=?5, metadata=?6,\n              archived=?7, sort_order=?8, ownership=?9, person_id=?10,\n              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           WHERE id=?1\n           RETURNING id AS \"id!\", name, kind, currency_code, institution, metadata,\n                     archived AS \"archived!: bool\", sort_order, secured_by_account_id, ownership,\n                     person_id, created_at, updated_at",
+  "query": "INSERT INTO accounts\n              (name, kind, currency_code, institution, metadata, archived, sort_order,\n               ownership, person_id)\n           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)\n           RETURNING id AS \"id!\", name, kind, currency_code, institution, metadata,\n                     archived AS \"archived!: bool\",\n                     excluded_from_net_worth AS \"excluded_from_net_worth!: bool\",\n                     sort_order, secured_by_account_id, ownership,\n                     person_id, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -39,38 +39,43 @@
         "type_info": "Integer"
       },
       {
-        "name": "sort_order",
+        "name": "excluded_from_net_worth!: bool",
         "ordinal": 7,
         "type_info": "Integer"
       },
       {
-        "name": "secured_by_account_id",
+        "name": "sort_order",
         "ordinal": 8,
         "type_info": "Integer"
       },
       {
-        "name": "ownership",
+        "name": "secured_by_account_id",
         "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "ownership",
+        "ordinal": 10,
         "type_info": "Text"
       },
       {
         "name": "person_id",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Integer"
       },
       {
         "name": "created_at",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text"
       },
       {
         "name": "updated_at",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Text"
       }
     ],
     "parameters": {
-      "Right": 10
+      "Right": 9
     },
     "nullable": [
       true,
@@ -81,6 +86,7 @@
       false,
       false,
       false,
+      false,
       true,
       false,
       true,
@@ -88,5 +94,5 @@
       false
     ]
   },
-  "hash": "b2f41e76a906e590438857aedc6cef9c63c31997818806257d951c1a4dc71c1d"
+  "hash": "83f014a578e17e74790df5f869494947bce60e42cc2cfbb2325d9f50b54767f5"
 }

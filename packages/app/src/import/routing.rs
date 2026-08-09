@@ -522,6 +522,7 @@ mod tests {
             currency_code: "NZD".into(),
             institution: None,
             archived: false,
+            excluded_from_net_worth: false,
             metadata: match number {
                 Some(n) => AccountMetadata::Depository(DepositoryMeta {
                     account_number: Some(n.to_string()),

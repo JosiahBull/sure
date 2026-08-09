@@ -792,6 +792,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/{id}/excluded-from-net-worth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Keep an account's balance out of the household's net worth, or put it back.
+         * @description Its own endpoint rather than a field on `SaveAccount`: that body is a full replace, so a
+         *     caller that omitted the field would silently clear the setting. See
+         *     `sure_core::SetExcludedFromNetWorth`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SetExcludedFromNetWorth"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Account"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}/ownership": {
         parameters: {
             query?: never;
@@ -5227,6 +5281,16 @@ export interface components {
             /** @description Typed, kind-specific configuration (discriminated by `profile`). */
             metadata: components["schemas"]["AccountMetadata"];
             archived: boolean;
+            /**
+             * @description Keep this account's balance out of the household's net worth without hiding it.
+             *
+             *     The flag is about the *pot*, not the movements: an excluded account leaves the
+             *     net-worth series, the balances roll-up and the forecast's projection, but its
+             *     transactions still count in the spend and category reports, because money you spent
+             *     is money you spent whoever the balance belongs to. Distinct from [`Self::archived`],
+             *     which removes the account from the app altogether.
+             */
+            excluded_from_net_worth: boolean;
             /** Format: int64 */
             sort_order: number;
             /**
@@ -5249,6 +5313,11 @@ export interface components {
             /** Format: int64 */
             value_minor: number;
             ownership: components["schemas"]["Ownership"];
+            /**
+             * @description Listed, but outside `BalancesReport::total_minor` — the household has said this
+             *     account is not part of what it is worth.
+             */
+            excluded_from_net_worth: boolean;
         };
         /**
          * @description Broad grouping used by net-worth and balance logic.
@@ -7449,6 +7518,18 @@ export interface components {
              * @description Amount owed, in the report currency (positive).
              */
             balance_minor: number;
+        };
+        /**
+         * @description Body of `PUT /api/accounts/{id}/excluded-from-net-worth`.
+         *
+         *     Its own endpoint rather than a field on [`SaveAccount`], deliberately: that DTO is a
+         *     full replace sent by the account form, the seed script, the api-tests helper and the
+         *     provider-link path, and any one of them omitting the field would silently clear the
+         *     user's setting. Kept off it, the flag survives a form save by construction — the same
+         *     arrangement [`SetSecuredBy`] has.
+         */
+        SetExcludedFromNetWorth: {
+            excluded_from_net_worth: boolean;
         };
         /** @description Body of `PUT /api/accounts/{id}/ownership`. */
         SetOwnership: {
