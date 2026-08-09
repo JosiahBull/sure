@@ -276,7 +276,16 @@ fn is_in_memory(database_url: &str) -> bool {
 }
 
 /// Run all pending migrations. Called on startup and by the test harness.
+///
+/// Each migration that actually runs is logged by version and name, because until it was, a
+/// schema change was completely silent: the only way to tell whether a start had applied one
+/// was to read `_sqlx_migrations` afterwards. That matters most in development, where the
+/// server restarts on every edit and a migration is applied within seconds of the file
+/// appearing — long before its author has finished settling its contents. Editing it after
+/// that point makes the *next* start fail with sqlx's checksum error, and the log is what
+/// connects that failure to the start that caused it.
 pub async fn migrate(pool: &Db) -> anyhow::Result<()> {
+    log_pending(pool).await;
     MIGRATOR.run(pool).await?;
     // Seeding lives here rather than in an INSERT inside the migration so that
     // `sure_core::tax`'s constants stay the only place those figures are written down — a second
@@ -286,11 +295,94 @@ pub async fn migrate(pool: &Db) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Log which migrations this start is about to apply, before applying them.
+///
+/// Read *before* the run rather than diffed after it, so a migration that fails halfway is
+/// still named in the log — an error that says only "migration 30 was previously applied but
+/// has been modified" is far easier to place when the line above it says what 30 is.
+///
+/// Deliberately infallible: this is reporting, and a database that cannot answer the question
+/// is about to fail the migration run itself, with a real error. Swallowing the problem here
+/// means the caller sees that error rather than one about a logging query. The first-ever
+/// start is the ordinary case for the query failing — `_sqlx_migrations` does not exist until
+/// `run` creates it — which is why a missing table is treated as "nothing applied yet" rather
+/// than as a fault.
+async fn log_pending(pool: &Db) {
+    let applied: std::collections::HashSet<i64> =
+        match sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations")
+            .fetch_all(pool)
+            .await
+        {
+            Ok(versions) => versions.into_iter().collect(),
+            // No table yet: a fresh database, so every migration is pending.
+            Err(_) => std::collections::HashSet::new(),
+        };
+
+    let pending: Vec<_> = MIGRATOR
+        .iter()
+        .filter(|m| !applied.contains(&m.version))
+        .collect();
+
+    if pending.is_empty() {
+        tracing::debug!(applied = applied.len(), "database schema is up to date");
+        return;
+    }
+    tracing::info!(
+        pending = pending.len(),
+        applied = applied.len(),
+        "applying database migrations"
+    );
+    for m in pending {
+        tracing::info!(version = m.version, name = %m.description, "applying migration");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    /// [`log_pending`] swallows its query error on purpose, and the cost of that is a silent
+    /// failure mode: if the row sqlx keeps its bookkeeping in ever stops answering to
+    /// `SELECT version FROM _sqlx_migrations`, the `Err` arm reads it as "nothing applied yet"
+    /// and every start would announce all 32 migrations as pending while applying none.
+    /// Nobody would notice from the log, which is the one thing the log exists to prevent.
+    ///
+    /// So assert the round trip on a database that has just been fully migrated: what the
+    /// migrator knows about and what the table records must be the same set, leaving nothing
+    /// pending.
+    #[tokio::test]
+    async fn a_migrated_database_reports_nothing_pending() {
+        let pool = connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+
+        let applied: Vec<i64> = sqlx::query_scalar("SELECT version FROM _sqlx_migrations")
+            .fetch_all(&pool)
+            .await
+            .expect("the version column log_pending reads must exist and decode as i64");
+
+        let known: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
+        assert!(
+            !known.is_empty(),
+            "the migrator must know of some migrations"
+        );
+        assert_eq!(
+            applied.len(),
+            known.len(),
+            "every migration the migrator knows about must be recorded as applied"
+        );
+        let applied: std::collections::HashSet<i64> = applied.into_iter().collect();
+        let pending: Vec<i64> = known
+            .iter()
+            .copied()
+            .filter(|v| !applied.contains(v))
+            .collect();
+        assert!(
+            pending.is_empty(),
+            "a fully migrated database must report nothing pending, got {pending:?}"
+        );
+    }
 
     #[test]
     fn every_in_memory_spelling_has_no_file_on_disk() {
