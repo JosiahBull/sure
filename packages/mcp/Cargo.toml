@@ -1,0 +1,37 @@
+[package]
+name = "sure-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "sure_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+sure-core = { workspace = true }
+sure-app = { workspace = true }
+# For `Shutdown`: the compute-heavy tools hand their pure-compute half to
+# `spawn_blocking` so a report aggregation cannot stall a tokio worker, and the transport
+# takes a child cancellation token so an in-flight MCP call is part of the drain rather
+# than something the process walks away from. `sure-appbase` depends on nothing else in
+# the workspace, so this is a leaf.
+sure-appbase = { workspace = true }
+rmcp = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The port fakes every tool test is driven against.
+async-trait = { workspace = true }
+tokio = { workspace = true }
+# Only to build an `AppError::Internal` in the error-mapping tests — the variant wraps an
+# `anyhow::Error`, and there is no other way to construct one.
+anyhow = { workspace = true }

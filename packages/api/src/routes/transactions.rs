@@ -32,6 +32,9 @@ pub struct TxQueryParams {
     pub include_one_off: Option<bool>,
     /// Case-insensitive substring match on description/merchant/notes.
     pub search: Option<String>,
+    /// `true` keeps only uncategorised rows, `false` only categorised ones; omitted means
+    /// both. `category_id` cannot express this — there is no id standing for "none".
+    pub uncategorized: Option<bool>,
     /// Whose transactions to show: `joint`, or a household member's id. Matches on the
     /// *effective* attribution — a transaction's own override, or its account's owner.
     pub attributed_to: Option<String>,
@@ -56,6 +59,7 @@ impl TryFrom<TxQueryParams> for TxQuery {
             to: q.to,
             include_one_off: q.include_one_off,
             search: q.search,
+            uncategorized: q.uncategorized,
             limit: q.limit,
             offset: q.offset,
         })

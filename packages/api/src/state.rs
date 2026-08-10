@@ -59,4 +59,11 @@ pub struct AppState {
     /// valuation write that was cut in half. Tracked, the same task is either waited for or
     /// named in the report — which is the report's entire purpose.
     pub shutdown: sure_appbase::Shutdown,
+    /// The most of the MCP surface `SURE_MCP` permits this process to serve.
+    ///
+    /// Here rather than in `ApiConfig` because a *handler* needs it: the settings route
+    /// refuses a stored mode above the ceiling, and reports the ceiling so the app can
+    /// explain a control it has to disable. A `sure-core` type, so this struct still names
+    /// nothing from `sure-mcp` — the two adapters remain unaware of each other.
+    pub mcp_ceiling: sure_core::McpMode,
 }

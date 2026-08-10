@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE settings\n         SET base_currency_code = ?1,\n             mcp_mode = COALESCE(?2, mcp_mode),\n             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')\n         WHERE id = 1\n         RETURNING base_currency_code, mcp_mode, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "base_currency_code",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "mcp_mode",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cfc98db2808b209be1509b912b0e25a86bf20469b4cda81139ffabfb92aa5510"
+}

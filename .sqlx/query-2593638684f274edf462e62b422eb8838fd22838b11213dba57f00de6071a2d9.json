@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT mcp_mode FROM settings WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "mcp_mode",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2593638684f274edf462e62b422eb8838fd22838b11213dba57f00de6071a2d9"
+}

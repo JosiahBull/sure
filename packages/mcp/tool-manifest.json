@@ -1,0 +1,334 @@
+[
+  {
+    "name": "account_detail",
+    "tier": "read",
+    "description": "Full detail for one account: its settings and recent valuations, plus whatever its kind adds — holdings and their market value for a brokerage or shares account, secured debt and paid-off percentage for a property, vesting grants for private equity.",
+    "read_only": true,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [
+      "account_id",
+      "as_of"
+    ],
+    "required": [
+      "account_id"
+    ]
+  },
+  {
+    "name": "bulk_categorize",
+    "tier": "write",
+    "description": "Set the category, merchant or one-off flag on many transactions at once, chosen by id or by filter. Runs as a dry run unless you pass dry_run=false together with expect_count matching what the dry run reported.",
+    "read_only": false,
+    "destructive": true,
+    "idempotent": null,
+    "arguments": [
+      "account_id",
+      "attributed_to",
+      "category_id",
+      "dry_run",
+      "expect_count",
+      "from",
+      "ids",
+      "is_one_off",
+      "merchant_id",
+      "range",
+      "search",
+      "to",
+      "uncategorized"
+    ],
+    "required": []
+  },
+  {
+    "name": "create_category",
+    "tier": "write",
+    "description": "Create a category, optionally nested under an existing one.",
+    "read_only": false,
+    "destructive": null,
+    "idempotent": null,
+    "arguments": [
+      "kind",
+      "name",
+      "parent_id"
+    ],
+    "required": [
+      "name"
+    ]
+  },
+  {
+    "name": "create_merchant",
+    "tier": "write",
+    "description": "Create a merchant (payee), optionally with a default category so future transactions from it are filed automatically.",
+    "read_only": false,
+    "destructive": null,
+    "idempotent": null,
+    "arguments": [
+      "category_id",
+      "name",
+      "note"
+    ],
+    "required": [
+      "name"
+    ]
+  },
+  {
+    "name": "create_transaction",
+    "tier": "write",
+    "description": "Record a transaction. Amount is a decimal string; negative is money out.",
+    "read_only": false,
+    "destructive": null,
+    "idempotent": null,
+    "arguments": [
+      "account_id",
+      "amount",
+      "category_id",
+      "currency_code",
+      "description",
+      "is_one_off",
+      "merchant_id",
+      "notes",
+      "posted_at"
+    ],
+    "required": [
+      "account_id",
+      "amount",
+      "description",
+      "posted_at"
+    ]
+  },
+  {
+    "name": "get_transaction",
+    "tier": "read",
+    "description": "Fetch one transaction with everything on it: notes, merchant, transfer link, source feed, and which rule categorised it.",
+    "read_only": true,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [
+      "id"
+    ],
+    "required": [
+      "id"
+    ]
+  },
+  {
+    "name": "list_accounts",
+    "tier": "read",
+    "description": "List accounts with their current balance, currency, kind and owner. Returns the account ids other tools take. Start here.",
+    "read_only": true,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [
+      "include_archived"
+    ],
+    "required": []
+  },
+  {
+    "name": "list_categories",
+    "tier": "read",
+    "description": "List every category as a full path (e.g. 'Food > Groceries') with its id and kind (income/expense/transfer).",
+    "read_only": true,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [],
+    "required": []
+  },
+  {
+    "name": "list_merchants",
+    "tier": "read",
+    "description": "List custom merchants (payees) with their id and default category. These are the merchant_ids that categorising tools take.",
+    "read_only": true,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [],
+    "required": []
+  },
+  {
+    "name": "list_rules",
+    "tier": "read",
+    "description": "List the categorisation rules, in the order they are applied. Shows each rule's expression and what it sets.",
+    "read_only": true,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [],
+    "required": []
+  },
+  {
+    "name": "money_flow",
+    "tier": "read",
+    "description": "The money-flow graph for a window: income sources into the household, and out again into expense categories and savings. Returns one line per flow.",
+    "read_only": true,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [
+      "attributed_to",
+      "currency",
+      "from",
+      "include_one_off",
+      "range",
+      "to"
+    ],
+    "required": []
+  },
+  {
+    "name": "net_worth",
+    "tier": "read",
+    "description": "Net worth over time, split into assets and liabilities, normalised to one currency.",
+    "read_only": true,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [
+      "attributed_to",
+      "currency",
+      "from",
+      "interval",
+      "range",
+      "to"
+    ],
+    "required": []
+  },
+  {
+    "name": "preview_rule",
+    "tier": "read",
+    "description": "Evaluate a rule expression against the whole ledger and report how many transactions it matches, with a sample. Changes nothing. Always do this before saving a rule. The expression is a Zen expression (gorules.io) evaluated per transaction; truthy means match. Fields: amount, amount_minor, abs_amount, is_income, is_expense, description, merchant, merchant_id, notes, currency, account, account_kind, account_id, category_id, is_one_off, date, year, month, day. Example: is_expense and contains(lower(description), 'countdown')",
+    "read_only": true,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [
+      "expression",
+      "limit"
+    ],
+    "required": [
+      "expression"
+    ]
+  },
+  {
+    "name": "record_valuation",
+    "tier": "write",
+    "description": "Record a point-in-time value for an account — a house revaluation, a car's current worth. Feeds net worth from that date on.",
+    "read_only": false,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [
+      "account_id",
+      "as_of",
+      "note",
+      "value"
+    ],
+    "required": [
+      "account_id",
+      "as_of",
+      "value"
+    ]
+  },
+  {
+    "name": "run_rule",
+    "tier": "write",
+    "description": "Apply one rule, or every enabled rule, to the whole ledger. Reports how many transactions changed and a run_id that undo_rule_run can reverse.",
+    "read_only": false,
+    "destructive": true,
+    "idempotent": null,
+    "arguments": [
+      "rule_id"
+    ],
+    "required": []
+  },
+  {
+    "name": "save_rule",
+    "tier": "write",
+    "description": "Create or replace a categorisation rule. Saving does not apply it — call run_rule for that. Preview the expression first.",
+    "read_only": false,
+    "destructive": null,
+    "idempotent": null,
+    "arguments": [
+      "description",
+      "enabled",
+      "expression",
+      "id",
+      "name",
+      "overwrite_manual",
+      "priority",
+      "set_category_id",
+      "set_merchant_id",
+      "set_one_off",
+      "stop_on_match"
+    ],
+    "required": [
+      "expression",
+      "name"
+    ]
+  },
+  {
+    "name": "search_transactions",
+    "tier": "read",
+    "description": "Find transactions by account, category, date window, text, or whether they are uncategorised. Returns rows, newest first. To total or compare spending use summarize_spending instead — do not fetch rows and add them up.",
+    "read_only": true,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [
+      "account_id",
+      "attributed_to",
+      "category_id",
+      "from",
+      "include_one_off",
+      "limit",
+      "offset",
+      "range",
+      "search",
+      "to",
+      "uncategorized"
+    ],
+    "required": []
+  },
+  {
+    "name": "summarize_spending",
+    "tier": "read",
+    "description": "Total income or expense over a window, grouped by category, merchant, account or month, normalised to one currency. Use this for any question ending in a number — how much, which is biggest, how it changed month to month.",
+    "read_only": true,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [
+      "attributed_to",
+      "currency",
+      "direction",
+      "from",
+      "group_by",
+      "include_one_off",
+      "range",
+      "to",
+      "top_n"
+    ],
+    "required": [
+      "group_by"
+    ]
+  },
+  {
+    "name": "undo_rule_run",
+    "tier": "write",
+    "description": "Reverse a rule run, restoring every transaction it changed to what it was before.",
+    "read_only": false,
+    "destructive": null,
+    "idempotent": null,
+    "arguments": [
+      "run_id"
+    ],
+    "required": [
+      "run_id"
+    ]
+  },
+  {
+    "name": "update_transaction",
+    "tier": "write",
+    "description": "Change one transaction's category, merchant, or one-off flag. Only the fields you pass are touched; pass null to clear a category or merchant.",
+    "read_only": false,
+    "destructive": null,
+    "idempotent": true,
+    "arguments": [
+      "category_id",
+      "id",
+      "is_one_off",
+      "merchant_id"
+    ],
+    "required": [
+      "id"
+    ]
+  }
+]

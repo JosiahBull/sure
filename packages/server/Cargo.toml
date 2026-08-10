@@ -24,6 +24,7 @@ sure-dal = { workspace = true }
 sure-providers = { workspace = true }
 sure-scheduler = { workspace = true }
 sure-api = { workspace = true }
+sure-mcp = { workspace = true }
 axum = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }

@@ -129,6 +129,13 @@ pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
     if !q.include_one_off.unwrap_or(true) {
         qb.push(" AND t.is_one_off = 0");
     }
+    if let Some(uncategorized) = q.uncategorized {
+        qb.push(if uncategorized {
+            " AND t.category_id IS NULL"
+        } else {
+            " AND t.category_id IS NOT NULL"
+        });
+    }
     if let Some(search) = q.search.as_deref().filter(|s| !s.is_empty()) {
         let like = format!("%{}%", search.to_lowercase());
         qb.push(" AND (lower(t.description) LIKE ")
@@ -969,6 +976,63 @@ mod tests {
         .await
         .unwrap()
         .id
+    }
+
+    /// The gap `category_id` cannot express: there is no id meaning "none", so without this
+    /// filter the only way to reach the uncategorised rows is to pull the whole ledger and
+    /// sift it client-side — which is exactly what the MCP tool must not do.
+    #[tokio::test]
+    async fn the_uncategorized_filter_selects_each_side_and_omitting_it_selects_both() {
+        let db = test_db().await;
+        let acc = account(&db, "Bank").await;
+        let groceries = category(&db, "Groceries").await;
+        let bare = tx(&db, acc, "2026-01-01", -100).await;
+        let filed = tx(&db, acc, "2026-01-02", -200).await;
+        bulk_update(
+            &db,
+            BulkUpdate {
+                ids: batch(vec![filed]),
+                category_id: Some(Some(groceries)),
+                merchant_id: None,
+                is_one_off: None,
+                ownership: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let ids = |rows: Vec<Transaction>| rows.into_iter().map(|t| t.id).collect::<Vec<_>>();
+
+        assert_eq!(
+            ids(list(
+                &db,
+                TxQuery {
+                    uncategorized: Some(true),
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap()),
+            vec![bare]
+        );
+        assert_eq!(
+            ids(list(
+                &db,
+                TxQuery {
+                    uncategorized: Some(false),
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap()),
+            vec![filed]
+        );
+        // Omitted is not "false": the default listing still shows everything.
+        assert_eq!(
+            ids(list(&db, TxQuery::default()).await.unwrap()).len(),
+            2,
+            "omitting the filter must not narrow the ledger"
+        );
     }
 
     #[tokio::test]

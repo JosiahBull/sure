@@ -48,6 +48,21 @@ pub enum AccountClass {
     Liability,
 }
 
+impl AccountClass {
+    /// The wire representation (snake_case) — matches
+    /// `#[serde(rename_all = "snake_case")]`. There is no `FromStr` pair because this is
+    /// never stored or parsed: a class is always derived from its kind via
+    /// [`AccountKind::class`].
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AccountClass::Cash => "cash",
+            AccountClass::Asset => "asset",
+            AccountClass::Investment => "investment",
+            AccountClass::Liability => "liability",
+        }
+    }
+}
+
 impl AccountKind {
     pub fn class(self) -> AccountClass {
         use AccountKind::*;
@@ -195,6 +210,52 @@ impl std::str::FromStr for Interval {
             "week" => Interval::Week,
             "month" => Interval::Month,
             other => return Err(format!("unknown interval '{other}'")),
+        })
+    }
+}
+
+/// The axis a spending summary rolls up along (`sure_app::reports::ReportService::spend_by`).
+///
+/// Sibling to [`Interval`], which chooses the *time* granularity of a series; this chooses
+/// what the buckets are. Parsed at whichever edge names it — an unrecognised value is an
+/// error there, never a silent default to `Category`.
+#[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupBy {
+    /// The category the transaction actually carries, labelled with its full path
+    /// (`Food > Groceries`) — *not* rolled up to its top-level ancestor the way
+    /// `category_breakdown` does. A caller wanting the roll-up can sum the prefixes.
+    Category,
+    /// The merchant record, or the raw payee text where a row has no merchant.
+    Merchant,
+    Account,
+    /// Calendar month (`YYYY-MM`).
+    Month,
+}
+
+impl GroupBy {
+    /// The stored/wire representation (snake_case) — matches
+    /// `#[serde(rename_all = "snake_case")]`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GroupBy::Category => "category",
+            GroupBy::Merchant => "merchant",
+            GroupBy::Account => "account",
+            GroupBy::Month => "month",
+        }
+    }
+}
+
+impl std::str::FromStr for GroupBy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "category" => GroupBy::Category,
+            "merchant" => GroupBy::Merchant,
+            "account" => GroupBy::Account,
+            "month" => GroupBy::Month,
+            other => return Err(format!("unknown group_by '{other}'")),
         })
     }
 }

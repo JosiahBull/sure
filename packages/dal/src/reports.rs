@@ -274,7 +274,14 @@ struct SpendTransactionRow {
     category_id: Option<i64>,
     is_one_off: bool,
     linked_transaction_id: Option<i64>,
+    account_id: i64,
+    account_name: String,
     account_kind: String,
+    merchant_id: Option<i64>,
+    // The merchant record's name where the transaction has one, else whatever text the feed
+    // wrote. Coalesced in SQL rather than resolved later: a row can carry a payee as free
+    // text with no `merchant_id` at all, and grouping that reads only the id loses it.
+    merchant: Option<String>,
     // The transaction's own override (both NULL when it has none) and its account's owner.
     tx_ownership: Option<String>,
     tx_person_id: Option<i64>,
@@ -291,7 +298,12 @@ pub struct SpendTransaction {
     pub category_id: Option<i64>,
     pub is_one_off: bool,
     pub linked_transaction_id: Option<i64>,
+    pub account_id: i64,
+    pub account_name: String,
     pub account_kind: AccountKind,
+    pub merchant_id: Option<i64>,
+    /// The merchant record's name, or the raw payee text where the row has no merchant.
+    pub merchant: Option<String>,
     /// Who this spending belongs to, already resolved: the transaction's own override, or
     /// its account's owner. Resolved here so every spend report filters on one field
     /// rather than each re-deriving the rule.
@@ -321,6 +333,10 @@ impl TryFrom<SpendTransactionRow> for SpendTransaction {
             category_id: r.category_id,
             is_one_off: r.is_one_off,
             linked_transaction_id: r.linked_transaction_id,
+            account_id: r.account_id,
+            account_name: r.account_name,
+            merchant_id: r.merchant_id,
+            merchant: r.merchant,
         })
     }
 }
@@ -662,10 +678,18 @@ pub async fn spend_transactions(
         SpendTransactionRow,
         r#"SELECT t.posted_at, t.amount_minor, t.currency_code, t.category_id,
                   t.is_one_off AS "is_one_off!: bool", t.linked_transaction_id,
-                  a.kind AS account_kind, t.ownership AS tx_ownership,
+                  t.account_id, a.name AS account_name,
+                  a.kind AS account_kind, t.merchant_id,
+                  -- `COALESCE` over two nullable columns describes as having no type at
+                  -- all, so the decode type has to be named; `?` keeps it nullable, which
+                  -- it genuinely is when a row carries neither a merchant nor payee text.
+                  COALESCE(m.name, t.merchant) AS "merchant?: String",
+                  t.ownership AS tx_ownership,
                   t.person_id AS tx_person_id, a.ownership AS account_ownership,
                   a.person_id AS account_person_id
-             FROM transactions t JOIN accounts a ON a.id = t.account_id
+             FROM transactions t
+             JOIN accounts a ON a.id = t.account_id
+             LEFT JOIN merchants m ON m.id = t.merchant_id
             WHERE t.posted_at >= ?1 AND t.posted_at < ?2"#,
         from,
         to

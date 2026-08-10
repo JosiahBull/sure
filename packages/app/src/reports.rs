@@ -13,7 +13,7 @@ use std::sync::Arc;
 use chrono::{Datelike, NaiveDate};
 
 use sure_core::{
-    AccountClass, AccountKind, AppError, AppResult, CategoryKind, Interval, Ownership,
+    AccountClass, AccountKind, AppError, AppResult, CategoryKind, GroupBy, Interval, Ownership,
 };
 
 use crate::fx::Fx;
@@ -95,6 +95,39 @@ pub struct CategoryBreakdown {
     pub to: String,
     pub income: Vec<CategoryTotal>,
     pub expense: Vec<CategoryTotal>,
+}
+
+/// One bucket of a [`SpendByReport`]: the axis value, and what was spent or earned in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpendGroup {
+    /// The category / merchant / account this bucket is, where it has an id. `None` for a
+    /// month, for the uncategorised bucket, and for a payee that exists only as feed text —
+    /// which is exactly why the label is carried separately rather than looked up later.
+    pub id: Option<i64>,
+    pub label: String,
+    /// Always positive: which side of zero this is, is the list it appears in.
+    pub total_minor: i64,
+}
+
+/// Income and expense totalled along one axis for a window — the shape behind "what did I
+/// spend on groceries, by month".
+///
+/// Sibling to [`CategoryBreakdown`], which answers the same question along one fixed axis
+/// (top-level category). Unlike that one this **does** carry `unconverted`: a breakdown is
+/// self-evidently a partial view of a period, whereas a single grouped total reads as a
+/// complete answer, and a silently-omitted currency would make it a wrong one.
+#[derive(Debug)]
+pub struct SpendByReport {
+    pub currency: String,
+    pub from: String,
+    pub to: String,
+    pub group_by: GroupBy,
+    pub income: Vec<SpendGroup>,
+    pub expense: Vec<SpendGroup>,
+    /// Currencies with no rate to `currency`; their transactions are excluded from both
+    /// lists rather than added at parity.
+    pub unconverted: Vec<String>,
+    pub rates_as_of: Option<String>,
 }
 
 /// Which side of the money-flow graph a node represents. Built directly (never parsed
@@ -630,6 +663,16 @@ impl Categories {
 
     pub(crate) fn kind_of(&self, id: i64) -> Option<CategoryKind> {
         self.kinds.get(&id).copied()
+    }
+
+    /// A category's ancestry rendered root-first (`Food > Groceries`), for a reader with no
+    /// tree in front of them. A top-level category is just its own name.
+    pub(crate) fn path_of(&self, id: i64) -> String {
+        self.chain(id)
+            .into_iter()
+            .map(|c| self.name_of(c))
+            .collect::<Vec<_>>()
+            .join(" > ")
     }
 }
 
@@ -1358,6 +1401,134 @@ impl ReportService {
             to: to.to_string(),
             income: to_totals(income),
             expense: to_totals(expense),
+        }
+    }
+
+    /// Income and expense totalled along one axis for the window.
+    ///
+    /// Exists so a caller that wants "groceries, by month" gets four numbers instead of four
+    /// thousand rows to add up itself. Reuses [`Self::category_breakdown_inputs`]' loading
+    /// wholesale — same window, same attribution filter, same rate table — and differs only
+    /// in how the one pass over the rows is keyed.
+    pub async fn spend_by(&self, q: &ReportQuery, group_by: GroupBy) -> AppResult<SpendByReport> {
+        let inputs = self.category_breakdown_inputs(q).await?;
+        Ok(Self::spend_by_from(inputs, group_by))
+    }
+
+    /// The synchronous half of [`Self::spend_by`]: one pass over the window, keyed by
+    /// `group_by`. `self`- and await-free, for the blocking pool.
+    pub fn spend_by_from(inputs: CategoryBreakdownInputs, group_by: GroupBy) -> SpendByReport {
+        let CategoryBreakdownInputs {
+            base,
+            fx,
+            cats,
+            spend,
+            from,
+            to,
+        } = inputs;
+
+        // Keyed by the bucket's identity, valued by its label and running total. A month and
+        // a text-only payee have no id, so the key cannot be one: it is whatever string
+        // distinguishes two buckets on this axis, and the label is carried beside the total
+        // rather than re-derived at the end.
+        let mut income: HashMap<String, (Option<i64>, String, f64)> = HashMap::new();
+        let mut expense: HashMap<String, (Option<i64>, String, f64)> = HashMap::new();
+
+        for t in &spend {
+            // Unconvertible rows are left out entirely rather than added at parity — and,
+            // unlike `category_breakdown`, the omission is reported: see `SpendByReport`.
+            let Some(base_major) = fx.try_to_base_major(t.amount_minor.abs(), &t.currency_code)
+            else {
+                continue;
+            };
+            let (key, id, label) = Self::spend_bucket(t, &cats, group_by);
+            let side = if t.amount_minor >= 0 {
+                &mut income
+            } else {
+                &mut expense
+            };
+            let entry = side.entry(key).or_insert((id, label, 0.0));
+            entry.2 += base_major;
+        }
+
+        let to_groups = |m: HashMap<String, (Option<i64>, String, f64)>| -> Vec<SpendGroup> {
+            let mut v: Vec<SpendGroup> = m
+                .into_iter()
+                .map(|(_, (id, label, total))| SpendGroup {
+                    id,
+                    label,
+                    total_minor: fx.base_minor(total),
+                })
+                .collect();
+            match group_by {
+                // A time axis is only readable in time order; every other axis is a
+                // ranking, and the caller almost always wants the biggest first.
+                GroupBy::Month => v.sort_by(|a, b| a.label.cmp(&b.label)),
+                GroupBy::Category | GroupBy::Merchant | GroupBy::Account => {
+                    v.sort_by(|a, b| {
+                        b.total_minor
+                            .cmp(&a.total_minor)
+                            // Ties would otherwise order by hash iteration, which differs
+                            // run to run and makes the output untestable.
+                            .then_with(|| a.label.cmp(&b.label))
+                    });
+                }
+            }
+            v
+        };
+
+        SpendByReport {
+            currency: base,
+            from: from.to_string(),
+            to: to.to_string(),
+            group_by,
+            income: to_groups(income),
+            expense: to_groups(expense),
+            unconverted: fx.unconverted(),
+            rates_as_of: fx.rates_as_of().map(str::to_string),
+        }
+    }
+
+    /// Which bucket one transaction falls in: `(grouping key, id, display label)`.
+    fn spend_bucket(
+        t: &SpendTransaction,
+        cats: &Categories,
+        group_by: GroupBy,
+    ) -> (String, Option<i64>, String) {
+        match group_by {
+            GroupBy::Category => match t.category_id {
+                // The full path, not just the leaf name: two different "Groceries" under
+                // different parents are two buckets, and a bare leaf name would merge them
+                // in the reader's head even though the key kept them apart.
+                Some(id) => (format!("c{id}"), Some(id), cats.path_of(id)),
+                None => ("c0".to_string(), None, "Uncategorised".to_string()),
+            },
+            GroupBy::Merchant => match (t.merchant_id, t.merchant.as_deref()) {
+                (Some(id), name) => (
+                    format!("m{id}"),
+                    Some(id),
+                    name.unwrap_or("(unnamed merchant)").to_string(),
+                ),
+                // Payee text with no merchant record. Case-folded for the key so `COUNTDOWN`
+                // and `Countdown` are one bucket, but displayed as first seen.
+                (None, Some(name)) if !name.is_empty() => {
+                    (format!("t{}", name.to_lowercase()), None, name.to_string())
+                }
+                (None, _) => ("t".to_string(), None, "(no merchant)".to_string()),
+            },
+            GroupBy::Account => (
+                format!("a{}", t.account_id),
+                Some(t.account_id),
+                t.account_name.clone(),
+            ),
+            // `posted_at` is an ISO-8601 date, so the first seven characters are `YYYY-MM`.
+            // A row whose date is too short to slice is bucketed under its own text rather
+            // than panicking — the ledger has historically carried a few (see
+            // `earliest_transaction_date`'s note on `01/07/2020`).
+            GroupBy::Month => {
+                let month = t.posted_at.get(..7).unwrap_or(&t.posted_at).to_string();
+                (month.clone(), None, month)
+            }
         }
     }
 
@@ -2306,7 +2477,11 @@ mod tests {
                 category_id: Some(category_id),
                 is_one_off: false,
                 linked_transaction_id: None,
+                account_id: 1,
+                account_name: "Bank".to_string(),
                 account_kind: AccountKind::Bank,
+                merchant_id: None,
+                merchant: None,
                 attribution: Ownership::Joint,
             };
             vec![
@@ -2884,6 +3059,287 @@ mod tests {
                     format!("{split:#?}"),
                     "query: {q:?}"
                 );
+            }
+        }
+    }
+
+    /// `spend_by` — the grouped-total report behind "what did I spend on groceries, by
+    /// month". Every case drives `spend_by_from`, the pure half, over a hand-built window so
+    /// the assertions are about the *keying*, not about loading.
+    mod spend_by {
+        use super::*;
+
+        const BANK: i64 = 1;
+        const CARD: i64 = 2;
+
+        /// Two-level category tree: Food > Groceries, and a top-level Salary.
+        fn cats() -> Categories {
+            let mut c = Categories::default_for_test();
+            c.insert_for_test(10, None, "Food", CategoryKind::Expense);
+            c.insert_for_test(11, Some(10), "Groceries", CategoryKind::Expense);
+            c.insert_for_test(20, None, "Salary", CategoryKind::Income);
+            c
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn row(
+            posted_at: &str,
+            amount_minor: i64,
+            category_id: Option<i64>,
+            account_id: i64,
+            account_name: &str,
+            merchant_id: Option<i64>,
+            merchant: Option<&str>,
+            currency_code: &str,
+        ) -> SpendTransaction {
+            SpendTransaction {
+                posted_at: posted_at.to_string(),
+                amount_minor,
+                currency_code: currency_code.to_string(),
+                category_id,
+                is_one_off: false,
+                linked_transaction_id: None,
+                account_id,
+                account_name: account_name.to_string(),
+                account_kind: AccountKind::Bank,
+                merchant_id,
+                merchant: merchant.map(str::to_string),
+                attribution: Ownership::Joint,
+            }
+        }
+
+        fn inputs(spend: Vec<SpendTransaction>, fx: Fx) -> CategoryBreakdownInputs {
+            CategoryBreakdownInputs {
+                base: "NZD".to_string(),
+                fx,
+                cats: cats(),
+                spend,
+                from: d("2026-01-01"),
+                to: d("2026-03-31"),
+            }
+        }
+
+        /// `(label, total_minor)` pairs, which is all any assertion here cares about.
+        fn pairs(groups: &[SpendGroup]) -> Vec<(&str, i64)> {
+            groups
+                .iter()
+                .map(|g| (g.label.as_str(), g.total_minor))
+                .collect()
+        }
+
+        fn fixture() -> Vec<SpendTransaction> {
+            vec![
+                // Two grocery shops at the same merchant, one month apart.
+                row(
+                    "2026-01-05",
+                    -50_00,
+                    Some(11),
+                    BANK,
+                    "Bank",
+                    Some(7),
+                    Some("Countdown"),
+                    "NZD",
+                ),
+                row(
+                    "2026-02-05",
+                    -70_00,
+                    Some(11),
+                    BANK,
+                    "Bank",
+                    Some(7),
+                    Some("Countdown"),
+                    "NZD",
+                ),
+                // A different leaf under the same parent's tree, on the card.
+                row(
+                    "2026-02-11",
+                    -30_00,
+                    Some(10),
+                    CARD,
+                    "Card",
+                    None,
+                    Some("Bakery"),
+                    "NZD",
+                ),
+                // Income, so it must land on the other side of the report.
+                row(
+                    "2026-01-20",
+                    5_000_00,
+                    Some(20),
+                    BANK,
+                    "Bank",
+                    None,
+                    None,
+                    "NZD",
+                ),
+                // No category at all.
+                row("2026-03-02", -12_00, None, BANK, "Bank", None, None, "NZD"),
+            ]
+        }
+
+        #[test]
+        fn groups_by_category_under_its_full_path_and_splits_income_from_expense() {
+            let r = ReportService::spend_by_from(
+                inputs(fixture(), Fx::parity("NZD")),
+                GroupBy::Category,
+            );
+
+            // Ranked biggest first; the leaf carries its parent so two "Groceries" under
+            // different parents could never read as one.
+            assert_eq!(
+                pairs(&r.expense),
+                vec![
+                    ("Food > Groceries", 120_00),
+                    ("Food", 30_00),
+                    ("Uncategorised", 12_00),
+                ]
+            );
+            assert_eq!(pairs(&r.income), vec![("Salary", 5_000_00)]);
+            // Totals are unsigned on both sides — the list is what carries the direction.
+            assert!(r.expense.iter().all(|g| g.total_minor > 0));
+            assert_eq!(r.group_by, GroupBy::Category);
+        }
+
+        #[test]
+        fn groups_by_merchant_folding_the_record_and_the_bare_payee_text_separately() {
+            let r = ReportService::spend_by_from(
+                inputs(fixture(), Fx::parity("NZD")),
+                GroupBy::Merchant,
+            );
+
+            assert_eq!(
+                pairs(&r.expense),
+                vec![
+                    ("Countdown", 120_00),
+                    ("Bakery", 30_00),
+                    ("(no merchant)", 12_00)
+                ]
+            );
+            // The merchant record's id comes back so a caller can follow up on it; the
+            // text-only payee has none to give.
+            assert_eq!(r.expense[0].id, Some(7));
+            assert_eq!(r.expense[1].id, None);
+        }
+
+        /// A feed that writes the same payee in two casings is one merchant, not two — but
+        /// it is displayed as first seen rather than case-folded into the output.
+        #[test]
+        fn a_bare_payee_is_one_bucket_however_the_feed_capitalised_it() {
+            let spend = vec![
+                row(
+                    "2026-01-05",
+                    -10_00,
+                    None,
+                    BANK,
+                    "Bank",
+                    None,
+                    Some("Z Energy"),
+                    "NZD",
+                ),
+                row(
+                    "2026-01-06",
+                    -25_00,
+                    None,
+                    BANK,
+                    "Bank",
+                    None,
+                    Some("Z ENERGY"),
+                    "NZD",
+                ),
+            ];
+            let r =
+                ReportService::spend_by_from(inputs(spend, Fx::parity("NZD")), GroupBy::Merchant);
+            assert_eq!(pairs(&r.expense), vec![("Z Energy", 35_00)]);
+        }
+
+        #[test]
+        fn groups_by_account_and_by_month() {
+            let by_account = ReportService::spend_by_from(
+                inputs(fixture(), Fx::parity("NZD")),
+                GroupBy::Account,
+            );
+            assert_eq!(
+                pairs(&by_account.expense),
+                vec![("Bank", 132_00), ("Card", 30_00)]
+            );
+            assert_eq!(by_account.expense[0].id, Some(BANK));
+
+            let by_month =
+                ReportService::spend_by_from(inputs(fixture(), Fx::parity("NZD")), GroupBy::Month);
+            // Chronological, not ranked: a time axis read biggest-first is unreadable, and
+            // February would otherwise come before January here.
+            assert_eq!(
+                pairs(&by_month.expense),
+                vec![("2026-01", 50_00), ("2026-02", 100_00), ("2026-03", 12_00)]
+            );
+            assert!(by_month.expense.iter().all(|g| g.id.is_none()));
+        }
+
+        /// The reason this report carries `unconverted` where `category_breakdown` does not:
+        /// one grouped total reads as a complete answer, so an omitted currency has to be
+        /// stated rather than left for the reader to notice.
+        #[test]
+        fn an_unconvertible_currency_is_excluded_from_the_totals_and_named() {
+            let spend = vec![
+                row(
+                    "2026-01-05",
+                    -50_00,
+                    Some(11),
+                    BANK,
+                    "Bank",
+                    Some(7),
+                    Some("Countdown"),
+                    "NZD",
+                ),
+                row(
+                    "2026-01-06",
+                    -99_00,
+                    Some(11),
+                    BANK,
+                    "Bank",
+                    Some(7),
+                    Some("Countdown"),
+                    "JPY",
+                ),
+            ];
+            let r =
+                ReportService::spend_by_from(inputs(spend, Fx::parity("NZD")), GroupBy::Category);
+
+            assert_eq!(pairs(&r.expense), vec![("Food > Groceries", 50_00)]);
+            assert_eq!(r.unconverted, vec!["JPY".to_string()]);
+        }
+
+        /// Ties would otherwise order by hash iteration, which differs run to run.
+        #[test]
+        fn equal_totals_order_by_label_so_the_output_is_stable() {
+            let spend = vec![
+                row(
+                    "2026-01-05",
+                    -40_00,
+                    None,
+                    BANK,
+                    "Bank",
+                    None,
+                    Some("Bravo"),
+                    "NZD",
+                ),
+                row(
+                    "2026-01-06",
+                    -40_00,
+                    None,
+                    BANK,
+                    "Bank",
+                    None,
+                    Some("Alpha"),
+                    "NZD",
+                ),
+            ];
+            for _ in 0..8 {
+                let r = ReportService::spend_by_from(
+                    inputs(spend.clone(), Fx::parity("NZD")),
+                    GroupBy::Merchant,
+                );
+                assert_eq!(pairs(&r.expense), vec![("Alpha", 40_00), ("Bravo", 40_00)]);
             }
         }
     }

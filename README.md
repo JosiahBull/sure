@@ -27,6 +27,18 @@ on old devices.
 - **Property equity**: link a home's mortgage, revolving credit, and other loans (e.g. a
   green-loan program) as its secured debt, and see total debt, equity, and **paid-off %**.
 
+**Agent access (MCP)**
+- An [MCP](https://modelcontextprotocol.io) server on the same port, so Claude (or any MCP
+  client) can answer "what did grocery spend do after we switched supermarkets" against the
+  real ledger — and, behind a second opt-in, file transactions and write rules. Aggregation
+  happens server-side so nothing pulls four thousand rows to add them up, and the one tool
+  that can change many rows at once refuses to write until it has told you the count and been
+  told it back. **Off by default**, and gated twice: `SURE_MCP` sets a ceiling on the host,
+  and the working mode is a setting in the app (Settings → Preferences) that can only choose
+  within it — changes apply with no restart. Turning it on sends transaction memos to a model
+  provider, which is a real departure from the rest of this app. See
+  [docs/MCP.md](docs/MCP.md).
+
 **Automation**
 - **Rules** with a nested-logic [Zen expression](https://gorules.io) engine
   (`is_expense and contains(lower(description), 'countdown')`). A rule can set a category,
@@ -84,6 +96,7 @@ packages/
   providers/    Rust: TransactionProvider trait + registry + CSV/Akahu/Yahoo/FX clients (sure-providers).
   app/          Rust: the application core — use-case services + repo ports, no SQL/HTTP (sure-app).
   api/          Rust: Axum routes/handlers + OpenAPI, depends only on sure-app; `gen-openapi` bin (sure-api).
+  mcp/          Rust: MCP tools/resources/prompts over the same core, for an agent (sure-mcp).
   server/       Rust: the composition root — wires sure-dal/sure-providers into sure-app/sure-api; owns `main` (sure-server).
   testproxy/    Rust: the record/replay proxy cluster standing in for every third-party host (sure-testproxy).
   api-tests/    TypeScript: Playwright e2e — spawns the real binary per test, driven through @sure/client.
@@ -304,7 +317,9 @@ loads on startup unless `SURE_ENV_FILE` says otherwise (see
 (default `127.0.0.1:8080`), `WEB_DIR` (serve the SPA when set), `RUST_LOG`,
 `BACKGROUND_TASKS` (set to `off` to stop the scheduler — exchange rates, provider polling,
 stock prices, transfer linking — from running; the API e2e suite does this so a task
-firing on startup can't race a test).
+firing on startup can't race a test), `SURE_MCP` (`off`/`read`/`write` — the *ceiling* on the
+MCP endpoint at `/mcp`, off unless set, with the working mode chosen in the app; see
+[docs/MCP.md](docs/MCP.md)).
 
 The HTTP layer — cache directives, compression, h2c, and the abuse guards — is described
 in [docs/HTTP.md](docs/HTTP.md), along with every env var that tunes it. The defaults are

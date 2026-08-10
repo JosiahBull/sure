@@ -3184,7 +3184,11 @@ mod tests {
                 category_id: Some(1),
                 is_one_off: false,
                 linked_transaction_id: None,
+                account_id: 1,
+                account_name: "Bank".into(),
                 account_kind: AccountKind::Bank,
+                merchant_id: None,
+                merchant: None,
                 attribution: sure_core::Ownership::Joint,
             },
             crate::ports::SpendTransaction {
@@ -3194,7 +3198,11 @@ mod tests {
                 category_id: Some(1),
                 is_one_off: false,
                 linked_transaction_id: None,
+                account_id: 1,
+                account_name: "Bank".into(),
                 account_kind: AccountKind::Bank,
+                merchant_id: None,
+                merchant: None,
                 attribution: sure_core::Ownership::Joint,
             },
         ];
@@ -4420,7 +4428,11 @@ mod tests {
                     category_id: Some(10),
                     is_one_off: false,
                     linked_transaction_id: None,
+                    account_id: 1,
+                    account_name: "Bank".into(),
                     account_kind: AK::Bank,
+                    merchant_id: None,
+                    merchant: None,
                     attribution: sure_core::Ownership::Joint,
                 });
             }
@@ -4549,7 +4561,11 @@ mod tests {
                     category_id: Some(10),
                     is_one_off: false,
                     linked_transaction_id: None,
+                    account_id: 1,
+                    account_name: "Bank".into(),
                     account_kind: AK::Bank,
+                    merchant_id: None,
+                    merchant: None,
                     attribution: sure_core::Ownership::Joint,
                 });
                 cash.push(500_000);
@@ -5095,7 +5111,11 @@ mod tests {
                     category_id: Some(10),
                     is_one_off: false,
                     linked_transaction_id: None,
+                    account_id: 1,
+                    account_name: "Bank".into(),
                     account_kind: AK::Bank,
+                    merchant_id: None,
+                    merchant: None,
                     attribution: sure_core::Ownership::Joint,
                 });
             }

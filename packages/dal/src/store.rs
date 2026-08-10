@@ -612,7 +612,11 @@ impl ReportRepo for SqliteStore {
                 category_id: t.category_id,
                 is_one_off: t.is_one_off,
                 linked_transaction_id: t.linked_transaction_id,
+                account_id: t.account_id,
+                account_name: t.account_name,
                 account_kind: t.account_kind, // already `sure_core::AccountKind`, parsed in the DAL
+                merchant_id: t.merchant_id,
+                merchant: t.merchant,
             })
             .collect())
     }
@@ -929,6 +933,10 @@ impl SettingsRepo for SqliteStore {
 
     async fn update(&self, input: UpdateSettings) -> AppResult<Settings> {
         crate::settings::update(&self.db, input).await
+    }
+
+    async fn mcp_mode(&self) -> AppResult<sure_core::McpMode> {
+        crate::settings::mcp_mode(&self.db).await
     }
 }
 

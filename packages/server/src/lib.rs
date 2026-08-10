@@ -23,9 +23,50 @@ use sure_dal::Db;
 
 use crate::config::Config;
 
-/// Build the `AppState` every handler shares: one `SqliteStore` + `SystemClock`, wired
-/// into the four logic-heavy services and handed out directly (as a repo port trait
-/// object) for every thin-CRUD aggregate.
+/// The MCP endpoint, or an empty router when `SURE_MCP` leaves it off.
+///
+/// Handed to [`sure_api::build_app`] rather than merged around it, so `/mcp` sits inside the
+/// same middleware stack as `/api` — panic catching, request ids, tracing, the rate limiter,
+/// the body cap. `sure-api` sees only an opaque `Router` and never names `sure-mcp`; this is
+/// the one function that knows both.
+///
+/// The `Host` allowlist comes from `CORS_ALLOWED_ORIGINS`, deliberately. `rmcp` defaults to
+/// accepting loopback authorities only, because a locally-running MCP server is a
+/// DNS-rebinding target — a page the user visits can point its own hostname at `127.0.0.1`
+/// and POST here from their browser. Serving Sure on a real hostname therefore has to name
+/// that hostname twice, and taking the second answer from the first means the two cannot
+/// drift into disagreeing about who may reach this process.
+fn mcp_router(state: sure_mcp::McpState, config: &Config) -> axum::Router {
+    // Mounted on the *ceiling*, not on the stored setting: the household can switch agent
+    // access off (and back on) in the app without a restart, and while it is off the mounted
+    // endpoint simply serves no tools. A ceiling of `off` — the default — is the only thing
+    // that makes `/mcp` not a route at all.
+    if config.mcp.ceiling == sure_mcp::McpMode::Off {
+        return axum::Router::new();
+    }
+    let hosts = config
+        .api
+        .cors_allowed_origins
+        .iter()
+        .filter_map(|origin| origin.parse::<axum::http::Uri>().ok())
+        .filter_map(|uri| uri.authority().map(|a| a.to_string()))
+        .collect();
+    tracing::info!(
+        ceiling = config.mcp.ceiling.as_str(),
+        "mcp endpoint mounted at /mcp; the mode served is this capped against the app's setting"
+    );
+    axum::Router::new().nest_service("/mcp", sure_mcp::http_service(state, config.mcp, hosts))
+}
+
+/// Build the state each driving adapter shares: one `SqliteStore` + `SystemClock`, wired
+/// into the logic-heavy services and handed out directly (as a repo port trait object) for
+/// every thin-CRUD aggregate.
+///
+/// Both adapters are built here, from the same store and the same service instances — the
+/// MCP surface is a sibling of the HTTP one, not a client of it. Each declares its own
+/// dependencies (`sure_mcp::McpState` is a strict subset: no import pipeline, no provider
+/// registry, no snapshot repo, because no tool may reach them), and this is the one place
+/// that knows both lists.
 ///
 /// `shutdown` is passed in rather than made here: a handler that starts work outliving its
 /// response must spawn it on *this* process's tracker, so that the drain below waits for it
@@ -37,7 +78,8 @@ fn build_state(
     imports: Arc<dyn ImportRegistry>,
     stock_price_provider: Arc<dyn StockPriceProvider>,
     shutdown: Shutdown,
-) -> sure_api::State {
+    mcp_ceiling: sure_mcp::McpMode,
+) -> (sure_api::State, sure_mcp::McpState) {
     let store = Arc::new(SqliteStore::new(db));
     let clock = Arc::new(SystemClock);
 
@@ -91,7 +133,23 @@ fn build_state(
         rules.clone(),
     ));
 
-    sure_api::State {
+    let mcp = sure_mcp::McpState {
+        reports: reports.clone(),
+        rules: rules.clone(),
+        brokerage: brokerage.clone(),
+        accounts: store.clone(),
+        transactions: store.clone(),
+        categories: store.clone(),
+        merchants: store.clone(),
+        valuations: store.clone(),
+        equity: store.clone(),
+        settings: store.clone(),
+        currencies: store.clone(),
+        stock_price_provider: stock_price_provider.clone(),
+        shutdown: shutdown.clone(),
+    };
+
+    let api = sure_api::State {
         brokerage,
         import,
         reports,
@@ -114,7 +172,10 @@ fn build_state(
         provider_registry: registry,
         stock_price_provider,
         shutdown,
-    }
+        mcp_ceiling,
+    };
+
+    (api, mcp)
 }
 
 /// Connect, migrate, and serve until `shutdown` is cancelled.
@@ -241,14 +302,20 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         });
     }
 
-    let state = build_state(
+    let (state, mcp_state) = build_state(
         pool.clone(),
         registry,
         imports,
         stock_price_provider,
         shutdown.clone(),
+        config.mcp.ceiling,
     );
-    let app = sure_api::build_app(state, config.web_dir.as_deref(), &config.api);
+    let app = sure_api::build_app(
+        state,
+        config.web_dir.as_deref(),
+        &config.api,
+        mcp_router(mcp_state, &config),
+    );
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "sure-api listening");

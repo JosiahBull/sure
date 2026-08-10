@@ -4547,12 +4547,15 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Settings"];
+                        "application/json": components["schemas"]["SettingsView"];
                     };
                 };
             };
         };
-        /** Update global settings (currently just the base reporting currency). */
+        /**
+         * Update global settings: the base reporting currency, and how much of the MCP (agent)
+         *     surface to serve.
+         */
         put: {
             parameters: {
                 query?: never;
@@ -4571,7 +4574,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Settings"];
+                        "application/json": components["schemas"]["SettingsView"];
                     };
                 };
                 422: {
@@ -4831,6 +4834,11 @@ export interface paths {
                     include_one_off?: boolean;
                     /** @description Case-insensitive substring match on description/merchant/notes. */
                     search?: string;
+                    /**
+                     * @description `true` keeps only uncategorised rows, `false` only categorised ones; omitted means
+                     *     both. `category_id` cannot express this — there is no id standing for "none".
+                     */
+                    uncategorized?: boolean;
                     /**
                      * @description Whose transactions to show: `joint`, or a household member's id. Matches on the
                      *     *effective* attribution — a transaction's own override, or its account's owner.
@@ -6634,6 +6642,20 @@ export interface components {
          */
         LotKind: "buy" | "sell" | "corporate";
         /**
+         * @description How much of the MCP (agent) surface is served.
+         *
+         *     Ordered deliberately — `Off < Read < Write` — because the environment variable `SURE_MCP`
+         *     is a *ceiling* and the stored setting is clamped to it with [`Ord::min`]. Adding a variant
+         *     means deciding where it sits in that order, which is why the derive is spelled out rather
+         *     than hand-written comparisons living at each call site.
+         *
+         *     Lives here rather than in `sure-mcp` because it is persisted (`settings.mcp_mode`) and
+         *     crosses the wire: CLAUDE.md rule 1 puts a closed set that is read or written as text in
+         *     `sure-core`, parsed at the edge exactly once.
+         * @enum {string}
+         */
+        McpMode: "off" | "read" | "write";
+        /**
          * @description A reusable payee. Custom merchants are unique by name (case-insensitive) and can
          *     carry a suggested default category.
          */
@@ -7613,6 +7635,34 @@ export interface components {
         Settings: {
             /** @description Currency all reports are normalised into. */
             base_currency_code: string;
+            /**
+             * @description How much of the MCP surface the household has asked for. What is actually served is
+             *     this clamped to the `SURE_MCP` ceiling — see [`SettingsView::mcp_ceiling`].
+             */
+            mcp_mode: components["schemas"]["McpMode"];
+            updated_at: string;
+        };
+        /**
+         * @description Settings as the app needs to render them.
+         *
+         *     A DTO twin rather than `Settings` itself, for one reason: two of these four fields are not
+         *     stored anywhere. `mcp_ceiling` is what the `SURE_MCP` environment variable permits and
+         *     `mcp_effective` is what is therefore actually served — both facts about how this process
+         *     was *started*, which no row can hold. Without them a settings page cannot explain why a
+         *     control it is showing does nothing, and would have to re-implement the clamp to guess.
+         */
+        SettingsView: {
+            /** @description Currency all reports are normalised into. */
+            base_currency_code: string;
+            /** @description The MCP mode the household has asked for. */
+            mcp_mode: components["schemas"]["McpMode"];
+            /**
+             * @description The most this process will serve, from `SURE_MCP`. `off` — the default — means the
+             *     endpoint is not mounted at all and no choice here can change that.
+             */
+            mcp_ceiling: components["schemas"]["McpMode"];
+            /** @description What is actually served: `mcp_mode` clamped to `mcp_ceiling`. */
+            mcp_effective: components["schemas"]["McpMode"];
             updated_at: string;
         };
         /** @description Share / equity holdings (NZ, US, or private). */
@@ -7850,6 +7900,7 @@ export interface components {
         };
         UpdateSettings: {
             base_currency_code: string;
+            mcp_mode?: null | components["schemas"]["McpMode"];
         };
         /**
          * @description A point-in-time value for an account (property price, share holding value, loan

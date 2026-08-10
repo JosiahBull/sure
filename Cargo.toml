@@ -8,6 +8,11 @@ members = [
     "packages/providers",
     "packages/app",
     "packages/api",
+    # The second driving adapter, sibling to `packages/api`: the same application core
+    # reached over MCP instead of HTTP, so an agent can read the ledger (and, under a
+    # separate opt-in, write to it). Depends only on `sure-app`, exactly as `sure-api`
+    # does, and never names `sure-dal` or a transport of its own — `sure-server` mounts it.
+    "packages/mcp",
     "packages/server",
     # Test support, never linked into a release binary: the programmable-proxy cluster that
     # stands in for the third-party hosts `sure-providers` reaches. A workspace member (not a
@@ -139,6 +144,18 @@ zen-expression = "0.55"
 # normal distribution its stochastic accounts/categories draw monthly returns from.
 rand = "0.8"
 rand_distr = "0.4"
+# The official Rust MCP SDK, and the only dependency `sure-mcp` has outside the workspace.
+# `transport-streamable-http-server` is the one transport built: it yields a plain
+# `tower::Service`, which is what lets `sure-server` nest the MCP endpoint into the router
+# `sure-api` already assembles instead of opening a second listener. `schemars` is what
+# derives each tool's input schema — take it from `rmcp::schemars` at the call site rather
+# than declaring it here, so the two can never drift to incompatible majors.
+rmcp = { version = "3", features = [
+    "server",
+    "macros",
+    "schemars",
+    "transport-streamable-http-server",
+] }
 
 # Internal crates
 sure-appbase = { path = "packages/appbase" }
@@ -148,6 +165,7 @@ sure-dal = { path = "packages/dal" }
 sure-providers = { path = "packages/providers" }
 sure-app = { path = "packages/app" }
 sure-api = { path = "packages/api" }
+sure-mcp = { path = "packages/mcp" }
 # Test support only. Depends on nothing else in the workspace *on purpose*: the dependency
 # runs one way (`sure-providers` dev-depends on it), so the shared proxy middleware can be
 # used by a provider test without a dependency cycle.

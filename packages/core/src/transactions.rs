@@ -166,6 +166,10 @@ pub struct TxQuery {
     pub include_one_off: Option<bool>,
     /// Case-insensitive substring match on description/merchant/notes.
     pub search: Option<String>,
+    /// `true` keeps only rows with no category, `false` only rows that have one; omitted
+    /// means both. Distinct from `category_id`, which can only ever name a category that
+    /// exists — there is no id for "none", so the gap this closes could not be expressed.
+    pub uncategorized: Option<bool>,
     /// Restrict to transactions whose *effective* attribution (override, else the account's
     /// owner) is this. Parsed from `?attributed_to=joint|<person id>` at the HTTP edge.
     pub attributed_to: Option<Ownership>,

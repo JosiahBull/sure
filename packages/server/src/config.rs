@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::Context;
 use sure_api::config::{ApiConfig, Limits, DEFAULT_CORS_ORIGINS};
 use sure_appbase::LifecycleConfig;
+use sure_mcp::config::{McpConfig, McpMode, DEFAULT_MAX_ROWS};
 use sure_providers::Endpoint;
 
 use crate::http::HttpConfig;
@@ -47,6 +48,9 @@ pub struct Config {
     /// [`HttpConfig::shutdown_grace`], which bounds only the connection drain *inside*
     /// the application future — these bound the sequence around it.
     pub lifecycle: LifecycleConfig,
+    /// The MCP surface: off, read-only, or read-write. Off by default — see `docs/MCP.md`
+    /// for why enabling it is a decision rather than a default.
+    pub mcp: McpConfig,
 }
 
 /// The base URL of each provider adapter, already checked to be somewhere a credential may
@@ -136,6 +140,11 @@ impl Config {
             max_etag_body_bytes: parsed("MAX_ETAG_BODY_BYTES", defaults.max_etag_body_bytes),
         };
 
+        let mcp = McpConfig {
+            ceiling: mcp_ceiling()?,
+            max_rows: parsed("SURE_MCP_MAX_ROWS", DEFAULT_MAX_ROWS),
+        };
+
         let api = ApiConfig {
             limits,
             cors_allowed_origins: cors_origins(),
@@ -211,7 +220,27 @@ impl Config {
             provider_endpoints,
             sandbox,
             lifecycle,
+            mcp,
         })
+    }
+}
+
+/// `SURE_MCP`, or [`McpMode::Off`] when unset — the **ceiling**, not the working mode.
+///
+/// What is served is this clamped against `settings.mcp_mode`, which the household sets in
+/// the app. Unset therefore means the endpoint is absent no matter what the app stores:
+/// turning agent access on requires someone with access to the host, and the toggle in the
+/// app can only choose within what the host already allowed.
+///
+/// The one env var in this file that does **not** go through [`parsed`], for the same
+/// reason [`endpoint`] doesn't: falling back on a typo would answer a question about access
+/// with a guess. `SURE_MCP=wrtie` silently serving nothing is a confusing afternoon;
+/// a value that fell back the *other* way would be an agent with write access to the
+/// household ledger that nobody asked for. Neither is a warning line's worth of risk.
+fn mcp_ceiling() -> anyhow::Result<McpMode> {
+    match std::env::var("SURE_MCP") {
+        Err(_) => Ok(McpMode::Off),
+        Ok(raw) => raw.parse().map_err(|e: String| anyhow::anyhow!(e)),
     }
 }
 

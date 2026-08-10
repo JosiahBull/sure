@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT base_currency_code, updated_at FROM settings WHERE id = 1",
+  "query": "SELECT base_currency_code, mcp_mode, updated_at FROM settings WHERE id = 1",
   "describe": {
     "columns": [
       {
@@ -9,8 +9,13 @@
         "type_info": "Text"
       },
       {
-        "name": "updated_at",
+        "name": "mcp_mode",
         "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 2,
         "type_info": "Text"
       }
     ],
@@ -19,8 +24,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "622bf9596f76d60de328a46f66165c3e57a81d887e7e74618c7af1035529cf2e"
+  "hash": "b03e1d426a63dc261f4d36a66279c82553837833ce89f8702076ed45a1db44fd"
 }

@@ -50,6 +50,11 @@ pub use sure_core::{AppError, AppResult};
 /// The e2e test harness calls this with a fresh [`AppState`] to drive the real app
 /// over HTTP, so there is no separate "test app" that could drift from production.
 ///
+/// `extra` is for a *second transport* mounted on the same listener — today the MCP
+/// endpoint at `/mcp`, when `SURE_MCP` enables it, and `Router::new()` otherwise. It is an
+/// opaque `Router` on purpose: this crate stays unaware of what is in it, so `sure-api`
+/// does not gain a dependency on `sure-mcp`. Only the composition root names both.
+///
 /// # Layer order
 ///
 /// Listed outermost first; each one wraps everything below it. `Router::layer` applies a
@@ -69,7 +74,12 @@ pub use sure_core::{AppError, AppResult};
 /// | cache headers | Innermost, so it sees the handler's real status before deciding. |
 ///
 /// [`MatchedPath`]: axum::extract::MatchedPath
-pub fn build_app(state: AppState, web_dir: Option<&str>, config: &ApiConfig) -> Router {
+pub fn build_app(
+    state: AppState,
+    web_dir: Option<&str>,
+    config: &ApiConfig,
+    extra: Router,
+) -> Router {
     let mut app: Router<AppState> =
         routes::router(&config.limits).route("/api/openapi.json", get(openapi_json));
 
@@ -89,6 +99,12 @@ pub fn build_app(state: AppState, web_dir: Option<&str>, config: &ApiConfig) -> 
 
     let mut app = app
         .with_state(state)
+        // Merged here — after the API routes have their state, before a single layer is
+        // applied — so anything in `extra` sits *inside* the whole stack below and gets the
+        // panic catching, request id, tracing, rate limiting and body cap the API routes
+        // get. Merging it in the composition root instead would leave it outside all of
+        // them, which is how a second transport quietly ends up unmetered and untraced.
+        .merge(extra)
         .layer(from_fn_with_state(
             config.cdn_cache_headers,
             cache::cache_control,

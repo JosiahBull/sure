@@ -140,6 +140,8 @@ use utoipa::OpenApi;
         crate::routes::currencies::Currency,
         crate::routes::currencies::NewCurrency,
         crate::routes::settings::Settings,
+        crate::routes::settings::SettingsView,
+        crate::routes::settings::McpMode,
         crate::routes::settings::UpdateSettings,
         crate::routes::categories::Category,
         crate::routes::categories::CategoryNode,

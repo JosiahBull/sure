@@ -70,7 +70,7 @@ pub use rules::{
     PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RuleRunKind,
     RunResult, SaveRule,
 };
-pub use settings::{Settings, UpdateSettings};
+pub use settings::{McpMode, Settings, UpdateSettings};
 pub use stock_prices::StockPrice;
 pub use tax::{
     average_take_home_bps, builtin_scales, govt_contribution_minor, latest_scale,
@@ -84,8 +84,8 @@ pub use transactions::{
 };
 pub use types::{
     Account, AccountClass, AccountKind, AccountMetadata, AreaUnit, BrokerageMeta, CryptoMeta,
-    DepositoryMeta, GenericMeta, Interval, LoanMeta, MileageUnit, MortgageMeta, PropertyMeta,
-    RateType, RepaymentFrequency, SaveAccount, SetExcludedFromNetWorth, SetSecuredBy, SharesMeta,
-    StudentLoanMeta, TaxTreatment, ValidationMode, VehicleMeta,
+    DepositoryMeta, GenericMeta, GroupBy, Interval, LoanMeta, MileageUnit, MortgageMeta,
+    PropertyMeta, RateType, RepaymentFrequency, SaveAccount, SetExcludedFromNetWorth, SetSecuredBy,
+    SharesMeta, StudentLoanMeta, TaxTreatment, ValidationMode, VehicleMeta,
 };
 pub use valuations::{NewValuation, Valuation, ValuationQuery, ValuationSource};

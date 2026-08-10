@@ -21,7 +21,7 @@ use sure_core::{
     CategoryNode, Cron, CronRun, CronRunResult, Currency, DividendDetail, EquityExercise,
     EquityGrant, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot, ImportRecord,
     ImportSource, IncomeStream, LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind,
-    Merchant, NewCurrency, NewValuation, Ownership, Person, Provider, ProviderAccount,
+    McpMode, Merchant, NewCurrency, NewValuation, Ownership, Person, Provider, ProviderAccount,
     ProviderKind, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult,
     SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent,
     SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
@@ -430,7 +430,14 @@ pub struct SpendTransaction {
     pub category_id: Option<i64>,
     pub is_one_off: bool,
     pub linked_transaction_id: Option<i64>,
+    pub account_id: i64,
+    pub account_name: String,
     pub account_kind: AccountKind,
+    pub merchant_id: Option<i64>,
+    /// The merchant record's name, or — where the row has no merchant record — whatever
+    /// payee text the feed wrote. Already coalesced, so a caller grouping by payee sees one
+    /// field rather than having to decide between an id and a string per row.
+    pub merchant: Option<String>,
     /// Already-resolved effective attribution (override, else the account's owner).
     pub attribution: Ownership,
 }
@@ -1003,6 +1010,9 @@ pub trait CurrencyRepo: Send + Sync {
 pub trait SettingsRepo: Send + Sync {
     async fn get(&self) -> AppResult<Settings>;
     async fn update(&self, input: UpdateSettings) -> AppResult<Settings>;
+    /// Just the stored MCP mode. Read on every MCP request, which is why it is a method of
+    /// its own rather than a field plucked off [`Self::get`].
+    async fn mcp_mode(&self) -> AppResult<McpMode>;
 }
 
 #[async_trait]
