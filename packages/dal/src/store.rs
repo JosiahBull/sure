@@ -375,6 +375,10 @@ impl ValuationRepo for SqliteStore {
         crate::valuations::create(&self.db, account_id, input).await
     }
 
+    async fn update(&self, id: i64, input: NewValuation) -> AppResult<Valuation> {
+        crate::valuations::update(&self.db, id, input).await
+    }
+
     async fn delete(&self, id: i64) -> AppResult<()> {
         crate::valuations::delete(&self.db, id).await
     }

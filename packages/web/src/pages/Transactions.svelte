@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { api, formatMoney, formatDate, formatDateLong, type Schemas } from "../lib/api";
   import { categoryColor } from "../lib/color";
   import { categoryOptions, depthOf, qualifiedName, rootIdOf, subtreeIds } from "../lib/categories";
@@ -7,7 +7,7 @@
   import { ICONS } from "../lib/icons";
   import { RANGES, activeRange, attributionParam, filters, type RangeKey } from "../lib/state.svelte";
   import ValuationPanel from "../lib/ValuationPanel.svelte";
-  import { router } from "../lib/router.svelte";
+  import { queryParams, router } from "../lib/router.svelte";
   import Icon from "../lib/Icon.svelte";
   import {
     people,
@@ -378,6 +378,34 @@
     const qs = p.toString();
     history.replaceState(null, "", `#${base}${qs ? "?" + qs : ""}`);
   }
+
+  // Follow the URL's account, not just the one this page was opened with.
+  //
+  // `App.svelte` keys the active page on the path *without* its query and remounts with
+  // `{#key activePath}` (see `queryParams`'s doc in the router), so navigating from
+  // `?account=19` to `?account=4` — which is what the side panel does — never tears this
+  // component down. Seeding `accountId` from the param once at setup therefore left the page
+  // showing the account it was first opened with while the URL said otherwise.
+  //
+  // Only `router.path` is a dependency: `accountId` is read and written inside `untrack`
+  // because `syncUrl` writes the URL with `replaceState` (no `hashchange`, so `router.path`
+  // holds the last *navigated* value). Tracking `accountId` would make this effect re-run on
+  // an in-page account change, read the stale URL, and put the old account straight back.
+  $effect(() => {
+    const fromUrl = num(queryParams().get("account")) ?? "";
+    untrack(() => {
+      if (fromUrl === accountId) return;
+      accountId = fromUrl;
+      page = 1;
+      // The same widening a fresh deep-link does, so switching accounts shows what opening
+      // that account's URL directly would have: an account's history is usually older than
+      // whatever window happened to be selected.
+      if (fromUrl !== "") {
+        filters.range = "all";
+        filters.custom = null;
+      }
+    });
+  });
 
   // Resolve the initial page (from a highlight deep-link or a resumed `?at=`) once the data
   // it refers to has loaded — lands on whichever page contains that transaction.

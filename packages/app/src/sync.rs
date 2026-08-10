@@ -1017,6 +1017,9 @@ mod tests {
         async fn create(&self, _account_id: i64, _input: NewValuation) -> AppResult<Valuation> {
             unreachable!("SyncService never creates a manual valuation")
         }
+        async fn update(&self, _id: i64, _input: NewValuation) -> AppResult<Valuation> {
+            unreachable!("SyncService never edits a valuation")
+        }
         async fn delete(&self, _id: i64) -> AppResult<()> {
             unreachable!("SyncService never deletes a valuation")
         }

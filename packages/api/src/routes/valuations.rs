@@ -43,6 +43,7 @@ impl TryFrom<ValuationQueryParams> for ValuationQuery {
 // OTEL span names for this module's handlers.
 const VALUATIONS_LIST: &str = "valuations.list";
 const VALUATIONS_CREATE: &str = "valuations.create";
+const VALUATIONS_UPDATE: &str = "valuations.update";
 const VALUATIONS_DELETE: &str = "valuations.delete";
 
 /// List an account's valuations, newest first, optionally narrowed by source.
@@ -94,6 +95,30 @@ pub async fn create(
     ))
 }
 
+/// Edit a valuation entered by hand — its date, amount or note.
+///
+/// Manual only: the other sources are derived and would be recomputed over, so editing one is
+/// refused rather than silently undone by the next sync.
+#[utoipa::path(put, path = "/api/valuations/{id}", tag = "valuations",
+    params(("id" = i64, Path,)), request_body = NewValuation,
+    responses((status = 200, body = Valuation), (status = 404, body = crate::error::ErrorBody),
+              (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = VALUATIONS_UPDATE,
+    level = "debug",
+    skip_all,
+    fields(valuation_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn update(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<NewValuation>,
+) -> AppResult<Json<Valuation>> {
+    Ok(Json(st.valuations.update(id, input).await?))
+}
+
 /// Delete a valuation.
 #[utoipa::path(delete, path = "/api/valuations/{id}", tag = "valuations",
     params(("id" = i64, Path,)),
@@ -114,5 +139,8 @@ pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResul
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/accounts/{id}/valuations", get(list).post(create))
-        .route("/valuations/{id}", axum::routing::delete(delete))
+        .route(
+            "/valuations/{id}",
+            axum::routing::put(update).delete(delete),
+        )
 }

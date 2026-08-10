@@ -64,6 +64,7 @@ use utoipa::OpenApi;
         crate::routes::rules::undo_run,
         crate::routes::valuations::list,
         crate::routes::valuations::create,
+        crate::routes::valuations::update,
         crate::routes::valuations::delete,
         crate::routes::reports::net_worth,
         crate::routes::reports::category_breakdown,

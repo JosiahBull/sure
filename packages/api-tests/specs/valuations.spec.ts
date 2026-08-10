@@ -118,3 +118,73 @@ test("a valuation can be deleted, and an unknown one is a 404", async ({ api }) 
   const missing = await api.DELETE("/api/valuations/{id}", { params: { path: { id: 999_999 } } });
   expect(missing.response.status).toBe(404);
 });
+
+test("a manual value can be edited, and a derived one cannot", async ({ api }) => {
+  const acc = await createAccount(api, "Sunny", "vehicle", "NZD", {
+    metadata: { profile: "vehicle", make: "Nissan", model: "Caravan", year: 1990 },
+  });
+  const created = (await setValue(api, acc.id, "2026-06-01", 15_400_00, "first guess")).data!;
+
+  // Date, amount and note are all editable, in place — the row keeps its id rather than being
+  // deleted and re-made, which would lose its place in the series and its created_at.
+  const { data: edited, response } = await api.PUT("/api/valuations/{id}", {
+    params: { path: { id: created.id } },
+    body: { as_of: "2026-05-01", value_minor: 15_000_00, note: "checked against the listing" },
+  });
+  expect(response.status).toBe(200);
+  expect(edited!.id).toBe(created.id);
+  expect(edited!.as_of).toBe("2026-05-01");
+  expect(edited!.value_minor).toBe(15_000_00);
+  expect(edited!.note).toBe("checked against the listing");
+
+  const missing = await api.PUT("/api/valuations/{id}", {
+    params: { path: { id: 999_999 } },
+    body: { as_of: "2026-05-01", value_minor: 1 },
+  });
+  expect(missing.response.status).toBe(404);
+});
+
+/**
+ * A derived value is not the user's to edit: a provider row is rewritten by the next sync, a
+ * brokerage row is recomputed from holdings, and a cron row is the output of a scheduled
+ * adjustment whose `cron_runs` entry would then describe a figure it never produced. Refusing
+ * says so, where silently accepting an edit that vanishes on the next sync would not.
+ */
+test("editing a synced value is refused with a reason", async ({ api }) => {
+  // A vehicle, because an asset account's opening balance is recorded as a *valuation* — which
+  // is the base a valuation cron compounds. On a bank account it is a transaction, and the cron
+  // has nothing to grow.
+  const acc = await createAccount(api, "Sunny", "vehicle", "NZD", {
+    metadata: { profile: "vehicle", make: "Nissan", model: "Caravan", year: 1990 },
+    opening_balance_minor: 16_500_00,
+    opening_balance_date: "2025-01-01",
+  });
+  const cron = (
+    await api.POST("/api/crons", {
+      body: {
+        name: "Depreciation",
+        account_id: acc.id,
+        kind: "depreciation",
+        rate_bps: 200,
+        start_date: "2025-01-01",
+        enabled: true,
+      },
+    })
+  ).data!;
+  await api.POST("/api/crons/{id}/run", {
+    params: { path: { id: cron.id }, query: { to: "2025-06-01" } },
+  });
+
+  const derived = (
+    await api.GET("/api/accounts/{id}/valuations", {
+      params: { path: { id: acc.id }, query: { source: "cron" } },
+    })
+  ).data!;
+  expect(derived.length).toBeGreaterThan(0);
+
+  const { response } = await api.PUT("/api/valuations/{id}", {
+    params: { path: { id: derived[0].id } },
+    body: { as_of: "2026-05-01", value_minor: 1_00 },
+  });
+  expect(response.status).toBe(422);
+});

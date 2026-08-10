@@ -754,6 +754,9 @@ pub trait ValuationRepo: Send + Sync {
         q: ValuationQuery,
     ) -> AppResult<Vec<Valuation>>;
     async fn create(&self, account_id: i64, input: NewValuation) -> AppResult<Valuation>;
+    /// Edit a valuation someone entered by hand. Refuses a derived one — see
+    /// `sure_dal::valuations::update`.
+    async fn update(&self, id: i64, input: NewValuation) -> AppResult<Valuation>;
     async fn delete(&self, id: i64) -> AppResult<()>;
     async fn upsert_from_brokerage(
         &self,

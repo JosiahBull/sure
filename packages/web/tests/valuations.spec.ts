@@ -107,3 +107,55 @@ test("select-all ignores valuation rows entirely", async ({ page }) => {
   // Nothing selectable here, so no bulk bar — rather than one claiming two rows.
   await expect(page.locator(".bulkbar")).toHaveCount(0);
 });
+
+/**
+ * The router keys the active page on the path *without* its query and does not remount on a
+ * query-only change, so a page seeding state from a param has to keep following it. Clicking a
+ * different account in the side panel navigates to the page it is already on — which changed
+ * the URL and nothing else.
+ *
+ * Driven through the real panel, so it needs a viewport wide enough to have one: below 720px
+ * `.panel-col` is `width: 0`.
+ */
+test("choosing another account from the side panel actually changes the view", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await goto(page, HOME); // Family Home: valuations, no transactions
+  await expect(page.locator(".val-row").first()).toBeVisible();
+
+  const panel = page.locator(".panel");
+  // Groups collapse by default; open whichever holds the target account.
+  const target = panel.locator(".acct-row", { hasText: "Everyday" }).first();
+  if (!(await target.isVisible())) {
+    await panel.locator(".group-row, .acct-group, button").filter({ hasText: /Cash/i }).first().click();
+  }
+  await target.click();
+
+  await expect(page).toHaveURL(/account=/);
+  // The view followed, not just the URL: this account has transactions and no valuations.
+  await expect(page.locator(".tx-row:not(.val-row)").first()).toBeVisible();
+  await expect(page.locator(".val-row")).toHaveCount(0);
+});
+
+test("a manual value can be edited in place", async ({ page }) => {
+  await goto(page, HOME);
+  await page.getByRole("button", { name: "Set value", exact: true }).click();
+
+  const row = page.locator(".valuations .line").first();
+  const before = await row.innerText();
+  await row.getByRole("button", { name: /^Edit value/ }).click();
+
+  // The form is the editor: it loads the row, and saving changes it rather than adding one.
+  const count = await page.locator(".valuations .line").count();
+  await page.getByLabel("Value", { exact: true }).fill("999000");
+  await page.getByRole("button", { name: "Save changes" }).click();
+
+  await expect(page.locator(".valuations .line").first()).toContainText("999,000");
+  expect(await page.locator(".valuations .line").count()).toBe(count);
+
+  // Put it back so the shared seed is unchanged.
+  const restored = before.match(/[\d,]+\.\d\d/)![0].replace(/,/g, "");
+  await page.locator(".valuations .line").first().getByRole("button", { name: /^Edit value/ }).click();
+  await page.getByLabel("Value", { exact: true }).fill(restored);
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.locator(".valuations .line").first()).toContainText(restored.split(".")[0].slice(0, 3));
+});

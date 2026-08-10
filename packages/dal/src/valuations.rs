@@ -181,6 +181,64 @@ pub async fn upsert_from_brokerage(
     .try_into()
 }
 
+/// Change a valuation someone entered by hand: its date, its amount, or its note.
+///
+/// **Manual valuations only.** The other sources are derived, and editing one is either futile
+/// or destructive: a `provider` row is rewritten by the next sync's per-day upsert, a
+/// `brokerage` row is recomputed from the holdings ledger, and a `cron` row is the output of a
+/// scheduled adjustment whose `cron_runs` entry would then describe a figure it did not
+/// produce. A row that is not manual is reported as not found *for this operation* — the
+/// caller asked to edit something that is not theirs to edit — rather than silently no-op'ing.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn update(db: &Db, id: i64, input: NewValuation) -> AppResult<Valuation> {
+    let existing = sqlx::query!(
+        r#"SELECT account_id, source, currency_code FROM valuations WHERE id=?1"#,
+        id
+    )
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound("valuation"))?;
+
+    let source: ValuationSource = existing
+        .source
+        .parse()
+        .map_err(|e: String| AppError::Internal(anyhow::anyhow!(e)))?;
+    if source != ValuationSource::Manual {
+        return Err(AppError::validation(format!(
+            "this value was written by {}, so it can't be edited here — it is derived and \
+             would be overwritten",
+            source.as_str()
+        )));
+    }
+
+    // Currency defaults to the one already stored rather than the account's: a manual
+    // valuation may deliberately have been recorded in another currency, and an edit of the
+    // amount should not quietly move it.
+    let currency = input
+        .currency_code
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_uppercase())
+        .unwrap_or(existing.currency_code);
+    let as_of = input.as_of.to_string();
+    let value_minor = input.value_minor.minor();
+    sqlx::query_as!(
+        ValuationRow,
+        r#"UPDATE valuations SET as_of=?2, value_minor=?3, currency_code=?4, note=?5
+            WHERE id=?1
+         RETURNING id AS "id!", account_id, as_of, value_minor, currency_code, source, note,
+                   created_at"#,
+        id,
+        as_of,
+        value_minor,
+        currency,
+        input.note
+    )
+    .fetch_one(db)
+    .await?
+    .try_into()
+}
+
 /// Delete a valuation.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {

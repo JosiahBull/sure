@@ -1,437 +1,468 @@
-# Architecture
+# Architecture refactor: toward a hexagonal core
 
-Sure is a flat Cargo + pnpm workspace. The backend follows a **ports-and-adapters
-(hexagonal)** shape: an application core of use-case services depends only on trait
-*ports*, and the web framework and the database are *adapters* wired in at the edges. The
-frontend is a single Svelte SPA that talks to the backend only through a generated,
-type-safe client.
+A staged plan to move Sure from its current layered split to a **hexagonal (ports &
+adapters)** architecture, so business logic is isolated from both the web framework and
+the database and becomes trivial to modify, test, and re-back.
 
-> The move to this shape was staged; see [`architecture-refactor.md`](./architecture-refactor.md)
-> for the plan and its status. All of it has landed: Phases 1–2 (extract `sure-app`,
-> introduce repo ports), Phase 3a (purify `sure-core`'s domain types of `sqlx`), Phase 3b
-> (a deliberately selective wire-DTO audit — reports keep their existing DTO twins;
-> nothing else needed one), Phase 3c (repo-port coverage extended to every aggregate, so
-> no handler calls `sure-dal` directly any more), and Phase 3d (the composition root
-> extracted into its own `sure-server` crate, so `sure-api` is a pure routes/handlers
-> library with no `main` and no dependency on `sure-dal` or `sqlx`).
+Read [`ARCHITECTURE.md`](./ARCHITECTURE.md) first — it describes the codebase as it
+stands today. This document describes where we're taking it and how, in three phases that
+each ship independently.
 
-## Crate map
+> **This plan consciously revises one decision recorded in `ARCHITECTURE.md`.** That
+> document argues the DAL should expose *plain repository functions* rather than a `Store`
+> trait, "because there is exactly one backing store; introducing a trait there would be
+> ceremony without payoff." Phase 3 reverses that. The payoff we're now buying is not a
+> second database — it's **isolating and unit-testing the logic-heavy services** (rules,
+> brokerage, reports) against in-memory fakes, and being able to change a table's shape
+> without touching the domain type or any handler. When these phases land,
+> `ARCHITECTURE.md`'s "traits where polymorphism is real, functions where it isn't"
+> section must be updated to match.
+
+## Status
+
+| Phase | State | Landed |
+|---|---|---|
+| **1 — Extract `sure-app`** | ✅ Done | 2026-07-20, `4ca476c` |
+| **2 — Repo ports for logic-heavy services** | ✅ Done | 2026-07-20, `95eccde` |
+| **3a — Row/domain split** | ✅ Done | 2026-07-20 |
+| **3b — Wire-DTO audit (reports only; no other twin needed)** | ✅ Done | 2026-07-20 |
+| **3c — Full repo-port coverage** | ✅ Done | 2026-07-20, `79da86a` |
+| **3d — `sure-server` composition-root split** | ✅ Done | 2026-07-20, `136565c` |
+| **3c′ — Relocate provider ports into `sure-app`** | ✅ Done | 2026-07-21 (working tree) |
+
+Phases 1–2 shipped close to the plan below, with two notable as-built choices: the
+services became **structs** (`BrokerageService`, `ReportService`, `RuleService`,
+`SyncService`) constructed from `Arc<dyn Port>` dependencies rather than free functions;
+and the ports own **their own plain row types** (`HoldingRow`, `WalletRow`, …) that the
+adapter maps into, because `sure-app` can't depend back on `sure-dal`. See the per-phase
+"as built" notes. `docs/ARCHITECTURE.md` has been updated to describe the landed state.
+
+---
+
+## Where we are
+
+Five backend crates with a strict one-way dependency graph:
 
 ```
-sure-core  ──►  (nothing)          domain vocabulary: AppError, AccountKind/Class, and the
-                                     shared request/response types (no persistence deps)
-sure-scheduler ─► (nothing)        generic recurring-task scheduler: ScheduledTask +
-                                     TaskStateStore ports, storage-agnostic
-sure-providers ─► app, sure-core   concrete adapters implementing sure-app's provider
-                                     ports: CSV + Akahu (NZ banking) transaction sources,
-                                     Yahoo Finance prices, Frankfurter FX, and the upload
-                                     parsers (ASB, myIR, Sharesies, CSV) behind
-                                     `ImportAdapter`; two registries implement the two
-                                     lookup ports (`ProviderRegistry`, `ImportRegistry`)
-sure-app   ──►  core, scheduler    the application core: use-case services (brokerage,
-                                     reports, rules, sync, stock prices, forecast) + the
-                                     background tasks, the compute engines (rule eval,
-                                     report aggregation, Monte Carlo projection), and every
-                                     PORT the services depend on — repos, Clock, and the
-                                     provider ports. No SQL, no HTTP.
-sure-dal   ──►  app, core,         SQLite pool + migrations + every SQL query (per-entity
-                scheduler            repository modules) + `SqliteStore`, which implements
-                                     every one of sure-app's repo ports, and the
-                                     scheduler's SQLite-backed TaskStateStore
-sure-api   ──►  app, core,         thin Axum HTTP layer: handlers, request/response DTOs,
-                providers            OpenAPI. No SQL, no compute, no `main`. Every handler
-                                     goes through a `sure_app` service or repo port; the
-                                     crate never names `sure_dal` or `sqlx`.
-sure-server ──► app, dal,          the composition root: the only crate that names every
-                providers,           adapter. Builds the one `SqliteStore` + `SystemClock`,
-                scheduler, api       injects them into `sure-app`'s services and `sure-api`'s
-                                     `AppState`, registers the scheduler tasks, and owns
-                                     `main`/`serve`. Produces the `sure-api` binary.
-@sure/client ◄── (OpenAPI spec)    generated openapi-typescript + openapi-fetch client
-@sure/web  ──►  @sure/client       Svelte SPA
-@sure/api-tests ─► @sure/client    TS+Playwright e2e: spawns the sure-api binary, drives it
-                                     through the client (validates client + API together)
+sure-core       domain vocabulary: AppError, AccountKind/Class, shared DTO types
+sure-scheduler  generic recurring-task scheduler — ScheduledTask + TaskStateStore ports
+sure-dal        SQLite pool + migrations + every SQL query (per-entity modules)
+sure-providers  TransactionProvider / StockPriceProvider / ExchangeRateProvider + adapters
+sure-api        Axum HTTP layer + MOST OF THE BUSINESS LOGIC
 ```
 
-Arrows are "depends on". The graph runs `core ← app ← {dal, providers}`, with `sure-api`
-depending on `sure-app` for every handler and on neither `sure-dal` nor `sure-providers`.
-That last part was only true of `sure-dal` until the import unification: `sure-api` named
-three parsers directly (`routes::{asb, student_loan, brokerage}`), which is what putting
-them behind the `ImportAdapter` port closed — see [IMPORT.md](IMPORT.md).
-The key inversion is that **both `sure-dal` and `sure-providers` depend on `sure-app`** —
-the adapters depend on the core to see the port traits they implement (`SqliteStore` the
-repo ports; the provider clients the `TransactionProvider` / `StockPriceProvider` /
-`ExchangeRateProvider` ports; `Registry` the `ProviderRegistry` port), and the core never
-names an adapter. The concrete provider adapters (a `Registry`, a `StockPriceProvider`) are
-built by the composition root and injected into `AppState`, so a handler selects a provider
-through a port rather than naming a concrete one. `sure-server` sits above all of it as the
-composition root, the one place every concrete adapter is named and wired together; the web
-framework's routing lives in `sure-api`, but the binary — and the only crate that touches
-both `sqlx` and a live `TcpListener` — is `sure-server`.
+Two structural problems block "trivial to modify":
 
-### `sure-core` — the shared vocabulary
-Pure domain types every layer speaks: the workspace `AppError`/`AppResult`, the JSON
-error envelope, and `AccountKind`/`AccountClass`. **No web framework and no persistence
-library, ever, for the domain types themselves.** `sure-core` still has an `sqlx` Cargo
-feature, but as of Phase 3a it gates *only* `AppError`'s own `From<sqlx::Error>`
-conversion — no domain struct or enum derives any `sqlx` trait, with or without the
-feature on:
+1. **The application core lives inside the web crate.** `sure-api` holds not just routing
+   but the rule engine (`routes/rules.rs`), report aggregation (`routes/reports.rs`, 800
+   LOC), brokerage valuation (`brokerage.rs`), FX (`fx.rs`), the stock-price service
+   (`stock_prices.rs`), and the scheduled-task bodies (`exchange_rates.rs`,
+   `provider_poll.rs`, `transfer_link.rs`). To change a business rule you edit the HTTP
+   crate; to test one you stand up Axum and SQLite.
 
-```toml
-# sure-core
-[features]
-sqlx = ["dep:sqlx"]                  # `AppError: From<sqlx::Error>` only
-axum = ["dep:axum", "dep:tracing"]   # `impl IntoResponse for AppError`
-# sure-dal enables `sqlx`; sure-api enables `axum`; app and providers enable neither.
+2. **The core depends on the concrete adapter, not on a port.** Every service calls
+   `sure_dal::transactions::list(&db, q)` — free functions on a concrete `SqlitePool`.
+   The inside of the hexagon points straight at the SQLite outside, so logic can't be
+   exercised without a real database, and the persisted row shape *is* the domain type
+   (`sure-core` types derive `sqlx::FromRow` behind a feature).
+
+What's already right, and stays: `sure-scheduler` is a clean port/adapter pair
+(`TaskStateStore` defined with the mechanism, implemented by the DAL); `sure-providers`
+already defines port traits with swappable adapters and a `Registry`; `AppError`
+feature-gates its web and db concerns. These are the templates for everything below.
+
+## Where we're going
+
+```
+        DRIVING ADAPTERS              APPLICATION CORE                DRIVEN ADAPTERS
+   ┌────────────────────────┐    ┌──────────────────────┐      ┌────────────────────────┐
+   │ sure-api               │    │ sure-app             │      │ sure-dal (SQLite)      │
+   │  routes, extractors,   │───▶│  use-cases /services │◀─────│  implements repo ports │
+   │  OpenAPI, telemetry    │    │  + PORTS (traits):   │      ├────────────────────────┤
+   │ scheduler task wiring  │    │   repos, Clock       │◀─────│ sure-providers         │
+   │ main.rs = composition  │    │        │             │      │  implement provider    │
+   │            root        │    │        ▼             │      │  ports                 │
+   └────────────────────────┘    │ sure-core (domain)   │      ├────────────────────────┤
+                                  │  pure types + logic  │◀─────│ system Clock, etc.     │
+                                  └──────────────────────┘      └────────────────────────┘
 ```
 
-`sqlx` is gated because only the DAL touches the database: the feature supplies the
-`From<sqlx::Error>` conversion that lets DAL functions use `?`. Built on their own,
-`sure-core`, `sure-app`, `sure-providers`, and (since Phase 3d) `sure-api` pull in neither
-sqlx nor axum's server bits, with the `sqlx` feature on or off — `cargo check -p sure-core
---all-features` and `--no-default-features` both compile the exact same domain types.
-`sure-server`, the composition root, is the only crate that depends on `sure-dal` and so
-the only one Cargo's feature unification actually links `sqlx` into — the `sure-api`
-binary it produces is built entirely from crates that never declare or name it.
+Target dependency arrows ("depends on"):
 
-Every `sure-dal` per-entity module maps its own `#[derive(sqlx::FromRow)]` row struct
-(`TransactionRow`, `RuleRow`, `CronRow`, …) into the `sure-core` domain type via a `From`
-(or, where a column can fail to parse — `AccountRow.kind` — a fallible `TryFrom`) impl;
-`AccountKind` binds/reads as plain `TEXT` through a hand-written `as_str()`/`FromStr`
-pair rather than `sqlx::Type`. A column rename or type change touches only the row struct
-and its conversion, never the domain type or a handler.
+```
+sure-core       ─► (nothing)                       pure domain types + pure domain logic
+sure-app        ─► sure-core, sure-scheduler       use-cases + all ports (traits)
+sure-dal        ─► sure-app, sure-core, scheduler  implements repo ports + TaskStateStore
+sure-providers  ─► sure-app, sure-core             implements provider ports
+sure-api        ─► sure-app, sure-core             thin HTTP; (dal + providers only in main)
+```
 
-> **Phase 3b (wire DTOs) landed as a deliberately selective audit.** `sure-core`'s shared
-> types still derive `serde`/`utoipa::ToSchema` and double as the JSON wire shape for
-> every aggregate except reports — that's a conscious choice, not an oversight (see the
-> refactor doc): a DTO twin is only worth it where the wire shape genuinely diverges from
-> the domain shape, which the Phase 3c audit confirmed is true only of reports' response
-> types (already split, from Phase 1).
+The one arrow that flips is **`api → dal` becomes `dal → app`**: the adapter now depends
+on the core to see the port traits it implements, and the core never names the adapter.
+`sure-api`'s binary still depends on `sure-dal`/`sure-providers`, but *only in the
+composition root* (`main.rs`/`serve()`) where concrete adapters are constructed and
+injected — handlers reference only `sure-app`. `serve()` already does exactly this for the
+scheduler; we extend the pattern to everything.
 
-### `sure-scheduler` — generic recurring-task scheduling
-A small, storage-agnostic crate for background jobs that need to survive a restart
-without redoing work ahead of schedule — the motivating case is the exchange-rate poll,
-but it's written to take on more scheduled tasks later without each one reinventing this.
-Two traits define the seam:
+---
+
+## Phase 1 — Extract `sure-app` (highest value, lowest risk)
+
+> **✅ As built (2026-07-20, `4ca476c`).** `packages/app` created (~2,900 LOC) with the
+> modules below plus `ports.rs`; `zen-expression` moved to `sure-app`. `sure-api`'s
+> `lib.rs` no longer declares the compute modules — they're gone from the web crate. The
+> `brokerage.rs` unit tests moved with the code. Everything below is the plan as executed.
+
+Physically move the business logic out of the web crate into a new `sure-app` crate. **No
+trait inversion yet** — the services keep calling `sure_dal::*` free functions directly.
+This alone splits the big crate and establishes the layer; it's a large but mechanical
+move that touches no logic.
+
+### New crate
+
+```
+packages/app/
+  Cargo.toml        # deps: sure-core, sure-dal, sure-providers, sure-scheduler,
+                    #       chrono, rust_decimal, serde_json, async-trait, tracing, anyhow
+  src/lib.rs
+```
+
+Add `"packages/app"` to the workspace members and `sure-app = { path = "packages/app" }`
+to `[workspace.dependencies]`.
+
+### What moves
+
+| From `sure-api` | To `sure-app` | Notes |
+|---|---|---|
+| `brokerage.rs` | `app/brokerage.rs` | valuation + FX orchestration |
+| `fx.rs` | `app/fx.rs` | make `Fx` and its methods `pub` (was `pub(crate)`) |
+| `stock_prices.rs` | `app/stock_prices.rs` | `price_at` service + `StockPriceTask` |
+| `exchange_rates.rs` | `app/tasks/exchange_rates.rs` | `ExchangeRateTask` |
+| `provider_poll.rs` | `app/tasks/provider_poll.rs` | `ProviderPollTask` |
+| `transfer_link.rs` | `app/tasks/transfer_link.rs` | `TransferLinkTask` |
+| rule engine from `routes/rules.rs` | `app/rules.rs` | the `zen-expression` loop, `Current`, `validate_rule`, apply/preview orchestration; move `zen-expression` dep to `sure-app` |
+| aggregation from `routes/reports.rs` | `app/reports.rs` | net-worth / category / flow compute; the `ReportQuery`/response DTOs stay in `sure-api` for now (they're `ToSchema`) |
+| provider sync orchestration from `routes/providers.rs` | `app/sync.rs` | `sync_provider` and the fetch→dedupe→persist flow the poll task shares |
+
+### What stays in `sure-api`
+
+`routes/` (now thin), `openapi.rs`, `state.rs`, `config.rs`, `telemetry.rs`, `main.rs`,
+`lib.rs`, and `AppError`'s `IntoResponse`. A handler becomes: extract → call one
+`sure_app` function → serialize.
 
 ```rust
-#[async_trait]
-pub trait ScheduledTask: Send + Sync {
-    fn name(&self) -> &'static str;      // key in the state store, e.g. "exchange_rate_poll"
-    fn interval(&self) -> Duration;      // how often it needs to run
-    async fn run(&self) -> anyhow::Result<()>;
-}
-
-#[async_trait]
-pub trait TaskStateStore: Send + Sync {
-    async fn last_run_at(&self, task_name: &str) -> anyhow::Result<Option<DateTime<Utc>>>;
-    async fn record_run(&self, task_name: &str, at: DateTime<Utc>) -> anyhow::Result<()>;
+// routes/brokerage.rs — after
+pub async fn snapshot(State(st): State<AppState>, Path(id): Path<i64>, Query(q): Query<AsOf>)
+    -> AppResult<Json<BrokerageSnapshot>>
+{
+    let provider = YahooFinanceProvider::new();
+    Ok(Json(sure_app::brokerage::snapshot(&st.db, Some(&provider), id, q.as_of()).await?))
 }
 ```
 
-`Scheduler` wakes up every `check_interval` (independent of any task's own interval — it
-just controls how promptly a newly-due task is noticed), asks the store whether each
-registered task is due, and runs it. Only a *successful* run is recorded, so a failure is
-retried on the next check rather than waiting out the full interval. The concrete tasks
-now live in `sure-app` (`sure_app::tasks::*`, `sure_app::stock_prices::StockPriceTask`);
-`sure-dal` is the only implementor of `TaskStateStore` (`SqliteTaskStateStore`, backed by
-the `scheduled_task_runs` table) — deliberately separate from `crons`/`cron_runs`, which
-is a user-facing recurring-*adjustment* ledger (appreciation, interest, …), not a
-background-job scheduler. This crate is the template the rest of the architecture now
-follows: a port defined with the mechanism, an adapter implementing it elsewhere.
+Scheduler wiring in `serve()` changes only its import paths
+(`crate::exchange_rates::ExchangeRateTask` → `sure_app::tasks::exchange_rates::ExchangeRateTask`).
 
-### `sure-providers` — the external adapters
-Concrete implementations of the provider ports — this crate holds adapters, **not** port
-definitions. The ports live in `sure_app::ports` (the hexagon owns its ports); this crate
-depends on `sure-app` to see them, so `sure-app` never depends back on it. The
-transaction-source port it implements is:
+### Acceptance
 
-```rust
-#[async_trait]
-pub trait TransactionProvider: Send + Sync {   // defined in sure_app::ports
-    fn kind(&self) -> &'static str;
-    fn description(&self) -> &'static str;
-    fn accepts_payload(&self) -> bool { false }
-    fn supports_account_discovery(&self) -> bool { false }
-    async fn fetch(&self, ctx: SyncContext<'_>) -> anyhow::Result<Vec<ProviderTransaction>>;
-    async fn list_accounts(&self) -> anyhow::Result<Vec<ProviderAccount>> { Err(...) }
-    async fn current_balance(&self, ctx: SyncContext<'_>) -> anyhow::Result<Option<ProviderBalance>> { Ok(None) }
-}
-```
+- `sure-api` no longer contains `zen-expression` or report/brokerage math.
+- `cargo build -p sure-app` compiles without `axum`.
+- `cargo test --workspace` green; the e2e suite (`@sure/api-tests`) unchanged and passing.
+- No behaviour change — this is a move, verified by the existing tests (`brokerage.rs`'s
+  unit tests move with it).
 
-`Registry` (this crate) implements `sure_app::ports::ProviderRegistry`, holding the
-available implementations; the composition root builds it and injects it, and `sure-app`'s
-`SyncService` handles persistence, dedupe (on `(provider, external_id)`), and audit
-generically. The bundled `CsvProvider` is a credential-free reference implementation. To
-add a bank/broker integration you implement the trait and add it to `Registry::new()` —
-`sure-app` and `sure-api` never change.
+---
 
-Nothing in `sure-providers` reads configuration. An adapter that talks to the network is
-constructed with an `Endpoint` (its base URL, already checked to be `https://` or a proxy on
-this machine — see `packages/providers/src/http.rs`), which is why `Registry::new` takes the
-built `AkahuProvider` rather than building one: only `sure-server` knows where it points and
-whether there are credentials. That is also what lets a test aim an adapter at the local
-record/replay proxy (`packages/testproxy`) instead of the live API.
+## Phase 2 — Introduce ports where testability pays
 
-`list_accounts` is the account-discovery half: providers whose credentials can surface
-many upstream accounts (e.g. `AkahuProvider`, holding the `AKAHU_APP_TOKEN`/`AKAHU_USER_TOKEN`
-pair `serve` read for it — or the error saying which one is unset, so an unconfigured install
-still boots and fails with a variable name when someone asks for a sync) implement it to
-enumerate accounts not yet linked to a local one.
-`POST /api/providers/link` then creates (or attaches to) a local account and the
-`providers` row in one step, storing the upstream identifier in `config`
-(`{"external_account_id": "..."}`) — no schema change needed, since `providers.config` is
-already a free-form JSON column. `sure-app`'s `ProviderPollTask` auto-syncs every enabled
-provider whose kind doesn't `accepts_payload()` (i.e. needs no human-supplied data) on a
-fixed interval, sharing the same fetch/dedupe/audit path (`SyncService`) as the manual
-sync route — new discovery-and-poll-capable provider kinds get both for free. Linking also
-triggers one immediate best-effort sync, so a freshly-linked account isn't sitting empty
-until the next scheduled poll.
+> **✅ As built (2026-07-20, `95eccde`).** Ports live in `sure_app::ports`: `Clock` /
+> `SystemClock` plus `AccountRepo`, `BrokerageRepo`, `StockPriceCacheRepo`, `ValuationRepo`,
+> `FxRatesRepo`, `RuleRepo`, `ReportRepo`, `ProviderRepo`, `TransferRepo`,
+> `ExchangeRateRepo`. `sure-dal` now depends on `sure-app` and provides
+> `sure_dal::store::SqliteStore`, one struct implementing every port by delegating to the
+> existing per-entity modules and mapping row shapes. Services are structs
+> (`BrokerageService` etc.) holding `Arc<dyn Port>`s; `AppState` holds `db` + the four
+> services + a `stock_prices` port, wired in `AppState::new` (HTTP composition root) and
+> again in `serve()` for the scheduler tasks. A `FixedClock` test seam lives in
+> `sure-app`. **Divergence from the plan:** the ports own plain row types rather than
+> returning `sure-core`/`sure-dal` structs, since `sure-app` can't depend on `sure-dal`
+> (the inversion) — this already decouples the *port surface* from the table shape, which
+> is a down payment on Phase 3a for those shapes.
 
-`current_balance` addresses a gap transactions alone can't: a provider's transaction
-history often doesn't reach back to when the account was opened (a mortgage's full term,
-say), so summing only the available transactions drifts from the real balance. The sync
-service upserts a same-day, `source = 'provider'` valuation from whatever this returns
-after every successful sync — `account_value_at` (the balance/net-worth logic in
-`sure_app::reports`) already prefers the latest valuation over summed transactions for any
-account kind, so this anchors the displayed balance to the upstream's live figure going
-forward, while transactions remain the detailed ledger for the rules engine and history.
-A partial unique index (`valuations(account_id, as_of) WHERE source = 'provider'`, added
-in `0010_provider_valuations.sql`) makes repeated same-day syncs update that day's snapshot
-in place rather than accumulating rows; manual/cron valuations are unaffected. The same
-balance fetch also carries an optional credit `limit_minor` (Akahu's `balance.limit`),
-patched into a `credit_card`/`revolving_credit` account's `DepositoryMeta.credit_limit_minor`
-(`accounts::set_credit_limit`, a no-op for any other kind) — the web UI computes "remaining
-borrowing" from that plus the current balance.
+Invert the dependency for the logic-heavy services so they can be unit-tested against
+in-memory fakes, and abstract the clock. **Scope this deliberately**: add ports for the
+services that contain real branching logic (rules, brokerage/FX, reports, sync); leave
+thin CRUD routes calling `sure_dal` directly — a `TransactionRepo::list` that a handler
+calls once and forwards is ceremony (the exact judgement `ARCHITECTURE.md` already makes).
 
-`ProviderTransaction.category` (a `ProviderCategory { name, group }`) is the other piece
-of enrichment a source can carry — Akahu's NZFCC classification, for instance.
-`import_transactions` (`sure-dal`) resolves it via `categories::find_or_create` /
-`merchants::find_or_create` (a group becomes the parent of its named category; a newly-
-seen merchant is seeded with that category as its default) so imported transactions are
-categorized instead of landing uncategorized, without duplicating a category/merchant
-already reused by name across a sync's many rows. An already-known merchant's own default
-category is never overwritten by a later import.
-
-This crate implements two more ports (also defined in `sure_app::ports`), consumed by
-`sure-app`'s scheduled tasks: `StockPriceProvider` (`fetch_daily_prices` → daily closes,
-implemented by `YahooFinanceProvider`, driven by `StockPriceTask` and injected into
-`AppState` for the on-demand price lookups the brokerage/stock-price routes make) and
-`ExchangeRateProvider` (`fetch_rates(base)` → FX quotes, implemented by the free/keyless
-`FrankfurterProvider`, driven by `ExchangeRateTask`). Neither uses the `Registry` — there's
-exactly one implementation of each, instantiated directly in the composition root.
-
-### `sure-app` — the application core
-The hexagon's interior: the use-case services that hold **all the business logic**, the
-compute engines, the background tasks, and — the point of the crate — the **ports** those
-services depend on. No `sqlx`, no `axum`, no SQL, no HTTP.
-
-Services are structs constructed from their dependencies as trait objects, so each can be
-unit-tested against in-memory fakes:
-
-- `BrokerageService` — price each open position from the historical-price cache, convert
-  via FX, total into the account currency, and backfill a daily valuation series.
-- `ReportService` — running balances, currency normalisation, category roll-ups, flow
-  graphs (the ~800-line aggregation that was previously in the web crate).
-- `RuleService` — the `zen-expression` evaluation loop that turns transaction contexts
-  into decided category/merchant/one-off changes.
-- `SyncService` — the fetch → dedupe → persist → audit → revalue flow shared by the manual
-  sync route and `ProviderPollTask`. Also owns `survey_accounts`, the single reading of a
-  discovery response the household is entitled to: which upstream accounts are already
-  linked, and which are *joint* — reported by more than one connected login. Discovery hides
-  the ones already linked and `link` refuses them, both from that one function, because a
-  joint account arrives once per holder's login with a different `external_id` and nickname
-  in each, and linking both counts one bank account twice in net worth.
-- `ForecastService` — resolves each asset/investment/liability account's and each
-  top-level income/expense category's growth/volatility/dividend-yield assumption
-  (override → an existing enabled cron's rate → derived from history, or a deterministic
-  amortisation schedule for a mortgage/loan with complete terms), then runs a Monte Carlo
-  projection (thousands of independent monthly paths) into P10/P25/median/mean/P75/P90
-  net-worth bands. Every `forecast_events` step-change/one-off applies identically across
-  every path — a user-asserted certainty, not something the simulation adds noise to.
-  Never writes to the real ledger; unlike `crons`, nothing here is ever applied for real.
-- `StockPriceTask` and `sure_app::tasks::{exchange_rates, provider_poll, transfer_link}` —
-  the `ScheduledTask` implementations.
-
-The ports live in `sure_app::ports`:
+### Ports live in `sure-app`
 
 ```rust
-// The wall clock, abstracted so day-by-day logic is deterministic in tests.
-pub trait Clock: Send + Sync {
-    fn now(&self) -> DateTime<Utc>;
-    fn today(&self) -> NaiveDate { self.now().date_naive() }
-}
+// sure-app/src/ports.rs
+use sure_core::{Account, AppResult, StockPrice, Transaction /* … */};
 
-#[async_trait]
+#[async_trait::async_trait]
 pub trait AccountRepo: Send + Sync {
     async fn get(&self, id: i64) -> AppResult<Account>;
 }
-// …plus BrokerageRepo, StockPriceCacheRepo, ValuationRepo, FxRatesRepo, RuleRepo,
-//    ReportRepo, ProviderRepo, TransferRepo, ExchangeRateRepo, ForecastRepo — and the
-//    provider ports (TransactionProvider, StockPriceProvider, ExchangeRateProvider,
-//    ProviderRegistry), all implemented by sure-providers.
-```
 
-Both `sure-dal` and `sure-providers` implement ports from this crate, so both depend on it
-and it depends on neither — one rule for every outbound dependency: the port is defined
-here, the adapter lives outside and implements it, and the composition root injects the
-concrete one.
-
-Because `sure-dal` must depend on `sure-app` to implement these traits, `sure-app` cannot
-depend back on `sure-dal` (Cargo forbids the cycle). So every row shape a port returns is
-a **plain type owned by `sure_app::ports`** (`HoldingRow`, `WalletRow`, `TxCtx`, …), not
-one of `sure-dal`'s internal `FromRow` structs — the adapter maps between the two. Where a
-shape is already shared domain vocabulary (`Account`, `Valuation`, `Provider`, …) the
-ports reuse `sure_core` directly. This already decouples the *port surface* from the table
-shape; Phase 3 extends the same decoupling to the remaining `sure-core` types.
-
-`SystemClock` is the real clock (used by the composition root); a `FixedClock` test seam
-lets a service's unit tests freeze "today".
-
-### `sure-dal` — the data-access adapter
-Owns everything SQLite-specific: pool creation and pragmas (WAL, foreign keys), the
-embedded migration set (`packages/dal/migrations`), `MIGRATOR`, and — the point of the
-crate — **every SQL query in the app**. Exposes a `Db` type alias (today just
-`SqlitePool`) that the composition root passes around. A `build.rs` emits
-`rerun-if-changed=migrations` so a newly-added migration always forces a recompile (the
-classic `sqlx::migrate!` staleness trap).
-
-Queries live in per-entity repository modules (`sure_dal::{accounts, transactions,
-categories, merchants, rules, reports, crons, equity, providers, snapshot, valuations,
-currencies, settings, exchange_rates, scheduled_tasks, forecast}`). Each module owns its
-row/request/response types (they derive `FromRow`) and its functions, which take `&Db` and
-return `AppResult<T>` — so no `sqlx` type ever crosses the crate boundary. Conventions are
-uniform: `list → Vec<T>`, `create → T`, `get`/`update → T` (`NotFound` if absent),
-`delete → ()`; foreign-key and unique-constraint failures are mapped to
-`AppError::validation`/`Conflict` here rather than leaking a database error upward. Whole
-multi-statement operations that must be atomic (a rules run and its audit trail, a config
-import, the crons engine) run inside a transaction owned by the DAL.
-
-The adapter to the application core is `sure_dal::store::SqliteStore` — **one struct
-wrapping the pool that implements every `sure_app::ports` repo trait** by delegating to the
-per-entity functions above and mapping each row into the port's plain type. Because one
-struct implements every port, the composition root can hand out `store.clone()` for each
-of a service's dependencies. `SqliteStore` is also where the row-shape → port-shape mapping
-lives, keeping the SQL untouched by the port introduction.
-
-### `sure-api` — the HTTP boundary
-A thin driving adapter: the Axum handlers, the request/response DTOs, the OpenAPI
-document, and request telemetry. **No SQL, no business logic, no `main`** — every handler
-either calls one `sure_app` service or reaches into `AppState`'s repo port directly for a
-thin CRUD aggregate; nothing calls `sure_dal`. It re-exports the lower crates it does
-depend on under their historical module paths so handler code reads unchanged:
-
-```rust
-pub use sure_core::error;             // crate::error::AppError, ...
-pub use sure_providers as providers;  // crate::providers::{Registry, TransactionProvider, ...}
-```
-
-`AppState` (defined in `state.rs`) is the injection point: every field is either an
-`Arc<Service>` (the five logic-heavy services) or `Arc<dyn Port>` (a `sure_app::ports`
-trait object for a thin-CRUD aggregate) — both types `sure-app` defines, so the struct
-itself never names `sure_dal`. `build_app(state, web_dir, &ApiConfig)` assembles the
-router, the OpenAPI JSON endpoint, and the middleware stack around whatever `AppState`
-it's handed; it's called both by `sure-server`'s `serve()` and by the e2e harness (with a
-fresh `AppState` built the same way production does), so there's no separate "test app"
-that could drift from production.
-
-Five sibling modules make up that stack, each a thin layer over the routes:
-`cache` (the route→cache-policy/deadline table), `etag` (weak validators and `304`s),
-`limits` (per-client rate limiting, the in-flight ceiling, the shared error envelope),
-`security` (security headers and the CORS allowlist), and `telemetry` (the request span
-and error normalisation). `config` holds their tunables as plain data with `Default` —
-**it parses no environment**, because reading the environment is a concern of *running*
-the server. See [HTTP.md](HTTP.md) for what each layer does and why it sits where it does.
-
-### `sure-server` — the composition root
-A thin crate with exactly one job: own `main`, and be the only place a concrete adapter
-is named and wired together. It's the sole dependent of `sure-dal` left in the binary's
-own source (as opposed to `sure-api`, which depends on `sure-app` and `sure-providers`
-only) — splitting it out of `sure-api` is what makes "`sure-api` depends only on
-`sure-app` [+ `sure-providers`, for the couple of routes that need a concrete provider
-adapter directly]" literally true, not just true of its business logic.
-
-```rust
-// sure-server/src/lib.rs
-fn build_state(db: Db) -> sure_api::State {
-    let store = Arc::new(SqliteStore::new(db));
-    let clock = Arc::new(SystemClock);
-    let brokerage = Arc::new(BrokerageService::new(store.clone(), /* …ports… */, clock.clone()));
-    // reports, rules, sync built the same way, then handed out as `sure_api::State { .. }`
-    // — a plain struct literal, since every `AppState` field is `pub`.
-    sure_api::State { brokerage, /* … */ stock_prices: store.clone(), /* … */ providers: store }
+#[async_trait::async_trait]
+pub trait BrokerageRepo: Send + Sync {
+    async fn positions_at(&self, account_id: i64, as_of: &str) -> AppResult<Vec<HoldingRow>>;
+    async fn wallet_balances_at(&self, account_id: i64, as_of: &str) -> AppResult<Vec<WalletRow>>;
+    async fn account_tickers(&self, account_id: i64) -> AppResult<Vec<(String, String)>>;
+    async fn earliest_activity_date(&self, account_id: i64) -> AppResult<Option<String>>;
 }
 
-pub async fn serve(config: Config) -> anyhow::Result<()> {
-    let pool = sure_dal::connect(&config.database_url).await?;
-    sure_dal::migrate(&pool).await?;
-    // …build a second SqliteStore + SystemClock, register the scheduler tasks
-    // (skipped entirely when BACKGROUND_TASKS=off, as the e2e suite sets)…
-    let app = sure_api::build_app(build_state(pool.clone()), config.web_dir.as_deref(), &config.api);
-    http::serve(listener, app, config.http).await?;   // drains before returning
-    pool.close().await;
-    Ok(())
+#[async_trait::async_trait]
+pub trait StockPriceCacheRepo: Send + Sync {
+    async fn get_at(&self, ticker: &str, exchange: &str, as_of: &str) -> AppResult<Option<StockPrice>>;
+    async fn upsert(&self, ticker: &str, exchange: &str, as_of: &str, close: &str, ccy: &str) -> AppResult<()>;
+}
+
+// Abstracts the wall clock so day-by-day logic (brokerage backfill, scheduler,
+// stock-price polling) is deterministic in tests instead of reading Utc::now() directly.
+pub trait Clock: Send + Sync {
+    fn now(&self) -> chrono::DateTime<chrono::Utc>;
+    fn today(&self) -> chrono::NaiveDate { self.now().date_naive() }
 }
 ```
 
-`Config` (all environment parsing — `DATABASE_URL`/`BIND_ADDR`/`WEB_DIR`/`BACKGROUND_TASKS`
-plus the HTTP tunables it hands to `sure-api` as an `ApiConfig`) lives here too, for the same reason:
-it's a concern of *running* the server, not of the routes themselves. The crate's only
-binary, `sure-api`, is what `Dockerfile`/`package.json`/CI actually build and run — the
-name predates the split and was kept unchanged so nothing downstream (the Docker
-`ENTRYPOINT`, `packages/api-tests`' spawned-binary path) needed to change.
+Also introduced here: `ValuationRepo`, `FxRatesRepo` (the `currency_decimals` +
+`exchange_rates` loaders `Fx::load` uses), `RuleRepo`, and `ReportRepo`. The provider port
+traits (`StockPriceProvider`, `TransactionProvider`, `ExchangeRateProvider`) were initially
+left in `sure-providers`; Phase 3c′ (below) relocated them into `sure-app::ports` too, so
+every port now has a single home.
 
-The `http` module owns the TCP accept loop instead of calling `axum::serve`, because the
-connection-level guards — a slowloris timeout, a connection ceiling, HTTP/2 stream limits,
-and a graceful drain — are all settings on hyper's connection builder, which `axum::serve`
-constructs internally and never exposes. Draining before `pool.close()` is what stops a
-container restart from cutting a SQLite write short. See [HTTP.md](HTTP.md).
+### Adapter in `sure-dal`
 
-## Why this shape, and how it grows
+One struct wrapping the pool implements every repo port by delegating to the existing free
+functions — the functions don't change, so the SQL is untouched:
 
-The goal is smaller, independently-testable units with a one-way dependency graph and the
-volatile technologies (web framework, database) pinned to the edges:
+```rust
+// sure-dal/src/store.rs
+use sure_app::ports::{AccountRepo, StockPriceCacheRepo /* … */};
 
-- **The error type is the seam between layers.** Every crate returns `AppResult<T>`; only
-  `sure-api` (with `sure-core/axum`) knows how that becomes an HTTP status, and only
-  `sure-dal` (with `sure-core/sqlx`) knows how a `sqlx::Error` becomes an `AppError`. Each
-  direction is a feature on the shared error type, so web and persistence stay out of the
-  layers that don't need them.
-- **SQL lives in exactly one crate.** `sure-app` and `sure-api` name no `sqlx` type and
-  issue no query; they ask a repo port for data and hand it changes to persist. The
-  concrete store sits behind `SqliteStore`, so a different backend is a new adapter, not a
-  rewrite of the services.
-- **Every aggregate sits behind a port, but for two different reasons.** The logic-heavy
-  services (brokerage, reports, rules, sync, forecast) depend on repo-port *traits* and the `Clock`
-  port because that's what makes their branching logic unit-testable against in-memory
-  fakes — `SqliteStore` is one implementation among what could be several. The thin CRUD
-  aggregates (accounts, categories, merchants, currencies, settings, …) also go through a
-  port, but `SqliteStore` is their only implementation ever expected to exist; the trait
-  there isn't for test substitutability, it's what makes "`sure-api` cannot depend on
-  `sure-dal`" a compiler-enforced fact rather than a convention. Once that was the goal
-  (Phase 3c), a thin CRUD handler had no other way to reach its data — it can only see
-  what `AppState` hands it, and `AppState`'s fields are `sure_app` types. (This supersedes
-  two earlier decisions in turn: first that the DAL should expose *only* functions and no
-  traits, then — mid-refactor — that a port was only worth it where polymorphism-for-
-  testing was real. Both were reasonable calls under a narrower goal than the one that
-  ultimately won: an `sure-api` that depends on `sure-dal` in zero call sites, not just in
-  the ones that happen to need a test double.)
+#[derive(Clone)]
+pub struct SqliteStore { pub db: crate::Db }
 
-**How compute and persistence divide.** A feature that is part pure logic and part SQL
-splits across `sure-app` and `sure-dal`: the logic (and the ports it needs) lives in
-`sure-app`, the SQL in `sure-dal` behind `SqliteStore`. Rules are the clearest case: the
-DAL loads evaluation contexts and, given a list of decided changes, writes the transaction
-updates and audit rows in one transaction; `RuleService` owns the `zen-expression` loop
-that turns contexts into those changes. Reports follow the same shape — DAL loaders return
-rows, `ReportService` crunches them. Operations that are *all* SQL and must be atomic (the
-crons engine, config import/export, run undo) live wholly in the DAL and are exposed to the
-services as a single port method.
+#[async_trait::async_trait]
+impl AccountRepo for SqliteStore {
+    async fn get(&self, id: i64) -> AppResult<Account> { crate::accounts::get(&self.db, id).await }
+}
 
-## Type safety across the boundary
+#[async_trait::async_trait]
+impl StockPriceCacheRepo for SqliteStore {
+    async fn get_at(&self, t: &str, e: &str, a: &str) -> AppResult<Option<StockPrice>> {
+        crate::stock_prices::get_at(&self.db, t, e, a).await
+    }
+    async fn upsert(&self, t: &str, e: &str, a: &str, c: &str, ccy: &str) -> AppResult<()> {
+        crate::stock_prices::upsert(&self.db, t, e, a, c, ccy).await
+    }
+}
+```
 
-`cargo run --bin gen-openapi` serialises the `utoipa` document to
-`packages/client/openapi.json`; `openapi-typescript` turns it into `paths`/`components`
-types; the SPA calls the API through `openapi-fetch`. A backend change that alters a
-request or response therefore surfaces as a **TypeScript compile error** in the web app.
-(`packages/client/strip-operation-ids.mjs` drops duplicate `operationId`s so the generator
-keys types by path — see its comment for the why.)
+`sure-dal` gains `sure-app` as a dependency (to see the traits). No cycle:
+`dal → app → core`, and `dal → core` directly.
+
+### Services depend on ports, not on `Db`
+
+```rust
+// sure-app/src/brokerage.rs — after
+use std::sync::Arc;
+
+pub struct BrokerageService {
+    accounts: Arc<dyn AccountRepo>,
+    brokerage: Arc<dyn BrokerageRepo>,
+    prices: Arc<dyn StockPriceCacheRepo>,
+    valuations: Arc<dyn ValuationRepo>,
+    fx: Arc<dyn FxRatesRepo>,
+    clock: Arc<dyn Clock>,
+}
+
+impl BrokerageService {
+    pub async fn snapshot(
+        &self,
+        price_provider: Option<&dyn StockPriceProvider>,
+        account_id: i64,
+        as_of: NaiveDate,
+    ) -> AppResult<BrokerageSnapshot> {
+        let account = self.accounts.get(account_id).await?;   // ← port, fakeable
+        // … same logic, `self.prices` / `self.fx` instead of sure_dal::*, self.clock.today()
+    }
+}
+```
+
+Now a unit test constructs `BrokerageService` from hand-written in-memory fakes and a
+frozen `Clock` — no SQLite, no Axum. This is the whole point of the exercise.
+
+### Composition root wires concrete adapters
+
+```rust
+// sure-api/src/main.rs (serve) / state.rs
+let store = Arc::new(sure_dal::SqliteStore { db: pool.clone() });
+let clock = Arc::new(sure_app::SystemClock);
+
+let brokerage = Arc::new(BrokerageService::new(
+    store.clone(), store.clone(), store.clone(), store.clone(), store.clone(), clock.clone(),
+));
+let reports = Arc::new(ReportService::new(store.clone(), clock.clone()));
+let rules   = Arc::new(RuleService::new(store.clone()));
+
+let state = AppState { db: pool, brokerage, reports, rules /* thin CRUD still uses db */ };
+```
+
+`AppState` holds `Arc<Service>`s; handlers call `st.brokerage.snapshot(...)` and never
+name `sure_dal`. `SqliteStore` implementing many traits means one `store.clone()` satisfies
+every port a service needs.
+
+### Acceptance
+
+- `sure-app`'s logic-heavy modules have unit tests that use in-memory fakes (no `sure-dal`
+  in `[dev-dependencies]` for those tests).
+- No `Utc::now()` / `chrono::Utc::now()` inside `sure-app` services — all via `Clock`.
+- Handlers for rules/brokerage/reports/sync reference only `sure_app` types.
+- `cargo test --workspace` + e2e green.
+
+---
+
+## Phase 3 — Purify the domain and complete port coverage
+
+> **3a ✅ done; 3b/3c/3d ⏳ pending.** Starting point after Phase 2: `sure-core` still
+> carried the `sqlx` and `axum` features and its shared types still derived
+> `sqlx::FromRow` / `sqlx::Type`, so for the *shared vocabulary* (`Transaction`,
+> `Account`, …) the domain type was still also the row type and the wire type. The ports'
+> own row shapes (`HoldingRow`, …) were already decoupled from Phase 2.
+
+Finish the hexagon: make `sure-core` a *pure* domain crate and extend port coverage to the
+remaining aggregates, so persistence and transport shapes are fully decoupled from the
+domain model. Order the work by payoff — the row/domain split is the valuable part; the
+wire-DTO split is optional and only where shapes actually diverge.
+
+### 3a. Split the persistence row shape from the domain type (valuable)
+
+> **✅ As built (2026-07-20).** Every `sure_core` type that derived `sqlx::FromRow`
+> directly (18 structs across 12 files: `HoldingLot`, `Dividend`, `DividendWithholding`,
+> `Category`, `Currency`, `Merchant`, `Settings`, `Cron`, `CronRun`, `EquityGrant`,
+> `EquityExercise`, `Valuation`, `ProviderSync`, `StockPrice`, `Rule`, `RuleRun`,
+> `RuleApplicationDetail`, `Transaction`) got a `*Row` struct + `From`/`TryFrom` impl in
+> its `sure-dal` module, following the `AccountRow`/`ProviderRow` pattern that already
+> existed. `AccountKind` also lost its `sqlx::Type` derive — it gained a hand-written
+> `as_str()`/`FromStr` pair instead, and `AccountRow.kind`/binds go through that; since a
+> stored value that fails to parse is now a real (if never-expected) failure mode rather
+> than a `sqlx::Type` decode error, `From<AccountRow> for Account` became a fallible
+> `TryFrom`. `sure-core`'s `sqlx` feature now gates *only* `AppError`'s
+> `From<sqlx::Error>` conversion (not a "domain type" concern) — no struct or enum in
+> `sure-core` derives any `sqlx` trait any more, satisfying the acceptance criterion
+> literally. `Account` also gained `#[derive(Clone)]` (needed by Phase 2's test fakes;
+> every field type already derived `Clone`, so this was a trivial, safe addition — noted
+> here since it landed slightly out of order, alongside Phase 2 work).
+
+Today `sure_core::Transaction` derives `sqlx::FromRow`, so the table shape *is* the domain
+type — a column rename ripples into every handler. Separate them:
+
+```rust
+// sure-core (domain) — pure, no sqlx/serde/utoipa derives
+#[derive(Clone, Debug)]
+pub struct Transaction { /* domain fields */ }
+
+// sure-dal — the row, mapped to the domain type
+#[derive(sqlx::FromRow)]
+struct TransactionRow { /* columns */ }
+impl From<TransactionRow> for sure_core::Transaction { /* … */ }
+```
+
+Now a migration that reshapes a table changes only `TransactionRow` and its `From` impl.
+Do this for every aggregate. Drop `sure-core`'s `sqlx` feature entirely once complete.
+
+### 3b. Split the wire DTO from the domain type (only where it pays)
+
+`sure-core` types also derive `serde` + `utoipa::ToSchema` — transport concerns. The
+purist move is a DTO twin in `sure-api` with `From<Domain>`:
+
+```rust
+// sure-api/src/dto.rs
+#[derive(Serialize, ToSchema)]
+pub struct TransactionDto { /* … */ }
+impl From<sure_core::Transaction> for TransactionDto { /* … */ }
+```
+
+**Be selective.** A `serde` derive on a domain type is harmless to modifiability; the cost
+of a DTO twin + `From` impl for every type is real. Introduce a DTO **only where the wire
+shape genuinely diverges from the domain shape** (e.g. computed/flattened report
+responses, or when an API-compat concern pins the JSON while the domain evolves). Where
+they're identical, keeping the derives on the domain type is the pragmatic call. Track
+which types get a twin so the choice is deliberate, not accidental.
+
+### 3c. Complete the ports; relocate provider ports
+
+Extend repo-port coverage to the aggregates left calling `sure_dal` directly in Phase 2,
+so `sure-api` need not depend on `sure-dal` at all except in the composition root. For a
+single source of truth, move the provider port *traits* (`TransactionProvider`,
+`StockPriceProvider`, `ExchangeRateProvider`) into `sure-app::ports`, leaving
+`sure-providers` as pure adapters implementing them — mirroring the repo-port arrangement
+exactly.
+
+> **✅ 3c′ as built (2026-07-21).** The provider ports moved into `sure_app::ports`
+> alongside the repo ports; `sure-providers` now depends on `sure-app` (the `app → providers`
+> arrow flipped) and defines no traits of its own. Placement split by role: the
+> API-surfaced DTOs (`ProviderAccount`, `ProviderKind`) went to `sure-core` beside the
+> other provider wire types (`Provider`, `ProviderSync`) so `sure-app` needn't take a
+> `utoipa`/`serde` dependency; the internal port DTOs (`ProviderTransaction`,
+> `ProviderCategory`, `ProviderBalance`, `SyncContext`, `StockPriceQuote`,
+> `ExchangeRateQuote`) went to `app::ports` with the traits. A new
+> `ProviderRegistry` port lets `sure-providers`' `Registry` be injected, so
+> `SyncService`, `ProviderPollTask`, and every `routes::providers` handler stop calling
+> `Registry::new()`; the stock-price feed is injected into `AppState` too, so the
+> brokerage/stock-price handlers no longer name `YahooFinanceProvider`.
+>
+> The remainder at the time — three upload *parsers* `sure-api` still named directly, as
+> plain functions rather than through a port — went the same way when the four import
+> endpoints became one: they implement `ImportAdapter` and arrive through an
+> `ImportRegistry` the composition root builds. `sure-api` now names no concrete adapter at
+> all. See [IMPORT.md](IMPORT.md).
+
+### 3d. (Optional) extract the composition root
+
+If we want `sure-api` itself to depend only on `sure-app`, split the binary out: a thin
+`sure-server` crate owns `main.rs`/`serve()` and depends on everything to wire it, while
+`sure-api` becomes a library of routes/handlers depending only on `sure-app`. This is the
+last 5% — worth it only if we start shipping the API as a reusable library.
+
+### Acceptance
+
+- `sure-core` builds with **no** `sqlx`, `axum`, `serde`, or `utoipa` feature required by
+  the domain types (serde/utoipa may remain on consciously-chosen shared DTOs).
+- Changing a table's columns touches only `sure-dal`; changing the JSON contract touches
+  only `sure-api`.
+- `sure-api`'s non-`main` code names neither `sqlx` nor `sure_dal` query functions.
+- `ARCHITECTURE.md` updated to describe the ports-and-adapters model and to supersede the
+  "plain functions, not traits" rationale.
+
+---
+
+## Sequencing, risk, and testing
+
+- **Order:** Phase 1 → 2 → 3, each a separate PR (or a small series). Phase 1 is a pure
+  move and should land and bake before 2 begins. Within Phase 2, port one service at a
+  time (brokerage, then reports, then rules, then sync) — each is independently
+  shippable. Phase 3a (rows) before 3b (DTOs).
+- **Safety net:** the `@sure/api-tests` Playwright e2e suite drives the real binary through
+  the generated client end-to-end — it's the regression gate for every phase, since none
+  of this should change external behaviour. Keep it green at each step; treat a client
+  TypeScript compile error (from a changed OpenAPI shape) as a signal a DTO changed
+  unintentionally.
+- **Merge gates unchanged:** `cargo fmt --all --check`, `cargo clippy --workspace
+  --all-targets --all-features -D warnings`, `cargo test --workspace`, web/api-tests
+  typecheck (see [`CI.md`](./CI.md)). New crate must satisfy all four.
+- **Rollback:** Phase 1 is trivially revertible (it's a move). Phases 2–3 are per-service,
+  so a problematic service can be reverted to direct `sure_dal` calls without unwinding the
+  others.
+
+## Definition of done
+
+The rule engine, report aggregation, and brokerage valuation compile and unit-test with
+**no web framework and no database** in scope; a new persistence backend or a table
+reshape is a change confined to `sure-dal`; a JSON contract change is confined to
+`sure-api`; and `sure-core` is a dependency-free description of the domain. At that point
+"trivial to modify" is structural, not aspirational.

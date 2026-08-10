@@ -37,12 +37,16 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let confirmingDelete = $state<number | null>(null);
+  // The row being edited. The form doubles as the editor rather than growing a second one:
+  // the fields are identical, and a separate inline form would drift from this one.
+  let editingId = $state<number | null>(null);
 
   // A liability is stored negative, so the field asks for what is *owed* and negates on save.
   // Typing 59020.76 into a field labelled "Balance owed" and having it land as an asset is
   // the single likeliest way to get this wrong.
   const isLiability = $derived(accountClass === "liability");
   const amountLabel = $derived(isLiability ? "Balance owed" : "Value");
+  const editing = $derived(editingId !== null);
 
   async function load() {
     const { data } = await api.GET("/api/accounts/{id}/valuations", {
@@ -67,27 +71,49 @@
     return next ? `held until ${formatDate(next.as_of)}` : "held from here on";
   }
 
+  function startEdit(v: Valuation) {
+    editingId = v.id;
+    // Shown the way it was entered: a liability's stored value is negative, and the field
+    // asks for what is owed.
+    amount = String(Math.abs(v.value_minor) / 100);
+    asOf = v.as_of;
+    note = v.note ?? "";
+    error = null;
+  }
+
+  function cancelEdit() {
+    editingId = null;
+    amount = "";
+    note = "";
+    asOf = new Date().toISOString().slice(0, 10);
+    error = null;
+  }
+
   async function save() {
     const major = parseFloat(amount.replace(/[^0-9.-]/g, ""));
     if (isNaN(major)) return;
     busy = true;
     error = null;
     const magnitude = Math.round(Math.abs(major) * 100);
-    const { error: e } = await api.POST("/api/accounts/{id}/valuations", {
-      params: { path: { id: accountId } },
-      body: {
-        as_of: asOf,
-        value_minor: isLiability ? -magnitude : magnitude,
-        note: note.trim() || undefined,
-      },
-    });
+    const body = {
+      as_of: asOf,
+      value_minor: isLiability ? -magnitude : magnitude,
+      note: note.trim() || undefined,
+    };
+    const { error: e } =
+      editingId !== null
+        ? await api.PUT("/api/valuations/{id}", { params: { path: { id: editingId } }, body })
+        : await api.POST("/api/accounts/{id}/valuations", {
+            params: { path: { id: accountId } },
+            body,
+          });
     busy = false;
     if (e) {
-      error = "Couldn't save that value.";
+      error =
+        (e as { error?: { message?: string } }).error?.message ?? "Couldn't save that value.";
       return;
     }
-    amount = "";
-    note = "";
+    cancelEdit();
     await load();
     onchange?.();
   }
@@ -125,9 +151,18 @@
       <input class="input" placeholder="e.g. opening balance from the IR letter" bind:value={note} />
     </label>
     <button class="btn btn-sm btn-primary" onclick={save} disabled={busy || !amount.trim()}>
-      Set {isLiability ? "balance" : "value"}
+      {editing ? "Save changes" : `Set ${isLiability ? "balance" : "value"}`}
     </button>
+    {#if editing}
+      <button class="btn btn-sm" onclick={cancelEdit}>Cancel</button>
+    {/if}
   </div>
+
+  {#if editing}
+    <div class="small faint" style="margin-top:6px">
+      Editing the value set on {formatDate(asOf)}. Changing the date moves it.
+    </div>
+  {/if}
 
   {#if isLiability}
     <div class="small faint" style="margin-top:6px">
@@ -154,7 +189,7 @@
   </div>
 
   {#each rows as v, i (v.id)}
-    <div class="row spread line">
+    <div class="row spread line" class:editing={editingId === v.id}>
       <div style="min-width:0">
         <span class="tabular">{formatMoney(v.value_minor, v.currency_code ?? currency)}</span>
         <span class="badge">{SOURCE_LABEL[v.source]}</span>
@@ -163,15 +198,22 @@
         </div>
       </div>
       {#if v.source === "manual"}
-        {#if confirmingDelete === v.id}
-          <button class="btn btn-sm btn-danger" onclick={() => remove(v.id)}>Delete?</button>
-        {:else}
+        <div class="row" style="gap:6px">
           <button
             class="btn btn-sm"
-            aria-label="Delete value from {v.as_of}"
-            onclick={() => (confirmingDelete = v.id)}>✕</button
+            aria-label="Edit value from {v.as_of}"
+            onclick={() => startEdit(v)}>Edit</button
           >
-        {/if}
+          {#if confirmingDelete === v.id}
+            <button class="btn btn-sm btn-danger" onclick={() => remove(v.id)}>Delete?</button>
+          {:else}
+            <button
+              class="btn btn-sm"
+              aria-label="Delete value from {v.as_of}"
+              onclick={() => (confirmingDelete = v.id)}>✕</button
+            >
+          {/if}
+        </div>
       {:else}
         <!-- Deleting a cron-written valuation would leave its period consumed in `cron_runs`,
              so that month's adjustment could never re-apply. Undo the run instead. -->
@@ -206,6 +248,10 @@
     padding: 7px 0;
     border-top: 1px solid var(--border);
     gap: 8px;
+  }
+  .line.editing {
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+    border-radius: var(--r-sm);
   }
   .warn {
     margin-top: 8px;
