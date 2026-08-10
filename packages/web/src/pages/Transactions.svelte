@@ -58,7 +58,11 @@
 
   let txns = $state<Tx[]>([]);
   let valuations = $state<Val[]>([]);
-  let showAllValuations = $state(false);
+  // Every source by default. Filtering to `manual` made an account whose value is *only* ever
+  // synced — a loan the lender reports a balance for and nothing else — render an empty page,
+  // which is the opposite of the point. The bound below is what keeps a brokerage account's
+  // daily series from drowning its own history.
+  let onlyMyValues = $state(false);
   let showValuation = $state(false);
   let accounts = $state<Account[]>([]);
   let categories = $state<Category[]>([]);
@@ -521,7 +525,7 @@
     const { data } = await api.GET("/api/accounts/{id}/valuations", {
       params: {
         path: { id: Number(accountId) },
-        query: showAllValuations ? {} : { source: "manual" },
+        query: onlyMyValues ? { source: "manual", limit: 500 } : { limit: 500 },
       },
     });
     valuations = data ?? [];
@@ -559,7 +563,7 @@
   // account or the source toggle needs a refetch.
   $effect(() => {
     accountId;
-    showAllValuations;
+    onlyMyValues;
     loadValuations();
   });
 
@@ -924,6 +928,17 @@
         </li>
       {/each}
     </ul>
+  {/if}
+
+  {#if accountId !== ""}
+    <!-- With the filters, not appended under the rows: it is a filter, and the rows live in a
+         horizontally-scrolling container where a control never settles under the pointer.
+         Rendered on the strength of the account alone rather than of what has loaded, so it
+         isn't absent exactly when someone wants it — on an account showing nothing. -->
+    <label class="only-mine small faint">
+      <input type="checkbox" bind:checked={onlyMyValues} />
+      Only show values I set by hand
+    </label>
   {/if}
 
   {#if loading && txns.length === 0}
@@ -1630,6 +1645,13 @@
   }
   .val-amount {
     color: var(--text-muted);
+  }
+  .only-mine {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 0 10px;
+    cursor: pointer;
   }
   .owner-chip {
     position: relative;

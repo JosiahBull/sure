@@ -18,15 +18,29 @@ async function goto(page: Page, route: string) {
 // shape that used to render "No transactions." over the top of its own history.
 const HOME = "/transactions?account=4";
 
-test("an account's manual valuations show as rows in its history", async ({ page }) => {
+test("an account's values show as rows in its history, whoever wrote them", async ({ page }) => {
   await goto(page, HOME);
 
   const rows = page.locator(".val-row");
   await expect(rows.first()).toBeVisible();
   await expect(rows.first()).toContainText("Value set");
-  await expect(rows.first()).toContainText("manual");
   // A level reads `= $X`, against a transaction's +/- delta.
   await expect(rows.first().locator(".val-amount")).toContainText("=");
+
+  // Every source, not just the ones typed by hand. Filtering to `manual` by default meant an
+  // account whose value is *only* ever synced — a loan the lender reports a balance for and
+  // nothing else — rendered an empty page, which is the opposite of the point.
+  // Wait for the fetch to land before counting: the rows arrive after the first paint.
+  await expect.poll(() => rows.count()).toBeGreaterThan(1);
+  const badges = new Set(await rows.locator(".badge").allTextContents());
+  expect(badges.has("manual")).toBe(true);
+  expect(badges.has("scheduled")).toBe(true);
+
+  // …and they can still be narrowed to the ones you set.
+  const all = await rows.count();
+  await page.locator("label.only-mine").click();
+  await expect.poll(() => rows.count()).toBeLessThan(all);
+  expect(new Set(await rows.locator(".badge").allTextContents())).toEqual(new Set(["manual"]));
 });
 
 /**
