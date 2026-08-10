@@ -29,6 +29,10 @@ axum = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 tokio = { workspace = true }
+# Only for the container's `--health-check` mode. Adds nothing to the image: every provider
+# adapter in `sure-providers` already pulls this in, so the client is linked into the binary
+# either way — this line just lets `sure-server` name it.
+reqwest = { workspace = true }
 tower = { workspace = true }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }

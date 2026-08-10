@@ -64,8 +64,20 @@ RUN pnpm --filter @sure/client generate \
  && pnpm --filter @sure/web build:fast
 
 # ---- Compile the release binary (arch-specific → built per target platform) ---------
+# Statically linked against musl, so the runtime image below can be one with no libc, no
+# shell and no package manager in it at all. This stage runs *as* the target platform (no
+# --platform override), so under `buildx --platform linux/amd64,linux/arm64` each arch
+# compiles natively-under-emulation and `musl-gcc` is always the one for the arch in hand —
+# no cross toolchain to configure.
 FROM rust:${RUST_VERSION}-bookworm AS bin
 WORKDIR /build
+# musl-tools brings `musl-gcc`; cmake and clang are for `aws-lc-sys`, the C/asm crypto
+# backend behind rustls, which every provider adapter's HTTPS goes through. SQLite is
+# compiled into the binary too (libsqlite3-sys `bundled`), which is what leaves the runtime
+# image needing no shared library whatsoever.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends musl-tools musl-dev cmake clang \
+ && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 # `appbase` and `testproxy` are workspace members, so cargo needs their manifests to load the
 # workspace at all — even though `-p sure-server` never builds testproxy.
@@ -88,20 +100,50 @@ COPY packages/server ./packages/server
 # The release profile (Cargo.toml) already strips symbols and enables LTO. The `sure-api`
 # binary is produced by the `sure-server` crate (the composition root); `sure-api` itself
 # is now a routes/handlers library with no `main`.
-RUN cargo build --release --locked -p sure-server --bin sure-api
+#
+# The triple is derived from the machine rather than passed in, because this stage already
+# *is* the target arch; the binary is then copied to a fixed path so the runtime stage does
+# not have to name a triple it would otherwise have to keep in step.
+RUN case "$(uname -m)" in \
+      x86_64)  TARGET=x86_64-unknown-linux-musl  ;; \
+      aarch64) TARGET=aarch64-unknown-linux-musl ;; \
+      *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac \
+ && rustup target add "$TARGET" \
+ && CC_x86_64_unknown_linux_musl=musl-gcc \
+    CC_aarch64_unknown_linux_musl=musl-gcc \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
+    cargo build --release --locked -p sure-server --bin sure-api --target "$TARGET" \
+ && cp "target/$TARGET/release/sure-api" /sure-api
+# Its own step, not chained onto the build: as part of that `&&` run, any compile failure
+# would have been reported as "not statically linked" instead of as itself. A dynamic
+# binary here would fail at runtime with an unhelpful "no such file or directory" (the
+# missing thing being the loader), so it is worth catching at build time.
+RUN ldd /sure-api 2>&1 | grep -q "not a dynamic executable" \
+ || { echo "sure-api is dynamically linked; the runtime image has no loader for it" >&2; exit 1; }
+# An empty directory to become /data, since the runtime image has no shell to mkdir with.
+RUN mkdir -p /empty-data
 
 # ---- Runtime ------------------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
-# ca-certificates: outbound TLS for providers. curl: HEALTHCHECK. tini: PID-1 signal
-# handling + zombie reaping — it forwards SIGTERM to sure-api, which drains in-flight
-# requests and closes the SQLite pool itself before exiting (see docs/HTTP.md).
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl tini \
- && rm -rf /var/lib/apt/lists/* \
- && useradd --system --uid 10001 --home-dir /app --create-home sure
+# `distroless/static` is about 2 MB and contains no shell, no package manager, no libc and
+# no userland — just ca-certificates (outbound TLS for the providers), /etc/passwd for the
+# nonroot user, and tzdata. Nothing in here is executable except the one binary below, so
+# the usual post-exploitation toolkit — a shell, curl, apt, coreutils — simply is not present.
+#
+# There is no tini. It was here for PID-1 signal handling and zombie reaping, and this
+# process needs neither: `sure_appbase::run` installs its own SIGTERM/SIGINT handlers (so
+# PID 1's "ignore unhandled signals" rule never applies), and the app spawns no child
+# processes at all — the Landlock policy forbids `execve` outright, so there are no zombies
+# to reap. See docs/SANDBOX.md and docs/HTTP.md.
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 WORKDIR /app
-COPY --from=bin /build/target/release/sure-api /usr/local/bin/sure-api
-COPY --from=web /build/packages/web/dist ./web
+# Owned by root and not writable by the user that runs it: the binary cannot rewrite itself.
+COPY --from=bin --chown=root:root --chmod=0555 /sure-api /usr/local/bin/sure-api
+COPY --from=web --chown=root:root /build/packages/web/dist ./web
+# 65532 is distroless' `nonroot`. The volume has to be owned by it, and with no shell there
+# is nothing to `chown` with — so the ownership is set on the way in from an empty directory.
+COPY --from=bin --chown=65532:65532 /empty-data /data
 
 # Single-binary runtime config. BIND_ADDR is 0.0.0.0 because the app's own default,
 # 127.0.0.1, is unreachable from outside the container. The SQLite DB lives under /data
@@ -116,12 +158,14 @@ ENV DATABASE_URL=sqlite:/data/sure.db \
     BIND_ADDR=0.0.0.0:8080 \
     WEB_DIR=/app/web \
     RUST_LOG=info
-RUN mkdir -p /data && chown sure:sure /data
-USER sure
+USER 65532:65532
 VOLUME ["/data"]
 EXPOSE 8080
 
+# The binary probes itself — there is no curl here, and adding one would mean carrying a
+# second program (and its CVEs) purely to ask a question the server can answer about itself.
+# Exec form, because there is no shell to parse a string one. See packages/server/src/health.rs.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD curl -fsS "http://127.0.0.1:8080/api/health" || exit 1
+  CMD ["/usr/local/bin/sure-api", "--health-check"]
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/sure-api"]
+ENTRYPOINT ["/usr/local/bin/sure-api"]

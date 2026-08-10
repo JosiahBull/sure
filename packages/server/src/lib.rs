@@ -4,6 +4,7 @@
 //! `sure-dal` or `sqlx` — that split is the point of this crate.
 
 pub mod config;
+pub mod health;
 pub mod http;
 pub mod sandbox;
 

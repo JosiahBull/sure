@@ -3331,6 +3331,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "landlock",
+ "reqwest 0.12.28",
  "sure-api",
  "sure-app",
  "sure-appbase",

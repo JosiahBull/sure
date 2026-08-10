@@ -337,6 +337,20 @@ pnpm docker:build
 docker run --rm -p 8080:8080 -v sure-data:/data sure:latest
 ```
 
+The image is ~28 MB and contains the statically-linked binary, the built SPA, and a CA
+bundle — and nothing else. No shell, no package manager, no libc, no `curl`, no coreutils:
+`gcr.io/distroless/static` plus a musl build, so the only executable in it is `sure-api`
+itself. That is most of the point. A container whose only program is the one you meant to
+run has nowhere to go if the process is ever compromised, and there is no distro package
+stream underneath it to track CVEs against.
+
+Two things that used to be installed for are gone with it. `curl` was there for the
+`HEALTHCHECK`, which is now `sure-api --health-check` — the server asking itself, through the
+HTTP client the provider adapters already link in, so it costs the image nothing. `tini` was
+there for PID-1 signal handling and zombie reaping, and this process needs neither: it
+installs its own `SIGTERM`/`SIGINT` handlers, and the Landlock policy forbids `execve`, so it
+has no children to reap.
+
 On Linux the process sandboxes itself with [Landlock](https://landlock.io) before it opens
 the database or binds a socket: writable access to the data directory and nothing else,
 read access to the SPA directory and the system config it needs, no `execve` anywhere, and

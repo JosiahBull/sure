@@ -14,6 +14,15 @@ use sure_server::sandbox;
 /// lifecycle helper that insisted on constructing its own would have to run before the
 /// sandbox, or the sandbox would have to run after it. Neither is acceptable.
 fn main() -> anyhow::Result<()> {
+    // Before anything else — before the env file, tracing, config, and above all the
+    // sandbox. The container's HEALTHCHECK runs this binary in probe mode (there is no
+    // shell or `curl` in the runtime image to do it with), and the Landlock policy permits
+    // outbound TCP to 443 and 53 only, so a probe applied after `sandbox::apply` could not
+    // reach the server's own port. It needs none of that setup regardless.
+    if std::env::args().nth(1).as_deref() == Some(sure_server::health::FLAG) {
+        return sure_server::health::probe();
+    }
+
     // First of all, and now more strictly than before: `init_tracing` reads `RUST_LOG`, and
     // everything a provider needs — its base URL in `Config::from_env`, Akahu's token pair in
     // `serve` — is read once, at startup, rather than on the first sync. Nothing gets a second
