@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "concurrently -n api,web -c blue,magenta --kill-others-on-fail \"pnpm dev:api\" \"node scripts/wait-for-backend.mjs && pnpm dev:web\"",
     "clean": "bash scripts/clean.sh",
+    "docker:build": "bash scripts/build.sh",
     "dev:api": "node scripts/dev-api.mjs",
     "dev:api:once": "cargo run -p sure-server --bin sure-api",
     "dev:api:blocked": "node scripts/blocked.mjs node scripts/dev-api.mjs",

@@ -31,6 +31,7 @@ COPY packages/dal ./packages/dal
 COPY packages/providers ./packages/providers
 COPY packages/app ./packages/app
 COPY packages/api ./packages/api
+COPY packages/mcp ./packages/mcp
 # `.sqlx` carries the compile-time query metadata every `sqlx::query!` in `sure-dal` is checked
 # against, and `.cargo/config.toml` pins SQLX_OFFLINE=true. Both are required for the build: with
 # no metadata and no database the macros cannot resolve, and the compile fails. Nothing here ever
@@ -76,6 +77,7 @@ COPY packages/dal ./packages/dal
 COPY packages/providers ./packages/providers
 COPY packages/app ./packages/app
 COPY packages/api ./packages/api
+COPY packages/mcp ./packages/mcp
 # `.sqlx` carries the compile-time query metadata every `sqlx::query!` in `sure-dal` is checked
 # against, and `.cargo/config.toml` pins SQLX_OFFLINE=true. Both are required for the build: with
 # no metadata and no database the macros cannot resolve, and the compile fails. Nothing here ever

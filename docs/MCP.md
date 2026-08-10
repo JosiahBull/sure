@@ -18,7 +18,9 @@ read the ledger and — under a second, separate opt-in — write to it.
 Two switches, and **both** have to allow it:
 
 1. **`SURE_MCP`** — an environment variable, and a *ceiling*. It says the most this process
-   will ever serve. Unset (the default) means `off`, and `/mcp` is not a route at all.
+   will ever serve. Unset (the default) means `off`, and `/mcp` is not a route at all — a
+   client's POST gets a 404, or a 405 from the static handler when the SPA is being served
+   (`WEB_DIR`, as in the container image). Either way there is no MCP behind it.
 2. **Settings → Preferences → Agent access** — the working mode, stored in the database and
    changeable from the app. What is served is this **clamped to the ceiling**.
 
@@ -30,7 +32,7 @@ SURE_MCP=write ./target/release/sure-api     # the app may choose off, read or w
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `SURE_MCP` | `off` | `off` \| `read` \| `write` — the ceiling. Off means `/mcp` 404s. |
+| `SURE_MCP` | `off` | `off` \| `read` \| `write` — the ceiling. Off means `/mcp` is not mounted. |
 | `SURE_MCP_MAX_ROWS` | `200` | Ceiling on rows any one tool returns. |
 
 The reason it is a ceiling and not just a default: the API has no authentication, so a

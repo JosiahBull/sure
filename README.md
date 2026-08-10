@@ -224,6 +224,7 @@ you're looking at.
 | `pnpm dev:api:blocked` | `pnpm dev:api` with the tokio blocking detector compiled in ([above](#finding-blocking-code)) |
 | `pnpm gen:client` | Regenerate the OpenAPI spec and the typed client |
 | `pnpm build` | Generate client, build the release backend, build the SPA |
+| `pnpm docker:build` | Build the release container image locally (`./scripts/build.sh`) |
 | `pnpm seed` | Seed a running backend with demo data |
 | `pnpm test` | Rust tests, then the API e2e tests, then the web Playwright suite |
 | `pnpm test:rust` | Rust unit, integration and doc tests (`cargo test --workspace --all-features`) |
@@ -325,6 +326,16 @@ The HTTP layer — cache directives, compression, h2c, and the abuse guards — 
 in [docs/HTTP.md](docs/HTTP.md), along with every env var that tunes it. The defaults are
 the intended settings; the most likely one to change is `CORS_ALLOWED_ORIGINS` if you serve
 the app from a different hostname than `sure.bullfamilies.com`.
+
+The same thing as a container — one image serving the API and the SPA — is
+`pnpm docker:build` (or `./scripts/build.sh`), which builds exactly what the Release workflow
+publishes on a tag, so a broken image build is something you find before pushing a tag rather
+than after:
+
+```bash
+pnpm docker:build
+docker run --rm -p 8080:8080 -v sure-data:/data sure:latest
+```
 
 On Linux the process sandboxes itself with [Landlock](https://landlock.io) before it opens
 the database or binds a socket: writable access to the data directory and nothing else,
