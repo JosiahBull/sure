@@ -133,7 +133,15 @@ export default async function globalSetup() {
   // built here rather than lazily so a missing binary is one `cargo` error at setup, not a
   // handshake timeout fifteen seconds later.
   execSync("pnpm run build:fast", { cwd: webDir, stdio: "inherit" });
-  execSync("cargo build -p sure-api -p sure-testproxy", { cwd: repoRoot, stdio: "inherit" });
+  // Both binaries are named explicitly, and `sure-api` comes from `sure-server` rather than
+  // from the crate that shares the binary's name: `-p sure-api` selects the *library* package
+  // (`packages/api`), whose only `[[bin]]` is `gen-openapi`, so it compiles happily and leaves
+  // `target/debug/sure-api` absent — a `spawn ... ENOENT` fifteen lines below, blamed on the
+  // spawn rather than on the build. `@sure/api-tests`' global-setup already spelt it this way.
+  execSync("cargo build -p sure-server --bin sure-api -p sure-testproxy --bin sure-testproxy", {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
 
   // Stop a server a previous run left behind. A run whose setup threw never reached
   // global-teardown, so its detached backend is still holding the port — and still holding

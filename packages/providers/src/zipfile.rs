@@ -149,7 +149,7 @@ mod tests {
             10
         );
         let err = budget
-            .read("c", 1, &mut [b'x'].as_slice())
+            .read("c", 1, &mut b"x".as_slice())
             .expect_err("refused")
             .to_string();
         assert!(err.contains("more than 20 bytes"), "{err:?}");
