@@ -34,8 +34,8 @@ use std::sync::Arc;
 
 use chrono::NaiveDate;
 use partly_proxy_lib::{
-    shared, ClusterHandle, Mode, ProxyClusterBuilder, ProxyConfig, RecordingConfig,
-    SharedMiddleware, SharedStorage, UpstreamTarget,
+    ClusterHandle, Mode, ProxyClusterBuilder, ProxyConfig, RecordingConfig, SharedMiddleware,
+    SharedStorage, UpstreamTarget, shared,
 };
 use rust_decimal::Decimal;
 use sure_app::ports::{ExchangeRateProvider, StockPriceProvider};

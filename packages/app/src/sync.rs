@@ -1384,11 +1384,13 @@ mod tests {
             service.adopt_account_numbers("fake").await.expect("adopts"),
             0
         );
-        assert!(accounts
-            .account_numbers
-            .lock()
-            .expect("test mutex")
-            .is_empty());
+        assert!(
+            accounts
+                .account_numbers
+                .lock()
+                .expect("test mutex")
+                .is_empty()
+        );
     }
 
     /// A loan-shaped upstream account, which is what a mortgage arrives as.
@@ -1699,18 +1701,20 @@ mod tests {
         // And the writes really are all skipped — the brokerage valuation is computed
         // elsewhere, and the other two are no-ops for this metadata profile anyway.
         assert!(h.valuations.rows.lock().expect("test mutex").is_empty());
-        assert!(h
-            .accounts
-            .credit_limits
-            .lock()
-            .expect("test mutex")
-            .is_empty());
-        assert!(h
-            .accounts
-            .original_amounts
-            .lock()
-            .expect("test mutex")
-            .is_empty());
+        assert!(
+            h.accounts
+                .credit_limits
+                .lock()
+                .expect("test mutex")
+                .is_empty()
+        );
+        assert!(
+            h.accounts
+                .original_amounts
+                .lock()
+                .expect("test mutex")
+                .is_empty()
+        );
         // The currency-free institution backfill still happens, as it does on a mismatch.
         assert_eq!(
             *h.accounts.institutions.lock().expect("test mutex"),
@@ -1952,8 +1956,10 @@ mod tests {
         // Both attempts are durably recorded as errors, for the same provider.
         let recorded = h.recorded();
         assert_eq!(recorded.len(), 2);
-        assert!(recorded
-            .iter()
-            .all(|r| r.status == SyncOutcome::Error && r.provider_id == 1));
+        assert!(
+            recorded
+                .iter()
+                .all(|r| r.status == SyncOutcome::Error && r.provider_id == 1)
+        );
     }
 }

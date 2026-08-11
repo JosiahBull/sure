@@ -10,7 +10,7 @@ use rmcp::model::{
     Role,
 };
 
-use crate::error::{invalid_params, ToolResult};
+use crate::error::{ToolResult, invalid_params};
 use crate::server::SureMcp;
 
 pub const MONTHLY_REVIEW: &str = "monthly_review";

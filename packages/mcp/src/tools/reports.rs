@@ -11,8 +11,8 @@ use serde::Deserialize;
 use sure_app::reports::{ReportQuery, SpendGroup};
 use sure_core::{GroupBy, Interval, Ownership};
 
-use crate::convert::{money_to_string, resolve_window, table, Range};
-use crate::error::{invalid_params, to_mcp, ToolResult};
+use crate::convert::{Range, money_to_string, resolve_window, table};
+use crate::error::{ToolResult, invalid_params, to_mcp};
 use crate::server::SureMcp;
 
 /// The axis a summary groups along. A twin of [`sure_core::GroupBy`] so the schema shown to

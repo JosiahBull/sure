@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 use serde::Deserialize;
 
 use sure_app::ports::{ExchangeRateProvider, ExchangeRateQuote};

@@ -28,7 +28,7 @@
 use std::time::Duration;
 
 use axum::extract::{MatchedPath, Request, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
 

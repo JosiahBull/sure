@@ -1,8 +1,8 @@
 //! Browser-facing hardening: the response headers that constrain what a page may do with
 //! our output, and the CORS policy that decides who may read it at all.
 
-use axum::http::{header, HeaderName, HeaderValue};
 use axum::Router;
+use axum::http::{HeaderName, HeaderValue, header};
 use tower_http::cors::{AllowMethods, AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 

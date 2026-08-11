@@ -62,8 +62,8 @@ use std::io::Cursor;
 use std::str::FromStr;
 
 use chrono::{NaiveDate, Utc};
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 
 use sure_app::ports::{ProviderCategory, ProviderTransaction};
 use sure_core::CategoryKind;
@@ -2863,9 +2863,11 @@ mod tests {
         assert_eq!(out.exports[0].transactions[0].description, "SHOP A");
         assert_eq!(out.exports[1].transactions[0].description, "SHOP B");
         // Each row's id is namespaced on its own account, so two accounts can't collide.
-        assert!(out.exports[1].transactions[0]
-            .external_id
-            .starts_with("asb:12-3136-0000123-51:"));
+        assert!(
+            out.exports[1].transactions[0]
+                .external_id
+                .starts_with("asb:12-3136-0000123-51:")
+        );
         // Several accounts is the ordinary case, not a caveat: the result describes each one, so
         // there is nothing left for an upload-level warning to add.
         assert!(out.warnings.is_empty(), "{:?}", out.warnings);

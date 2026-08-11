@@ -8,11 +8,11 @@
 
 #![cfg(unix)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use sure_appbase::{run, AppOutcome, LifecycleConfig, Shutdown, Trigger};
+use sure_appbase::{AppOutcome, LifecycleConfig, Shutdown, Trigger, run};
 
 #[test]
 fn sigterm_cancels_the_application_and_drains_what_it_spawned() {

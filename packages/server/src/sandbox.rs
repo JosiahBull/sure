@@ -328,7 +328,7 @@ fn display(paths: &[PathBuf]) -> String {
 #[cfg(target_os = "linux")]
 impl Plan {
     fn apply(&self, mode: SandboxMode) -> anyhow::Result<()> {
-        use landlock::{LandlockStatus, RulesetStatus, ABI};
+        use landlock::{ABI, LandlockStatus, RulesetStatus};
 
         // The ABI at which every restriction this policy actually relies on exists:
         // filesystem rights (v1), TCP bind/connect (v4) and scoping (v6). `enforce`
@@ -414,8 +414,8 @@ impl Plan {
     /// or the logging.
     fn enforce(&self) -> anyhow::Result<landlock::RestrictionStatus> {
         use landlock::{
-            Access, AccessFs, AccessNet, BitFlags, NetPort, PathBeneath, PathFd, Ruleset,
-            RulesetAttr, RulesetCreatedAttr, Scope, ABI,
+            ABI, Access, AccessFs, AccessNet, BitFlags, NetPort, PathBeneath, PathFd, Ruleset,
+            RulesetAttr, RulesetCreatedAttr, Scope,
         };
 
         // The newest ABI this crate knows about. Compatibility is best-effort by default,

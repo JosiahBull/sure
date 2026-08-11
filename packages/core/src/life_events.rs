@@ -312,10 +312,10 @@ impl LifeEffectSpec {
                     (Some(_), Some(_)) => {
                         return Err(
                             "income_step has both an absolute amount and a percentage".into()
-                        )
+                        );
                     }
                     (None, None) => {
-                        return Err("income_step has neither an amount nor a rate".into())
+                        return Err("income_step has neither an amount nor a rate".into());
                     }
                 };
                 Ok(LifeEffectSpec::IncomeStep {
@@ -656,54 +656,64 @@ mod tests {
     #[test]
     fn an_impossible_column_combination_is_an_error_not_a_coercion() {
         // A step with neither an amount nor a rate.
-        assert!(LifeEffectSpec::from_columns(
-            LifeEffectKind::IncomeStep,
-            EffectColumns {
-                income_stream_id: Some(1),
-                ..EffectColumns::default()
-            }
-        )
-        .is_err());
+        assert!(
+            LifeEffectSpec::from_columns(
+                LifeEffectKind::IncomeStep,
+                EffectColumns {
+                    income_stream_id: Some(1),
+                    ..EffectColumns::default()
+                }
+            )
+            .is_err()
+        );
         // …and one with both.
-        assert!(LifeEffectSpec::from_columns(
-            LifeEffectKind::IncomeStep,
-            EffectColumns {
-                income_stream_id: Some(1),
-                amount_minor: Some(1),
-                rate_bps: Some(1),
-                ..EffectColumns::default()
-            }
-        )
-        .is_err());
+        assert!(
+            LifeEffectSpec::from_columns(
+                LifeEffectKind::IncomeStep,
+                EffectColumns {
+                    income_stream_id: Some(1),
+                    amount_minor: Some(1),
+                    rate_bps: Some(1),
+                    ..EffectColumns::default()
+                }
+            )
+            .is_err()
+        );
         // A one-off pointing at nothing, and at two things.
-        assert!(LifeEffectSpec::from_columns(
-            LifeEffectKind::OneOffAmount,
-            EffectColumns {
-                amount_minor: Some(1),
-                ..EffectColumns::default()
-            }
-        )
-        .is_err());
-        assert!(LifeEffectSpec::from_columns(
-            LifeEffectKind::OneOffAmount,
-            EffectColumns {
-                amount_minor: Some(1),
-                account_id: Some(1),
-                category_id: Some(2),
-                ..EffectColumns::default()
-            }
-        )
-        .is_err());
+        assert!(
+            LifeEffectSpec::from_columns(
+                LifeEffectKind::OneOffAmount,
+                EffectColumns {
+                    amount_minor: Some(1),
+                    ..EffectColumns::default()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            LifeEffectSpec::from_columns(
+                LifeEffectKind::OneOffAmount,
+                EffectColumns {
+                    amount_minor: Some(1),
+                    account_id: Some(1),
+                    category_id: Some(2),
+                    ..EffectColumns::default()
+                }
+            )
+            .is_err()
+        );
         // A pause with no duration.
-        assert!(LifeEffectSpec::from_columns(
-            LifeEffectKind::IncomePause,
-            EffectColumns {
-                person_id: Some(1),
-                rate_bps: Some(0),
-                ..EffectColumns::default()
-            }
-        )
-        .is_err());
+        assert!(
+            LifeEffectSpec::from_columns(
+                LifeEffectKind::IncomePause,
+                EffectColumns {
+                    person_id: Some(1),
+                    rate_bps: Some(0),
+                    ..EffectColumns::default()
+                }
+            )
+            .is_err()
+        );
         // Every error names the kind, so a corrupt row can be found.
         let e = LifeEffectSpec::from_columns(LifeEffectKind::IncomePause, EffectColumns::default())
             .unwrap_err();
@@ -805,10 +815,12 @@ mod tests {
     #[test]
     fn an_out_of_range_amount_is_refused_at_the_edge() {
         assert!(effect_amounts_in_range(&every_spec()).is_ok());
-        assert!(effect_amounts_in_range(&[LifeEffectSpec::OneOffAmount {
-            target: EffectTarget::Account { account_id: 1 },
-            amount_minor: i64::MAX,
-        }])
-        .is_err());
+        assert!(
+            effect_amounts_in_range(&[LifeEffectSpec::OneOffAmount {
+                target: EffectTarget::Account { account_id: 1 },
+                amount_minor: i64::MAX,
+            }])
+            .is_err()
+        );
     }
 }

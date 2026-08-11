@@ -28,8 +28,8 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{ConnectInfo, Request};
 use axum::Router;
+use axum::extract::{ConnectInfo, Request};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;

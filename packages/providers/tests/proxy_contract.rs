@@ -34,8 +34,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::{Method, StatusCode};
 use partly_proxy_lib::{
-    shared, Command, Mode, ProxyClusterBuilder, ProxyConfig, RequestMatcher, SharedMiddleware,
-    SharedStorage, StubbedResponse, UpstreamTarget,
+    Command, Mode, ProxyClusterBuilder, ProxyConfig, RequestMatcher, SharedMiddleware,
+    SharedStorage, StubbedResponse, UpstreamTarget, shared,
 };
 // The middleware under test is `sure-testproxy`'s, not a copy of it: this file is what proves
 // the implementation the Playwright suites and the in-process fixtures actually run.

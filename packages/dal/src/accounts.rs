@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 pub use sure_core::{Account, SaveAccount, SetSecuredBy};
 use sure_core::{
     AccountClass, AccountKind, AccountMetadata, AppError, AppResult, IsoDate, Ownership,
@@ -1802,16 +1802,18 @@ mod tests {
 
         // Zero is the absence of a balance, and both derivations read "no rows" as zero, so
         // the ledger stays empty rather than gaining a $0 row.
-        assert!(crate::transactions::list(
-            &db,
-            sure_core::TxQuery {
-                account_id: Some(account.id),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap()
-        .is_empty());
+        assert!(
+            crate::transactions::list(
+                &db,
+                sure_core::TxQuery {
+                    account_id: Some(account.id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
         assert!(
             crate::valuations::list_for_account(&db, account.id, Default::default())
                 .await
@@ -2039,8 +2041,10 @@ mod tests {
             },
         )
         .await;
-        assert!(validation_message(result)
-            .contains("opening balance can only be set when creating an account"));
+        assert!(
+            validation_message(result)
+                .contains("opening balance can only be set when creating an account")
+        );
 
         // The same edit without it goes through.
         update(

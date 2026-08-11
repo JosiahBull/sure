@@ -31,8 +31,8 @@
 use bytes::Bytes;
 use http::{Method, StatusCode};
 use partly_proxy_lib::{
-    shared, ClusterHandle, Command, ProxyClusterBuilder, RecordedRequest, RequestMatcher,
-    SharedMiddleware, StubbedResponse,
+    ClusterHandle, Command, ProxyClusterBuilder, RecordedRequest, RequestMatcher, SharedMiddleware,
+    StubbedResponse, shared,
 };
 use sure_app::ports::{SyncContext, TransactionProvider};
 use sure_core::AccountKind;

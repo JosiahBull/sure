@@ -12,7 +12,7 @@ use serde::Deserialize;
 use sure_core::PreviewRequest;
 
 use crate::convert::{money_to_string, table};
-use crate::error::{to_mcp, ToolResult};
+use crate::error::{ToolResult, to_mcp};
 use crate::server::SureMcp;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

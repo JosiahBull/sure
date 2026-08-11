@@ -9,8 +9,8 @@ use rmcp::{schemars, tool, tool_router};
 use serde::Deserialize;
 use sure_core::{Ownership, TxQuery};
 
-use crate::convert::{money_to_string, resolve_window, table, truncation_note, Range};
-use crate::error::{invalid_params, to_mcp, ToolResult};
+use crate::convert::{Range, money_to_string, resolve_window, table, truncation_note};
+use crate::error::{ToolResult, invalid_params, to_mcp};
 use crate::server::SureMcp;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]

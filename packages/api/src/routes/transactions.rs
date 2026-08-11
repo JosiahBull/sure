@@ -1,7 +1,7 @@
+use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::Router;
 use serde::Deserialize;
 use utoipa::IntoParams;
 

@@ -39,8 +39,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::{Method, StatusCode};
 use partly_proxy_lib::{
-    shared, ClusterHandle, Command, Mode, ProxyClusterBuilder, ProxyConfig, RequestMatcher,
-    StubbedResponse, UpstreamTarget,
+    ClusterHandle, Command, Mode, ProxyClusterBuilder, ProxyConfig, RequestMatcher,
+    StubbedResponse, UpstreamTarget, shared,
 };
 use sure_app::ports::{ExchangeRateProvider, ExchangeRateQuote};
 use sure_providers::{Endpoint, FrankfurterProvider};

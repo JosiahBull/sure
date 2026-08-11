@@ -13,7 +13,7 @@ use serde::Deserialize;
 use sure_core::{AccountKind, Valuation};
 
 use crate::convert::{money_to_string, table};
-use crate::error::{invalid_params, to_mcp, ToolResult};
+use crate::error::{ToolResult, invalid_params, to_mcp};
 use crate::server::SureMcp;
 
 /// How many of an account's valuations to show. Enough to see a trend; the full series is

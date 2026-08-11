@@ -4,7 +4,7 @@
 
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sure_core::{AppError, AppResult};
 
 use crate::Db;

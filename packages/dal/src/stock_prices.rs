@@ -271,14 +271,18 @@ mod tests {
             "5.50"
         );
         // Before any cached data.
-        assert!(get_at(&db, "MEL", "NZX", "2026-07-01")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            get_at(&db, "MEL", "NZX", "2026-07-01")
+                .await
+                .unwrap()
+                .is_none()
+        );
         // A different ticker has nothing cached.
-        assert!(get_at(&db, "AAPL", "", "2026-07-13")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            get_at(&db, "AAPL", "", "2026-07-13")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use partly_proxy_lib::Mode;
-use sure_testproxy::{start, ClusterConfig, Started, Upstream};
+use sure_testproxy::{ClusterConfig, Started, Upstream, start};
 use tokio::io::AsyncReadExt;
 
 const MODE_ENV: &str = "SURE_TESTPROXY_MODE";

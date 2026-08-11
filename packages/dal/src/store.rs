@@ -1183,8 +1183,8 @@ mod tests {
     use std::sync::Arc;
 
     use sqlx::sqlite::SqlitePoolOptions;
-    use sure_app::reports::{ReportQuery, ReportService};
     use sure_app::SystemClock;
+    use sure_app::reports::{ReportQuery, ReportService};
     use sure_core::{AccountKind, SaveAccount};
 
     use super::*;

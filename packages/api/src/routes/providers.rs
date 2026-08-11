@@ -1,10 +1,10 @@
 use crate::error::{AppError, AppResult};
 use crate::extract::Json;
 use crate::state::AppState;
+use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::Router;
 
 pub use sure_core::{
     LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Ownership, Provider, ProviderAccount,

@@ -5,9 +5,9 @@
 //! that a DTO twin is worth it even in this early, no-trait-inversion phase (see
 //! `docs/architecture-refactor.md`).
 
+use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
-use axum::Router;
 use serde::{Deserialize, Serialize};
 use sure_core::{AccountClass, AccountKind, Ownership};
 use utoipa::{IntoParams, ToSchema};

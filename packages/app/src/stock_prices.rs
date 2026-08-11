@@ -387,10 +387,12 @@ mod tests {
         let provider = FakeProvider::default();
         let as_of = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
 
-        assert!(price_at(&cache, &provider, "ZZZZ", "", as_of)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            price_at(&cache, &provider, "ZZZZ", "", as_of)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -436,10 +438,12 @@ mod tests {
         };
 
         // A missing price is what every caller already handles; a 500 from a panel is not.
-        assert!(price_at(&cache, &provider, "VOD", "LSE", as_of)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            price_at(&cache, &provider, "VOD", "LSE", as_of)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -458,9 +462,11 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(price_at(&cache, &provider, "MEL", "NZX", as_of)
-            .await
-            .is_err());
+        assert!(
+            price_at(&cache, &provider, "MEL", "NZX", as_of)
+                .await
+                .is_err()
+        );
     }
 
     /// An in-memory stand-in for the accounts table's ticker listings — the task never
@@ -568,16 +574,20 @@ mod tests {
         // skipped so the rest of the batch still completes.
         task.run(&CancellationToken::new()).await.unwrap();
 
-        assert!(prices
-            .get_at("MEL", "NZX", &today.to_string())
-            .await
-            .unwrap()
-            .is_some());
-        assert!(prices
-            .get_at("BAD", "", &today.to_string())
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            prices
+                .get_at("MEL", "NZX", &today.to_string())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            prices
+                .get_at("BAD", "", &today.to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// Collects rendered events so a test can assert on what an operator would actually see.
@@ -679,16 +689,20 @@ mod tests {
         assert_eq!(outcome, TaskRun::Completed);
         drop(guard);
 
-        assert!(prices
-            .get_at("MEL", "NZX", &today.to_string())
-            .await
-            .unwrap()
-            .is_some());
-        assert!(prices
-            .get_at("VOD", "LSE", &today.to_string())
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            prices
+                .get_at("MEL", "NZX", &today.to_string())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            prices
+                .get_at("VOD", "LSE", &today.to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
         // The WARN has to name both the symbol and the offending code, or nobody can tell
         // which currency to add.
         assert!(

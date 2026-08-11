@@ -2,10 +2,10 @@
 //! all go through `sure_app::rules::RuleService` (`st.rules`) now, backed by the
 //! `RuleRepo` port. These handlers are thin glue.
 
+use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::Router;
 
 use crate::error::AppResult;
 use crate::extract::Json;

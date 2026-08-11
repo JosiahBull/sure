@@ -9,11 +9,11 @@
 //! process, so a test that raises `SIGTERM` cannot share an executable with tests running
 //! in parallel beside it.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use sure_appbase::{run, AppOutcome, DrainOutcome, LifecycleConfig, Outcome, Shutdown, Trigger};
+use sure_appbase::{AppOutcome, DrainOutcome, LifecycleConfig, Outcome, Shutdown, Trigger, run};
 
 /// A runtime per test — `run` consumes the one it is given.
 fn runtime() -> tokio::runtime::Runtime {

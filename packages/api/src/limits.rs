@@ -26,7 +26,7 @@ use axum::response::Response;
 // is where the middleware that produces them lives, and every existing caller
 // (`crate::cache`, `crate::telemetry`) names them through this module.
 pub use crate::error::{
-    clothe_error, overloaded_response, ErrorAlreadyClothed, PreservedErrorCode,
+    ErrorAlreadyClothed, PreservedErrorCode, clothe_error, overloaded_response,
 };
 
 // ---- per-client rate limit --------------------------------------------------------

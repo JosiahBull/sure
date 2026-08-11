@@ -28,7 +28,7 @@ use std::hash::{Hash, Hasher};
 
 use axum::body::{Body, HttpBody};
 use axum::extract::{MatchedPath, Request, State};
-use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
+use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
 
