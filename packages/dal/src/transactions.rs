@@ -1,4 +1,4 @@
-use sqlx::{FromRow, QueryBuilder, Sqlite};
+use sqlx::{AssertSqlSafe, FromRow, QueryBuilder, Sqlite};
 use sure_core::transactions::MAX_BULK_IDS;
 use sure_core::{AppError, AppResult, Ownership};
 pub use sure_core::{
@@ -484,16 +484,19 @@ pub async fn amounts_for_matching(
         .map(|id| id.to_string())
         .collect::<Vec<_>>()
         .join(",");
-    // Runtime-shaped, so not macro-checkable: the `IN (…)` list is built above.
-    Ok(sqlx::query_as::<_, (i64, String, i64)>(&format!(
+    // Runtime-shaped, so not macro-checkable: the `IN (…)` list is built above. `AssertSqlSafe`
+    // is sqlx 0.9's audit marker for exactly that — `ids` is `i64::to_string` output and
+    // nothing else, so it cannot carry a quote, a comment, or a statement separator.
+    let sql = AssertSqlSafe(format!(
         "SELECT account_id, substr(posted_at, 1, 10), amount_minor FROM transactions
          WHERE account_id IN ({ids})
          ORDER BY posted_at
          LIMIT ?1"
-    ))
-    .bind(limit)
-    .fetch_all(db)
-    .await?)
+    ));
+    Ok(sqlx::query_as::<_, (i64, String, i64)>(sql)
+        .bind(limit)
+        .fetch_all(db)
+        .await?)
 }
 
 /// Delete every transaction on this account that `provider_tag` imported — undo for a bulk

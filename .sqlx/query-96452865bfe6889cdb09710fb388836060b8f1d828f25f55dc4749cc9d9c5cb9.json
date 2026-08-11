@@ -6,79 +6,163 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "account_id",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "account_id"
+          }
+        }
       },
       {
         "name": "ticker",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "ticker"
+          }
+        }
       },
       {
         "name": "exchange",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "exchange"
+          }
+        }
       },
       {
         "name": "name",
         "ordinal": 4,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "name"
+          }
+        }
       },
       {
         "name": "currency_code",
         "ordinal": 5,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "currency_code"
+          }
+        }
       },
       {
         "name": "trade_date",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "trade_date"
+          }
+        }
       },
       {
         "name": "quantity",
         "ordinal": 7,
-        "type_info": "Float"
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "quantity"
+          }
+        }
       },
       {
         "name": "unit_price",
         "ordinal": 8,
-        "type_info": "Float"
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "unit_price"
+          }
+        }
       },
       {
         "name": "fee_minor",
         "ordinal": 9,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "fee_minor"
+          }
+        }
       },
       {
         "name": "kind",
         "ordinal": 10,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "kind"
+          }
+        }
       },
       {
         "name": "external_id",
         "ordinal": 11,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "external_id"
+          }
+        }
       },
       {
         "name": "provider",
         "ordinal": 12,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "provider"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 13,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Right": 10
     },
     "nullable": [
-      true,
+      null,
       false,
       false,
       false,

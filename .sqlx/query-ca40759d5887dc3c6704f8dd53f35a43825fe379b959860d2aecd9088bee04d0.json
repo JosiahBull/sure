@@ -6,122 +6,266 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "person_id",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "person_id"
+          }
+        }
       },
       {
         "name": "label",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "label"
+          }
+        }
       },
       {
         "name": "employer",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "employer"
+          }
+        }
       },
       {
         "name": "currency_code",
         "ordinal": 4,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "currency_code"
+          }
+        }
       },
       {
         "name": "annual_amount_minor",
         "ordinal": 5,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "annual_amount_minor"
+          }
+        }
       },
       {
         "name": "basis",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "basis"
+          }
+        }
       },
       {
         "name": "pay_frequency",
         "ordinal": 7,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "pay_frequency"
+          }
+        }
       },
       {
         "name": "first_payment_on",
         "ordinal": 8,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "first_payment_on"
+          }
+        }
       },
       {
         "name": "starts_on",
         "ordinal": 9,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "starts_on"
+          }
+        }
       },
       {
         "name": "ends_on",
         "ordinal": 10,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "ends_on"
+          }
+        }
       },
       {
         "name": "annual_increase_bps",
         "ordinal": 11,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "annual_increase_bps"
+          }
+        }
       },
       {
         "name": "kiwisaver_bps",
         "ordinal": 12,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "kiwisaver_bps"
+          }
+        }
       },
       {
         "name": "student_loan!: bool",
         "ordinal": 13,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "student_loan"
+          }
+        }
       },
       {
         "name": "take_home_bps",
         "ordinal": 14,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "take_home_bps"
+          }
+        }
       },
       {
         "name": "linked_category_id",
         "ordinal": 15,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "linked_category_id"
+          }
+        }
       },
       {
         "name": "enabled!: bool",
         "ordinal": 16,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "enabled"
+          }
+        }
       },
       {
         "name": "sort_order",
         "ordinal": 17,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "sort_order"
+          }
+        }
       },
       {
         "name": "notes",
         "ordinal": 18,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "notes"
+          }
+        }
       },
       {
         "name": "employer_kiwisaver_bps",
         "ordinal": 19,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "employer_kiwisaver_bps"
+          }
+        }
       },
       {
         "name": "kiwisaver_account_id",
         "ordinal": 20,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "kiwisaver_account_id"
+          }
+        }
       },
       {
         "name": "student_loan_account_id",
         "ordinal": 21,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "student_loan_account_id"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 22,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "created_at"
+          }
+        }
       },
       {
         "name": "updated_at",
         "ordinal": 23,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "updated_at"
+          }
+        }
       }
     ],
     "parameters": {

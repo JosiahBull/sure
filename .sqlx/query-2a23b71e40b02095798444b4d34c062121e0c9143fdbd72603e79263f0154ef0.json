@@ -6,12 +6,19 @@
       {
         "name": "currency_code!",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "currency_code"
+          }
+        }
       },
       {
         "name": "amount_minor!: i64",
         "ordinal": 1,
-        "type_info": "Null"
+        "type_info": "Integer",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -19,7 +26,7 @@
     },
     "nullable": [
       false,
-      null
+      false
     ]
   },
   "hash": "2a23b71e40b02095798444b4d34c062121e0c9143fdbd72603e79263f0154ef0"

@@ -6,38 +6,58 @@
       {
         "name": "ticker!",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "ticker"
+          }
+        }
       },
       {
         "name": "exchange!",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "exchange"
+          }
+        }
       },
       {
         "name": "currency_code!",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "currency_code"
+          }
+        }
       },
       {
         "name": "name: String",
         "ordinal": 3,
-        "type_info": "Null"
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
         "name": "quantity!: f64",
         "ordinal": 4,
-        "type_info": "Null"
+        "type_info": "Float",
+        "origin": "Expression"
       }
     ],
     "parameters": {
       "Right": 3
     },
     "nullable": [
-      false,
-      false,
-      false,
-      null,
-      null
+      true,
+      true,
+      true,
+      true,
+      false
     ]
   },
   "hash": "5e6bcf4b883a9cf03ce2d165adab4578c672693a2f4f97d47432940b349ecb40"

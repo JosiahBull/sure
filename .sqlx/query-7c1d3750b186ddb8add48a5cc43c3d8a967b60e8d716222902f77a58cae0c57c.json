@@ -1,0 +1,158 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO forecast_assumptions\n              (target_type, target_id, annual_growth_bps, annual_volatility_bps,\n               dividend_yield_bps, long_run_growth_bps, notes, annual_fee_bps,\n               annual_fixed_fee_minor)\n           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)\n           ON CONFLICT(target_type, target_id) DO UPDATE SET\n              annual_growth_bps=excluded.annual_growth_bps,\n              annual_volatility_bps=excluded.annual_volatility_bps,\n              dividend_yield_bps=excluded.dividend_yield_bps,\n              long_run_growth_bps=excluded.long_run_growth_bps,\n              annual_fee_bps=excluded.annual_fee_bps,\n              annual_fixed_fee_minor=excluded.annual_fixed_fee_minor,\n              notes=excluded.notes,\n              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           RETURNING id AS \"id!\", target_type, target_id, annual_growth_bps, annual_volatility_bps,\n                     dividend_yield_bps, long_run_growth_bps,\n                     annual_fee_bps AS \"annual_fee_bps?\",\n                     annual_fixed_fee_minor AS \"annual_fixed_fee_minor?\",\n                     notes, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "target_type",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "target_type"
+          }
+        }
+      },
+      {
+        "name": "target_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "target_id"
+          }
+        }
+      },
+      {
+        "name": "annual_growth_bps",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "annual_growth_bps"
+          }
+        }
+      },
+      {
+        "name": "annual_volatility_bps",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "annual_volatility_bps"
+          }
+        }
+      },
+      {
+        "name": "dividend_yield_bps",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "dividend_yield_bps"
+          }
+        }
+      },
+      {
+        "name": "long_run_growth_bps",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "long_run_growth_bps"
+          }
+        }
+      },
+      {
+        "name": "annual_fee_bps?",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "annual_fee_bps"
+          }
+        }
+      },
+      {
+        "name": "annual_fixed_fee_minor?",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "annual_fixed_fee_minor"
+          }
+        }
+      },
+      {
+        "name": "notes",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "notes"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "7c1d3750b186ddb8add48a5cc43c3d8a967b60e8d716222902f77a58cae0c57c"
+}

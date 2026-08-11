@@ -1267,13 +1267,15 @@ mod tests {
     /// refuses outright, so `Inf` and absurd-but-finite are the only two cases on disk.
     async fn insert_unvalidated(db: &Db, account_id: i64, ticker: &str, quantity_sql: &str) {
         // `quantity_sql` is a raw SQL expression (`9e999`), which is the whole point of this
-        // helper — so this one cannot be a checked macro.
-        sqlx::query(&format!(
+        // helper — so this one cannot be a checked macro, and `AssertSqlSafe` (sqlx 0.9's audit
+        // marker for a dynamic query string) is the honest label: the interpolation is
+        // deliberate, and every caller is a literal in this test module.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO holdings
                 (account_id, ticker, exchange, currency_code, trade_date, quantity, unit_price,
                  fee_minor, kind)
              VALUES (?1, ?2, 'NZX', 'NZD', '2026-01-03', {quantity_sql}, 1.0, 0, 'buy')"
-        ))
+        )))
         .bind(account_id)
         .bind(ticker)
         .execute(db)

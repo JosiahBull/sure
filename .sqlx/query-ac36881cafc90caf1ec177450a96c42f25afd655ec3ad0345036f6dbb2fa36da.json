@@ -6,74 +6,152 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "rule_run_id",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "rule_run_id"
+          }
+        }
       },
       {
         "name": "rule_id",
         "ordinal": 2,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "rule_id"
+          }
+        }
       },
       {
         "name": "transaction_id",
         "ordinal": 3,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "transaction_id"
+          }
+        }
       },
       {
         "name": "prev_category_id",
         "ordinal": 4,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "prev_category_id"
+          }
+        }
       },
       {
         "name": "new_category_id",
         "ordinal": 5,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "new_category_id"
+          }
+        }
       },
       {
         "name": "prev_categorized_by_rule_id",
         "ordinal": 6,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "prev_categorized_by_rule_id"
+          }
+        }
       },
       {
         "name": "prev_one_off: bool",
         "ordinal": 7,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "prev_one_off"
+          }
+        }
       },
       {
         "name": "new_one_off: bool",
         "ordinal": 8,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "new_one_off"
+          }
+        }
       },
       {
         "name": "prev_merchant_id",
         "ordinal": 9,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "prev_merchant_id"
+          }
+        }
       },
       {
         "name": "new_merchant_id",
         "ordinal": 10,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "new_merchant_id"
+          }
+        }
       },
       {
         "name": "reverted!: bool",
         "ordinal": 11,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "reverted"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 12,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Right": 1
     },
     "nullable": [
-      true,
+      false,
       false,
       true,
       false,

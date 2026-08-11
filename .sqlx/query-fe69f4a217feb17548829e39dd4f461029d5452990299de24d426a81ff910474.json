@@ -6,12 +6,24 @@
       {
         "name": "ticker",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "ticker"
+          }
+        }
       },
       {
         "name": "exchange",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "holdings",
+            "name": "exchange"
+          }
+        }
       }
     ],
     "parameters": {

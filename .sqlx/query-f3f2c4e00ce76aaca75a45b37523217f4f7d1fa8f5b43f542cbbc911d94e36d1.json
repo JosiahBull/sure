@@ -1,0 +1,170 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rules\n              (name, description, expression, set_category_id, set_one_off, overwrite_manual,\n               stop_on_match, priority, enabled, set_merchant_id)\n           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)\n           RETURNING id AS \"id!\", name, description, expression,\n                     set_category_id AS \"set_category_id?\",\n                     set_one_off AS \"set_one_off: bool\", set_merchant_id AS \"set_merchant_id?\",\n                     overwrite_manual AS \"overwrite_manual!: bool\",\n                     stop_on_match AS \"stop_on_match!: bool\", priority,\n                     enabled AS \"enabled!: bool\", created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "expression",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "expression"
+          }
+        }
+      },
+      {
+        "name": "set_category_id?",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_category_id"
+          }
+        }
+      },
+      {
+        "name": "set_one_off: bool",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_one_off"
+          }
+        }
+      },
+      {
+        "name": "set_merchant_id?",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_merchant_id"
+          }
+        }
+      },
+      {
+        "name": "overwrite_manual!: bool",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "overwrite_manual"
+          }
+        }
+      },
+      {
+        "name": "stop_on_match!: bool",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "stop_on_match"
+          }
+        }
+      },
+      {
+        "name": "priority",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "priority"
+          }
+        }
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f3f2c4e00ce76aaca75a45b37523217f4f7d1fa8f5b43f542cbbc911d94e36d1"
+}

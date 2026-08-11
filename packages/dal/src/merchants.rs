@@ -48,8 +48,8 @@ pub async fn create(db: &Db, input: SaveMerchant) -> AppResult<Merchant> {
     }
     Ok(sqlx::query_as!(
         MerchantRow,
-        "INSERT INTO merchants (name, category_id, note) VALUES (?1, ?2, ?3)
-         RETURNING id, name, category_id, note, created_at, updated_at",
+        r#"INSERT INTO merchants (name, category_id, note) VALUES (?1, ?2, ?3)
+           RETURNING id, name, category_id AS "category_id?", note, created_at, updated_at"#,
         name,
         input.category_id,
         input.note
@@ -68,10 +68,10 @@ pub async fn update(db: &Db, id: i64, input: SaveMerchant) -> AppResult<Merchant
     }
     Ok(sqlx::query_as!(
         MerchantRow,
-        "UPDATE merchants SET name=?2, category_id=?3, note=?4,
-            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?1
-         RETURNING id, name, category_id, note, created_at, updated_at",
+        r#"UPDATE merchants SET name=?2, category_id=?3, note=?4,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE id=?1
+           RETURNING id, name, category_id AS "category_id?", note, created_at, updated_at"#,
         id,
         name,
         input.category_id,
@@ -105,8 +105,8 @@ pub async fn find_or_create(db: &Db, name: &str, category_id: Option<i64>) -> Ap
     }
     match sqlx::query_as!(
         MerchantRow,
-        "INSERT INTO merchants (name, category_id) VALUES (?1, ?2)
-         RETURNING id, name, category_id, note, created_at, updated_at",
+        r#"INSERT INTO merchants (name, category_id) VALUES (?1, ?2)
+           RETURNING id, name, category_id AS "category_id?", note, created_at, updated_at"#,
         name,
         category_id
     )

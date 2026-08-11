@@ -6,7 +6,13 @@
       {
         "name": "last_run_at",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "scheduled_task_runs",
+            "name": "last_run_at"
+          }
+        }
       }
     ],
     "parameters": {

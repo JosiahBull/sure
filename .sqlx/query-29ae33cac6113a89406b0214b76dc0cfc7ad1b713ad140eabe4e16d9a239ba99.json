@@ -6,14 +6,20 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "id"
+          }
+        }
       }
     ],
     "parameters": {
       "Right": 4
     },
     "nullable": [
-      true
+      null
     ]
   },
   "hash": "29ae33cac6113a89406b0214b76dc0cfc7ad1b713ad140eabe4e16d9a239ba99"

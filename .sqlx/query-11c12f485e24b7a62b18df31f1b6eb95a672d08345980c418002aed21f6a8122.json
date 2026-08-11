@@ -6,62 +6,134 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "target_type",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "target_type"
+          }
+        }
       },
       {
         "name": "target_id",
         "ordinal": 2,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "target_id"
+          }
+        }
       },
       {
         "name": "annual_growth_bps",
         "ordinal": 3,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "annual_growth_bps"
+          }
+        }
       },
       {
         "name": "annual_volatility_bps",
         "ordinal": 4,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "annual_volatility_bps"
+          }
+        }
       },
       {
         "name": "dividend_yield_bps",
         "ordinal": 5,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "dividend_yield_bps"
+          }
+        }
       },
       {
         "name": "long_run_growth_bps",
         "ordinal": 6,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "long_run_growth_bps"
+          }
+        }
       },
       {
         "name": "annual_fee_bps",
         "ordinal": 7,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "annual_fee_bps"
+          }
+        }
       },
       {
         "name": "annual_fixed_fee_minor",
         "ordinal": 8,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "annual_fixed_fee_minor"
+          }
+        }
       },
       {
         "name": "notes",
         "ordinal": 9,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "notes"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 10,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "created_at"
+          }
+        }
       },
       {
         "name": "updated_at",
         "ordinal": 11,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "updated_at"
+          }
+        }
       }
     ],
     "parameters": {

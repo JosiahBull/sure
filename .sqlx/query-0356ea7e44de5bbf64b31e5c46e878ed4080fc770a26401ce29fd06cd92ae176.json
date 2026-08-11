@@ -6,34 +6,64 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_event_relations",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "event_id",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_event_relations",
+            "name": "event_id"
+          }
+        }
       },
       {
         "name": "depends_on_event_id",
         "ordinal": 2,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_event_relations",
+            "name": "depends_on_event_id"
+          }
+        }
       },
       {
         "name": "kind",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "forecast_event_relations",
+            "name": "kind"
+          }
+        }
       },
       {
         "name": "min_gap_months",
         "ordinal": 4,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_event_relations",
+            "name": "min_gap_months"
+          }
+        }
       }
     ],
     "parameters": {
       "Right": 0
     },
     "nullable": [
-      true,
+      false,
       false,
       false,
       false,
