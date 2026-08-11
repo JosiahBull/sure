@@ -14,7 +14,7 @@
   "//openapi-fetch": "Held below 0.17 deliberately, and packages/api-tests must match. 0.16 does not apply openapi-typescript-helpers' `Readable<T>` at all; 0.17 wraps both `data` and `error` in it, and its array branch (`T extends (infer E)[] ? Readable<E>[]`) collapses tuples — so `StoredTaxScale.brackets`, generated from Rust's `Vec<(Option<i64>, i64)>` as `[number | null, number][]`, degrades to `(number | null)[][]`. Verified 2026-08-11 by actually installing 0.17.0: `pnpm --filter @sure/web check` then fails in src/pages/TaxRates.svelte with \"Type '(number | null)[]' is not assignable to type '[number | null, number]'. Target requires 2 element(s) but source may have fewer.\" 0.17.0 is the only 0.17.x, so there is no patch release to jump to. Fix open but unmerged upstream (openapi-ts/openapi-typescript#2673, #2842) — raise the cap once one lands, and don't widen the tuple or cast to get around it.",
   "//typescript": "Capped at 5.x by `openapi-typescript`, which peers `typescript: ^5.x`. That is the whole workspace's ceiling, so all three packages move together. Stable 6.0.3 does build clean (gen:client byte-identical, web + api-tests typechecks green, measured 2026-08-11) but it makes openapi-typescript the tree's only unmet peer — `pnpm peers check` is otherwise silent — for no measured gain, so it is not worth taking ahead of upstream. npm `latest` is 7.x and is blocked outright; see the note in packages/web.",
   "dependencies": {
-    "openapi-fetch": "^0.16.0"
+    "openapi-fetch": "^0.17.0"
   },
   "devDependencies": {
     "openapi-typescript": "^7.13.0",
