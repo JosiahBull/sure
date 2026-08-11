@@ -11,11 +11,12 @@
   "scripts": {
     "generate": "node strip-operation-ids.mjs && openapi-typescript ./openapi.json -o ./src/schema.d.ts"
   },
+  "//openapi-fetch": "Held below 0.17 deliberately, and packages/api-tests must match. 0.17 wraps every response in openapi-typescript-helpers' `Readable<T>`, whose array branch (`T extends (infer E)[] ? Readable<E>[]`) collapses tuples: StoredTaxScale's `brackets: [number | null, number][]` comes back as `(number | null)[][]`, so assigning a response to `Schemas[\"StoredTaxScale\"]` stops compiling. Upstream bug, fix open but unmerged (openapi-ts/openapi-typescript#2673, #2842) — raise the cap once one lands, don't widen the tuple to get around it.",
   "dependencies": {
-    "openapi-fetch": "^0.13.5"
+    "openapi-fetch": "^0.16.0"
   },
   "devDependencies": {
-    "openapi-typescript": "^7.9.1",
-    "typescript": "^5.9.2"
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^5.9.3"
   }
 }
