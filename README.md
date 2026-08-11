@@ -368,4 +368,5 @@ directly for personal-app use.
 
 ## License
 
-MIT.
+Not yet licensed. No rights are granted; all rights reserved pending a licensing
+decision.
