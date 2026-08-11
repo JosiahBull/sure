@@ -270,10 +270,10 @@ pub(crate) async fn validate(db: &Db, input: &SaveAccount, write: Write) -> AppR
     // Checked here rather than left to the FK so a form that names a person who has since
     // been deleted gets the same field-level 422 as every other bad value, alongside
     // whatever else is wrong with the save.
-    if let Ownership::Person { person_id } = input.ownership {
-        if !crate::people::exists(db, person_id).await? {
-            problems.push(format!("person {person_id} does not exist"));
-        }
+    if let Ownership::Person { person_id } = input.ownership
+        && !crate::people::exists(db, person_id).await?
+    {
+        problems.push(format!("person {person_id} does not exist"));
     }
     if !problems.is_empty() {
         return Err(AppError::validation(problems.join("; ")));
@@ -425,17 +425,17 @@ pub(crate) async fn insert(
     // net-worth/equity calculations (which only ever read the `valuations` table, never
     // metadata directly) have a real starting value from day one instead of reading as
     // $0 until the user separately remembers to add one by hand.
-    if let AccountMetadata::Property(ref p) = account.metadata {
-        if let (Some(price), Some(date)) = (p.purchase_price_minor, &p.purchase_date) {
-            insert_valuation(
-                tx,
-                &account,
-                date,
-                price,
-                "Initial valuation from purchase price",
-            )
-            .await?;
-        }
+    if let AccountMetadata::Property(ref p) = account.metadata
+        && let (Some(price), Some(date)) = (p.purchase_price_minor, &p.purchase_date)
+    {
+        insert_valuation(
+            tx,
+            &account,
+            date,
+            price,
+            "Initial valuation from purchase price",
+        )
+        .await?;
     }
 
     // The opening balance is seeded here, in the same transaction as the account itself, so

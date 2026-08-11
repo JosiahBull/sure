@@ -802,10 +802,10 @@ pub(crate) async fn load_spend(
             if !include_one_off && t.is_one_off {
                 return false;
             }
-            if let Some(cid) = t.category_id {
-                if cats.is_transfer(cid) {
-                    return false;
-                }
+            if let Some(cid) = t.category_id
+                && cats.is_transfer(cid)
+            {
+                return false;
             }
             match parse_stored_date("transactions.posted_at", None, &t.posted_at) {
                 Some(d) => d >= from && d <= to,
@@ -1717,10 +1717,10 @@ impl ReportService {
             // the household has said this account is not part of what it is worth. Listing it
             // is the point — an account you cannot see is `archived`, which is a different
             // thing — so this is an `if` around the total, never a `continue`.
-            if !a.excluded_from_net_worth {
-                if let Some(base_major) = fx.try_to_base_major(value_minor, &ccy) {
-                    total += base_major;
-                }
+            if !a.excluded_from_net_worth
+                && let Some(base_major) = fx.try_to_base_major(value_minor, &ccy)
+            {
+                total += base_major;
             }
             out.push(AccountBalance {
                 ownership: a.ownership,

@@ -1135,11 +1135,11 @@ fn merge_by_account(parsed: Vec<AsbExport>) -> anyhow::Result<Vec<AsbExport>> {
         // mid-history figure, and putting that on the ledger would invent a large movement.
         // Dropped rather than adjusted: `implied_opening_minor` then works it back from the
         // closing balance, which spans every row the merge holds.
-        if let (Some(at), Some(from)) = (&export.stated_opening_as_of, &export.covered_from) {
-            if at > from {
-                export.stated_opening_minor = None;
-                export.stated_opening_as_of = None;
-            }
+        if let (Some(at), Some(from)) = (&export.stated_opening_as_of, &export.covered_from)
+            && at > from
+        {
+            export.stated_opening_minor = None;
+            export.stated_opening_as_of = None;
         }
     }
     by_account.sort_by(|a, b| a.account.cmp(&b.account));
@@ -1365,10 +1365,10 @@ fn parse_csv(source: &str, bytes: &[u8]) -> anyhow::Result<AsbExport> {
         if preamble.declared.is_some_and(|(f, t)| date < f || date > t) {
             outside_window += 1;
         }
-        if let (Some(previous), Some(balance)) = (running, balance) {
-            if previous + amount_minor != balance {
-                chain_breaks += 1;
-            }
+        if let (Some(previous), Some(balance)) = (running, balance)
+            && previous + amount_minor != balance
+        {
+            chain_breaks += 1;
         }
         if balance.is_some() {
             running = balance;
@@ -1411,15 +1411,15 @@ fn parse_csv(source: &str, bytes: &[u8]) -> anyhow::Result<AsbExport> {
              will be out by the difference"
         ));
     }
-    if let (Some(stated), Some(ledger)) = (stated_closing, out.ledger_balance_minor) {
-        if stated != ledger {
-            out.warnings.push(format!(
-                "the export's closing balance row says {} but its header says {} — one of the \
+    if let (Some(stated), Some(ledger)) = (stated_closing, out.ledger_balance_minor)
+        && stated != ledger
+    {
+        out.warnings.push(format!(
+            "the export's closing balance row says {} but its header says {} — one of the \
                  two was misread",
-                money(stated),
-                money(ledger)
-            ));
-        }
+            money(stated),
+            money(ledger)
+        ));
     }
     // The strongest check in the file: what ASB says the account opened at, against what its
     // own rows and closing balance imply. Reported rather than resolved — a difference means a

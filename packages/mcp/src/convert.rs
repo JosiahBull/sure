@@ -143,12 +143,12 @@ pub fn resolve_window(
         Some(s) => Some(parse(s)?),
         None => range_to.map(|d| d.to_string()),
     };
-    if let (Some(f), Some(t)) = (&from, &to) {
-        if f > t {
-            return Err(invalid_params(format!(
-                "the window starts after it ends: from={f}, to={t}"
-            )));
-        }
+    if let (Some(f), Some(t)) = (&from, &to)
+        && f > t
+    {
+        return Err(invalid_params(format!(
+            "the window starts after it ends: from={f}, to={t}"
+        )));
     }
     Ok((from, to))
 }

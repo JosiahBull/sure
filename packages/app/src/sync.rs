@@ -626,39 +626,36 @@ impl SyncService {
                         // Also best-effort: lets a credit_card/revolving_credit account show
                         // "remaining borrowing" (the web UI computes limit minus what's owed). A
                         // no-op for any account kind with no such concept.
-                        if let Some(limit_minor) = bal.limit_minor {
-                            if let Err(e) = self
+                        if let Some(limit_minor) = bal.limit_minor
+                            && let Err(e) = self
                                 .accounts
                                 .set_credit_limit(provider.account_id, limit_minor)
                                 .await
-                            {
-                                tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider credit limit");
-                            }
+                        {
+                            tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider credit limit");
                         }
                         // Same idea for a mortgage/loan's original borrowed amount, so the web UI
                         // can show how much of it has been paid down. A no-op for any other kind.
-                        if let Some(initial_principal_minor) = bal.initial_principal_minor {
-                            if let Err(e) = self
+                        if let Some(initial_principal_minor) = bal.initial_principal_minor
+                            && let Err(e) = self
                                 .accounts
                                 .set_original_amount(provider.account_id, initial_principal_minor)
                                 .await
-                            {
-                                tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider original loan amount");
-                            }
+                        {
+                            tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider original loan amount");
                         }
                     }
                 }
                 // Backfill the institution name too, but only if unset — see
                 // `set_institution_if_unset`'s doc comment for why this one never
                 // overwrites. Carries no amount, so a currency mismatch doesn't taint it.
-                if let Some(institution) = bal.institution {
-                    if let Err(e) = self
+                if let Some(institution) = bal.institution
+                    && let Err(e) = self
                         .accounts
                         .set_institution_if_unset(provider.account_id, &institution)
                         .await
-                    {
-                        tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider institution");
-                    }
+                {
+                    tracing::warn!(account_id = provider.account_id, error = %e, "could not record provider institution");
                 }
             }
             Ok(None) => {}

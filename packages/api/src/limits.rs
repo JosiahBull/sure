@@ -185,10 +185,10 @@ impl RateLimiter {
     /// believing them from an arbitrary peer would let anyone pick their own rate-limit
     /// key (or someone else's).
     fn client_ip(&self, request: &Request) -> Option<IpAddr> {
-        if self.trust_proxy_headers {
-            if let Some(ip) = from_proxy_headers(request.headers()) {
-                return Some(ip);
-            }
+        if self.trust_proxy_headers
+            && let Some(ip) = from_proxy_headers(request.headers())
+        {
+            return Some(ip);
         }
         request
             .extensions()

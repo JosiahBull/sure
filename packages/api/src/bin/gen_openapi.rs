@@ -9,10 +9,10 @@ fn main() -> anyhow::Result<()> {
     let json = ApiDoc::openapi().to_pretty_json()?;
     match std::env::args().nth(1) {
         Some(path) => {
-            if let Some(parent) = Path::new(&path).parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent)?;
-                }
+            if let Some(parent) = Path::new(&path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&path, json)?;
             eprintln!("wrote OpenAPI spec to {path}");

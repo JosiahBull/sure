@@ -293,27 +293,28 @@ fn plan_run(rules: &[Rule], rows: &[TxCtx]) -> (i64, Vec<PlannedApplication>) {
             let manual = cur.categorized_by_rule_id.is_none() && cur.category_id.is_some();
             let mut new_category = cur.category_id;
             let mut cat_changed = false;
-            if let Some(target) = rule.set_category_id {
-                if (!manual || rule.overwrite_manual) && cur.category_id != Some(target) {
-                    new_category = Some(target);
-                    cat_changed = true;
-                }
+            if let Some(target) = rule.set_category_id
+                && (!manual || rule.overwrite_manual)
+                && cur.category_id != Some(target)
+            {
+                new_category = Some(target);
+                cat_changed = true;
             }
             let mut new_one_off = cur.is_one_off;
             let mut one_off_changed = false;
-            if let Some(v) = rule.set_one_off {
-                if cur.is_one_off != v {
-                    new_one_off = v;
-                    one_off_changed = true;
-                }
+            if let Some(v) = rule.set_one_off
+                && cur.is_one_off != v
+            {
+                new_one_off = v;
+                one_off_changed = true;
             }
             let mut new_merchant = cur.merchant_id;
             let mut merchant_changed = false;
-            if let Some(m) = rule.set_merchant_id {
-                if cur.merchant_id != Some(m) {
-                    new_merchant = Some(m);
-                    merchant_changed = true;
-                }
+            if let Some(m) = rule.set_merchant_id
+                && cur.merchant_id != Some(m)
+            {
+                new_merchant = Some(m);
+                merchant_changed = true;
             }
 
             if cat_changed || one_off_changed || merchant_changed {

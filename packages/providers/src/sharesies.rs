@@ -229,22 +229,20 @@ pub fn parse_wallet_transactions(bytes: &[u8]) -> anyhow::Result<Vec<ProviderTra
         // never emitted as its own wallet row. Add it here as a separate transaction so
         // the per-currency balances net out — otherwise every conversion credits one
         // wallet without ever debiting the other, massively inflating the total.
-        if detail_kind == "fx_order" {
-            if let Some(d) = detail.as_ref() {
-                if let (Some(source_amount), Some(source_currency)) =
-                    (d.source_amount.as_deref(), d.source_currency.as_deref())
-                {
-                    out.push(ProviderTransaction {
-                        external_id: format!("{}:src", r.key),
-                        posted_at: millis_to_rfc3339(r.timestamp.quantum)?,
-                        amount_minor: -decimal_to_minor(source_amount)?,
-                        currency_code: Some(source_currency.to_uppercase()),
-                        description: description.clone(),
-                        merchant: None,
-                        category: Some(transfer_category()),
-                    });
-                }
-            }
+        if detail_kind == "fx_order"
+            && let Some(d) = detail.as_ref()
+            && let (Some(source_amount), Some(source_currency)) =
+                (d.source_amount.as_deref(), d.source_currency.as_deref())
+        {
+            out.push(ProviderTransaction {
+                external_id: format!("{}:src", r.key),
+                posted_at: millis_to_rfc3339(r.timestamp.quantum)?,
+                amount_minor: -decimal_to_minor(source_amount)?,
+                currency_code: Some(source_currency.to_uppercase()),
+                description: description.clone(),
+                merchant: None,
+                category: Some(transfer_category()),
+            });
         }
 
         // The row itself (the target/credit side for an fx_order, or an ordinary movement

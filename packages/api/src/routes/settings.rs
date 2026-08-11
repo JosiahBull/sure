@@ -83,15 +83,15 @@ pub async fn update_settings(
     // Refused rather than clamped. Storing `write` while serving `read` would make the
     // settings page state something untrue about the running server, and "your request was
     // silently reduced" is a worse thing to discover later than a 422 now.
-    if let Some(requested) = input.mcp_mode {
-        if requested > st.mcp_ceiling {
-            return Err(AppError::validation(format!(
-                "SURE_MCP permits at most '{}' on this server, so agent access cannot be set \
+    if let Some(requested) = input.mcp_mode
+        && requested > st.mcp_ceiling
+    {
+        return Err(AppError::validation(format!(
+            "SURE_MCP permits at most '{}' on this server, so agent access cannot be set \
                  to '{}'. Change the SURE_MCP environment variable and restart to raise it.",
-                st.mcp_ceiling.as_str(),
-                requested.as_str()
-            )));
-        }
+            st.mcp_ceiling.as_str(),
+            requested.as_str()
+        )));
     }
     Ok(Json(SettingsView::of(
         st.settings.update(input).await?,

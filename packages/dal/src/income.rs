@@ -184,17 +184,17 @@ fn validate(input: &SaveIncomeStream) -> AppResult<()> {
             input.employer_kiwisaver_bps
         ));
     }
-    if let Some(th) = input.take_home_bps {
-        if !(0..=10_000).contains(&th) {
-            problems.push(format!(
-                "take_home_bps must be between 0 and 10000, got {th}"
-            ));
-        }
+    if let Some(th) = input.take_home_bps
+        && !(0..=10_000).contains(&th)
+    {
+        problems.push(format!(
+            "take_home_bps must be between 0 and 10000, got {th}"
+        ));
     }
-    if let Some(end) = input.ends_on.as_ref() {
-        if end.date() <= input.starts_on.date() {
-            problems.push("ends_on must be after starts_on".into());
-        }
+    if let Some(end) = input.ends_on.as_ref()
+        && end.date() <= input.starts_on.date()
+    {
+        problems.push("ends_on must be after starts_on".into());
     }
     // A schedule with two figures on the same date is a typo, and the unique index would report it
     // as an opaque constraint failure. Name it instead.

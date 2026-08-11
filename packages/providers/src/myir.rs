@@ -281,10 +281,11 @@ fn read_workbook(name: &str, bytes: &[u8]) -> anyhow::Result<Workbook> {
     let mut header_at = None;
     for (i, row) in sheet.rows().enumerate() {
         let first = cell_text(row.first());
-        if first.ends_with(':') && row.len() > 1 {
-            if let Some(value) = row.get(1) {
-                labels.insert(first.trim_end_matches(':').to_lowercase(), value.clone());
-            }
+        if first.ends_with(':')
+            && row.len() > 1
+            && let Some(value) = row.get(1)
+        {
+            labels.insert(first.trim_end_matches(':').to_lowercase(), value.clone());
         }
         if first == "Period ending" {
             header_at = Some(i);
@@ -380,10 +381,10 @@ fn cell_text(cell: Option<&Data>) -> String {
 /// A `Date` column arrives as `Data::DateTime` — calamine's `dates` feature resolves the
 /// cell's number format for us — but a re-saved export can carry the same value as text.
 fn parse_cell_day(cell: Option<&Data>, file: &str, where_: &str) -> anyhow::Result<NaiveDate> {
-    if let Some(Data::DateTime(dt)) = cell {
-        if let Some(day) = dt.as_datetime().map(|d| d.date()) {
-            return Ok(day);
-        }
+    if let Some(Data::DateTime(dt)) = cell
+        && let Some(day) = dt.as_datetime().map(|d| d.date())
+    {
+        return Ok(day);
     }
     parse_day(&cell_text(cell), file, where_)
 }

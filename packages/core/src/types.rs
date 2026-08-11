@@ -989,15 +989,15 @@ impl AccountMetadata {
         // A subtype that *is* set must be one of the curated values, in both modes: an
         // unrecognised one is a typo or a stale client, and it would silently lose its
         // human label everywhere the UI looks it up.
-        if let Some((_, legal)) = SUBTYPE_VALUES.iter().find(|(p, _)| *p == profile) {
-            if let Some(subtype) = field("subtype").and_then(Value::as_str) {
-                let subtype = subtype.trim();
-                if !subtype.is_empty() && !legal.contains(&subtype) {
-                    problems.push(format!(
-                        "subtype '{subtype}' is not one of: {}",
-                        legal.join(", ")
-                    ));
-                }
+        if let Some((_, legal)) = SUBTYPE_VALUES.iter().find(|(p, _)| *p == profile)
+            && let Some(subtype) = field("subtype").and_then(Value::as_str)
+        {
+            let subtype = subtype.trim();
+            if !subtype.is_empty() && !legal.contains(&subtype) {
+                problems.push(format!(
+                    "subtype '{subtype}' is not one of: {}",
+                    legal.join(", ")
+                ));
             }
         }
 

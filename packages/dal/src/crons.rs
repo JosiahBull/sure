@@ -306,18 +306,16 @@ async fn apply_cron(
             break;
         }
         let due = period >= start && last.map(|l| period > l).unwrap_or(true);
-        if due {
-            if let Some(run) = apply_period(conn, cron, period).await? {
-                let period_s = period.to_string();
-                sqlx::query!(
-                    "UPDATE crons SET last_run_on=?2 WHERE id=?1",
-                    cron.id,
-                    period_s
-                )
-                .execute(&mut *conn)
-                .await?;
-                created.push(run);
-            }
+        if due && let Some(run) = apply_period(conn, cron, period).await? {
+            let period_s = period.to_string();
+            sqlx::query!(
+                "UPDATE crons SET last_run_on=?2 WHERE id=?1",
+                cron.id,
+                period_s
+            )
+            .execute(&mut *conn)
+            .await?;
+            created.push(run);
         }
         (y, m) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
     }
