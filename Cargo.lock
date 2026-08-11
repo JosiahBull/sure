@@ -3189,7 +3189,6 @@ dependencies = [
  "sure-providers",
  "thiserror 2.0.18",
  "tokio",
- "tokio-blocked",
  "tower",
  "tower-http",
  "tracing",
@@ -3542,19 +3541,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
- "tracing",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "tokio-blocked"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbd262ab9dcfa7f6820fc236c63609a2256e3ed46ca563abc3279ea2c6586212"
-dependencies = [
- "tracing",
- "tracing-core",
- "tracing-subscriber",
 ]
 
 [[package]]

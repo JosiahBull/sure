@@ -11,12 +11,6 @@ workspace = true
 name = "sure-api"
 path = "src/main.rs"
 
-[features]
-# Development only: build the binary with `sure-api`'s tokio blocking detector compiled in.
-# Needs `RUSTFLAGS="--cfg tokio_unstable"` on the same build to do anything —
-# `pnpm dev:api:blocked` / `pnpm test:api:blocked` set both. See the README.
-blocking-detector = ["sure-api/blocking-detector"]
-
 [dependencies]
 sure-appbase = { workspace = true }
 sure-app = { workspace = true }

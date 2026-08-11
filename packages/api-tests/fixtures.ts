@@ -12,17 +12,16 @@ import { decodeBody, type ProxyClient, type RecordedExchange, type Upstream } fr
 
 const here = path.dirname(fileURLToPath(import.meta.url)); // packages/api-tests
 const REPO_ROOT = path.resolve(here, "..", "..");
-// A detector run (`pnpm test:api:blocked`) builds into its own target dir, so the binary
-// global-setup just built is not always target/debug — see scripts/blocked.mjs.
+// Whatever directory cargo wrote to, which is not always `target/`: a developer with
+// CARGO_TARGET_DIR exported has global-setup build somewhere else entirely, and a hard-coded
+// path would then look like a missing build.
 const TARGET_DIR = process.env.CARGO_TARGET_DIR
   ? path.resolve(REPO_ROOT, process.env.CARGO_TARGET_DIR)
   : path.join(REPO_ROOT, "target");
 const BIN = path.join(TARGET_DIR, "debug", "sure-api");
-// Out of the same directory, and built by the same global-setup, so a detector run finds both
-// binaries or neither — resolving the proxy from a hard-coded `target/debug` would have worked
-// locally and then looked like a missing build under `pnpm test:api:blocked`.
+// Out of the same directory, and built by the same global-setup, so the suite finds both
+// binaries or neither.
 const PROXY_BIN = path.join(TARGET_DIR, "debug", "sure-testproxy");
-const BLOCKED = Boolean(process.env.SURE_BLOCKED);
 
 /**
  * The proxy belonging to this Playwright worker, published module-side.
@@ -250,12 +249,9 @@ export async function startServer(
       SURE_ENV_FILE: "",
       DATABASE_URL: `sqlite:${path.join(dir, "test.db")}`,
       BIND_ADDR: `127.0.0.1:${port}`,
-      // Silent by default. Under the blocking detector the whole point is the WARN lines
-      // it emits, so let those through — plus the detector's own startup warnings, which
-      // are how a build that can't report anything says so instead of looking clean. Not a
-      // bare `warn`: that would add every unrelated warning the suite deliberately
-      // provokes, and the detector's "active" INFO line once per spawned server.
-      RUST_LOG: BLOCKED ? "error,tokio_blocked=warn,sure_api::telemetry=warn" : "error",
+      // Errors only. Not `warn`: the suite deliberately provokes plenty of those, and each
+      // would land in the output of a test that is passing.
+      RUST_LOG: "error",
       // No background scheduler. Its first check runs immediately, so the provider poll
       // would record an extra "error" sync row for any enabled provider a test just
       // created — a race the provider specs lost intermittently — and the exchange-rate
@@ -271,11 +267,9 @@ export async function startServer(
       ...proxyEnvironment(),
       ...env,
     },
-    // Normally the backend's own logs are noise around a test result. Under the detector
-    // they *are* the result, so let them through (the tracing subscriber writes to stdout)
-    // — Playwright attributes the output to the test that was running. `capture` keeps
-    // them for the test to read instead.
-    stdio: capture ? ["ignore", "pipe", "pipe"] : BLOCKED ? ["ignore", "inherit", "inherit"] : "ignore",
+    // The backend's own logs are noise around a test result, so they go nowhere unless
+    // `capture` asks for them — which pipes them for the test itself to read.
+    stdio: capture ? ["ignore", "pipe", "pipe"] : "ignore",
   });
 
   let logs = "";

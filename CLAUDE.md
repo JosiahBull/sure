@@ -152,14 +152,6 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   below). `test:rust` carries `--all-features` but deliberately *not*
   `--all-targets`: for `cargo test` that flag excludes doctests rather than adding to
   them, which would silently drop `sure_appbase`'s usage example.
-- **Blocking-code detector** (development only): `pnpm dev:api:blocked` and
-  `pnpm test:api:blocked` build with `sure-api`'s `blocking-detector` feature *and*
-  `RUSTFLAGS="--cfg tokio_unstable"` — both are needed, the feature alone reports nothing —
-  into `target/blocked/`, which adds `tokio-blocked`'s layer to the subscriber
-  `telemetry::init_tracing` installs so a task that blocks its worker thread logs a WARN.
-  It is never on in a normal or release build. Keep the `RUST_LOG` filter attached to the
-  *output* layer rather than the registry: a registry-wide filter drops the TRACE-level
-  `runtime.spawn` spans the detector reads, and the detector then silently sees nothing.
 - **Spawning background tasks**: use `Shutdown::spawn` / `Shutdown::spawn_blocking`
   (`packages/appbase`), never a bare `tokio::spawn`, for anything that outlives a
   request. Only tracked tasks are cancelled and waited for at shutdown; an untracked one
