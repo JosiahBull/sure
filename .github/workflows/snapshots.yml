@@ -45,6 +45,11 @@ jobs:
           else
             git config user.name  "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "chore: update Playwright Linux snapshots"
+            # --no-verify: `pnpm install` above runs the `prepare` script, which points
+            # core.hooksPath at .githooks — so without this, committing seven PNGs would run
+            # the entire pre-commit suite (clippy, cargo test, the api-tests e2e run) inside
+            # this container, to gate a bot commit that changes no source at all. The gates
+            # that matter run in checks.yml against this commit once it lands.
+            git commit --no-verify -m "chore: update Playwright Linux snapshots"
             git push
           fi
