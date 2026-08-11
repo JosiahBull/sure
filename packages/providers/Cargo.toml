@@ -40,7 +40,18 @@ tokio = { workspace = true }
 # dependency, and `http` had two byte-identical builders because the two `ClientBuilder`s were
 # different types.
 akahu-client = "0.3"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# Opens the three archive uploads (`zipfile.rs`, and `asb`/`myir`/`sharesies` through it).
+# `deflate` is the one codec an upload here actually uses — a real `.xlsx` is deflated, and
+# dropping the defaults leaves out aes-crypto, bzip2, lzma, ppmd, xz and zstd, none of which
+# a bank or IRD export arrives as. The version is 8 rather than 2 because `calamine` below
+# already asks for `zip = "8.6"` with exactly this feature set, so matching it is what keeps
+# one zip in the lockfile instead of two majors of it.
+#
+# The feature kept its name across those six majors but not its meaning: on 2.x `deflate`
+# selected flate2's miniz_oxide backend, on 8.x it selects `zlib-rs`. Both are pure Rust, so
+# the release build still cross-compiles without a C toolchain — the property that matters
+# here (see the `rustls` note on reqwest in the root manifest).
+zip = { version = "8", default-features = false, features = ["deflate"] }
 # Reads the myIR .xlsx exports (`myir.rs`). `dates` makes calamine resolve a cell's number
 # format for us, so a date column arrives as `Data::DateTime` rather than a bare Excel
 # serial we'd have to map back through the workbook's style table by hand.
