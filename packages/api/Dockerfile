@@ -128,16 +128,18 @@ RUN case "$(uname -m)" in \
     cargo build --release --locked -p sure-server --bin sure-api --target "$TARGET" \
  && cp "target/$TARGET/release/sure-api" /sure-api
 # `relocation-model=static` above is why the amd64 binary is a plain ET_EXEC. `+crt-static` is
-# already the musl default, but on x86_64-unknown-linux-musl rustc then emits a *static-PIE*,
-# which used to carry a PT_INTERP naming /lib/ld-musl-x86_64.so.1 — a loader
-# `distroless/static` does not contain. That no longer reproduces as of the trixie/rustc 1.97
-# bump: a minimal binary linked exactly the way this stage links it (musl-gcc, `+crt-static`)
-# comes out a static-PIE with no PT_INTERP whether or not the flag is set. The flag stays
-# anyway — it pins the property rather than inheriting it from a toolchain that has already
-# changed once, and dropping it would change the shipped artifact (a PIE, ASLR back), which
-# deserves its own commit rather than riding along with a base-image bump. aarch64 was never
-# affected: a plain static ET_EXEC with no PT_INTERP either way, which is why this only ever
-# failed on one arch.
+# already the musl default, but on x86_64-unknown-linux-musl rustc then emits a *static-PIE* —
+# and on the bookworm base this stage used to sit on, a musl static-PIE still carried a
+# PT_INTERP naming /lib/ld-musl-x86_64.so.1, a loader `distroless/static` does not contain.
+# That no longer reproduces on trixie. Measured on this base (rustc 1.97.1, musl 1.2.5): a
+# minimal binary linked exactly the way this stage links — musl-gcc, `+crt-static` — comes out
+# DYN with no PT_INTERP whether the flag is set or not; with the flag it is ET_EXEC, also with
+# no PT_INTERP. The flag stays anyway: it pins ET_EXEC rather than inheriting the absence of an
+# interpreter from a toolchain that has already changed it once, and dropping it would change
+# the shipped artifact (a PIE, with ASLR back) — its own decision, not a side effect of a
+# base-image bump. What guards the property is the assertion below, not this flag.
+# aarch64 was never affected: a plain static ET_EXEC with no PT_INTERP either way, which is
+# why this only ever failed on one arch.
 #
 # Its own step, not chained onto the build: as part of that `&&` run, any compile failure
 # would have been reported as "not statically linked" instead of as itself. A binary that
