@@ -1480,6 +1480,12 @@
     border-radius: var(--r-sm);
     color: var(--text-muted);
     background: var(--surface);
+    /* A flex item's min-width defaults to `auto`, i.e. it refuses to shrink below its
+       content — so on a phone-width viewport this box held the row at its own min-content
+       width and pushed the Filter button beside it off the right of the screen entirely.
+       `.search-input` already carries this; the box around it has to as well or the input's
+       willingness to shrink never reaches the row. */
+    min-width: 0;
   }
   .search-box:focus-within {
     border-color: var(--text-muted);
@@ -1538,7 +1544,14 @@
     border-radius: var(--r);
     background: var(--surface-2);
     color: var(--text-muted);
-    min-width: 480px;
+    /* 560, not 480: the twelve tracks split as 8/2/2, so at 480 the Category and Amount cells
+       are ~73px each while their labels ("Category label ↕", "Amount ↕") measure wider — the
+       two header buttons then overlap, and a click aimed at Amount's centre lands on
+       Category's caret. It is a real overlap, not a test artefact; it just needed a viewport
+       narrow enough to show. Costs nothing elsewhere, because this table already scrolls
+       inside its own overflow-x container rather than widening the page.
+       Keep in lockstep with .tx-row below or the columns stop lining up. */
+    min-width: 560px;
   }
   .th-tx {
     grid-column: span 8;
@@ -1650,7 +1663,9 @@
     padding: 16px;
     border-radius: var(--r-sm);
     border: 1px solid transparent;
-    min-width: 480px;
+    /* Matches .tx-head's min-width — the head is a separate grid, so the two only line up
+       while these agree. */
+    min-width: 560px;
   }
   .tx-row:hover {
     background: var(--hover);
