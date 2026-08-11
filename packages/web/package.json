@@ -25,6 +25,6 @@
     "svelte-check": "^4.7.5",
     "typescript": "^5.9.2",
     "vite": "^6.0.7",
-    "vite-plugin-pwa": "^0.21.1"
+    "vite-plugin-pwa": "^1.3.0"
   }
 }
