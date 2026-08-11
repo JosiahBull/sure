@@ -39,7 +39,7 @@ reqwest-akahu = { package = "reqwest", version = "0.13", default-features = fals
     "json",
     "rustls",
 ] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 # Reads the myIR .xlsx exports (`myir.rs`). `dates` makes calamine resolve a cell's number
 # format for us, so a date column arrives as `Data::DateTime` rather than a bare Excel
 # serial we'd have to map back through the workbook's style table by hand.
