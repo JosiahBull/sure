@@ -57,11 +57,12 @@ Everything else is denied. In particular:
 The CA directories are there because a Landlock rule binds to the **inode** a path
 resolves to, and on Debian every `*.pem` in `/etc/ssl/certs` is a *symlink* into
 `/usr/share/ca-certificates`. Granting the directory the links live in grants nothing for
-the files themselves. It matters for exactly one provider: the Akahu client goes through
-`rustls-platform-verifier`, which reads the system trust store, where the others use
-reqwest's bundled webpki roots. Without those directories TLS still works — the
-concatenated `ca-certificates.crt` is a real file — but the verifier logs a `Permission
-denied` warning for every certificate in the store on its way past.
+the files themselves. It matters for every provider: reqwest 0.13's `rustls` feature verifies
+through `rustls-platform-verifier`, which reads the system trust store. (On 0.12 it mattered
+for Akahu alone — `rustls-tls` compiled webpki roots into the binary, and only `akahu-client`
+was already on 0.13.) Without those directories TLS still works — the concatenated
+`ca-certificates.crt` is a real file — but the verifier logs a `Permission denied` warning for
+every certificate in the store on its way past.
 
 Two deliberate compromises are worth naming:
 

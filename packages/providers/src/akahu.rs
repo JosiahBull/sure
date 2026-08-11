@@ -299,7 +299,7 @@ impl AkahuProvider {
             .as_ref()
             .map_err(|missing| anyhow::anyhow!("{} is not set", missing.env_var()))?;
         let client = AkahuClient::new(
-            crate::http::akahu_client(&self.endpoint),
+            crate::http::client(&self.endpoint),
             credentials.app_token.clone(),
             Some(self.endpoint.url().to_string()),
         )

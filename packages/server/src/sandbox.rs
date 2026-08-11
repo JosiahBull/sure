@@ -76,10 +76,12 @@ const CONFIG_DIRS: &[&str] = &["/etc"];
 ///
 /// `/etc/ssl/certs` comes free with [`CONFIG_DIRS`], but on Debian its `*.pem` entries are
 /// *symlinks* into these directories — and a Landlock rule resolves to the target's inode,
-/// so granting the directory the links sit in grants nothing at all. The Akahu client is
-/// the one that cares: it reaches the system store through `rustls-platform-verifier`,
-/// where the other providers use reqwest's bundled webpki roots. Without this it still
-/// works — `ca-certificates.crt` is a real concatenated file — but logs a `Permission
+/// so granting the directory the links sit in grants nothing at all. **Every** outbound
+/// client cares, since reqwest 0.13: its `rustls` feature verifies through
+/// `rustls-platform-verifier`, which reads the system trust store, where 0.12's `rustls-tls`
+/// compiled webpki roots into the binary and read no certificate at all. (Akahu was the sole
+/// exception before, because `akahu-client` already held that crate to 0.13.) Without this it
+/// still works — `ca-certificates.crt` is a real concatenated file — but logs a `Permission
 /// denied` warning for every certificate in the store on the way past.
 const CA_CERT_DIRS: &[&str] = &[
     "/usr/share/ca-certificates",
@@ -92,9 +94,10 @@ const CA_CERT_DIRS: &[&str] = &[
 /// path.
 const READ_ONLY_FILES: &[&str] = &["/dev/urandom"];
 
-/// Env vars that relocate the trust store. openssl-probe (under `rustls-native-certs`)
-/// honours both, so if an operator has pointed them somewhere custom that is where the
-/// certificates will be read from.
+/// Env vars that relocate the trust store. openssl-probe (under `rustls-native-certs`, which
+/// `rustls-platform-verifier` uses on Linux) honours both, so if an operator has pointed them
+/// somewhere custom that is where the certificates will be read from — for every provider now,
+/// not just Akahu (see [`CA_CERT_DIRS`]).
 const CA_CERT_VARS: &[&str] = &["SSL_CERT_FILE", "SSL_CERT_DIR"];
 
 /// The only port the *built-in* provider endpoints reach: every adapter's
