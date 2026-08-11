@@ -143,7 +143,7 @@ zen-expression = "0.55"
 # The forecast's Monte Carlo simulation: a seedable RNG (reproducible in tests) plus the
 # normal distribution its stochastic accounts/categories draw monthly returns from.
 rand = "0.8"
-rand_distr = "0.4"
+rand_distr = "0.6"
 # The official Rust MCP SDK, and the only dependency `sure-mcp` has outside the workspace.
 # `transport-streamable-http-server` is the one transport built: it yields a plain
 # `tower::Service`, which is what lets `sure-server` nest the MCP endpoint into the router
