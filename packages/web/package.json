@@ -16,6 +16,8 @@
     "@sure/client": "workspace:*",
     "d3-sankey": "^0.12.3"
   },
+  "//typescript": "Held on 5.x with the rest of the workspace. TypeScript 7 is not a bump but a migration: `svelte-check@4.7.5` (which peers `^5.0.0 || ^6.0.0`) refuses to even start on it — \"TypeScript 7 support currently requires both TypeScript 7 and TypeScript 6 installed in your project, and requires using the --tsgo or --tsgo-experimental-api flag\", i.e. a dual install via an npm alias. Measured 2026-08-11. The 5.x ceiling itself comes from openapi-typescript; see the note in packages/client.",
+  "//@playwright/test": "Keep in lockstep with the pinned `mcr.microsoft.com/playwright:vX-noble` image in .github/workflows/{checks,snapshots}.yml — the committed *-linux.png baselines are only reproducible against the Chromium build and font stack that image ships. Currently both are 1.62.1.",
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
