@@ -6,17 +6,35 @@
       {
         "name": "account_id",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "account_id"
+          }
+        }
       },
       {
         "name": "source",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "source"
+          }
+        }
       },
       {
         "name": "currency_code",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "currency_code"
+          }
+        }
       }
     ],
     "parameters": {

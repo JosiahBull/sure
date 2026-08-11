@@ -6,49 +6,97 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "cron_runs",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "cron_id",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "cron_runs",
+            "name": "cron_id"
+          }
+        }
       },
       {
         "name": "period",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "cron_runs",
+            "name": "period"
+          }
+        }
       },
       {
         "name": "kind",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "cron_runs",
+            "name": "kind"
+          }
+        }
       },
       {
         "name": "valuation_id",
         "ordinal": 4,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "cron_runs",
+            "name": "valuation_id"
+          }
+        }
       },
       {
         "name": "transaction_id",
         "ordinal": 5,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "cron_runs",
+            "name": "transaction_id"
+          }
+        }
       },
       {
         "name": "detail",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "cron_runs",
+            "name": "detail"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 7,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "cron_runs",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Right": 6
     },
     "nullable": [
-      true,
+      null,
       false,
       false,
       false,

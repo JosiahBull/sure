@@ -6,7 +6,13 @@
       {
         "name": "scale_id",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "scale_id"
+          }
+        }
       }
     ],
     "parameters": {

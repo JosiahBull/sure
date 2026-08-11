@@ -76,9 +76,18 @@ levels cost far more CPU than they save bytes on JSON, and this runs on a small 
 OpenAPI document compresses from ~99 KB to ~16 KB. Bodies under 32 bytes, images, gRPC,
 and server-sent events are skipped. Disable with `COMPRESSION=off`.
 
+`Accept-Encoding` is read per RFC 9110 §12.5.3, which tower-http 0.7 tightened in two
+ways. A bare `*` now selects an encoding (zstd here) where 0.6 fell back to identity. And a
+client that rejects *every* encoding including identity — `identity;q=0` or `*;q=0`, with no
+acceptable alternative listed — gets a **406 Not Acceptable**. Only the status is
+overwritten: the handler has already run by then, so that 406 still carries the full
+identity body and its headers, which is worth knowing before debugging one. No browser
+sends either form, and `identity;q=0, gzip` still gets gzip.
+
 **Request decompression is deliberately absent.** `RequestDecompressionLayer` has no
-decompressed-size cap, so accepting `Content-Encoding: gzip` on `/api/config/import` would
-turn it into a zip-bomb target. Nothing in the app needs it.
+decompressed-size cap — still true as of tower-http 0.7 — so accepting
+`Content-Encoding: gzip` on `/api/config/import` would turn it into a zip-bomb target.
+Nothing in the app needs it.
 
 ## HTTP/2 and HTTP/3
 
@@ -231,7 +240,8 @@ same either way, so a generated client parses them fine.
 
 Static responses keep their own bodies: `ServeDir::not_found_service` deliberately serves
 the SPA shell *with* a 404 status, and replacing that with JSON would stop the app booting
-on a deep link.
+on a deep link. tower-http 0.7 now rejects a trailing slash on a file path, so `/sw.js/`
+lands in that same fallback instead of serving the file — the shell, not the script.
 
 ## Verifying by hand
 

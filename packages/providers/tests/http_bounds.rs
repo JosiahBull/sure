@@ -9,10 +9,14 @@
 //!
 //! `FrankfurterProvider` is the vehicle here, not the subject. It is the thinnest adapter over
 //! `http::client` + `http::json_capped` — one GET, no credentials, no pagination — so a failure
-//! in this file indicts the transport rather than the adapter. The gap that leaves:
-//! `http::akahu_client` sets the same three bounds on a *different* builder (`reqwest` 0.13, a
-//! separate major from the workspace's 0.12), and nothing here can reach it. Those repeats belong
-//! to the Akahu fixture, which already stands a cluster up.
+//! in this file indicts the transport rather than the adapter. What that now covers, and did not
+//! until the workspace reached reqwest 0.13: `http::client` is the *only* builder in the crate, so
+//! the client under test here is the same one `AkahuProvider` hands to `akahu-client` — the three
+//! bounds no longer need pinning twice. (They used to: `akahu-client` held that path to a second
+//! reqwest major, and its byte-identical builder was unreachable from here.) What is still
+//! Akahu-only is what this adapter does not have — credentials, pagination, and a response body
+//! read inside `akahu-client` rather than by `json_capped` — and that belongs to the Akahu
+//! fixture, which already stands a cluster up.
 //!
 //! Every cluster below is an `add_stub` cluster: `Mode::Replay`, no snapshot, a dummy upstream
 //! target. So even a stub that failed to match could not reach a host — the replay-miss 503 is
@@ -328,11 +332,10 @@ async fn an_upstream_500_surfaces_as_a_status_error() {
 /// left behind, caused by someone else's server. That is the outcome this const prevents, and
 /// nothing but a real stall demonstrates it.
 ///
-/// One test, not two, even though `http::client` and `http::akahu_client` are separate builders:
-/// `REQUEST_TIMEOUT` is a single const both read, so there is no *value* left to pin twice. What a
-/// second test would add is `reqwest` 0.13's builder honouring the argument it was handed — a
-/// third-party property — reachable only through `AkahuProvider`, whose fixture lives elsewhere.
-/// Another six seconds is a poor price for that.
+/// One test, and since the reqwest 0.13 collapse there is not even a second builder to argue
+/// about: `http::client` builds the client every adapter uses, from one `REQUEST_TIMEOUT`. A
+/// second copy of this test through `AkahuProvider` would re-time the identical client for
+/// another six seconds and assert nothing new.
 #[tokio::test]
 async fn a_stalled_upstream_fails_at_the_request_timeout_instead_of_hanging() {
     /// Well past the 6s ceiling, not just over it. The only assertion that stays meaningful is

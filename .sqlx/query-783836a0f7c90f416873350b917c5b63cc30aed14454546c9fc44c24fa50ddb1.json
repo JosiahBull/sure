@@ -6,67 +6,145 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "account_id",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "account_id"
+          }
+        }
       },
       {
         "name": "company",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "company"
+          }
+        }
       },
       {
         "name": "grant_date",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "grant_date"
+          }
+        }
       },
       {
         "name": "quantity",
         "ordinal": 4,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "quantity"
+          }
+        }
       },
       {
         "name": "strike_minor",
         "ordinal": 5,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "strike_minor"
+          }
+        }
       },
       {
         "name": "currency_code",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "currency_code"
+          }
+        }
       },
       {
         "name": "vest_months",
         "ordinal": 7,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "vest_months"
+          }
+        }
       },
       {
         "name": "cliff_months",
         "ordinal": 8,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "cliff_months"
+          }
+        }
       },
       {
         "name": "unit_value_minor",
         "ordinal": 9,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "unit_value_minor"
+          }
+        }
       },
       {
         "name": "note",
         "ordinal": 10,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "note"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 11,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "created_at"
+          }
+        }
       },
       {
         "name": "updated_at",
         "ordinal": 12,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "equity_grants",
+            "name": "updated_at"
+          }
+        }
       }
     ],
     "parameters": {

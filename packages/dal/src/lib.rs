@@ -25,9 +25,25 @@
 //!   `INTEGER PRIMARY KEY` (a rowid alias, which the type system considers nullable even
 //!   though it never is), and any column read back out of a subquery, CTE, `GROUP BY`, or
 //!   window function, which do not carry the base table's `NOT NULL` through.
-//! * **`col AS "col?"`** forces a column nullable, for the mirror case: the outer side of a
-//!   `LEFT JOIN`, where the column is `NOT NULL` in its own table but absent when the join
-//!   misses.
+//! * **`col AS "col?"`** forces a column nullable, for two cases. The mirror of the above is
+//!   the outer side of a `LEFT JOIN`, where the column is `NOT NULL` in its own table but
+//!   absent when the join misses. The second is a correctness workaround, not a hint: sqlx
+//!   0.9 resolves each output column back to the table column it came from, and for a nullable
+//!   `INTEGER` named in an `INSERT`/`UPDATE … RETURNING` clause it concludes `NOT NULL` when
+//!   the column is genuinely nullable. That is silent, not a build error — the macro decodes
+//!   with the type it inferred, and SQLite hands a non-`Option` `i64` getter `0` for a `NULL`,
+//!   so a cleared FK reads back as `Some(0)` and points at a row id nobody owns. It cost two
+//!   `sure-dal` tests on the 0.8 → 0.9 bump (`accounts.person_id` cleared to `NULL` came back
+//!   as person 0), and the other eight columns it affects had no test on that path at all.
+//!   So every nullable column returned by a `RETURNING` clause here that sqlx gets wrong
+//!   carries an explicit `?`: `accounts.person_id`/`secured_by_account_id`,
+//!   `categories.parent_id`, `merchants.category_id`, `rules.set_category_id`/`set_merchant_id`,
+//!   `tax_scales.kiwisaver_govt_income_cap_minor`, and `forecast_assumptions.annual_fee_bps`/
+//!   `annual_fixed_fee_minor`. The annotation is simply true of those columns, so it stays
+//!   correct (just redundant) if a later sqlx infers them properly — but **re-run the
+//!   cross-check when bumping sqlx**: compare each regenerated `.sqlx/` entry's `nullable`
+//!   flag against `PRAGMA table_info`, because the failure mode is a wrong value, not a
+//!   red build.
 //!
 //! * **`col AS "col: Type"`** names the Rust type to decode into. Needed wherever SQLite
 //!   reports no type at all — an aggregate over an empty table (`SUM(x)` describes as

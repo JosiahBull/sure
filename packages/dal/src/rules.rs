@@ -231,8 +231,9 @@ pub async fn create(db: &Db, input: SaveRule) -> AppResult<Rule> {
               (name, description, expression, set_category_id, set_one_off, overwrite_manual,
                stop_on_match, priority, enabled, set_merchant_id)
            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
-           RETURNING id AS "id!", name, description, expression, set_category_id,
-                     set_one_off AS "set_one_off: bool", set_merchant_id,
+           RETURNING id AS "id!", name, description, expression,
+                     set_category_id AS "set_category_id?",
+                     set_one_off AS "set_one_off: bool", set_merchant_id AS "set_merchant_id?",
                      overwrite_manual AS "overwrite_manual!: bool",
                      stop_on_match AS "stop_on_match!: bool", priority,
                      enabled AS "enabled!: bool", created_at, updated_at"#,
@@ -262,8 +263,9 @@ pub async fn update(db: &Db, id: i64, input: SaveRule) -> AppResult<Rule> {
               set_one_off=?6, overwrite_manual=?7, stop_on_match=?8, priority=?9, enabled=?10,
               set_merchant_id=?11, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE id=?1
-           RETURNING id AS "id!", name, description, expression, set_category_id,
-                     set_one_off AS "set_one_off: bool", set_merchant_id,
+           RETURNING id AS "id!", name, description, expression,
+                     set_category_id AS "set_category_id?",
+                     set_one_off AS "set_one_off: bool", set_merchant_id AS "set_merchant_id?",
                      overwrite_manual AS "overwrite_manual!: bool",
                      stop_on_match AS "stop_on_match!: bool", priority,
                      enabled AS "enabled!: bool", created_at, updated_at"#,

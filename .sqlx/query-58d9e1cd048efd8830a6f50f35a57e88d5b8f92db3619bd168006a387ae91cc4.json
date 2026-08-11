@@ -6,22 +6,46 @@
       {
         "name": "base_code",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "exchange_rates",
+            "name": "base_code"
+          }
+        }
       },
       {
         "name": "quote_code",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "exchange_rates",
+            "name": "quote_code"
+          }
+        }
       },
       {
         "name": "as_of",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "exchange_rates",
+            "name": "as_of"
+          }
+        }
       },
       {
         "name": "rate",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "exchange_rates",
+            "name": "rate"
+          }
+        }
       }
     ],
     "parameters": {

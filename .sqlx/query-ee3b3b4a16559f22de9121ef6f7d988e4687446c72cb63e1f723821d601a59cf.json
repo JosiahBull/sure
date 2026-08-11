@@ -6,44 +6,86 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "provider_id",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "provider_id"
+          }
+        }
       },
       {
         "name": "imported",
         "ordinal": 2,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "imported"
+          }
+        }
       },
       {
         "name": "skipped",
         "ordinal": 3,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "skipped"
+          }
+        }
       },
       {
         "name": "status",
         "ordinal": 4,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "status"
+          }
+        }
       },
       {
         "name": "detail",
         "ordinal": 5,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "detail"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Right": 5
     },
     "nullable": [
-      true,
+      null,
       false,
       false,
       false,
