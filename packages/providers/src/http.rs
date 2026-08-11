@@ -41,9 +41,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 ///
 /// `pub(crate)` because Akahu needs the same number and cannot get it the same way: that
 /// body is read inside `akahu-client`, so the ceiling is handed to `AkahuClient` instead of
-/// being enforced by [`json_capped`] here — see [`akahu_client`] below. One const for both,
-/// so "how much of a response may this process buffer?" has a single answer rather than two
-/// that drift apart.
+/// being enforced by [`json_capped`] here — see `akahu::AkahuProvider::client`. One const for
+/// both, so "how much of a response may this process buffer?" has a single answer rather than
+/// two that drift apart.
 pub(crate) const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Where a provider is allowed to point, and what that implies for the transport.
@@ -132,8 +132,20 @@ impl Endpoint {
     }
 }
 
-/// The bounded client the workspace-version providers share (Frankfurter, Yahoo), aimed at
-/// `endpoint`.
+/// The bounded client **every** provider here shares — Frankfurter, Yahoo, and the one handed
+/// to `akahu-client` — aimed at `endpoint`.
+///
+/// One function rather than two only since reqwest 0.13: `akahu-client` needs 0.13, so while
+/// the workspace was on 0.12 this crate carried a renamed second copy of reqwest and a second,
+/// byte-identical builder next to this one, because `reqwest::ClientBuilder` and
+/// `reqwest_akahu::ClientBuilder` were unrelated types. Nothing about the *bounds* differed
+/// then and nothing does now, which is the point: the timeout, the redirect refusal and the
+/// TLS decision are one set of answers for every host this process talks to.
+///
+/// The one bound that is *not* on this client is the byte ceiling, because a `ClientBuilder`
+/// has nowhere to put it: Frankfurter and Yahoo get it from [`json_capped`], and Akahu — whose
+/// body is read inside `akahu-client` — from the [`MAX_BODY_BYTES`] its own client-construction
+/// passes to `AkahuClient::with_max_response_bytes`.
 ///
 /// Panics only where `reqwest::Client::new()` — the call this replaces — already did: a
 /// TLS backend that could not initialise. Deliberately not a fallback to the default
@@ -162,32 +174,6 @@ pub(crate) fn client(endpoint: &Endpoint) -> reqwest::Client {
         // [`Endpoint`], which decided it once at parse time. `https_only` rejects the request
         // before it is sent, which is exactly what a loopback proxy — no certificate, nothing
         // to hand a TLS handshake — needs to be exempt from.
-        .https_only(endpoint.requires_tls())
-        .build()
-        .expect("build a bounded HTTP client")
-}
-
-/// The same, for `akahu-client`, which takes a `reqwest` 0.13 client — a different major
-/// from the workspace's 0.12, so the two builders cannot be one function. Same limits, on
-/// purpose: the provider poll is a scheduled task like the others.
-///
-/// One limit is missing here and cannot be added here: the byte ceiling. `akahu-client`
-/// executes the request and reads the body itself, so by the time a caller sees anything the
-/// buffering has already happened — [`json_capped`] never gets a `Response` to bound. Since
-/// 0.3 the crate takes the ceiling as a setting instead, and `akahu::AkahuProvider::client`
-/// hands it [`MAX_BODY_BYTES`]; a client built from this function and left at the crate's own
-/// default is bounded, but by *its* number rather than ours.
-pub(crate) fn akahu_client(endpoint: &Endpoint) -> reqwest_akahu::Client {
-    reqwest_akahu::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .connect_timeout(CONNECT_TIMEOUT)
-        // Same reasoning as `client()` above, and it bites hardest here: the `X-Akahu-Id`
-        // app token is a custom header, so it is the one reqwest would *not* strip on a
-        // cross-host redirect.
-        .redirect(reqwest_akahu::redirect::Policy::none())
-        // And the same reason this is a question rather than a constant — with the same
-        // token at stake, which is why [`Endpoint`] refuses to represent plaintext to
-        // anywhere but this machine.
         .https_only(endpoint.requires_tls())
         .build()
         .expect("build a bounded HTTP client")

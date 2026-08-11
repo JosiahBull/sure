@@ -71,11 +71,10 @@ hyper-util = { version = "0.1", features = [
     "http2",
 ] }
 # Only `sure-api` names this (the middleware stack in its `build_app`); `sure-server` gets it
-# through that. The tree compiles tower-http twice, and *both* reqwests are why: the
-# workspace's 0.12 and the 0.13 `akahu-client` brings (see packages/providers/Cargo.toml) each
-# pin `^0.6.8` for `follow-redirect`, and each is the latest of its major. No type crosses
-# between the two, so the duplicate costs build time only; it goes away when reqwest itself
-# moves to tower-http 0.7 — not when we move off reqwest 0.12.
+# through that. The tree still compiles tower-http twice, and reqwest is why: 0.13 pins
+# `^0.6.8` for its own `follow-redirect` layer, and 0.6.8 is the latest of that major. No type
+# crosses between the two, so the duplicate costs build time only; it goes away when reqwest
+# itself moves to tower-http 0.7.
 tower-http = { version = "0.7", features = [
     "trace",
     "cors",
@@ -111,9 +110,23 @@ chrono = { version = "0.4", features = ["serde"] }
 # Postgres/MySQL and is intentionally not wired into the SQLite pool.
 rust_decimal = { version = "1", features = ["serde"] }
 rust_decimal_macros = "1"
-# rustls (not the default native-tls/OpenSSL backend) so cross-compiling the release
-# binary doesn't need OpenSSL headers; the runtime image installs ca-certificates for it.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# One reqwest for the whole tree. It used to be two: `akahu-client` needs 0.13, so while this
+# was 0.12 `sure-providers` carried a renamed second copy of it — and that crate asks for
+# exactly the pair below (`json`, `rustls`, no defaults), so moving the workspace to 0.13 is
+# what collapsed the duplicate.
+#
+# rustls, not native-tls, so cross-compiling the release binary doesn't need OpenSSL headers.
+# 0.13 renamed the feature (`rustls-tls` → `rustls`) and made it the default backend, but with
+# `default-features = false` naming it is still what selects it. It also changed where the
+# roots come from: 0.12's `rustls-tls` compiled webpki-roots into the binary, 0.13's `rustls`
+# reads the *system* store through `rustls-platform-verifier`. So the runtime image's
+# `ca-certificates` (packages/api/Dockerfile) is now load-bearing for every provider rather
+# than for Akahu alone, as is `sure_server::sandbox`'s CA_CERT_DIRS grant. The crypto provider
+# is aws-lc-rs — 0.13's default, and already what the Akahu copy built.
+# `default-features = false` drops `charset`, `http2` and `system-proxy` here exactly as it did
+# on 0.12; `query` and `form` became opt-in features in 0.13 and nothing here asks reqwest to
+# build a query string or a form body.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "decimal", "preserve_order"] }
 thiserror = "2"
 anyhow = "1"

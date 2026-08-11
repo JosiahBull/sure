@@ -31,15 +31,15 @@ tokio = { workspace = true }
 # instead of the whole page it arrived in — which, because a sync cursor only advances on
 # success, used to wedge that account's import permanently rather than for one poll. It also
 # keeps the response body out of a deserialisation error's `Display`, and lets the caller cap
-# a response body (see `http::akahu_client`).
+# a response body (`AkahuProvider::client` hands it `http::MAX_BODY_BYTES`).
+#
+# It takes a `reqwest::Client` from the caller, and asks reqwest for the same `json` + `rustls`
+# with no defaults that the workspace does — so this is one client type shared with the other
+# adapters, built by `http::client`. Until the workspace moved to 0.13 it was not: this crate
+# carried a second, renamed copy of reqwest (`reqwest-akahu`) purely to satisfy this
+# dependency, and `http` had two byte-identical builders because the two `ClientBuilder`s were
+# different types.
 akahu-client = "0.3"
-# akahu-client depends on reqwest 0.13, one major ahead of the workspace's 0.12 (used by
-# the other providers above) — renamed so both can coexist without touching the rest of
-# this crate. Feature set mirrors what akahu-client itself requests.
-reqwest-akahu = { package = "reqwest", version = "0.13", default-features = false, features = [
-    "json",
-    "rustls",
-] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Reads the myIR .xlsx exports (`myir.rs`). `dates` makes calamine resolve a cell's number
 # format for us, so a date column arrives as `Data::DateTime` rather than a bare Excel

@@ -50,7 +50,7 @@ dependencies = [
  "chrono",
  "iso_currency",
  "nzfcc",
- "reqwest 0.13.4",
+ "reqwest",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -2186,44 +2186,6 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.12.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "futures-core",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "js-sys",
- "log",
- "percent-encoding",
- "pin-project-lite",
- "quinn",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sync_wrapper",
- "tokio",
- "tokio-rustls",
- "tower",
- "tower-http 0.6.11",
- "tower-service",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "webpki-roots",
-]
-
-[[package]]
-name = "reqwest"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
@@ -3159,8 +3121,7 @@ dependencies = [
  "csv",
  "http",
  "partly-proxy-lib",
- "reqwest 0.12.28",
- "reqwest 0.13.4",
+ "reqwest",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -3197,7 +3158,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "landlock",
- "reqwest 0.12.28",
+ "reqwest",
  "sure-api",
  "sure-app",
  "sure-appbase",
@@ -3219,7 +3180,7 @@ dependencies = [
  "bytes",
  "http",
  "partly-proxy-lib",
- "reqwest 0.12.28",
+ "reqwest",
  "serde_json",
  "tempfile",
  "tokio",
