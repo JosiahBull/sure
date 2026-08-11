@@ -70,11 +70,12 @@ hyper-util = { version = "0.1", features = [
     "http1",
     "http2",
 ] }
-# Only `sure-api` names this (the middleware stack in its `build_app`). The tree compiles
-# tower-http twice: reqwest 0.13 — pulled in by `akahu-client`, see packages/providers/Cargo.toml
-# — still pins `^0.6.8` for its own decompression and redirect handling, and 0.13.4 is the
-# latest. No type crosses between the two, so the duplicate costs build time only; it goes
-# away when reqwest moves to 0.7.
+# Only `sure-api` names this (the middleware stack in its `build_app`); `sure-server` gets it
+# through that. The tree compiles tower-http twice, and *both* reqwests are why: the
+# workspace's 0.12 and the 0.13 `akahu-client` brings (see packages/providers/Cargo.toml) each
+# pin `^0.6.8` for `follow-redirect`, and each is the latest of its major. No type crosses
+# between the two, so the duplicate costs build time only; it goes away when reqwest itself
+# moves to tower-http 0.7 — not when we move off reqwest 0.12.
 tower-http = { version = "0.7", features = [
     "trace",
     "cors",
