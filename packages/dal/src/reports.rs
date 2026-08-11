@@ -3,7 +3,7 @@
 //! graphs) lives in the API crate, which calls these loaders and crunches the numbers.
 
 use chrono::NaiveDate;
-use sure_core::{effective_ownership, AccountKind, AppError, AppResult, CategoryKind, Ownership};
+use sure_core::{AccountKind, AppError, AppResult, CategoryKind, Ownership, effective_ownership};
 
 use crate::Db;
 
@@ -320,7 +320,7 @@ impl TryFrom<SpendTransactionRow> for SpendTransaction {
             (None, Some(_)) => {
                 return Err(AppError::Internal(anyhow::anyhow!(
                     "transaction has a person_id but no ownership discriminant"
-                )))
+                )));
             }
             (Some(kind), person_id) => Some(parse_ownership(kind, person_id)?),
         };
@@ -838,9 +838,11 @@ mod tests {
         assert_eq!(seed_2.amount_minor, 42_00);
         // The window's own row is untouched, and nothing else came along for the ride: three
         // pre-window rows became two seeds.
-        assert!(rows
-            .iter()
-            .any(|t| t.account_id == 1 && t.posted_at == "2026-02-01" && t.amount_minor == 7_00));
+        assert!(
+            rows.iter().any(|t| t.account_id == 1
+                && t.posted_at == "2026-02-01"
+                && t.amount_minor == 7_00)
+        );
         assert_eq!(
             rows.len(),
             3,

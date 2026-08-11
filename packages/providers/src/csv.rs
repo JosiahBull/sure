@@ -4,8 +4,8 @@
 //! ideal for exercising the provider machinery end-to-end.
 
 use async_trait::async_trait;
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 
 use sure_app::ports::{ProviderTransaction, SyncContext, TransactionProvider};
 

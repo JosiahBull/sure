@@ -240,15 +240,15 @@ pub fn truncate_for_wire(text: &str, max_chars: usize) -> String {
 /// callers name them as `sure_core::error::{clothe_error, ..}` (and `sure_api::limits`
 /// re-exports them again, where the middleware that uses them lives).
 #[cfg(feature = "axum")]
-pub use http::{clothe_error, overloaded_response, ErrorAlreadyClothed, PreservedErrorCode};
+pub use http::{ErrorAlreadyClothed, PreservedErrorCode, clothe_error, overloaded_response};
 
 #[cfg(feature = "axum")]
 mod http {
     use super::{AppError, OVERLOADED_CODE, OVERLOADED_MESSAGE, OVERLOADED_RETRY_AFTER_SECS};
     use axum::{
+        Json,
         http::StatusCode,
         response::{IntoResponse, Response},
-        Json,
     };
 
     /// Marks a response whose body is already a proper `{ "error": { code, message } }`
@@ -482,7 +482,7 @@ mod sqlx_tests {
     #[cfg(feature = "axum")]
     mod response {
         use super::*;
-        use axum::http::{header, StatusCode};
+        use axum::http::{StatusCode, header};
         use axum::response::IntoResponse;
 
         /// The whole point of W-18: a client sees the *same* 503 + `Retry-After` +

@@ -1,7 +1,7 @@
+use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
-use axum::Router;
 
 use crate::error::{AppError, AppResult};
 use crate::extract::Json;

@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::middleware::{from_fn, from_fn_with_state};
-use axum::{routing::get, Json, Router};
+use axum::{Json, Router, routing::get};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};

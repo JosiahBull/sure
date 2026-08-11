@@ -1,4 +1,4 @@
-use sure_server::config::{load_dotenv, Config};
+use sure_server::config::{Config, load_dotenv};
 use sure_server::sandbox;
 
 /// Deliberately not `#[tokio::main]`.

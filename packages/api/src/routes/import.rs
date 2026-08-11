@@ -20,10 +20,10 @@
 
 use std::future::Future;
 
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::routing::post;
-use axum::Router;
 use serde::Deserialize;
 use sure_app::import::{FollowUp, ImportOptions};
 use sure_appbase::Shutdown;
@@ -271,13 +271,13 @@ pub fn router(limits: &Limits) -> Router<AppState> {
 /// here from `routes::brokerage` with the code they cover.
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use sure_appbase::{DrainOutcome, Shutdown};
 
-    use super::{parse_source, spawn_backfill, ImportQuery, ImportSource};
+    use super::{ImportQuery, ImportSource, parse_source, spawn_backfill};
     use crate::error::AppError;
 
     /// The fix for W-27. A tracked backfill is counted by the drain *and* waited for, so a

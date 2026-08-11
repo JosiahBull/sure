@@ -537,25 +537,31 @@ mod tests {
         };
         assert!(clean.is_clean());
 
-        assert!(!ShutdownReport {
-            drain: DrainOutcome::TimedOut {
-                abandoned: 1,
-                sites: vec!["src/lib.rs:1:1".to_string()],
-            },
-            ..clean.clone()
-        }
-        .is_clean());
-        assert!(!ShutdownReport {
-            app: AppOutcome::Abandoned,
-            ..clean.clone()
-        }
-        .is_clean());
+        assert!(
+            !ShutdownReport {
+                drain: DrainOutcome::TimedOut {
+                    abandoned: 1,
+                    sites: vec!["src/lib.rs:1:1".to_string()],
+                },
+                ..clean.clone()
+            }
+            .is_clean()
+        );
+        assert!(
+            !ShutdownReport {
+                app: AppOutcome::Abandoned,
+                ..clean.clone()
+            }
+            .is_clean()
+        );
         // "We never looked" is not the same as "there was nothing there".
-        assert!(!ShutdownReport {
-            blocking: BlockingOutcome::Skipped,
-            ..clean
-        }
-        .is_clean());
+        assert!(
+            !ShutdownReport {
+                blocking: BlockingOutcome::Skipped,
+                ..clean
+            }
+            .is_clean()
+        );
     }
 
     #[test]

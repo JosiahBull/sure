@@ -1,6 +1,6 @@
+use axum::Router;
 use axum::extract::State;
 use axum::routing::get;
-use axum::Router;
 use serde::Serialize;
 use utoipa::ToSchema;
 

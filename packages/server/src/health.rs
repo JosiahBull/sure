@@ -21,7 +21,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 
 /// The argument that selects this mode.
 pub const FLAG: &str = "--health-check";

@@ -218,8 +218,8 @@ fn is_due(last_run_at: Option<DateTime<Utc>>, now: DateTime<Utc>, interval: Dura
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 

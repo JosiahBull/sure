@@ -12,7 +12,7 @@ use rmcp::model::{
     ListResourcesResult, ReadResourceResponse, ReadResourceResult, Resource, ResourceContents,
 };
 
-use crate::error::{invalid_params, ToolResult};
+use crate::error::{ToolResult, invalid_params};
 use crate::server::SureMcp;
 
 pub const ACCOUNTS_URI: &str = "sure://accounts";

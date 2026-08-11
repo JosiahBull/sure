@@ -24,8 +24,8 @@ use std::io::Cursor;
 
 use calamine::{Data, Reader, Xlsx};
 use chrono::{Duration, NaiveDate};
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 
 use sure_app::ports::ProviderTransaction;
 

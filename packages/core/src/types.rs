@@ -1250,9 +1250,11 @@ mod tests {
             term_months: Some(0),
             ..fixed_mortgage()
         });
-        assert!(problems(&no_term, AccountKind::Mortgage)
-            .iter()
-            .any(|p| p.contains("term_months") && p.contains("greater than zero")));
+        assert!(
+            problems(&no_term, AccountKind::Mortgage)
+                .iter()
+                .any(|p| p.contains("term_months") && p.contains("greater than zero"))
+        );
     }
 
     /// An income-contingent student loan is asked for the two things it can answer, and
@@ -1325,13 +1327,15 @@ mod tests {
     #[test]
     fn linking_stays_lenient_for_what_a_feed_cannot_know() {
         let meta = AccountMetadata::Property(PropertyMeta::default());
-        assert!(meta
-            .validate_for(AccountKind::RealEstate, ValidationMode::Linked)
-            .is_ok());
+        assert!(
+            meta.validate_for(AccountKind::RealEstate, ValidationMode::Linked)
+                .is_ok()
+        );
         // …and the same value is refused at the account form, where a person is asked.
-        assert!(meta
-            .validate_for(AccountKind::RealEstate, ValidationMode::Manual)
-            .is_err());
+        assert!(
+            meta.validate_for(AccountKind::RealEstate, ValidationMode::Manual)
+                .is_err()
+        );
     }
 
     /// The exception: a mortgage's terms are asked for even when linking, because Akahu
@@ -1358,9 +1362,11 @@ mod tests {
         // A lender is a label, not a term — the feed supplies the institution anyway.
         assert!(!problems.iter().any(|p| p.starts_with("lender")));
 
-        assert!(AccountMetadata::Mortgage(fixed_mortgage())
-            .validate_for(AccountKind::Mortgage, ValidationMode::Linked)
-            .is_ok());
+        assert!(
+            AccountMetadata::Mortgage(fixed_mortgage())
+                .validate_for(AccountKind::Mortgage, ValidationMode::Linked)
+                .is_ok()
+        );
     }
 
     /// And a student loan links with none of it, on either path — it has no schedule for
@@ -1368,8 +1374,9 @@ mod tests {
     #[test]
     fn linking_a_student_loan_demands_nothing() {
         let meta = AccountMetadata::StudentLoan(StudentLoanMeta::default());
-        assert!(meta
-            .validate_for(AccountKind::StudentLoan, ValidationMode::Linked)
-            .is_ok());
+        assert!(
+            meta.validate_for(AccountKind::StudentLoan, ValidationMode::Linked)
+                .is_ok()
+        );
     }
 }

@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{json, Map, Value};
-use zen_expression::{expression::Standard, vm::VM, Expression};
+use serde_json::{Map, Value, json};
+use zen_expression::{Expression, expression::Standard, vm::VM};
 
 use sure_core::{
     AppError, AppResult, PreviewMatch, PreviewRequest, Rule, RulePreview, RuleRunKind, RunResult,
@@ -885,8 +885,7 @@ mod tests {
     /// separate principal row ever appear. Amounts are invented; the shape is what matters.
     #[test]
     fn the_shipped_loan_interest_rule_matches_a_loan_feeds_own_wording() {
-        const SHIPPED: &str =
-            "account_kind in ['mortgage', 'loan'] and startsWith(lower(description), 'interest of')";
+        const SHIPPED: &str = "account_kind in ['mortgage', 'loan'] and startsWith(lower(description), 'interest of')";
         validate_expression(SHIPPED).expect("the shipped expression must be valid");
 
         let matches = |kind: AccountKind, description: &str| {

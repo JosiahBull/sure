@@ -13,8 +13,8 @@
 
 use chrono::{Datelike, NaiveDate};
 use sure_core::{
-    income::PayStep, tax, IncomeBasis, IncomeStream, PayFrequency, ResolvedScale, StoredTaxScale,
-    TakeHome, TakeHomeSource,
+    IncomeBasis, IncomeStream, PayFrequency, ResolvedScale, StoredTaxScale, TakeHome,
+    TakeHomeSource, income::PayStep, tax,
 };
 
 /// The stored scales, resolved once per simulation into something the arithmetic can borrow.

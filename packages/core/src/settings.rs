@@ -57,7 +57,7 @@ impl std::str::FromStr for McpMode {
             other => {
                 return Err(format!(
                     "unknown MCP mode '{other}' (expected off, read or write)"
-                ))
+                ));
             }
         })
     }

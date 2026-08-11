@@ -3424,10 +3424,12 @@ mod tests {
             refix_rate_uncertainty_bps: Some(150),
             ..mortgage_meta()
         };
-        assert!(loan_terms(&AccountMetadata::Mortgage(meta), today)
-            .unwrap()
-            .refix
-            .is_none());
+        assert!(
+            loan_terms(&AccountMetadata::Mortgage(meta), today)
+                .unwrap()
+                .refix
+                .is_none()
+        );
     }
 
     /// An expiry with no rate to switch to isn't a schedule, and a rate with no expiry has
@@ -3444,10 +3446,12 @@ mod tests {
             ..mortgage_meta()
         };
         for meta in [expiry_only, rate_only] {
-            assert!(loan_terms(&AccountMetadata::Mortgage(meta), today)
-                .unwrap()
-                .refix
-                .is_none());
+            assert!(
+                loan_terms(&AccountMetadata::Mortgage(meta), today)
+                    .unwrap()
+                    .refix
+                    .is_none()
+            );
         }
     }
 
@@ -3478,15 +3482,17 @@ mod tests {
     fn table_payment_stays_finite_for_an_absurd_term() {
         let payment = table_payment(500_000_00.0, monthly_rate(2_000), MAX_TERM_MONTHS);
         assert!(payment.is_finite() && payment > 0.0, "got {payment}");
-        assert!(loan_terms(
-            &AccountMetadata::Mortgage(sure_core::MortgageMeta {
-                term_months: Some(999_999),
-                interest_rate_bps: Some(-500),
-                ..mortgage_meta()
-            }),
-            d("2026-07-01"),
-        )
-        .is_some_and(|t| t.term_months == MAX_TERM_MONTHS && t.rate_bps == 0));
+        assert!(
+            loan_terms(
+                &AccountMetadata::Mortgage(sure_core::MortgageMeta {
+                    term_months: Some(999_999),
+                    interest_rate_bps: Some(-500),
+                    ..mortgage_meta()
+                }),
+                d("2026-07-01"),
+            )
+            .is_some_and(|t| t.term_months == MAX_TERM_MONTHS && t.rate_bps == 0)
+        );
     }
 
     /// The whole point of anchoring: a loan that's been overpaid is worth what the ledger
@@ -3786,9 +3792,11 @@ mod tests {
         sims[1].only_if = Vec::new();
         sims[1].after = vec![(0, 3)];
         let outcomes = sample_event_outcomes(3, 16, 120, &sims);
-        assert!(outcomes
-            .iter()
-            .all(|p| p[1].occurred && p[1].month == Some(6)));
+        assert!(
+            outcomes
+                .iter()
+                .all(|p| p[1].occurred && p[1].month == Some(6))
+        );
     }
 
     /// A 50% event happens on about half the paths, and the same seed gives the same answer twice.

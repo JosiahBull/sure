@@ -694,7 +694,7 @@ pub trait BrokerageRepo: Send + Sync {
     async fn earliest_activity_date(&self, account_id: i64) -> AppResult<Option<String>>;
     async fn list_holdings(&self, account_id: i64) -> AppResult<Vec<HoldingLot>>;
     async fn create_holding(&self, account_id: i64, input: SaveHoldingLot)
-        -> AppResult<HoldingLot>;
+    -> AppResult<HoldingLot>;
     async fn delete_holding(&self, id: i64) -> AppResult<()>;
     async fn list_dividends(&self, account_id: i64) -> AppResult<Vec<DividendDetail>>;
     #[allow(clippy::too_many_arguments)]

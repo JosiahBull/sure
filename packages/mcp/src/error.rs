@@ -3,8 +3,8 @@
 //! The one mapping — the MCP counterpart of `sure-core`'s `IntoResponse` for HTTP, and it
 //! differs from that one in what it is willing to say.
 
-use rmcp::model::ErrorCode;
 use rmcp::ErrorData;
+use rmcp::model::ErrorCode;
 use sure_core::AppError;
 
 /// A `Result` a tool body can `?` through.

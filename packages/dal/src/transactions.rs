@@ -47,7 +47,7 @@ impl TryFrom<TransactionRow> for Transaction {
             (None, Some(_)) => {
                 return Err(AppError::Internal(anyhow::anyhow!(
                     "transaction has a person_id but no ownership discriminant"
-                )))
+                )));
             }
             (Some(kind), person_id) => Some(
                 Ownership::from_stored(kind, person_id)
@@ -1376,9 +1376,11 @@ mod tests {
             .unwrap();
 
         // The inherited row followed the account; the override didn't move.
-        assert!(attributed(&db, Ownership::Person { person_id: alex })
-            .await
-            .is_empty());
+        assert!(
+            attributed(&db, Ownership::Person { person_id: alex })
+                .await
+                .is_empty()
+        );
         assert_eq!(
             attributed(&db, Ownership::Person { person_id: sam }).await,
             ["inherited", "pinned to sam"]
@@ -1623,10 +1625,12 @@ mod tests {
         assert!(found[0].1.starts_with(&format!("asb#{chequing}-")));
         assert_eq!(found[1].0, savings);
 
-        assert!(sample_external_ids(&db, "nothing#")
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            sample_external_ids(&db, "nothing#")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

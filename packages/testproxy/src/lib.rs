@@ -35,12 +35,12 @@ use std::sync::Arc;
 use anyhow::Context;
 use async_trait::async_trait;
 use bytes::Bytes;
-use http::header::{CONTENT_TYPE, SET_COOKIE};
 use http::StatusCode;
+use http::header::{CONTENT_TYPE, SET_COOKIE};
 use partly_proxy_lib::{
-    shared, ClusterHandle, InMemoryStorage, Mode, Next, ProxyClusterBuilder, ProxyConfig,
-    ProxyMiddleware, ProxyRequest, ProxyResponse, RecordedExchange, RecordingConfig,
-    RequestContext, SharedStorage, UpstreamTarget,
+    ClusterHandle, InMemoryStorage, Mode, Next, ProxyClusterBuilder, ProxyConfig, ProxyMiddleware,
+    ProxyRequest, ProxyResponse, RecordedExchange, RecordingConfig, RequestContext, SharedStorage,
+    UpstreamTarget, shared,
 };
 
 /// A third-party host `sure` talks to, and everything the proxy needs to stand in for it.

@@ -4,9 +4,9 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::Context;
-use sure_api::config::{ApiConfig, Limits, DEFAULT_CORS_ORIGINS};
+use sure_api::config::{ApiConfig, DEFAULT_CORS_ORIGINS, Limits};
 use sure_appbase::LifecycleConfig;
-use sure_mcp::config::{McpConfig, McpMode, DEFAULT_MAX_ROWS};
+use sure_mcp::config::{DEFAULT_MAX_ROWS, McpConfig, McpMode};
 use sure_providers::Endpoint;
 
 use crate::http::HttpConfig;

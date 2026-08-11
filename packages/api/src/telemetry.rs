@@ -29,11 +29,11 @@
 use std::time::Duration;
 
 use axum::extract::{MatchedPath, Request};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use tower_http::classify::ServerErrorsFailureClass;
-use tracing::{field::Empty, Span};
+use tracing::{Span, field::Empty};
 use uuid::Uuid;
 
 use crate::error::{ErrorBody, ErrorDetail};

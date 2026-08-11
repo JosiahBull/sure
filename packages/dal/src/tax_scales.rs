@@ -1,7 +1,7 @@
 //! Editable tax scales: persistence, plus the seeding that keeps `sure_core::tax`'s constants the
 //! single place the figures are written down.
 
-use sure_core::tax::{builtin_scales, OwnedTaxScale, SaveTaxScale, StoredTaxScale, TaxScaleId};
+use sure_core::tax::{OwnedTaxScale, SaveTaxScale, StoredTaxScale, TaxScaleId, builtin_scales};
 use sure_core::{AppError, AppResult};
 
 use crate::Db;

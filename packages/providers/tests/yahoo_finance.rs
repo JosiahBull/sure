@@ -36,8 +36,8 @@ use bytes::Bytes;
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use http::{Method, StatusCode};
 use partly_proxy_lib::{
-    shared, ClusterHandle, Command, Mode, ProxyClusterBuilder, ProxyConfig, RequestMatcher,
-    SharedMiddleware, SharedStorage, StubbedResponse, UpstreamTarget,
+    ClusterHandle, Command, Mode, ProxyClusterBuilder, ProxyConfig, RequestMatcher,
+    SharedMiddleware, SharedStorage, StubbedResponse, UpstreamTarget, shared,
 };
 use sure_app::ports::{StockPriceProvider, StockPriceQuote};
 use sure_providers::{Endpoint, YahooFinanceProvider};

@@ -19,8 +19,8 @@ use sure_core::{
     SaveMerchant, SaveRule, SaveTransaction, TxQuery,
 };
 
-use crate::convert::{money_from_string, money_to_string, resolve_window, Range};
-use crate::error::{invalid_params, to_mcp, ToolResult};
+use crate::convert::{Range, money_from_string, money_to_string, resolve_window};
+use crate::error::{ToolResult, invalid_params, to_mcp};
 use crate::server::SureMcp;
 use crate::tools::reports::parse_attribution;
 

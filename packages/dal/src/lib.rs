@@ -95,10 +95,10 @@ pub mod tax_scales;
 pub mod transactions;
 pub mod valuations;
 
+use sqlx::ConnectOptions;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
-use sqlx::ConnectOptions;
 
 /// The handle every layer above passes around. A thin alias today; a natural place to
 /// grow into a wrapper type carrying repositories if the app ever needs it.
@@ -106,8 +106,8 @@ pub type Db = SqlitePool;
 
 // Re-export the concrete pool/connection types so callers don't need a direct `sqlx`
 // dependency just to name them.
-pub use sqlx::sqlite::SqlitePool as Pool;
 pub use sqlx::SqliteConnection;
+pub use sqlx::sqlite::SqlitePool as Pool;
 
 /// Migrations are embedded at compile time from `packages/dal/migrations`, so the
 /// binary and the test harness run the exact same schema with no external files.
@@ -356,8 +356,8 @@ async fn log_pending(pool: &Db) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// [`log_pending`] swallows its query error on purpose, and the cost of that is a silent
     /// failure mode: if the row sqlx keeps its bookkeeping in ever stops answering to

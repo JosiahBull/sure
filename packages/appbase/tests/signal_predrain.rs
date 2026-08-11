@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use sure_appbase::{run, LifecycleConfig, Shutdown, Trigger};
+use sure_appbase::{LifecycleConfig, Shutdown, Trigger, run};
 
 #[test]
 fn a_second_signal_skips_the_predrain_delay() {

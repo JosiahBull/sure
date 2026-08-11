@@ -4,10 +4,10 @@
 //! wire-facing (`ToSchema`) response, per the same DTO-twin rationale as
 //! `routes::reports`.
 
+use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Router;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 

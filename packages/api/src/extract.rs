@@ -20,8 +20,8 @@
 use axum::extract::{FromRequest, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::error::{clothe_error, truncate_for_wire};
 use crate::telemetry::status_code_slug;
@@ -88,9 +88,9 @@ fn rejection_response(status: StatusCode, body_text: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
     use axum::body::Body;
     use axum::routing::post;
-    use axum::Router;
     use serde::Deserialize;
     use tower::ServiceExt;
 

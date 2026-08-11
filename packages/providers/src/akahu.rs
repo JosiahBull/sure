@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 
 use akahu_client::{AccountId, AkahuClient, Attribute, BankAccountKind, UserToken};
 use async_trait::async_trait;
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use serde_json::Value;
 use sure_app::ports::{
     ProviderBalance, ProviderCategory, ProviderTransaction, SyncContext, TransactionProvider,

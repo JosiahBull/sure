@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::io::Cursor;
 
 use chrono::DateTime;
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use serde::Deserialize;
 
 use sure_app::ports::{ProviderCategory, ProviderTransaction};

@@ -28,7 +28,7 @@ impl Signals {
     /// [`recv`](Self::recv) simply never resolves — which is the honest representation of
     /// "this process cannot be asked to stop politely".
     pub(crate) fn install() -> Self {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
 
         let open = |kind: SignalKind, name: &'static str| match signal(kind) {
             Ok(stream) => Some(stream),
