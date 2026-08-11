@@ -15,6 +15,10 @@ pnpm workspace (`pnpm-workspace.yaml`): `packages/web` (the SPA),
 `packages/client` (generated typed API client), `packages/api-tests` (Playwright
 backend e2e suite).
 
+This file is the *rules*. The dev workflow they apply to — prerequisites, the reloading dev
+server, the command reference, and the testing tiers — is `docs/DEVELOPMENT.md`, and
+`README.md` is deliberately user-facing only (what Sure is, and how to run it).
+
 ## Rules
 
 ### 1. Domain values are enums, not strings
