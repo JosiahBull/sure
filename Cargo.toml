@@ -23,6 +23,11 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# AGPL-3.0-only, not MIT: parts of the web layer are transcribed from we-promise/sure
+# (AGPL-3.0), so this is a derivative work and cannot be relicensed more permissively.
+# `-only` rather than `-or-later` — upstream ships the bare LICENSE with no "or later"
+# grant, and we do not hand on more than we received. See LICENSE and README.
+license = "AGPL-3.0-only"
 repository = ""
 
 [workspace.lints.rust]

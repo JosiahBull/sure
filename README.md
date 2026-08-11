@@ -368,5 +368,24 @@ directly for personal-app use.
 
 ## License
 
-Not yet licensed. No rights are granted; all rights reserved pending a licensing
-decision.
+[AGPL-3.0-only](LICENSE).
+
+Not a permissive licence by preference but by inheritance: parts of the web layer —
+notably the account-subtype table, the palette and the design tokens in
+`packages/web/src/lib/accountSubtypes.ts`, `accountMeta.ts` and `app.css` — were
+transcribed from [we-promise/sure](https://github.com/we-promise/sure), which is
+AGPL-3.0. That makes this a derivative work, so it cannot be relicensed more
+permissively. Comments naming "the reference" throughout the web layer mark the passages
+concerned. This project is an independent Rust/Svelte rewrite and is not affiliated with,
+endorsed by, or supported by that project or its authors.
+
+`-only` rather than `-or-later`: upstream ships the bare licence text with no "or later"
+grant, so none is passed on.
+
+### Bundled third-party assets
+
+- **Geist** and **Geist Mono** (`packages/web/public/fonts/`) — © 2024 The Geist Project
+  Authors, under the [SIL Open Font License 1.1](packages/web/public/fonts/OFL.txt). The
+  fonts are *not* covered by the AGPL above; OFL clause 2 requires that licence to travel
+  with them, which is why the text is vendored beside the `.woff2` files.
+- **Lucide** icons (`packages/web/src/lib/icons.ts`) — ISC.

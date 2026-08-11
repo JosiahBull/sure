@@ -2,6 +2,7 @@
 name = "sure-testproxy"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 # Never goes to a registry, and never linked into `sure-api`: this crate exists so a test can
 # answer for what a bank or a price feed said.
 publish = false
