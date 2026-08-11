@@ -16,8 +16,16 @@
 ARG RUST_VERSION=1
 ARG NODE_VERSION=24
 
+# Both builder stages and the runtime sit on Debian 13 (trixie), which is current stable —
+# bookworm is oldstable. The three are kept on one release deliberately: the ca-certificates
+# bundle the runtime ships and the toolchain that produced the binary then come from the same
+# vintage. (The binary is statically linked against musl, so the runtime's glibc is not part
+# of the contract — distroless/static carries no libc at all — but the certificate store is.)
+# RUST_VERSION floats on the major so a new stable rustc is picked up without an edit here;
+# NODE_VERSION is pinned to the 24 LTS line to match `engines.node` and CI's node-version.
+
 # ---- Emit the OpenAPI spec (arch-independent → build once, on the native platform) --
-FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-bookworm AS spec
+FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-trixie AS spec
 WORKDIR /build
 # Only the Cargo workspace members are needed here (web/client are not Cargo crates).
 COPY Cargo.toml Cargo.lock ./
@@ -44,7 +52,7 @@ COPY packages/server ./packages/server
 RUN cargo run --locked -p sure-api --bin gen-openapi -- packages/client/openapi.json
 
 # ---- Build the typed client + SPA (arch-independent → build once, native) -----------
-FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS web
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-trixie-slim AS web
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 WORKDIR /build
 RUN corepack enable
@@ -69,12 +77,14 @@ RUN pnpm --filter @sure/client generate \
 # --platform override), so under `buildx --platform linux/amd64,linux/arm64` each arch
 # compiles natively-under-emulation and `musl-gcc` is always the one for the arch in hand —
 # no cross toolchain to configure.
-FROM rust:${RUST_VERSION}-bookworm AS bin
+FROM rust:${RUST_VERSION}-trixie AS bin
 WORKDIR /build
 # musl-tools brings `musl-gcc`; cmake and clang are for `aws-lc-sys`, the C/asm crypto
 # backend behind rustls, which every provider adapter's HTTPS goes through. SQLite is
 # compiled into the binary too (libsqlite3-sys `bundled`), which is what leaves the runtime
-# image needing no shared library whatsoever.
+# image needing no shared library whatsoever. trixie carries all four under these same names;
+# on Debian 13.6 that resolves to musl 1.2.5, cmake 3.31 and clang 19 (a name, not a version,
+# is what would break on a future base image — apt has no candidate to fall back to).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends musl-tools musl-dev cmake clang \
  && rm -rf /var/lib/apt/lists/*
@@ -117,13 +127,17 @@ RUN case "$(uname -m)" in \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
     cargo build --release --locked -p sure-server --bin sure-api --target "$TARGET" \
  && cp "target/$TARGET/release/sure-api" /sure-api
-# `relocation-model=static` above is the whole reason the amd64 image builds. `+crt-static` is
+# `relocation-model=static` above is why the amd64 binary is a plain ET_EXEC. `+crt-static` is
 # already the musl default, but on x86_64-unknown-linux-musl rustc then emits a *static-PIE*,
-# and a musl static-PIE still carries a PT_INTERP naming /lib/ld-musl-x86_64.so.1 — a loader
-# `distroless/static` does not contain. aarch64 is unaffected: it produces a plain static
-# ET_EXEC with no PT_INTERP either way, which is why this only ever failed on one arch.
-# The cost is ASLR for this binary; the alternative is a runtime image carrying a loader,
-# which is the thing that image exists to avoid.
+# which used to carry a PT_INTERP naming /lib/ld-musl-x86_64.so.1 — a loader
+# `distroless/static` does not contain. That no longer reproduces as of the trixie/rustc 1.97
+# bump: a minimal binary linked exactly the way this stage links it (musl-gcc, `+crt-static`)
+# comes out a static-PIE with no PT_INTERP whether or not the flag is set. The flag stays
+# anyway — it pins the property rather than inheriting it from a toolchain that has already
+# changed once, and dropping it would change the shipped artifact (a PIE, ASLR back), which
+# deserves its own commit rather than riding along with a base-image bump. aarch64 was never
+# affected: a plain static ET_EXEC with no PT_INTERP either way, which is why this only ever
+# failed on one arch.
 #
 # Its own step, not chained onto the build: as part of that `&&` run, any compile failure
 # would have been reported as "not statically linked" instead of as itself. A binary that
@@ -153,7 +167,7 @@ RUN mkdir -p /empty-data
 # "ignore unhandled signals" rule never applies), and the app spawns no child
 # processes at all — the Landlock policy forbids `execve` outright, so there are
 # no zombies to reap. See docs/SANDBOX.md and docs/HTTP.md.
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 WORKDIR /app
 # Owned by root and not writable by the user that runs it: the binary cannot rewrite itself.
 COPY --from=bin --chown=root:root --chmod=0555 /sure-api /usr/local/bin/sure-api
