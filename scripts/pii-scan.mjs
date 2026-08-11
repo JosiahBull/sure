@@ -20,16 +20,29 @@
 // `expandSnapshots` — and `AKAHU_SNAPSHOT_PATH` for the one upstream whose recordings are
 // not committable at all.
 //
-//   node scripts/pii-scan.mjs          # staged additions only (what the pre-commit hook runs)
-//   node scripts/pii-scan.mjs --all    # every tracked text file
+// A commit *message* is history too, and the two file modes below never see one: both read
+// blobs. That gap was not theoretical — the commit that introduced this script quoted, in its
+// own message, the third-party account number it had just found in an `asb.rs` doc comment, and
+// the 2026-08-04 scrub missed it because `--replace-text` rewrites blobs while messages need
+// `--replace-message`. It survived until 2026-08-11, the day before the first push to GitHub.
+// Hence `--message`, run by `.githooks/commit-msg` — see `commitMessage` for what git itself
+// strips before storing, which this has to strip too or it reports on text nobody committed.
+//
+//   node scripts/pii-scan.mjs                  # staged additions only (the pre-commit hook)
+//   node scripts/pii-scan.mjs --all            # every tracked text file
+//   node scripts/pii-scan.mjs --message FILE   # one commit message (the commit-msg hook)
 //
 // Reads `data/sure.db` as bytes and never opens a sqlite handle, so it cannot write to the
 // live database (see the `data/sure.db` convention in CLAUDE.md).
 
 import { execFileSync } from "node:child_process";
-import { existsSync, openSync, readSync, closeSync, statSync } from "node:fs";
+import { existsSync, openSync, readSync, closeSync, statSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { gunzipSync, inflateSync } from "node:zlib";
+
+// Resolved before the chdir below, because `--message` takes a path from git — relative to the
+// worktree root, which is where git runs hooks from — and chdir would silently re-anchor it.
+const invokedFrom = process.cwd();
 
 const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
   encoding: "utf8",
@@ -200,6 +213,21 @@ const skip = (file) => SKIP_FILE.some((re) => re.test(file));
 /** Declared here rather than at the scan below, because `scannedPaths` reads it. */
 const all = process.argv.includes("--all");
 
+/** Absolute path of the commit message to scan, or `null` in the two file modes. */
+const messageFile = (() => {
+  const at = process.argv.indexOf("--message");
+  if (at === -1) return null;
+  const given = process.argv[at + 1];
+  if (!given || given.startsWith("--")) {
+    console.error("pii-scan: --message needs a file path (git passes it to the commit-msg hook)");
+    process.exit(2);
+  }
+  return path.resolve(invokedFrom, given);
+})();
+
+/** What this run is answerable for, for the one-line verdict and the failure header. */
+const scope = all ? "the tree" : messageFile ? "the commit message" : "staged changes";
+
 /** Every tracked text file, as `{ file, line, text }` rows. */
 function wholeTree() {
   const files = execFileSync("git", ["ls-files", "-z"], { maxBuffer: 1 << 28 })
@@ -246,6 +274,55 @@ function stagedAdditions() {
       rows.push({ file, line: lineNo, text: raw.slice(1) });
       lineNo += 1;
     }
+  }
+  return rows;
+}
+
+/**
+ * One commit message, reduced to what git will actually store.
+ *
+ * Two things have to come off first, or this reports on text that never becomes part of any
+ * commit — and a gate that cries wolf is a gate people start bypassing:
+ *
+ *   * Comment lines. Git strips them, and the default template is full of `git status` output:
+ *     branch names, paths, and — after `git commit -s`, or an amend — an author line carrying
+ *     an email address, which the `email` pattern below would otherwise fire on every time.
+ *   * Everything from the scissors line. `commit.verbose` / `-v` appends the whole staged diff
+ *     under it; git drops it, and the pre-commit scan has already read exactly those lines.
+ *
+ * Line numbers stay those of the file on disk, so a reported line is one the author can find in
+ * their editor rather than an index into some post-filter buffer.
+ */
+function commitMessage(file) {
+  let raw;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch (e) {
+    console.error(`pii-scan: cannot read the commit message at ${file}: ${e.message}`);
+    process.exit(2);
+  }
+
+  // `core.commentChar` may be a single character or `auto`, in which case git picks the first
+  // candidate the message does not already use at line start — `#` unless the message is
+  // unusual, and guessing wrong here only ever means scanning a line git will discard.
+  let commentChar = "#";
+  try {
+    const configured = execFileSync("git", ["config", "--get", "core.commentChar"], {
+      encoding: "utf8",
+    }).trim();
+    if (configured && configured !== "auto") commentChar = configured;
+  } catch {
+    // Unset: `git config --get` exits non-zero, and `#` is already the default.
+  }
+  const isScissors = (text) => text.startsWith(commentChar) && /-{2,}\s*>8\s*-{2,}/.test(text);
+
+  const rows = [];
+  const lines = raw.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const text = lines[i];
+    if (isScissors(text)) break;
+    if (text.startsWith(commentChar)) continue;
+    rows.push({ file: "(commit message)", line: i + 1, text });
   }
   return rows;
 }
@@ -442,7 +519,12 @@ function decompressed(bytes) {
 
 // ------------------------------------------------------------------------------------- scan
 
-const { rows, akahuFiles } = expandSnapshots(all ? wholeTree() : stagedAdditions());
+// Snapshot expansion is a file-mode concern: it decodes `*.ndjson` bodies and judges staged
+// *paths* for the Akahu guard, and a message has neither. Skipping it also skips the `git diff`
+// it runs, which is most of why the commit-msg hook costs a file read and nothing else.
+const { rows, akahuFiles } = messageFile
+  ? { rows: commitMessage(messageFile), akahuFiles: new Map() }
+  : expandSnapshots(all ? wholeTree() : stagedAdditions());
 
 const findings = [];
 for (const row of rows) {
@@ -479,7 +561,7 @@ scrub gets them back out once they are in history — the last one cost a 58-com
 
 if (findings.length === 0) {
   if (akahuFiles.size === 0) {
-    console.log(`✓ no personal-data shapes in ${all ? "the tree" : "staged changes"}`);
+    console.log(`✓ no personal-data shapes in ${scope}`);
     process.exit(0);
   }
   process.exit(1);
@@ -488,7 +570,7 @@ if (findings.length === 0) {
 const hits = liveDbHits([...new Set(findings.map((f) => f.literal))]);
 
 console.error(
-  `\n✗ possible personal data in ${all ? "the tree" : "staged changes"} ` +
+  `\n✗ possible personal data in ${scope} ` +
     `(${findings.length} match${findings.length === 1 ? "" : "es"})\n`
 );
 for (const f of findings) {
@@ -514,20 +596,37 @@ for (const f of findings) {
   }
 }
 
-console.error(`
+const selfPath = path.relative(repoRoot, new URL(import.meta.url).pathname);
+
+console.error(
+  messageFile
+    ? `
+CLAUDE.md rule 3 reaches commit messages: a message is history on the same terms a fixture is,
+and rewriting one costs the same filter-repo run — with --replace-message rather than
+--replace-text, which is precisely the half the 2026-08-04 scrub left out. Nothing has been
+committed yet, so this is the cheapest moment this will ever be fixable.
+
+  * Reword it. Naming the shape — "a third party's account number" — says everything the
+    message needed to say; quoting the value is the part that becomes history.
+  * Your text is not lost. Git kept it, so recover and edit it with
+      git commit -e -F .git/COMMIT_EDITMSG
+  * If the literal is genuinely invented, add it to ALLOWED in ${selfPath}
+    so the next commit is quiet and the decision is recorded.
+
+Last resort: git commit --no-verify
+`
+    : `
 CLAUDE.md rule 3: fixtures carry real data's shape, never its identifiers.
 
   * Replace it length-for-length with an invented value — the ASB/myIR tests pin
     ASB's 12-character field widths, so a longer or shorter stand-in silently stops
     exercising the boundary the test exists for.
-  * If the literal is genuinely invented, add it to ALLOWED in ${path.relative(
-    repoRoot,
-    new URL(import.meta.url).pathname
-  )}
+  * If the literal is genuinely invented, add it to ALLOWED in ${selfPath}
     so the next commit is quiet and the decision is recorded.
   * Grep the whole tree before you finish: one value spreads into doc comments, the
     generated client schema, another crate's arithmetic, and rendered PNG baselines.
 
 Last resort: git commit --no-verify
-`);
+`
+);
 process.exit(1);

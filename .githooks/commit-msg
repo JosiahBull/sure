@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+#
+# Scan the commit message for personal data — CLAUDE.md rule 3, the half .githooks/pre-commit
+# cannot reach.
+#
+# That hook's scan reads staged *file* diffs, so no message has ever passed under it, and the
+# gap was not theoretical: the commit that introduced scripts/pii-scan.mjs quoted, in its own
+# message, the third-party account number it had just found in an `asb.rs` doc comment. It
+# survived the 2026-08-04 scrub because `--replace-text` rewrites blobs and messages need
+# `--replace-message`, and it was caught by hand on 2026-08-11, the day before this repo was
+# first pushed anywhere. A clean `pii-scan --all` actively disguised it: that verdict is about
+# files, and reads as though it were about the commit.
+#
+# Runs on every commit, amend, squash and merge. Costs one file read plus — only for literals
+# that match a shape and are not in ALLOWED — a byte grep of data/sure.db, so it is cheap
+# enough to sit in front of every commit without anyone noticing it.
+#
+# Bypass in an emergency with `git commit --no-verify`, which skips this and pre-commit both.
+set -euo pipefail
+
+# Absolutised before the cd, because git passes this path relative to the worktree root and
+# `git rev-parse --show-toplevel` is only the same directory until someone runs a hook from a
+# linked worktree or a bare-repo checkout.
+msg="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+
+cd "$(git rev-parse --show-toplevel)"
+
+exec node scripts/pii-scan.mjs --message "$msg"
