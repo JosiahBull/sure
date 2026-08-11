@@ -87,12 +87,9 @@ jobs:
 
   # The Rust `#[cfg(test)]` modules, packages/appbase/tests, and the doctests — nothing else
   # in this workflow runs them, so without this job they compile under clippy and never
-  # execute. `--all-features` matches the clippy line above so feature-gated tests are built
-  # at all: sure-api's `blocking_detector_tests` exist only under `blocking-detector`. That
-  # feature also wants `RUSTFLAGS="--cfg tokio_unstable"` to observe anything, deliberately
-  # not set here — those tests check `cfg!(tokio_unstable)` and skip themselves instead of
-  # failing. No `--all-targets`: for `cargo test` it *excludes* doctests rather than adding
-  # to them, which would silently drop the sure_appbase usage example.
+  # execute. `--all-features` matches the clippy line above, so a feature-gated test is built
+  # rather than silently skipped. No `--all-targets`: for `cargo test` it *excludes* doctests
+  # rather than adding to them, which would silently drop the sure_appbase usage example.
   test:
     name: Cargo tests
     runs-on: ubuntu-latest

@@ -8,19 +8,13 @@ import path from "node:path";
 // so a missing `sure-testproxy` is a suite that cannot start rather than a feature some specs
 // skip.
 //
-// `pnpm test:api:blocked` runs the suite through scripts/blocked.mjs, which sets
-// SURE_BLOCKED (plus the RUSTFLAGS and CARGO_TARGET_DIR that build needs): the binary then
-// carries the tokio blocking detector, and every server a test spawns reports its long
-// polls. See fixtures.ts for the log level and output handling that go with it. Both builds
-// inherit that CARGO_TARGET_DIR, which is the directory fixtures.ts resolves both binaries out
-// of.
+// One cargo invocation for both, so they share a single build-directory lock instead of
+// contending for it. It honours CARGO_TARGET_DIR, which is the directory fixtures.ts resolves
+// both binaries out of.
 export default async function globalSetup() {
   const repoRoot = path.resolve(process.cwd(), "..", "..");
-  const features = process.env.SURE_BLOCKED ? " --features blocking-detector" : "";
-  execSync(`cargo build -p sure-server --bin sure-api${features}`, { cwd: repoRoot, stdio: "inherit" });
-  // A second invocation rather than a second `-p` on the first: `blocking-detector` is a feature
-  // of `sure-server` alone, and cargo refuses an unqualified `--features` once more than one
-  // package is selected. Sequential, so the two share one build-directory lock rather than
-  // contending for it.
-  execSync("cargo build -p sure-testproxy --bin sure-testproxy", { cwd: repoRoot, stdio: "inherit" });
+  execSync("cargo build -p sure-server --bin sure-api -p sure-testproxy --bin sure-testproxy", {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
 }
