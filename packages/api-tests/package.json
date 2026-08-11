@@ -8,10 +8,11 @@
     "test": "playwright test",
     "check": "tsc --noEmit"
   },
+  "//openapi-fetch": "Must stay identical to packages/client's range, including its sub-0.17 cap — see the note there for why 0.17 breaks tuple response types.",
   "devDependencies": {
-    "@playwright/test": "^1.49.1",
-    "@types/node": "^22.10.5",
-    "openapi-fetch": "^0.13.5",
-    "typescript": "^5.9.2"
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^24.13.3",
+    "openapi-fetch": "^0.16.0",
+    "typescript": "^5.9.3"
   }
 }
