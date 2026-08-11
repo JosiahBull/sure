@@ -86,6 +86,24 @@ mod tests {
     use super::*;
     use std::io::{BufRead, Write};
     use std::net::TcpListener;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Serialises the two tests that drive [`probe`] end to end.
+    ///
+    /// `probe` reads `BIND_ADDR` out of the process environment, so those two are not
+    /// independent however carefully each one orders itself: cargo runs them on separate
+    /// threads, and whichever sets the var second decides where *both* probes go. About one
+    /// run in two, that meant the closed-port probe reached the healthy stub and returned
+    /// `Ok`, while the healthy probe got an RST from a listener that had already answered its
+    /// one request. Every other test here calls `target(Some(..))` directly and needs no lock.
+    static BIND_ADDR_ENV: Mutex<()> = Mutex::new(());
+
+    /// Take [`BIND_ADDR_ENV`], ignoring poisoning left by a sibling that already failed: the
+    /// lock guards an env var each holder overwrites anyway, so there is no inconsistent state
+    /// to inherit — and reporting the second test as "poisoned" would only bury the first.
+    fn bind_addr_env() -> MutexGuard<'static, ()> {
+        BIND_ADDR_ENV.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     /// The case the container actually runs: bound to the v4 wildcard, probed on v4 loopback.
     #[test]
@@ -161,8 +179,10 @@ mod tests {
     /// Drives the real [`probe`], so what it sends has to be something a server will answer.
     #[test]
     fn a_200_is_healthy_and_anything_else_is_not() {
-        // SAFETY: both cases run sequentially inside this one test, and `probe` reads
-        // `BIND_ADDR` once, up front.
+        let _env = bind_addr_env();
+        // SAFETY: both cases run sequentially inside this one test, `probe` reads `BIND_ADDR`
+        // once up front, and the guard above keeps the other `probe` test out of the variable
+        // for the duration.
         unsafe { std::env::set_var("BIND_ADDR", format!("127.0.0.1:{}", stub("200 OK"))) };
         if let Err(e) = probe() {
             panic!("a healthy server was reported unhealthy: {e:#}");
@@ -182,11 +202,14 @@ mod tests {
     /// crash, which is exactly when Docker is asking.
     #[test]
     fn a_closed_port_is_unhealthy() {
+        let _env = bind_addr_env();
         // Bind and drop, so the port is almost certainly free and nothing is behind it.
         let port = {
             let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             l.local_addr().unwrap().port()
         };
+        // SAFETY: the guard above is what makes this the only writer of `BIND_ADDR` while the
+        // probe below reads it.
         unsafe { std::env::set_var("BIND_ADDR", format!("127.0.0.1:{port}")) };
         assert!(probe().is_err());
     }
