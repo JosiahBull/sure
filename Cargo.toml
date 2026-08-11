@@ -162,8 +162,19 @@ tempfile = "3"
 zen-expression = "0.55"
 # The forecast's Monte Carlo simulation: a seedable RNG (reproducible in tests) plus the
 # normal distribution its stochastic accounts/categories draw monthly returns from.
-rand = "0.8"
-rand_distr = "0.4"
+#
+# The two majors move together — `rand_distr` tracks `rand`'s, and 0.6 is the release built
+# against 0.10. Reproducibility survived the jump, which for this crate is the property that
+# matters (`forecast.rs` pins exact simulated figures off fixed seeds): `StdRng` is still
+# ChaCha12 and 0.10's swap of `rand_chacha` for `chacha20` is documented as output-preserving,
+# `SeedableRng::seed_from_u64` still expands the seed with the same PCG32 and the same
+# constants, and neither `StandardUniform for f64` nor `rand_distr`'s `Normal` appears in
+# either crate's value-breaking lists. Note that rand does *not* promise this — `StdRng` is
+# explicitly non-portable across versions — so the exact-value tests are the evidence, not
+# the changelog. A future bump that reshuffles those figures is legitimate; one that changes
+# a *statistical* assertion is not.
+rand = "0.10"
+rand_distr = "0.6"
 # The official Rust MCP SDK, and the only dependency `sure-mcp` has outside the workspace.
 # `transport-streamable-http-server` is the one transport built: it yields a plain
 # `tower::Service`, which is what lets `sure-server` nest the MCP endpoint into the router
