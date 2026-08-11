@@ -325,6 +325,14 @@
     max-width: none;
     margin: 0 auto;
     padding: 10px clamp(16px, 2.8vw, 40px);
+    /* The breadcrumb and the three range/household/one-off controls do not fit side by side at
+       phone width, and none of them will shrink (a `<select>` is sized by its longest option).
+       Left alone they widen the *document* to ~712px, so the whole page scrolls sideways — and
+       because .rail and .subbar are sticky, scrolling the page then slides content underneath
+       them, which is how a click on a column header landed on the rail instead. Scroll the bar
+       itself, the way the transactions table already scrolls its own overflow, and the document
+       stays exactly one viewport wide. */
+    overflow-x: auto;
   }
   .icon-btn {
     padding: 6px 8px;
