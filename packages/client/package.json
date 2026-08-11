@@ -12,7 +12,7 @@
     "generate": "node strip-operation-ids.mjs && openapi-typescript ./openapi.json -o ./src/schema.d.ts"
   },
   "dependencies": {
-    "openapi-fetch": "^0.13.5"
+    "openapi-fetch": "^0.17.0"
   },
   "devDependencies": {
     "openapi-typescript": "^7.9.1",

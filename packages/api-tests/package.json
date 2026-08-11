@@ -9,9 +9,9 @@
     "check": "tsc --noEmit"
   },
   "devDependencies": {
-    "@playwright/test": "^1.49.1",
+    "@playwright/test": "^1.62.1",
     "@types/node": "^22.10.5",
-    "openapi-fetch": "^0.13.5",
+    "openapi-fetch": "^0.17.0",
     "typescript": "^5.9.2"
   }
 }
