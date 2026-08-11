@@ -131,11 +131,10 @@ RUN mkdir -p /empty-data
 # nonroot user, and tzdata. Nothing in here is executable except the one binary below, so
 # the usual post-exploitation toolkit — a shell, curl, apt, coreutils — simply is not present.
 #
-# There is no tini. It was here for PID-1 signal handling and zombie reaping, and this
-# process needs neither: `sure_appbase::run` installs its own SIGTERM/SIGINT handlers (so
-# PID 1's "ignore unhandled signals" rule never applies), and the app spawns no child
-# processes at all — the Landlock policy forbids `execve` outright, so there are no zombies
-# to reap. See docs/SANDBOX.md and docs/HTTP.md.
+# `sure_appbase::run` installs its own SIGTERM/SIGINT handlers (so PID 1's
+# "ignore unhandled signals" rule never applies), and the app spawns no child
+# processes at all — the Landlock policy forbids `execve` outright, so there are
+# no zombies to reap. See docs/SANDBOX.md and docs/HTTP.md.
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 WORKDIR /app
 # Owned by root and not writable by the user that runs it: the binary cannot rewrite itself.
