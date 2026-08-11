@@ -13,11 +13,17 @@ updates:
       prefix: chore
       include: scope
     groups:
-      # Bundle low-risk bumps into one PR to cut noise; majors still arrive individually.
+      # Bundle low-risk bumps into one PR to cut noise.
       cargo-minor-patch:
         update-types:
           - minor
           - patch
+    # Majors are never auto-merged: on 2026-08-11 sqlx 0.8→0.9, tower-http 0.6→0.7 and
+    # zip 2.4→8.6 landed on main 12s, 25s and 3m after being opened, because auto-merge
+    # with no required checks merges immediately. Bump majors by hand, with the migration.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # Node/pnpm packages across the pnpm workspace (pnpm-lock.yaml).
   - package-ecosystem: npm
@@ -33,6 +39,10 @@ updates:
         update-types:
           - minor
           - patch
+    # As above: majors are a human decision, not an automatic one.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # The GitHub Actions used by the CI, release, and snapshot workflows.
   - package-ecosystem: github-actions
