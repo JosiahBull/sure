@@ -3205,7 +3205,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "rand 0.8.7",
+ "rand 0.10.2",
  "rand_distr",
  "rust_decimal",
  "serde_json",
