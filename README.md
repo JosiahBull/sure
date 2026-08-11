@@ -119,8 +119,8 @@ error. (See `packages/client/strip-operation-ids.mjs` for why the spec is post-p
 
 ## Prerequisites
 
-- Rust (nightly is used here; stable ≥ 1.94 with edition 2021 also works — that floor is
-  `sqlx` 0.9's MSRV, not ours)
+- Rust (nightly is used here; stable ≥ 1.94 also works — that floor is `sqlx` 0.9's MSRV,
+  not ours. The workspace is on edition 2024, which needs only 1.85)
 - Node ≥ 22 and `pnpm` (`corepack enable`)
 - `sqlx-cli`, **only if you change a SQL query or add a migration** —
   `cargo install sqlx-cli@0.9.0 --no-default-features --features sqlite,rustls` — so you can run

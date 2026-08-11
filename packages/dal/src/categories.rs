@@ -194,12 +194,12 @@ async fn validate(db: &SqlitePool, input: &SaveCategory, id: Option<i64>) -> App
             return Err(AppError::validation("parent category does not exist"));
         }
         // Prevent cycles: the proposed parent must not be a descendant of this node.
-        if let Some(id) = id {
-            if would_cycle(db, id, parent).await? {
-                return Err(AppError::validation(
-                    "cannot nest a category under one of its own descendants",
-                ));
-            }
+        if let Some(id) = id
+            && would_cycle(db, id, parent).await?
+        {
+            return Err(AppError::validation(
+                "cannot nest a category under one of its own descendants",
+            ));
         }
         // Depth cap, in two halves because a re-parent takes a whole subtree with it:
         // where this node itself would land, and where its deepest descendant would. A

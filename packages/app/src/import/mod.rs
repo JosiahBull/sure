@@ -354,17 +354,17 @@ impl ImportService {
         // all the way back: the stated closing balance against Sure's own. A warning, not a
         // refusal — a legitimate export can predate the latest valuation, and an account whose
         // history is only now being reconstructed genuinely holds less than the bank says.
-        if let (Some(stated), Some(held)) = (item.stated_closing_minor, account_balance_minor) {
-            if stated != held {
-                warnings.push(format!(
-                    "the export closes at {} but {} holds {} — check the export is for that \
+        if let (Some(stated), Some(held)) = (item.stated_closing_minor, account_balance_minor)
+            && stated != held
+        {
+            warnings.push(format!(
+                "the export closes at {} but {} holds {} — check the export is for that \
                      account, and that its date range reaches back far enough; the two also \
                      differ while the account's own history is still incomplete",
-                    major(stated),
-                    account.name,
-                    major(held)
-                ));
-            }
+                major(stated),
+                account.name,
+                major(held)
+            ));
         }
 
         // The account's value before the item's first row. Withheld when something is already on
@@ -454,18 +454,18 @@ impl ImportService {
             // imported, so comparing against it would warn on every successful import.
             // Re-read, and the check still bites wherever there is a balance recorded
             // independently of these rows to reconcile against, and is silent where there isn't.
-            if let Some(balance) = self.latest_balance(account).await {
-                if ledger_sum != balance {
-                    out.warnings.push(format!(
-                        "{}'s transactions now sum to {} but the account is recorded at {}, a \
+            if let Some(balance) = self.latest_balance(account).await
+                && ledger_sum != balance
+            {
+                out.warnings.push(format!(
+                    "{}'s transactions now sum to {} but the account is recorded at {}, a \
                          difference of {} — some period is either counted twice or missing, so \
                          the reconstructed history before today will be out by that much",
-                        account.name,
-                        major(ledger_sum),
-                        major(balance),
-                        major(balance - ledger_sum),
-                    ));
-                }
+                    account.name,
+                    major(ledger_sum),
+                    major(balance),
+                    major(balance - ledger_sum),
+                ));
             }
         }
 

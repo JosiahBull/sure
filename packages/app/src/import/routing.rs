@@ -124,10 +124,10 @@ pub fn resolve<'a>(
     // The distinctive tail — `0000123-50` — is what a name carries when two accounts would
     // otherwise be indistinguishable. Ten characters, so a coincidental hit is unlikely; a
     // hint all the same, which is why it's reported as one.
-    if let Some(tail) = source_account.splitn(3, '-').nth(2) {
-        if let Some(found) = only_match(accounts, |a| a.name.contains(tail)) {
-            return Some((found, ImportMatch::AccountName));
-        }
+    if let Some(tail) = source_account.splitn(3, '-').nth(2)
+        && let Some(found) = only_match(accounts, |a| a.name.contains(tail))
+    {
+        return Some((found, ImportMatch::AccountName));
     }
     // Above the history tier because it is still an identifier the *source* stated, rather
     // than an inference from the rows — and because on a first import there is no history to
@@ -230,10 +230,10 @@ pub fn only_candidate<'a>(
     let sole = only_match(accounts, |a| source.accepts(a.kind))?;
     // A joint account contradicts nobody — it is everyone's — so only an account owned by a
     // *different* named person vetoes.
-    if let Some(person) = person_named(item.holder.as_deref(), people) {
-        if sole.ownership.person_id().is_some_and(|id| id != person.id) {
-            return None;
-        }
+    if let Some(person) = person_named(item.holder.as_deref(), people)
+        && sole.ownership.person_id().is_some_and(|id| id != person.id)
+    {
+        return None;
     }
     Some((sole, ImportMatch::OnlyCandidate))
 }

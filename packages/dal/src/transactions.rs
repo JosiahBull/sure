@@ -89,12 +89,12 @@ async fn split_ownership(
     let Some(ownership) = ownership else {
         return Ok((None, None));
     };
-    if let Ownership::Person { person_id } = ownership {
-        if !crate::people::exists(db, person_id).await? {
-            return Err(AppError::validation(format!(
-                "person {person_id} does not exist"
-            )));
-        }
+    if let Ownership::Person { person_id } = ownership
+        && !crate::people::exists(db, person_id).await?
+    {
+        return Err(AppError::validation(format!(
+            "person {person_id} does not exist"
+        )));
     }
     let (kind, person_id) = ownership.as_parts();
     Ok((Some(kind), person_id))

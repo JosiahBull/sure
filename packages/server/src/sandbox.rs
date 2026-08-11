@@ -210,10 +210,18 @@ pub fn apply(config: &Config) -> anyhow::Result<()> {
     // make writable — so point it at the data directory, which already is. Mutating the
     // environment is sound here and only here: `apply` runs from `main` before the tokio
     // runtime exists, so nothing else can be reading it concurrently.
-    if let Some(dir) = &database_dir {
-        if std::env::var_os("SQLITE_TMPDIR").is_none() {
-            std::env::set_var("SQLITE_TMPDIR", dir);
-        }
+    if let Some(dir) = &database_dir
+        && std::env::var_os("SQLITE_TMPDIR").is_none()
+    {
+        // SAFETY: `set_var` is unsafe from edition 2024 on, because a concurrent
+        // `getenv` in another thread is a data race the compiler cannot rule out. There
+        // is no other thread to race with here: `apply`'s only caller is `main`, which
+        // calls it before `tokio::runtime::Builder::build`, and nothing earlier in
+        // `main` spawns one. `Plan::apply`'s `check_single_threaded` re-derives that
+        // same invariant from /proc/self/task and fails startup if it does not hold —
+        // but it runs after this write, so it corroborates the reasoning rather than
+        // guarding this line.
+        unsafe { std::env::set_var("SQLITE_TMPDIR", dir) };
     }
 
     let plan = Plan::build(

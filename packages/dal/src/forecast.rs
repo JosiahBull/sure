@@ -104,13 +104,13 @@ pub async fn upsert_assumption(
     // deliberate 1e14 from a fat-fingered one, and by the time it reaches the simulation the
     // only honest options left are clamping it (a projection of an assumption the user never
     // made) or refusing the whole report.
-    if let Some(vol) = input.annual_volatility_bps {
-        if !(0..=MAX_VOLATILITY_BPS).contains(&vol) {
-            return Err(AppError::validation(format!(
-                "annual_volatility_bps must be between 0 and {MAX_VOLATILITY_BPS} \
+    if let Some(vol) = input.annual_volatility_bps
+        && !(0..=MAX_VOLATILITY_BPS).contains(&vol)
+    {
+        return Err(AppError::validation(format!(
+            "annual_volatility_bps must be between 0 and {MAX_VOLATILITY_BPS} \
                  (0-300%/yr), got {vol}"
-            )));
-        }
+        )));
     }
     let target_type = input.target_type.as_str();
     sqlx::query_as!(

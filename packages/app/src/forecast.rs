@@ -2041,11 +2041,11 @@ fn sample_event_outcomes(
             for &(parent, gap) in &ev.after {
                 // A parent that did not occur imposes nothing: `after` is ordering, not
                 // conditionality. If conditionality was meant, that is `only_if`.
-                if let Some(pm) = path_events[parent].month {
-                    if pm + gap > month {
-                        month = pm + gap;
-                        constrained = true;
-                    }
+                if let Some(pm) = path_events[parent].month
+                    && pm + gap > month
+                {
+                    month = pm + gap;
+                    constrained = true;
                 }
             }
             let clamped_early = month < 1;

@@ -429,7 +429,7 @@ mod tests {
         let months: Vec<usize> = counts
             .iter()
             .enumerate()
-            .filter(|(_, &c)| c > 0)
+            .filter(|&(_, &c)| c > 0)
             .map(|(i, _)| i)
             .collect();
         assert_eq!(months, vec![2, 5, 8, 11]);
