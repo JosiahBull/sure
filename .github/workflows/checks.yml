@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - run: node scripts/pii-scan.mjs --all
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       # Resolves a prebuilt `sqlx` binary where one is published and only falls back to building
@@ -102,6 +102,17 @@ jobs:
   # svelte-check (web) + tsc (api-tests). Both consume the generated client, so the
   # OpenAPI spec + typed client are produced first (`pnpm gen:client`, which builds and
   # runs the gen-openapi binary).
+  #
+  # The pnpm/setup-node pair below is repeated in api-tests, web-tests and snapshots.yml, and
+  # both halves are load bearing:
+  #   * pnpm FIRST, always. setup-node's `cache: pnpm` resolves the store directory by
+  #     shelling out to `pnpm store path`, so pnpm has to be installed before it runs;
+  #     reordering these two lines fails the cache step, not the install.
+  #   * `cache: pnpm` spelled out. setup-node caches automatically since v5
+  #     (`package-manager-cache`, default true), but v6 narrowed that to `packageManager`
+  #     fields naming *npm* — ours names pnpm, so nothing is cached unless this input says so.
+  # pnpm/action-setup needs no `with:`: it reads the version from the root package.json
+  # `packageManager` field (pnpm@11.20.0), which is also the single place to bump it.
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
@@ -109,8 +120,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -133,8 +144,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -176,8 +187,8 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
