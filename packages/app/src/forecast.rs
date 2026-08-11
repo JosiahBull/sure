@@ -26,7 +26,10 @@ use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+// `RngExt`, not `Rng`: rand 0.10 renamed the old `RngCore` to `Rng`, so the trait carrying the
+// sampling methods (`random`, `random_range`, …) is now `RngExt`. Importing `Rng` still
+// compiles — it is a real trait — but leaves `random::<f64>()` unresolved.
+use rand::{RngExt, SeedableRng};
 use rand_distr::{Distribution, Normal};
 
 use sure_core::{
@@ -2025,11 +2028,11 @@ fn sample_event_outcomes(
                 ev.event_id as u64,
                 path as u64,
             ));
-            let occurred = rng.gen::<f64>() < ev.probability
+            let occurred = rng.random::<f64>() < ev.probability
                 && ev.only_if.iter().all(|&p| path_events[p].occurred);
             // Drawn unconditionally, and separately from the occurrence draw, so changing an event's
             // probability cannot shift its timing distribution. One question, one draw.
-            let u = rng.gen::<f64>();
+            let u = rng.random::<f64>();
             let mut month = (ev.expected_month + uniform_offset(u, ev.spread)).round() as i64;
 
             // Relations, by clamping — never by resampling, which would make RNG consumption depend
