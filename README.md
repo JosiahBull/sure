@@ -119,13 +119,16 @@ error. (See `packages/client/strip-operation-ids.mjs` for why the spec is post-p
 
 ## Prerequisites
 
-- Rust (nightly is used here; stable ≥ 1.85 with edition 2021 also works)
+- Rust (nightly is used here; stable ≥ 1.94 with edition 2021 also works — that floor is
+  `sqlx` 0.9's MSRV, not ours)
 - Node ≥ 22 and `pnpm` (`corepack enable`)
 - `sqlx-cli`, **only if you change a SQL query or add a migration** —
-  `cargo install sqlx-cli --no-default-features --features sqlite,rustls` — so you can run
-  `pnpm sqlx:prepare`. Building and running the app needs neither it nor a database: the
-  compile-time query check reads the committed `.sqlx/` metadata (see
-  [Compile-time checked SQL](#compile-time-checked-sql)).
+  `cargo install sqlx-cli@0.9.0 --no-default-features --features sqlite,rustls` — so you can run
+  `pnpm sqlx:prepare`. Install it at the same version as the `sqlx` crate in `Cargo.toml` (the
+  version CI pins, see `.github/workflows/checks.yml`): the CLI writes the `.sqlx/` metadata the
+  macros read, and a mismatch surfaces only as "metadata is out of date". Building and running
+  the app needs neither it nor a database: the compile-time query check reads the committed
+  `.sqlx/` metadata (see [Compile-time checked SQL](#compile-time-checked-sql)).
 
 ## Quick start
 
