@@ -65,7 +65,8 @@ pub async fn create(db: &Db, input: SaveCategory) -> AppResult<Category> {
         CategoryRow,
         r#"INSERT INTO categories (name, parent_id, kind, color, icon, sort_order)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-           RETURNING id AS "id!", name, parent_id, kind, color, icon, sort_order, created_at"#,
+           RETURNING id AS "id!", name, parent_id AS "parent_id?", kind, color, icon,
+                     sort_order, created_at"#,
         name,
         input.parent_id,
         kind,
@@ -88,7 +89,8 @@ pub async fn update(db: &Db, id: i64, input: SaveCategory) -> AppResult<Category
         CategoryRow,
         r#"UPDATE categories SET name=?2, parent_id=?3, kind=?4, color=?5, icon=?6, sort_order=?7
            WHERE id=?1
-           RETURNING id AS "id!", name, parent_id, kind, color, icon, sort_order, created_at"#,
+           RETURNING id AS "id!", name, parent_id AS "parent_id?", kind, color, icon,
+                     sort_order, created_at"#,
         id,
         name,
         input.parent_id,
@@ -137,7 +139,8 @@ pub async fn find_or_create(
     sqlx::query_as!(
         CategoryRow,
         r#"INSERT INTO categories (name, parent_id, kind) VALUES (?1, ?2, ?3)
-           RETURNING id AS "id!", name, parent_id, kind, color, icon, sort_order, created_at"#,
+           RETURNING id AS "id!", name, parent_id AS "parent_id?", kind, color, icon,
+                     sort_order, created_at"#,
         name,
         parent_id,
         kind

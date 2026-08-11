@@ -130,8 +130,10 @@ pub async fn upsert_assumption(
               notes=excluded.notes,
               updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
            RETURNING id AS "id!", target_type, target_id, annual_growth_bps, annual_volatility_bps,
-                     dividend_yield_bps, long_run_growth_bps, annual_fee_bps,
-                     annual_fixed_fee_minor, notes, created_at, updated_at"#,
+                     dividend_yield_bps, long_run_growth_bps,
+                     annual_fee_bps AS "annual_fee_bps?",
+                     annual_fixed_fee_minor AS "annual_fixed_fee_minor?",
+                     notes, created_at, updated_at"#,
         target_type,
         input.target_id,
         input.annual_growth_bps,

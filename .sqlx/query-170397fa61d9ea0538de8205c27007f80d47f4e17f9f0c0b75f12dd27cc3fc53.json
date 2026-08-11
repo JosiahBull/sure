@@ -6,14 +6,20 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "id"
+          }
+        }
       }
     ],
     "parameters": {
       "Right": 21
     },
     "nullable": [
-      true
+      null
     ]
   },
   "hash": "170397fa61d9ea0538de8205c27007f80d47f4e17f9f0c0b75f12dd27cc3fc53"

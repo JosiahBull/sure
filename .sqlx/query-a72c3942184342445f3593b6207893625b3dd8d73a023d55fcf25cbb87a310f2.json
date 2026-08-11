@@ -6,39 +6,75 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "dividend_withholdings",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "dividend_id",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "dividend_withholdings",
+            "name": "dividend_id"
+          }
+        }
       },
       {
         "name": "owed_to",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dividend_withholdings",
+            "name": "owed_to"
+          }
+        }
       },
       {
         "name": "tax_amount_minor",
         "ordinal": 3,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "dividend_withholdings",
+            "name": "tax_amount_minor"
+          }
+        }
       },
       {
         "name": "tax_credit_minor",
         "ordinal": 4,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "dividend_withholdings",
+            "name": "tax_credit_minor"
+          }
+        }
       },
       {
         "name": "currency_code",
         "ordinal": 5,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dividend_withholdings",
+            "name": "currency_code"
+          }
+        }
       }
     ],
     "parameters": {
       "Right": 1
     },
     "nullable": [
-      true,
+      false,
       false,
       false,
       false,

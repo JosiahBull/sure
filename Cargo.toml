@@ -83,7 +83,12 @@ tower-http = { version = "0.6", features = [
     "set-header",
     "catch-panic",
 ] }
-sqlx = { version = "0.8", default-features = false, features = [
+# Keep in lockstep with the `sqlx-cli` pinned in .github/workflows/checks.yml: the CLI writes
+# the `.sqlx/` offline metadata the macros read, and a version mismatch surfaces as a bare
+# "metadata is out of date". `sqlite` is an umbrella in 0.9 (`sqlite-bundled` plus
+# `sqlite-deserialize`/`-load-extension`/`-unlock-notify`, which 0.8 folded in unconditionally),
+# so naming it keeps the built SQLite exactly as it was.
+sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "sqlite",
     "chrono",

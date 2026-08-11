@@ -6,37 +6,79 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_runs",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "rule_id",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_runs",
+            "name": "rule_id"
+          }
+        }
       },
       {
         "name": "kind",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rule_runs",
+            "name": "kind"
+          }
+        }
       },
       {
         "name": "matched",
         "ordinal": 3,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_runs",
+            "name": "matched"
+          }
+        }
       },
       {
         "name": "changed",
         "ordinal": 4,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_runs",
+            "name": "changed"
+          }
+        }
       },
       {
         "name": "undone!: bool",
         "ordinal": 5,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_runs",
+            "name": "undone"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rule_runs",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {

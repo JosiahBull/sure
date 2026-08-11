@@ -6,67 +6,145 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "account_id",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "account_id"
+          }
+        }
       },
       {
         "name": "ticker",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "ticker"
+          }
+        }
       },
       {
         "name": "exchange",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "exchange"
+          }
+        }
       },
       {
         "name": "record_date",
         "ordinal": 4,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "record_date"
+          }
+        }
       },
       {
         "name": "paid_date",
         "ordinal": 5,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "paid_date"
+          }
+        }
       },
       {
         "name": "shares_held",
         "ordinal": 6,
-        "type_info": "Float"
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "shares_held"
+          }
+        }
       },
       {
         "name": "gross_amount_minor",
         "ordinal": 7,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "gross_amount_minor"
+          }
+        }
       },
       {
         "name": "net_amount_minor",
         "ordinal": 8,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "net_amount_minor"
+          }
+        }
       },
       {
         "name": "currency_code",
         "ordinal": 9,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "currency_code"
+          }
+        }
       },
       {
         "name": "external_id",
         "ordinal": 10,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "external_id"
+          }
+        }
       },
       {
         "name": "provider",
         "ordinal": 11,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "provider"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 12,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dividends",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {
