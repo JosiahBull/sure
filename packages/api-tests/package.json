@@ -8,10 +8,12 @@
     "test": "playwright test",
     "check": "tsc --noEmit"
   },
+  "//openapi-fetch": "Must stay identical to packages/client's range, including its sub-0.17 cap — see the note there for the mechanism. Note that this package's own `tsc --noEmit` does pass on 0.17 (measured 2026-08-11): fixtures.ts imports the client by relative path (`../client/src/index`), so the copy that decides response types is the client's, and the client is where the tuple regression bites. Keeping the two ranges equal is what keeps a single openapi-fetch in the tree.",
+  "//@types/node": "Tracks the Node major this repo runs, not npm `latest`. `engines.node` is \">=24\" and every workflow in .github pins `node-version: 24`, so ^24 types against the runtime CI actually uses; `latest` is 26.x, which would let code typecheck against APIs Node 24 does not have. 24.13.3 is the newest 24.x. Raise this together with the Node pin, not on its own.",
   "devDependencies": {
-    "@playwright/test": "^1.49.1",
-    "@types/node": "^22.10.5",
-    "openapi-fetch": "^0.13.5",
-    "typescript": "^5.9.2"
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^24.13.3",
+    "openapi-fetch": "^0.16.0",
+    "typescript": "^5.9.3"
   }
 }

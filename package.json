@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Sure — a fast, local financial tracker (Rust + Axum + SQLite backend, Svelte SPA frontend).",
-  "packageManager": "pnpm@11.20.0",
+  "packageManager": "pnpm@11.21.0",
   "engines": {
     "node": ">=24"
   },
@@ -32,6 +32,6 @@
     "prepare": "git config core.hooksPath .githooks || true"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^10.0.4"
   }
 }
