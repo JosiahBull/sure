@@ -110,18 +110,36 @@ RUN case "$(uname -m)" in \
       *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
     esac \
  && rustup target add "$TARGET" \
- && CC_x86_64_unknown_linux_musl=musl-gcc \
+ && RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" \
+    CC_x86_64_unknown_linux_musl=musl-gcc \
     CC_aarch64_unknown_linux_musl=musl-gcc \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
     cargo build --release --locked -p sure-server --bin sure-api --target "$TARGET" \
  && cp "target/$TARGET/release/sure-api" /sure-api
+# `relocation-model=static` above is the whole reason the amd64 image builds. `+crt-static` is
+# already the musl default, but on x86_64-unknown-linux-musl rustc then emits a *static-PIE*,
+# and a musl static-PIE still carries a PT_INTERP naming /lib/ld-musl-x86_64.so.1 — a loader
+# `distroless/static` does not contain. aarch64 is unaffected: it produces a plain static
+# ET_EXEC with no PT_INTERP either way, which is why this only ever failed on one arch.
+# The cost is ASLR for this binary; the alternative is a runtime image carrying a loader,
+# which is the thing that image exists to avoid.
+#
 # Its own step, not chained onto the build: as part of that `&&` run, any compile failure
-# would have been reported as "not statically linked" instead of as itself. A dynamic
-# binary here would fail at runtime with an unhelpful "no such file or directory" (the
+# would have been reported as "not statically linked" instead of as itself. A binary that
+# asks for a loader fails at runtime with an unhelpful "no such file or directory" (the
 # missing thing being the loader), so it is worth catching at build time.
-RUN ldd /sure-api 2>&1 | grep -q "not a dynamic executable" \
- || { echo "sure-api is dynamically linked; the runtime image has no loader for it" >&2; exit 1; }
+#
+# The assertion is PT_INTERP, not `ldd`. `ldd` prints "statically linked" for the static-PIE
+# above — true as far as it goes, since nothing is in DT_NEEDED — while the binary still names
+# an interpreter it cannot run without. Reading the program headers asks the question the
+# kernel actually asks at execve.
+RUN if readelf -l /sure-api | grep -q INTERP; then \
+      echo "sure-api requests a program interpreter:" >&2; \
+      readelf -l /sure-api | grep -A1 INTERP >&2; \
+      echo "the runtime image has no loader for it" >&2; \
+      exit 1; \
+    fi
 # An empty directory to become /data, since the runtime image has no shell to mkdir with.
 RUN mkdir -p /empty-data
 
