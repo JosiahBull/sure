@@ -546,6 +546,69 @@ impl SyncService {
         provider: Provider,
         payload: Option<&str>,
     ) -> AppResult<SyncReport> {
+        let started = std::time::Instant::now();
+        let kind = provider.kind.clone();
+        let result = self.sync_provider_inner(provider, payload).await;
+        // Five outcomes, not two, because three of them are `Ok` at the type level and mean
+        // very different things to anyone reading the metric:
+        //
+        // * `conflict` — nothing was attempted (single-flight refusal). Folding it in with a
+        //   failed fetch would make the error rate jump whenever two syncs overlap.
+        // * `cooldown` — nothing was attempted either; the previous run was replayed.
+        // * `disconnected` — the upstream no longer has the account. A standing state, not a
+        //   bad minute, so a dashboard that counts it as `ok` reports a healthy feed for a
+        //   connection that has stopped delivering entirely.
+        //
+        // The inner match is exhaustive (CLAUDE.md rule 2) even though `Error` cannot reach
+        // here — `sync_provider_inner` returns `Err` for that — so a fourth `SyncOutcome` has
+        // to be given a name here rather than silently becoming `ok`.
+        let outcome = match &result {
+            Ok(report) if !report.fresh => "cooldown",
+            Ok(report) => match report.status {
+                SyncOutcome::Ok => "ok",
+                SyncOutcome::Disconnected => "disconnected",
+                SyncOutcome::Error => "error",
+            },
+            Err(AppError::Conflict(_)) => "conflict",
+            Err(_) => "error",
+        };
+        let attributes = [
+            sure_telemetry::KeyValue::new("provider_kind", kind.clone()),
+            sure_telemetry::KeyValue::new("outcome", outcome),
+        ];
+        let instruments = sure_telemetry::instruments();
+        instruments
+            .sync_duration
+            .record(sure_telemetry::secs(started.elapsed()), &attributes);
+        // `fresh` only. A cooldown replay returns the *previous* run's report, counts and all,
+        // so adding them again would inflate this counter every time someone presses "Sync now"
+        // inside the cooldown window — reporting imports that happened once as if they had
+        // happened five times.
+        if let Ok(sync) = &result
+            && sync.fresh
+        {
+            for (disposition, count) in [("imported", sync.imported), ("skipped", sync.skipped)] {
+                if count > 0 {
+                    instruments.sync_transactions.add(
+                        u64::try_from(count).unwrap_or(0),
+                        &[
+                            sure_telemetry::KeyValue::new("provider_kind", kind.clone()),
+                            sure_telemetry::KeyValue::new("disposition", disposition),
+                        ],
+                    );
+                }
+            }
+        }
+        result
+    }
+
+    /// The body of [`Self::sync_provider`], split so the whole use-case — including the
+    /// single-flight refusal — is one timed, counted unit.
+    async fn sync_provider_inner(
+        &self,
+        provider: Provider,
+        payload: Option<&str>,
+    ) -> AppResult<SyncReport> {
         let id = provider.id;
         // Claimed before any I/O — and released by `Drop`, so no exit path leaks it.
         let _slot = SyncSlot::claim(&self.in_flight, id).ok_or_else(|| {

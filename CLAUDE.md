@@ -7,7 +7,10 @@ talks to the DAL only through `sure_app::ports` traits) → `packages/api` (Axum
 OpenAPI) → `packages/server` (binary: wires it together, HTTP transport concerns) —
 plus `packages/providers` (bank/broker/price feed adapters), `packages/scheduler`
 (cron runner), `packages/appbase` (process lifecycle: signals, cancellation, and
-draining what the process spawned — depends on nothing else in the workspace), and
+draining what the process spawned — depends on nothing else in the workspace),
+`packages/telemetry` (OpenTelemetry: the SDK and OTLP exporters, the instrument registry every
+other layer records into, and the `tracing` layers — also depends on nothing else in the
+workspace, because everything from the DAL up depends on *it*; see `docs/OBSERVABILITY.md`), and
 `packages/testproxy` (test support: the record/replay proxy cluster standing in for every
 third-party host, so no test reaches one — also depends on nothing else in the workspace,
 because `sure-providers` dev-depends on *it*; see `docs/TESTING.md`).

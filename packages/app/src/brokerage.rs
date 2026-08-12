@@ -229,6 +229,13 @@ impl BrokerageService {
         provider: &dyn StockPriceProvider,
         account_id: i64,
     ) -> AppResult<usize> {
+        // This routinely outlives the HTTP response that started it (see
+        // `sure_api::routes::import::spawn_backfill`), so its duration appears in no request
+        // metric and in no access log.
+        let _timer = sure_telemetry::instruments::Timer::new(
+            &sure_telemetry::instruments().brokerage_backfill_duration,
+            Vec::new(),
+        );
         let Some(earliest) = self.brokerage.earliest_activity_date(account_id).await? else {
             return Ok(0); // nothing imported yet
         };

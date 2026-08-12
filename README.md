@@ -115,11 +115,19 @@ which the server loads on startup unless `SURE_ENV_FILE` says otherwise. See
 | `BACKGROUND_TASKS` | on | Set to `off` to stop the scheduler (exchange rates, provider polling, stock prices, transfer linking) |
 | `SURE_MCP` | `off` | Ceiling on the MCP endpoint at `/mcp` — `off`/`read`/`write`, with the working mode chosen in the app ([docs/MCP.md](docs/MCP.md)) |
 | `SURE_SANDBOX` | `best-effort` | Set to `enforce` to refuse to start if the kernel can't apply the whole sandbox |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset)* | Push OpenTelemetry traces and metrics to a collector. Off entirely when unset ([docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)) |
 | `CORS_ALLOWED_ORIGINS` | the author's own hostname + Vite's dev origins | Set it **empty** for the deployment above — the SPA is same-origin, so nothing needs cross-origin access, and the default allowlist names a host that isn't yours |
 
 The HTTP layer — cache directives, compression, h2c, and the abuse guards — is described
 in [docs/HTTP.md](docs/HTTP.md), along with every env var that tunes it. The defaults are
 the intended settings.
+
+Nothing is measured off-box by default. Setting `OTEL_EXPORTER_OTLP_ENDPOINT` turns on
+OpenTelemetry export — request and query latencies, provider sync health, how long ago each
+feed last succeeded — and `docker compose --profile observability up` starts a
+VictoriaMetrics/Grafana stack on this machine to point it at, with a dashboard already
+provisioned. See [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md), which also explains the one
+setting that catches everybody: the sandbox does not open the collector's port for you.
 
 On Linux the process sandboxes itself with [Landlock](https://landlock.io) before it opens
 the database or binds a socket: writable access to the data directory and nothing else,

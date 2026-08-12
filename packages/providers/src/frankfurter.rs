@@ -80,23 +80,29 @@ impl ExchangeRateProvider for FrankfurterProvider {
     }
 
     async fn fetch_rates(&self, base: &str) -> anyhow::Result<Vec<ExchangeRateQuote>> {
-        self.throttle.acquire(HOST).await?;
-        match self.client.latest(base).await {
-            Ok(table) => Ok(parse_quotes(table)),
-            // The one outcome that changes what this process does next rather than only what it
-            // reports: a rate limit arms a stand-down window, so the *next* caller is refused
-            // before a request goes out instead of adding to the burst that caused this.
-            Err(FrankfurterError::RateLimited {
-                status,
-                retry_after,
-            }) => Err(self.throttle.note_refusal(HOST, status, retry_after).await),
-            // CLAUDE.md rule 2's escape hatch: `FrankfurterError` is `#[non_exhaustive]`, so a
-            // catch-all is the only option — and it is the right answer anyway, because every
-            // remaining variant means the same thing to this caller (the rates could not be
-            // fetched) and differs only in the message. `RateLimited` above is the one that
-            // changes behaviour, and it is named.
-            Err(other) => Err(anyhow::Error::new(other)),
-        }
+        // The pacing sits *inside* the timing, deliberately: waiting for a throttle permit
+        // is time the caller spent on this call, and a metric that measured only the flight
+        // would go on looking healthy while every request queued behind the pacer.
+        crate::http::timed("frankfurter", "fetch_rates", async {
+            self.throttle.acquire(HOST).await?;
+            match self.client.latest(base).await {
+                Ok(table) => Ok(parse_quotes(table)),
+                // The one outcome that changes what this process does next rather than only what it
+                // reports: a rate limit arms a stand-down window, so the *next* caller is refused
+                // before a request goes out instead of adding to the burst that caused this.
+                Err(FrankfurterError::RateLimited {
+                    status,
+                    retry_after,
+                }) => Err(self.throttle.note_refusal(HOST, status, retry_after).await),
+                // CLAUDE.md rule 2's escape hatch: `FrankfurterError` is `#[non_exhaustive]`, so a
+                // catch-all is the only option — and it is the right answer anyway, because every
+                // remaining variant means the same thing to this caller (the rates could not be
+                // fetched) and differs only in the message. `RateLimited` above is the one that
+                // changes behaviour, and it is named.
+                Err(other) => Err(anyhow::Error::new(other)),
+            }
+        })
+        .await
     }
 }
 

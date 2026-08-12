@@ -311,7 +311,17 @@ impl Throttle {
     /// `host` is only for the message, and the message matters — it is what lands in
     /// `provider_syncs.detail` and in a 422 body, so it has to say that the request was never
     /// sent rather than that the upstream failed.
+    ///
+    /// Records `provider_throttle_wait`, and does it here rather than at the call sites for two
+    /// reasons. Every adapter that paces itself gets the metric without remembering to — this
+    /// is the one funnel — and the timing starts *before* the lock, not just around the sleep:
+    /// with several callers queued (the stock-price poll and an on-demand lookup sharing one
+    /// `Arc`), most of the wait is spent waiting for the mutex rather than in the sleep after
+    /// it, so timing only the sleep would report a fraction of the real cost. Without this a
+    /// backfill over 40 tickers spends 20 seconds in here and reports only that
+    /// `fetch_daily_prices` was slow.
     pub(crate) async fn acquire(&self, host: &str) -> anyhow::Result<()> {
+        let started = std::time::Instant::now();
         let mut state = self.state.lock().await;
 
         if let Some(until) = state.cooldown_until {
@@ -332,6 +342,16 @@ impl Throttle {
             }
         }
         state.last_request = Some(std::time::Instant::now());
+        // Only a cleared request is recorded. A refusal above returns early and is counted by
+        // the caller's own error path — folding it in here would put a near-zero sample into a
+        // histogram that is supposed to answer "how long are we spending waiting to send?".
+        sure_telemetry::instruments().provider_throttle_wait.record(
+            sure_telemetry::secs(started.elapsed()),
+            &[sure_telemetry::KeyValue::new(
+                "provider",
+                host.to_ascii_lowercase().replace(' ', "_"),
+            )],
+        );
         Ok(())
     }
 
@@ -394,6 +414,45 @@ impl Throttle {
     }
 }
 
+/// Time one outbound call and record its duration and outcome.
+///
+/// Wraps the adapter *method* rather than the `reqwest` call inside it, for a reason worth
+/// knowing: Akahu goes through the `akahu-client` SDK, which owns its own HTTP client, so there
+/// is no single `send()` in this crate that all three adapters pass through. Wrapping at this
+/// level covers all of them identically and measures what a caller actually waits for —
+/// including the JSON decode and, for Yahoo, the self-imposed throttle.
+///
+/// `outcome` is `ok` or `error` only. The error type here is `anyhow::Error` by the time it
+/// arrives, so a status code is not recoverable from it without every adapter agreeing on a
+/// richer error type — which is a bigger change than this metric justifies. Note the one case
+/// that reads oddly as a result: Yahoo turns a 404 into `Ok(vec![])` for a delisted ticker, so
+/// that is an `ok` with no rows, not an `error`.
+pub(crate) async fn timed<T, F>(
+    provider: &'static str,
+    operation: &'static str,
+    call: F,
+) -> anyhow::Result<T>
+where
+    F: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let started = std::time::Instant::now();
+    let result = call.await;
+    let elapsed = started.elapsed();
+    sure_telemetry::instruments()
+        .provider_request_duration
+        .record(
+            sure_telemetry::secs(elapsed),
+            &[
+                sure_telemetry::KeyValue::new("provider", provider),
+                sure_telemetry::KeyValue::new("operation", operation),
+                sure_telemetry::KeyValue::new(
+                    "outcome",
+                    if result.is_ok() { "ok" } else { "error" },
+                ),
+            ],
+        );
+    result
+}
 #[cfg(test)]
 mod tests {
     use super::*;

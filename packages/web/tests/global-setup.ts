@@ -184,6 +184,15 @@ export default async function globalSetup() {
   // and they decide whether the Providers page reads "connected" or "not configured". A suite
   // whose screenshots assert on exact pixels cannot have that depend on whose shell it ran in.
   const { AKAHU_APP_TOKEN, AKAHU_USER_TOKEN, ...envWithoutAkahu } = process.env;
+  // And the OTLP settings, for the same reason plus one of its own: a developer running the
+  // observability stack has `OTEL_EXPORTER_OTLP_ENDPOINT` exported, which would make this
+  // backend spawn exporter threads and push the visual suite's telemetry to their real
+  // collector. See the matching note in `packages/api-tests/fixtures.ts`.
+  for (const name of Object.keys(envWithoutAkahu)) {
+    if (name.startsWith("OTEL_") || name.startsWith("SURE_OTEL_")) {
+      delete envWithoutAkahu[name];
+    }
+  }
   const server = spawn(bin, [], {
     cwd: repoRoot,
     env: {

@@ -27,6 +27,17 @@
 //! `RUST_LOG=info,sure_api=debug,sure_dal=debug,sqlx::query=trace` (everything).
 //!
 //! Lines are **plain text unless `SURE_COLOR` asks otherwise** — see [`ColorChoice`].
+//!
+//! # Exporting any of it
+//!
+//! None of the above leaves the process. When an OTLP endpoint is configured, the same spans
+//! are *also* bridged to OpenTelemetry — see [`TelemetryHandle`] for why those layers are
+//! installed after the subscriber rather than with it, and `docs/OBSERVABILITY.md` for the
+//! settings. The spans here need nothing added: `http.request` already carries the stable
+//! semconv field names, and `http.route` is already the low-cardinality route template.
+//!
+//! `SURE_COLOR` governs the terminal layer only. An exported line carries no ANSI either way —
+//! it is a structured record on the wire, not text someone is reading.
 
 use std::io::IsTerminal;
 use std::str::FromStr;
@@ -36,6 +47,7 @@ use axum::extract::{MatchedPath, Request};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
+use sure_telemetry::BoxedLayer;
 use tower_http::classify::ServerErrorsFailureClass;
 use tracing::{Span, field::Empty};
 use uuid::Uuid;
@@ -111,6 +123,41 @@ impl ColorChoice {
     }
 }
 
+/// Directives for the OpenTelemetry layers, independent of `RUST_LOG`.
+///
+/// Separate because the two want different things: `RUST_LOG` tunes what a person reads in a
+/// terminal, while this decides what is exported — where `sqlx` at TRACE would ship SQL with
+/// its bound parameters. Defaults to [`sure_telemetry::config::DEFAULT_FILTER`].
+const OTEL_FILTER_VAR: &str = "SURE_OTEL_FILTER";
+
+/// Lets the OpenTelemetry layers be added to the subscriber *after* it is installed.
+///
+/// They cannot be added when it is built. Constructing an OTLP provider spawns an OS thread,
+/// and `sure_server::sandbox::apply` refuses to run once the process has more than one — so
+/// the providers have to be built after the sandbox, which is after `Config::from_env`, which
+/// is after this subscriber exists (its warnings are the reason the subscriber goes first).
+/// See `sure_telemetry`'s crate docs and `main`.
+pub struct TelemetryHandle {
+    reload: tracing_subscriber::reload::Handle<Vec<BoxedLayer>, tracing_subscriber::Registry>,
+}
+
+impl TelemetryHandle {
+    /// Add `layers` to the live subscriber. Empty is the ordinary case — export switched off —
+    /// and is skipped rather than swapped, so nothing pays for a needless rebuild of tracing's
+    /// per-callsite interest cache.
+    ///
+    /// A failure here is logged, not returned: telemetry that could not be installed must not
+    /// be the reason a server refuses to serve.
+    pub fn install(&self, layers: Vec<BoxedLayer>) {
+        if layers.is_empty() {
+            return;
+        }
+        if let Err(err) = self.reload.reload(layers) {
+            tracing::warn!(error = %err, "could not install the opentelemetry layers");
+        }
+    }
+}
+
 impl FromStr for ColorChoice {
     type Err = String;
 
@@ -148,9 +195,13 @@ fn color_from_env() -> Result<ColorChoice, String> {
 }
 
 /// Initialise the global tracing subscriber from `RUST_LOG`, falling back to
-/// [`DEFAULT_FILTER`], with colour from `SURE_COLOR` (see [`ColorChoice`] — off by default).
-/// Idempotent: safe to call more than once (later calls no-op).
-pub fn init_tracing() {
+/// [`DEFAULT_FILTER`], with colour from `SURE_COLOR` (see [`ColorChoice`] — off by default),
+/// and return the seam the OpenTelemetry layers are installed through.
+///
+/// Idempotent in the sense that it will not panic or replace an installed subscriber — but a
+/// second call returns a handle onto a subscriber that was never installed, whose `install`
+/// is silently inert. There is one caller, in `main`.
+pub fn init_tracing() -> TelemetryHandle {
     use tracing_subscriber::fmt::format::FmtSpan;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
@@ -178,13 +229,34 @@ pub fn init_tracing() {
         // breadcrumb trail beneath it.
         .with_span_events(FmtSpan::CLOSE);
 
+    // Starts empty, and is added **before** the fmt layer on purpose: the first `.with()` on
+    // the registry is typed against `Registry` itself, which is what lets `sure-telemetry`
+    // produce `Box<dyn Layer<Registry>>` without knowing the shape of this stack. Reversing
+    // these two lines changes that type and stops the layers fitting.
+    let (otel, reload) = tracing_subscriber::reload::Layer::new(Vec::<BoxedLayer>::new());
+
+    // `SURE_OTEL_FILTER` is read here rather than in `sure_server::config`, alongside
+    // `RUST_LOG` and for the same reason: the filter has to be fixed *now*. A per-layer filter
+    // is assigned its `FilterId` when the subscriber is built, so it cannot be swapped in with
+    // the layers later — attach it to the slot instead, once, and it governs whatever is
+    // installed into it. (The log bridge's extra ceiling rides inside the layer; see
+    // `sure_telemetry::max_level::MaxLevel`.)
+    let otel_filter = EnvFilter::try_from_env(OTEL_FILTER_VAR)
+        .unwrap_or_else(|_| EnvFilter::new(sure_telemetry::config::DEFAULT_FILTER));
+
     // `RUST_LOG` filters the output layer rather than the registry, so a second layer added
-    // here would see every span regardless of what the filter prints. Idempotent: `try_init`
+    // here would see every span regardless of what the filter prints — which is why the OTEL
+    // layers carry their own filters (`SURE_OTEL_TRACE_FILTER`, `SURE_OTEL_LOG_FILTER`), and
+    // why leaving them off would export every `sqlx` TRACE event. Idempotent: `try_init`
     // leaves an already-installed subscriber alone.
     let _ = tracing_subscriber::registry()
+        .with(otel.with_filter(otel_filter))
         .with(output.with_filter(filter))
         .try_init();
 
+    // After `try_init`, which is the whole point: this is the first moment a `warn!` has
+    // anywhere to go. Before the handle is returned, so the complaint is ordered ahead of
+    // anything `main` logs once the exporters are installed.
     if let Some(err) = complaint {
         tracing::warn!(
             env = COLOR_ENV,
@@ -192,6 +264,8 @@ pub fn init_tracing() {
             "unrecognised colour choice; using the default (never)"
         );
     }
+
+    TelemetryHandle { reload }
 }
 
 /// Build the request span for a single incoming HTTP request, populated with the
@@ -236,6 +310,10 @@ pub fn on_request(_request: &Request, span: &Span) {
 /// Record the response status onto the request span. No event is emitted: the span's
 /// `FmtSpan::CLOSE` line is the single INFO summary for the request, and it will render
 /// the status recorded here alongside the latency.
+///
+/// `_latency` stays unused on purpose. The request-duration histogram is recorded in
+/// [`request_context`] instead — see [`record_request`] for why this is the wrong place for it,
+/// and note that adding it here *as well* would double-count every 5xx.
 pub fn on_response(response: &Response, _latency: Duration, span: &Span) {
     span.record("http.response.status_code", response.status().as_u16());
 }
@@ -270,7 +348,20 @@ pub async fn request_context(request: Request, next: Next) -> Response {
     // booting on a deep link.
     let is_api = request.uri().path().starts_with("/api");
 
-    REQUEST_ID
+    // Read off the request before it is consumed, for the metric below. `MatchedPath` is the
+    // route *template*; this layer is added with `Router::layer`, so it runs after routing and
+    // the extension is there. A concrete path would make `http.route` unbounded.
+    let method = request.method().clone();
+    let route = request.extensions().get::<MatchedPath>().cloned();
+
+    // Held for the whole request, and a guard rather than a matched pair of `add(1)`/`add(-1)`:
+    // a panic in a handler unwinds through here (`CatchPanicLayer` is outside this layer) and a
+    // client that disappears has this future dropped. Either would ratchet the gauge up for the
+    // life of the process.
+    let _active = sure_telemetry::ActiveRequest::enter();
+    let started = std::time::Instant::now();
+
+    let response = REQUEST_ID
         .scope(request_id, async move {
             let response = next.run(request).await;
             let status = response.status();
@@ -290,7 +381,56 @@ pub async fn request_context(request: Request, next: Next) -> Response {
             }
             response
         })
-        .await
+        .await;
+
+    record_request(&method, route.as_ref(), &response, started.elapsed());
+    response
+}
+
+/// Record `http.server.request.duration` for one finished request.
+///
+/// Here rather than in [`on_response`] for two reasons. This function can see the request — the
+/// method and the matched route — where a `TraceLayer` callback is handed only the response and
+/// the span, and a span's fields cannot be read back out of it. And `tower-http` calls
+/// **both** `on_response` and `on_failure` for a 5xx (it classifies the response after
+/// reporting it), so a histogram recorded in the obvious pair of callbacks would count every
+/// server error twice.
+///
+/// The measurement ends when the response head is ready, which is when this middleware returns
+/// — a streamed body may still be going out. That is the ordinary meaning of request duration
+/// in a middleware-recorded metric, and it is what `time.busy`/`time.idle` on the span already
+/// describes.
+fn record_request(
+    method: &axum::http::Method,
+    route: Option<&MatchedPath>,
+    response: &Response,
+    elapsed: Duration,
+) {
+    let mut attributes = vec![
+        // `Method` is a closed set for anything routable, and axum answers 405 for the rest,
+        // so this cannot be driven wide by a client inventing verbs.
+        sure_telemetry::KeyValue::new("http.request.method", method.as_str().to_owned()),
+        sure_telemetry::KeyValue::new(
+            "http.response.status_code",
+            i64::from(response.status().as_u16()),
+        ),
+    ];
+    // Absent only for a request that matched no route at all; `unmatched` keeps those in one
+    // series instead of one per URL a scanner tries.
+    attributes.push(sure_telemetry::KeyValue::new(
+        "http.route",
+        route.map_or_else(|| "unmatched".to_owned(), |r| r.as_str().to_owned()),
+    ));
+    // `AppError::code` — a closed match over our own enum returning `&'static str`, which is
+    // exactly what a metric label needs. Taking it from the response extension is also what
+    // lets this live here instead of in `sure-core`, which must stay free of I/O and of
+    // opentelemetry.
+    if let Some(PreservedErrorCode(code)) = response.extensions().get::<PreservedErrorCode>() {
+        attributes.push(sure_telemetry::KeyValue::new("error.type", *code));
+    }
+    sure_telemetry::instruments()
+        .http_request_duration
+        .record(sure_telemetry::secs(elapsed), &attributes);
 }
 
 /// Whether a response already carries a JSON body — i.e. it came from [`AppError`], which
@@ -435,5 +575,117 @@ mod tests {
             .parse::<ColorChoice>()
             .expect_err("not a colour choice");
         assert!(err.contains("\"aut\""), "{err}");
+    }
+
+    // ---- the seam the OpenTelemetry layers are installed through ------------------
+    //
+    // Unrelated to the colour tests above and sharing only the module: these are about
+    // `reload::Layer`, which is what lets `main` add exporters after the sandbox has
+    // closed. Kept together because both are properties of `init_tracing`'s subscriber.
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use tracing_subscriber::layer::{Context, SubscriberExt as _};
+    use tracing_subscriber::{Layer, Registry};
+
+    /// Counts the events that reach it, which is the only thing these tests need to know.
+    struct Counting(Arc<AtomicUsize>);
+
+    impl<S: tracing::Subscriber> Layer<S> for Counting {
+        fn on_event(&self, _event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// The mechanism `TelemetryHandle` is built on, pinned end to end: a layer installed
+    /// *after* the subscriber is live still receives events, and the slot's filter still
+    /// governs it.
+    ///
+    /// Worth a test of its own because it is the load-bearing half of an ordering constraint
+    /// that is otherwise only visible as a Linux-only startup failure — the OTLP layers have to
+    /// be installable late, because the sandbox forbids building them any earlier — and because
+    /// tracing caches per-callsite interest, so "added late" is exactly how this would silently
+    /// receive nothing.
+    #[test]
+    fn a_layer_installed_after_the_subscriber_still_receives_events() {
+        let (otel, reload) = tracing_subscriber::reload::Layer::new(Vec::<BoxedLayer>::new());
+        let seen = Arc::new(AtomicUsize::new(0));
+        // The filter goes on the *slot*, up front, exactly as `init_tracing` does it.
+        let subscriber =
+            Registry::default().with(otel.with_filter(tracing_subscriber::EnvFilter::new("info")));
+
+        tracing::subscriber::with_default(subscriber, || {
+            // Nothing installed yet: the event is recorded and no layer wants it.
+            tracing::info!("before the swap");
+            assert_eq!(
+                seen.load(Ordering::Relaxed),
+                0,
+                "an empty layer list must not count anything"
+            );
+
+            reload
+                .reload(vec![Box::new(Counting(Arc::clone(&seen))) as BoxedLayer])
+                .expect("the reload handle outlives the subscriber it was built with");
+
+            tracing::info!("after the swap");
+            assert_eq!(
+                seen.load(Ordering::Relaxed),
+                1,
+                "a layer installed after the subscriber must still see events — if this fails, \
+                 tracing's interest cache was not rebuilt and the OTLP layers export nothing"
+            );
+
+            // The slot's filter governs whatever was swapped in, which is what makes
+            // `sqlx=off` and `opentelemetry=off` in `SURE_OTEL_FILTER` mean anything.
+            tracing::debug!("below the slot's filter");
+            assert_eq!(
+                seen.load(Ordering::Relaxed),
+                1,
+                "the filter on the reload slot must still apply after a swap"
+            );
+        });
+    }
+
+    /// Why the filter is on the slot and not on the layers, recorded as an executable fact.
+    ///
+    /// `Filtered` is handed its `FilterId` when the subscriber is *built*; a layer carrying its
+    /// own filter that arrives through a `reload` swap was never registered, and the first event
+    /// to reach it panics. This is the shape of the mistake — `.with_filter(..)` on a layer
+    /// about to be boxed into the slot — so it is worth a test that says so, rather than a
+    /// comment someone can undo.
+    #[test]
+    fn a_per_layer_filter_cannot_be_installed_through_the_slot() {
+        let (otel, reload) = tracing_subscriber::reload::Layer::new(Vec::<BoxedLayer>::new());
+        let seen = Arc::new(AtomicUsize::new(0));
+        let subscriber = Registry::default().with(otel);
+
+        // `AssertUnwindSafe` because a `Registry` is not `UnwindSafe` — the same reason
+        // `sure_scheduler::Scheduler::run_if_due` needs it around a task future. Nothing here
+        // is observed after the unwind except the payload.
+        //
+        // This test panics on purpose, so a panic message in the test output is expected.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tracing::subscriber::with_default(subscriber, || {
+                let filtered = Counting(Arc::clone(&seen))
+                    .with_filter(tracing_subscriber::EnvFilter::new("info"))
+                    .boxed();
+                reload
+                    .reload(vec![filtered])
+                    .expect("the swap itself is fine");
+                // It is *using* it that fails, not installing it.
+                tracing::info!("this event reaches a layer with no FilterId");
+            });
+        }));
+
+        let err = panicked.expect_err("a late-installed `Filtered` layer must not work silently");
+        let message = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(
+            message.contains("FilterId"),
+            "expected the missing-FilterId panic, got: {message:?}"
+        );
     }
 }

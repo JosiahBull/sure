@@ -240,6 +240,18 @@ export async function startServer(
   // error the Akahu provider returns when these are absent, which must hold regardless
   // of whatever the developer's own shell happens to have exported.
   const { AKAHU_APP_TOKEN, AKAHU_USER_TOKEN, ...envWithoutAkahu } = process.env;
+  // Same reasoning, different blast radius: once a developer runs the observability stack,
+  // `OTEL_EXPORTER_OTLP_ENDPOINT` lives in their shell — and every backend this suite spawns
+  // would then build an SDK, start three exporter threads, and push this suite's traces and
+  // metrics into their real VictoriaMetrics. Note the testproxy cannot catch that for us: it is
+  // a reverse proxy with one listener per named `Upstream` (Frankfurter, Yahoo, Akahu, House
+  // Pricer), so an exporter's connection never reaches it and `failOnUnstubbedRequests` never
+  // sees it. Hence stripping rather than stubbing. `specs/telemetry.spec.ts` sets them back
+  // deliberately.
+  const otelVars = Object.keys(envWithoutAkahu).filter(
+    (name) => name.startsWith("OTEL_") || name.startsWith("SURE_OTEL_"),
+  );
+  for (const name of otelVars) delete envWithoutAkahu[name];
   const proc = spawn(BIN, [], {
     env: {
       ...envWithoutAkahu,

@@ -24,4 +24,8 @@ tokio = { workspace = true }
 # `sure-appbase` handle keeps the dependency pointing down: the composition root decides
 # this loop is a tracked task, the scheduler only needs to know when to stop.
 tokio-util = { workspace = true }
+# The per-job duration histogram and outcome counter in `run_if_due` — the one place every
+# scheduled run's result is decided. `sure-telemetry` depends on nothing, so this does not
+# give the scheduler a view of the rest of the workspace.
+sure-telemetry = { workspace = true }
 tracing = { workspace = true }

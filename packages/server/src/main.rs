@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
     // chance to notice the file. That costs the log line a subscriber, so the path is reported
     // once there is one.
     let env_file = load_dotenv()?;
-    sure_api::init_tracing();
+    let telemetry = sure_api::init_tracing();
     if let Some(path) = &env_file {
         tracing::info!(file = %path.display(), "loaded env file");
     }
@@ -43,6 +43,22 @@ fn main() -> anyhow::Result<()> {
 
     sandbox::apply(&config)?;
 
+    // Immediately *after* the sandbox and *before* the runtime, and it has to be exactly here.
+    //
+    // Building an OTLP provider spawns an OS thread (the periodic metric reader, and the batch
+    // span/log processors). `sandbox::apply` refuses to run once the process has more than one
+    // thread — `landlock_restrict_self(2)` only restricts the caller, so a thread that already
+    // exists would keep an unrestricted domain — so doing this any earlier turns every start
+    // into "sandbox::apply must run before any thread is spawned". Doing it any later, from
+    // inside the runtime, means the exporter's socket is opened by a thread that inherited the
+    // domain but by then `serve` is already answering requests it cannot trace.
+    //
+    // Note the sandbox does not open the collector's port on its own: it permits 443 and 53,
+    // and it deliberately derives nothing from configuration. A plaintext collector needs
+    // `SURE_SANDBOX_CONNECT_PORTS`. See docs/OBSERVABILITY.md.
+    let otel = sure_telemetry::otel::init(&config.telemetry)?;
+    telemetry.install(otel.layers);
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
         .enable_all()
@@ -53,8 +69,16 @@ fn main() -> anyhow::Result<()> {
     // tidily the process stopped is reported, not returned, so a slow drain doesn't make
     // a successful run look like a crash.
     let lifecycle = config.lifecycle;
-    sure_appbase::run(runtime, lifecycle, |shutdown| {
+    let outcome = sure_appbase::run(runtime, lifecycle, |shutdown| {
         sure_server::serve(config, shutdown)
-    })
-    .result
+    });
+
+    // Last of all, and not through `Shutdown::spawn`: the exporters run on their own OS
+    // threads, which the drain cannot see (and so can never make a shutdown look unclean).
+    // The other half of that bargain is that nothing else will flush them. Blocking is right
+    // here — the runtime is gone, the shutdown report has already been logged, and the only
+    // thing left to do is get the last batch out.
+    otel.guard.shutdown();
+
+    outcome.result
 }

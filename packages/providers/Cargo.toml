@@ -25,6 +25,9 @@ anyhow = { workspace = true }
 rust_decimal = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
+# Per-request duration/outcome and response-size histograms. `sure-telemetry` depends on
+# nothing else in the workspace, so this does not give an adapter a view of the app.
+sure-telemetry = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 # 0.3 is what makes an Akahu enum value this crate has never seen (`Unknown`) cost one field

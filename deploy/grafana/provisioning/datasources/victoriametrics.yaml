@@ -1,0 +1,24 @@
+# Datasources for the observability profile in docker-compose.yml.
+#
+# VictoriaMetrics speaks the Prometheus query API, so the built-in `prometheus` type works and
+# needs no plugin — which is what keeps this file working even if the plugin install is skipped.
+apiVersion: 1
+
+datasources:
+  - name: VictoriaMetrics
+    uid: victoriametrics
+    type: prometheus
+    access: proxy
+    url: http://victoriametrics:8428
+    isDefault: true
+    jsonData:
+      # The app's metric export interval. Grafana uses it to pick sane step sizes rather than
+      # asking for points that were never written.
+      timeInterval: 60s
+      httpMethod: POST
+
+  - name: VictoriaLogs
+    uid: victorialogs
+    type: victoriametrics-logs-datasource
+    access: proxy
+    url: http://victorialogs:9428

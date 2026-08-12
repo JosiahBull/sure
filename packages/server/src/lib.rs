@@ -6,6 +6,7 @@
 pub mod config;
 pub mod health;
 pub mod http;
+pub mod sampler;
 pub mod sandbox;
 
 use std::sync::Arc;
@@ -249,6 +250,10 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
             config.provider_endpoints.house_pricer.clone(),
         ));
 
+    // Filled in by the scheduler block below when it runs, so the telemetry sampler reports
+    // last-run ages for exactly the tasks that exist. Empty with `BACKGROUND_TASKS=off`, where
+    // no task has a last run to be stale.
+    let mut scheduled_task_names: Vec<&'static str> = Vec::new();
     // Opt-out (`BACKGROUND_TASKS=off`) because the scheduler's first check runs
     // immediately, so every never-run task fires during startup: the API e2e suite turns
     // it off so the provider poll — which records a sync row per enabled provider — can't
@@ -336,6 +341,7 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         scheduler.register(Box::new(
             sure_app::tasks::transfer_link::TransferLinkTask::new(store),
         ));
+        scheduled_task_names = scheduler.task_names();
         // Tracked, so the drain below waits for a sweep that is mid-flight when the
         // shutdown signal lands — a provider poll part-way through writing a sync row is
         // exactly the thing that must not be cut off.
@@ -353,6 +359,32 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
                 watchdog.cancel();
             }
         });
+    }
+
+    // The domain gauges. Only when something is going to export them: with no OTLP endpoint the
+    // instruments are no-ops, so this would be a `COUNT(*)` over the ledger every five minutes
+    // to feed nothing — which is also why every Playwright-spawned backend does not run it.
+    //
+    // Through `Shutdown::spawn`, per the workspace convention, so the drain waits for a sample
+    // that is in flight rather than abandoning it mid-query. It is not gated on
+    // `background_tasks`: that flag is about work that *changes* the ledger, and reading it is a
+    // separate question.
+    if config.telemetry.is_enabled() {
+        let store = Arc::new(SqliteStore::new(pool.clone()));
+        let sampler = sampler::Sampler {
+            pool: pool.clone(),
+            reports: Arc::new(sure_app::reports::ReportService::new(
+                store.clone(),
+                store.clone(),
+                Arc::new(SystemClock),
+            )),
+            task_state: Arc::new(sure_dal::scheduled_tasks::SqliteTaskStateStore::new(
+                pool.clone(),
+            )),
+            interval: config.telemetry.sample_interval,
+            task_names: scheduled_task_names,
+        };
+        shutdown.spawn(sampler::run(sampler, shutdown.clone()));
     }
 
     let (state, mcp_state) = build_state(

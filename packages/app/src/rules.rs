@@ -122,12 +122,34 @@ impl RuleService {
         rule_id: Option<i64>,
         kind: RuleRunKind,
     ) -> AppResult<RunResult> {
+        // `kind` is `RuleRunKind`, a closed enum, so the label set is fixed.
+        let _timer = sure_telemetry::instruments::Timer::new(
+            &sure_telemetry::instruments().rules_run_duration,
+            vec![sure_telemetry::KeyValue::new("kind", kind.as_str())],
+        );
         let rows = self.rules.load_contexts().await?;
         let (matched, applications) = plan_run(rules, &rows);
 
-        self.rules
+        let run = self
+            .rules
             .persist_run(rule_id, kind, matched, applications)
-            .await
+            .await?;
+        // `matched` is how many transactions the rule set claimed; `changed` how many it
+        // actually rewrote. The gap between them is the interesting number — a rule set that
+        // matches thousands and changes nothing is doing no work.
+        let instruments = sure_telemetry::instruments();
+        for (disposition, count) in [("matched", run.matched), ("changed", run.changed)] {
+            if count > 0 {
+                instruments.rules_run_rows.add(
+                    u64::try_from(count).unwrap_or(0),
+                    &[
+                        sure_telemetry::KeyValue::new("kind", kind.as_str()),
+                        sure_telemetry::KeyValue::new("disposition", disposition),
+                    ],
+                );
+            }
+        }
+        Ok(run)
     }
 
     /// Apply every enabled rule to the transactions that have no category yet.

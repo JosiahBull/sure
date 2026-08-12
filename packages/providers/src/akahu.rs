@@ -165,6 +165,92 @@ impl TransactionProvider for AkahuProvider {
     }
 
     async fn fetch(&self, ctx: SyncContext<'_>) -> anyhow::Result<Vec<ProviderTransaction>> {
+        crate::http::timed("akahu", "fetch", self.fetch_inner(ctx)).await
+    }
+
+    /// Every account these credentials can see, minus any this side of the boundary cannot
+    /// represent.
+    ///
+    /// Dropping rather than propagating is the whole behaviour worth naming here. One account
+    /// whose balance will not fit in minor units used to fail the *listing*, which is the only
+    /// way into the connect dialog — so a single absurd figure on an account the user has no
+    /// interest in meant no account at all could be linked, and the message said nothing about
+    /// which one. Each survivor is independent of the others, so each is offered on its own
+    /// merits and the ones that failed are named in the log.
+    async fn list_accounts(&self) -> anyhow::Result<Vec<ProviderAccount>> {
+        crate::http::timed("akahu", "list_accounts", async {
+            if let Some(cached) = self.cached_accounts() {
+                tracing::debug!(
+                    accounts = cached.len(),
+                    "reusing the cached Akahu account list"
+                );
+                return Ok(cached);
+            }
+
+            // The credentials check stays *outside* the cache, above and below: an unconfigured
+            // install must keep answering "AKAHU_APP_TOKEN is not set" (the message
+            // `specs/akahu.spec.ts` reads out of a 422) rather than an empty list, and an error
+            // is never what gets cached.
+            let (client, user_token) = self.client()?;
+            self.throttle.acquire("Akahu").await?;
+            // `None`: a 404 on the *listing* is not one account being retired, so it must not be
+            // classified as a disconnection of whichever account happens to be linked.
+            let accounts = self
+                .sent(None, client.get_accounts(&user_token).await)
+                .await?;
+            let accounts: Vec<ProviderAccount> = accounts
+                .items
+                .into_iter()
+                .filter_map(|a| {
+                    let id = a.id.clone();
+                    match map_account(a) {
+                        Ok(account) => Some(account),
+                        Err(e) => {
+                            tracing::warn!(
+                                account = %id,
+                                error = %e,
+                                "skipping an Akahu account this build cannot represent; the rest \
+                                 of the listing is still offered"
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect();
+
+            // Only the accounts that survived are cached, which is the right half to keep: the
+            // dropped ones could not be offered for linking anyway, and re-deriving that on
+            // every cache hit would re-log the same warning for an account nobody can act on.
+            self.remember_accounts(&accounts);
+            Ok(accounts)
+        })
+        .await
+    }
+
+    async fn current_balance(
+        &self,
+        ctx: SyncContext<'_>,
+    ) -> anyhow::Result<Option<ProviderBalance>> {
+        crate::http::timed("akahu", "current_balance", async {
+            let account_id = external_account_id(ctx.config)?;
+            let (client, user_token) = self.client()?;
+            self.throttle.acquire("Akahu").await?;
+            let resp = self
+                .sent(
+                    Some(&account_id),
+                    client.get_account(&user_token, &account_id).await,
+                )
+                .await?;
+            Ok(Some(map_balance(&resp.item)?))
+        })
+        .await
+    }
+}
+
+impl AkahuProvider {
+    /// The body of [`TransactionProvider::fetch`]; split so the whole paginated sweep is one
+    /// timed unit. See `crate::http::timed`.
+    async fn fetch_inner(&self, ctx: SyncContext<'_>) -> anyhow::Result<Vec<ProviderTransaction>> {
         let account_id = external_account_id(ctx.config)?;
         let (client, user_token) = self.client()?;
         let start = ctx
@@ -191,6 +277,7 @@ impl TransactionProvider for AkahuProvider {
                 // Returning `Ok(out)` instead would advance the watermark past history this
                 // sweep never reached, leaving a permanent hole nothing would ever re-request.
                 SweepStep::OutOfTime => {
+                    record_sweep_limited("time");
                     anyhow::bail!(
                         "Akahu transaction sync for account {account_id} exceeded its \
                          {SWEEP_BUDGET:?} budget after {pages} page(s); no transactions were \
@@ -204,6 +291,7 @@ impl TransactionProvider for AkahuProvider {
                 // is only reachable on a first/backfill sync, since an incremental one asks
                 // for three days.
                 SweepStep::OutOfPages => {
+                    record_sweep_limited("pages");
                     tracing::warn!(
                         account = %account_id,
                         pages,
@@ -235,79 +323,14 @@ impl TransactionProvider for AkahuProvider {
                 None => break,
             }
         }
+        // Every exit from the loop above passes through here except `OutOfTime`, which bails.
+        // A rising distribution is the signal that an incremental sweep is no longer
+        // incremental — three days of transactions should be one page.
+        sure_telemetry::instruments().provider_sweep_pages.record(
+            pages as u64,
+            &[sure_telemetry::KeyValue::new("provider", "akahu")],
+        );
         Ok(out)
-    }
-
-    /// Every account these credentials can see, minus any this side of the boundary cannot
-    /// represent.
-    ///
-    /// Dropping rather than propagating is the whole behaviour worth naming here. One account
-    /// whose balance will not fit in minor units used to fail the *listing*, which is the only
-    /// way into the connect dialog — so a single absurd figure on an account the user has no
-    /// interest in meant no account at all could be linked, and the message said nothing about
-    /// which one. Each survivor is independent of the others, so each is offered on its own
-    /// merits and the ones that failed are named in the log.
-    async fn list_accounts(&self) -> anyhow::Result<Vec<ProviderAccount>> {
-        if let Some(cached) = self.cached_accounts() {
-            tracing::debug!(
-                accounts = cached.len(),
-                "reusing the cached Akahu account list"
-            );
-            return Ok(cached);
-        }
-
-        // The credentials check stays *outside* the cache, above and below: an unconfigured
-        // install must keep answering "AKAHU_APP_TOKEN is not set" (the message
-        // `specs/akahu.spec.ts` reads out of a 422) rather than an empty list, and an error is
-        // never what gets cached.
-        let (client, user_token) = self.client()?;
-        self.throttle.acquire("Akahu").await?;
-        // `None`: a 404 on the *listing* is not one account being retired, so it must not be
-        // classified as a disconnection of whichever account happens to be linked.
-        let accounts = self
-            .sent(None, client.get_accounts(&user_token).await)
-            .await?;
-        let accounts: Vec<ProviderAccount> = accounts
-            .items
-            .into_iter()
-            .filter_map(|a| {
-                let id = a.id.clone();
-                match map_account(a) {
-                    Ok(account) => Some(account),
-                    Err(e) => {
-                        tracing::warn!(
-                            account = %id,
-                            error = %e,
-                            "skipping an Akahu account this build cannot represent; the rest of \
-                             the listing is still offered"
-                        );
-                        None
-                    }
-                }
-            })
-            .collect();
-
-        // Only the accounts that survived are cached, which is the right half to keep: the
-        // dropped ones could not be offered for linking anyway, and re-deriving that on every
-        // cache hit would re-log the same warning for an account nobody can act on.
-        self.remember_accounts(&accounts);
-        Ok(accounts)
-    }
-
-    async fn current_balance(
-        &self,
-        ctx: SyncContext<'_>,
-    ) -> anyhow::Result<Option<ProviderBalance>> {
-        let account_id = external_account_id(ctx.config)?;
-        let (client, user_token) = self.client()?;
-        self.throttle.acquire("Akahu").await?;
-        let resp = self
-            .sent(
-                Some(&account_id),
-                client.get_account(&user_token, &account_id).await,
-            )
-            .await?;
-        Ok(Some(map_balance(&resp.item)?))
     }
 }
 
@@ -352,6 +375,22 @@ enum SweepStep {
     OutOfTime,
     /// [`MAX_PAGES`] pages already fetched and the cursor still has more.
     OutOfPages,
+}
+
+/// Count a sweep that stopped at a ceiling instead of at the end of the data.
+///
+/// The two `limit` values are the two [`SweepStep`] refusals, and they mean different things: a
+/// `time` stop leaves the watermark alone and self-heals on the next poll, while a `pages` stop
+/// keeps what it has and can leave a permanent gap on a first sync. Either way this is a
+/// condition that is otherwise only a WARN in a log nobody is reading.
+fn record_sweep_limited(limit: &'static str) {
+    sure_telemetry::instruments().provider_sweep_limited.add(
+        1,
+        &[
+            sure_telemetry::KeyValue::new("provider", "akahu"),
+            sure_telemetry::KeyValue::new("limit", limit),
+        ],
+    );
 }
 
 /// Decide from the clock and the page count alone.

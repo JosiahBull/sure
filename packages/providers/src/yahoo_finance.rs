@@ -186,43 +186,50 @@ impl StockPriceProvider for YahooFinanceProvider {
             return Ok(Vec::new());
         }
 
-        // Pad the requested range by a day on each side: Yahoo buckets timestamps by
-        // the exchange's local trading day, so a UTC-midnight boundary can otherwise
-        // clip the first or last day depending on which side of UTC the exchange sits.
-        let period1 = to_unix(from - ChronoDuration::days(1));
-        let period2 = to_unix(to + ChronoDuration::days(1));
+        // Everything past the memo is one timed unit, and the throttle wait is inside it
+        // deliberately: waiting for a pacing permit is time the caller spent on this call,
+        // and a metric that measured only the flight would look healthy while every request
+        // queued behind the pacer.
+        crate::http::timed("yahoo_finance", "fetch_daily_prices", async {
+            // Pad the requested range by a day on each side: Yahoo buckets timestamps by
+            // the exchange's local trading day, so a UTC-midnight boundary can otherwise
+            // clip the first or last day depending on which side of UTC the exchange sits.
+            let period1 = to_unix(from - ChronoDuration::days(1));
+            let period2 = to_unix(to + ChronoDuration::days(1));
 
-        self.throttle.acquire(HOST).await?;
-        match self.client.chart(&symbol, period1, period2).await {
-            Ok(chart) => Ok(parse_quotes(chart)),
-            // A delisted stock (e.g. RBD after its 2019 takeover) or an expired instrument
-            // (e.g. a lapsed "…RG" rights issue) comes back as 404. That's legitimately "no
-            // prices available", not a failure — an account's historical holdings routinely
-            // include such symbols — so return empty and let the caller leave those positions
-            // unpriced, rather than surfacing a hard error that the backfill/poller then logs as
-            // a warning for every delisted ticker. Distinct from `NoChartData`, which is a 200
-            // that said nothing and *is* an error: see the `absent` field.
-            Err(YahooFinanceError::UnknownSymbol { .. }) => {
-                tracing::debug!(%symbol, "no price data (delisted, expired, or unknown symbol)");
-                self.remember_absent(&symbol);
-                Ok(Vec::new())
+            self.throttle.acquire(HOST).await?;
+            match self.client.chart(&symbol, period1, period2).await {
+                Ok(chart) => Ok(parse_quotes(chart)),
+                // A delisted stock (e.g. RBD after its 2019 takeover) or an expired instrument
+                // (e.g. a lapsed "…RG" rights issue) comes back as 404. That's legitimately "no
+                // prices available", not a failure — an account's historical holdings routinely
+                // include such symbols — so return empty and let the caller leave those positions
+                // unpriced, rather than surfacing a hard error that the backfill/poller then logs as
+                // a warning for every delisted ticker. Distinct from `NoChartData`, which is a 200
+                // that said nothing and *is* an error: see the `absent` field.
+                Err(YahooFinanceError::UnknownSymbol { .. }) => {
+                    tracing::debug!(%symbol, "no price data (delisted, expired, or unknown symbol)");
+                    self.remember_absent(&symbol);
+                    Ok(Vec::new())
+                }
+                // The one outcome that changes what this process does next rather than only what it
+                // reports: a rate limit arms a stand-down window, so the *next* caller is refused
+                // before a request goes out instead of adding to the burst that caused this. It is
+                // the client that recognised the refusal, because it owns the response the
+                // `Retry-After` arrived on; the window it turns into is this crate's policy.
+                Err(YahooFinanceError::RateLimited {
+                    status,
+                    retry_after,
+                }) => Err(self.throttle.note_refusal(HOST, status, retry_after).await),
+                // CLAUDE.md rule 2's escape hatch: `YahooFinanceError` is `#[non_exhaustive]`, so a
+                // catch-all is the only option — and it is the right answer anyway, because every
+                // remaining variant means the same thing to this caller (the prices could not be
+                // fetched) and differs only in the message. The two above are the ones that change
+                // behaviour, and they are named.
+                Err(other) => Err(anyhow::Error::new(other)),
             }
-            // The one outcome that changes what this process does next rather than only what it
-            // reports: a rate limit arms a stand-down window, so the *next* caller is refused
-            // before a request goes out instead of adding to the burst that caused this. It is
-            // the client that recognised the refusal, because it owns the response the
-            // `Retry-After` arrived on; the window it turns into is this crate's policy.
-            Err(YahooFinanceError::RateLimited {
-                status,
-                retry_after,
-            }) => Err(self.throttle.note_refusal(HOST, status, retry_after).await),
-            // CLAUDE.md rule 2's escape hatch: `YahooFinanceError` is `#[non_exhaustive]`, so a
-            // catch-all is the only option — and it is the right answer anyway, because every
-            // remaining variant means the same thing to this caller (the prices could not be
-            // fetched) and differs only in the message. The two above are the ones that change
-            // behaviour, and they are named.
-            Err(other) => Err(anyhow::Error::new(other)),
-        }
+        })
+        .await
     }
 }
 

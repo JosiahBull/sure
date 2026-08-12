@@ -117,6 +117,15 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 /// for concurrent *readers* plus the one writer.
 const MAX_CONNECTIONS: u32 = 8;
 
+/// The pool ceiling, for the `db.client.connection.max` gauge.
+///
+/// An accessor rather than making [`MAX_CONNECTIONS`] public: the number is this module's
+/// decision, and a gauge that read a copy of it would be free to disagree with the pool the
+/// moment one of the two changed.
+pub fn max_connections() -> u32 {
+    MAX_CONNECTIONS
+}
+
 /// How long a request may wait for a pooled connection before giving up.
 ///
 /// Well under `sure_api::ApiConfig::request_timeout` (30s) on purpose, and the gap is the
@@ -201,6 +210,17 @@ where
                     return Err(err);
                 }
                 let wait = jittered(backoff);
+                // `what` is a `&'static str` chosen at the call site, and `attempt` is bounded
+                // by BUSY_RETRY_ATTEMPTS, so the label set is small and fixed. A rising rate
+                // here is the early warning that writers are queueing — the condition that
+                // becomes a 503 once the attempts run out.
+                sure_telemetry::instruments().db_busy_retries.add(
+                    1,
+                    &[
+                        sure_telemetry::KeyValue::new("operation", what),
+                        sure_telemetry::KeyValue::new("attempt", i64::from(attempt)),
+                    ],
+                );
                 tracing::warn!(
                     operation = what,
                     attempt,

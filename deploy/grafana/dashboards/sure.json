@@ -1,0 +1,296 @@
+{
+  "__comment": "Every query here was run against VictoriaMetrics 1.136 with real data from this app before being written down. Two things about the syntax are load-bearing and look like mistakes otherwise: metric names keep their dots (VM's OTLP ingestion does not rewrite them, unlike the Prometheus exporter), so a selector must be {__name__=\"a.b.c\"} rather than a bare a_b_c; and label names keep their dots too, so grouping needs quoting — sum by (le, \"http.route\"). See docs/OBSERVABILITY.md.",
+  "title": "Sure",
+  "uid": "sure-overview",
+  "editable": true,
+  "schemaVersion": 39,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "1m",
+  "timezone": "browser",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "row",
+      "title": "HTTP",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Request rate by route",
+      "description": "From the histogram's _count series — there is no separate request counter.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10, "showPoints": "never" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (\"http.route\") (rate({__name__=\"http.server.request.duration_count\"}[$__rate_interval]))",
+          "legendFormat": "{{http.route}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request latency p50 / p95 / p99",
+      "description": "Across all routes. The bucket boundaries are the OTEL semconv set for seconds; the SDK's own defaults are shaped for milliseconds and would make these numbers fiction.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate({__name__=\"http.server.request.duration_bucket\"}[$__rate_interval])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate({__name__=\"http.server.request.duration_bucket\"}[$__rate_interval])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate({__name__=\"http.server.request.duration_bucket\"}[$__rate_interval])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Errors by type",
+      "description": "error.type is AppError::code — a closed set of our own error categories, not an HTTP status.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (\"error.type\") (rate({__name__=\"http.server.request.duration_count\", \"error.type\"!=\"\"}[$__rate_interval]))",
+          "legendFormat": "{{error.type}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "p95 by route",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, \"http.route\") (rate({__name__=\"http.server.request.duration_bucket\"}[$__rate_interval])))",
+          "legendFormat": "{{http.route}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "SQLite",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Slowest repository operations (p95)",
+      "description": "db.operation.name is module.function, from the #[instrument] spans sure-dal already carries.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, histogram_quantile(0.95, sum by (le, \"db.operation.name\") (rate({__name__=\"db.client.operation.duration_bucket\"}[$__rate_interval]))))",
+          "legendFormat": "{{db.operation.name}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Connection pool, and writers queueing",
+      "description": "used/idle against the ceiling. busy_retries rising is the early warning that SQLite's single writer is contended — past four attempts it becomes a 503.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (\"db.client.connection.state\") ({__name__=\"db.client.connection.count\"})",
+          "legendFormat": "{{db.client.connection.state}}"
+        },
+        { "refId": "B", "expr": "max({__name__=\"db.client.connection.max\"})", "legendFormat": "ceiling" },
+        {
+          "refId": "C",
+          "expr": "sum (rate({__name__=\"sure.db.busy_retries\"}[$__rate_interval]))",
+          "legendFormat": "busy retries/s"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Providers and background work",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Time since last successful sync",
+      "description": "The gauge that catches a feed which has been failing quietly: providers.last_synced_at is written only on success. Red past 12h, which is two missed 6-hourly polls.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 27 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 25200 },
+              { "color": "red", "value": 43200 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (\"provider_name\") ({__name__=\"sure.provider.last_sync.age\"})",
+          "legendFormat": "{{provider_name}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Scheduled job outcomes",
+      "description": "completed / interrupted / failed / panicked / state_unavailable. Anything but completed and interrupted is worth looking at.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 27 },
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (\"job\", \"outcome\") (rate({__name__=\"sure.scheduler.job.total\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} {{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Upstream call latency p95",
+      "description": "Per provider and operation. The 6s ceiling is sure-providers' own request timeout.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 27 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, \"provider\", \"operation\") (rate({__name__=\"sure.provider.request.duration_bucket\"}[$__rate_interval])))",
+          "legendFormat": "{{provider}} {{operation}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "The ledger",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Net worth",
+      "description": "Minor units, so divide by 100 for dollars. Excludes accounts flagged excluded_from_net_worth, and any currency with no reachable rate — see the panel to the right.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 35 },
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (\"currency\") ({__name__=\"sure.net_worth.minor\"})",
+          "legendFormat": "{{currency}} (minor units)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Wants attention",
+      "description": "Uncategorised transactions, and currencies being left out of every converted total for want of an exchange rate. Both should trend to zero on their own.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 35 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max({__name__=\"sure.transactions.uncategorized.count\"})",
+          "legendFormat": "uncategorised transactions"
+        },
+        {
+          "refId": "B",
+          "expr": "max({__name__=\"sure.fx.unconverted.currencies\"})",
+          "legendFormat": "unconvertible currencies"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Accounts by class",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 35 },
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" }, "showPoints": "never" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (\"class\") ({__name__=\"sure.accounts.count\"})",
+          "legendFormat": "{{class}}"
+        }
+      ]
+    }
+  ]
+}

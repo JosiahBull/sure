@@ -13,11 +13,17 @@ path = "src/main.rs"
 
 [dependencies]
 sure-appbase = { workspace = true }
+# `AccountClass`, so the sampler's per-class gauge enumerates the same four classes the domain
+# defines rather than a list of strings copied out of `AccountClass::as_str`.
+sure-core = { workspace = true }
 sure-app = { workspace = true }
 sure-dal = { workspace = true }
 sure-providers = { workspace = true }
 sure-scheduler = { workspace = true }
 sure-api = { workspace = true }
+# `otel::init` — built in `main`, between the sandbox and the runtime. See the comment there
+# for why that is the only place it can go.
+sure-telemetry = { workspace = true }
 sure-mcp = { workspace = true }
 axum = { workspace = true }
 hyper = { workspace = true }
@@ -30,6 +36,9 @@ reqwest = { workspace = true }
 tower = { workspace = true }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
+# The sampler's clock arithmetic: "how long ago did this provider last sync?" is a
+# `DateTime<Utc>` subtraction, and the stored value is an RFC-3339 string.
+chrono = { workspace = true }
 tracing = { workspace = true }
 
 # Landlock is a Linux LSM with no equivalent elsewhere; `sandbox.rs` compiles to a logged

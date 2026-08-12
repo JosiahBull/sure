@@ -255,6 +255,20 @@ Credentials are never enabled.
 There is **no Content-Security-Policy yet**. It needs validating against the Svelte build's
 inline styles and the committed screenshot baselines; worth a focused change of its own.
 
+## Telemetry
+
+Every request produces one INFO log line (the `http.request` span closing) and, when an OTLP
+endpoint is configured, a `http.server.request.duration` observation labelled with the matched
+route template, the method, the status, and `AppError::code` where there was an error. The
+histogram is recorded in the `request_context` middleware rather than in a `TraceLayer` callback,
+for two reasons worth knowing before moving it: that middleware can see the *request* (a
+`TraceLayer` callback gets only the response and the span, and a span's fields cannot be read
+back out), and `tower-http` calls both `on_response` **and** `on_failure` for a 5xx — so a
+histogram recorded in the obvious pair of callbacks counts every server error twice.
+
+The full list of metrics, the env vars, and the sandbox port the collector needs are in
+[OBSERVABILITY.md](OBSERVABILITY.md).
+
 ## Error responses
 
 Every `/api` failure comes back as `{ "error": { "code", "message" } }`, including the ones
