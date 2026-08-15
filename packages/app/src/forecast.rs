@@ -4055,6 +4055,18 @@ mod tests {
             async fn list_brokerage_tickers(&self) -> AppResult<Vec<SharesTicker>> {
                 unreachable!()
             }
+            async fn list_house_pricer_subscriptions(
+                &self,
+            ) -> AppResult<Vec<crate::ports::HousePricerSubscription>> {
+                unreachable!()
+            }
+            async fn set_house_pricer_link(
+                &self,
+                _account_id: i64,
+                _link: Option<sure_core::HousePricerLink>,
+            ) -> AppResult<Account> {
+                unreachable!()
+            }
             async fn set_credit_limit(&self, _account_id: i64, _v: i64) -> AppResult<()> {
                 unreachable!()
             }

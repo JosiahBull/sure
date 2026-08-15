@@ -13,22 +13,22 @@ use sure_app::ports::{
     AccountCurrency, AccountRepo, ActiveAccount, Activity30dRow, AssetAccount, BrokerageRepo,
     CategoryRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo, DividendImport, EquityRepo,
     ExchangeRateRepo, ExchangeRateRow, ForecastRepo, FxRatesRepo, HoldingImport, HoldingRow,
-    ImportCounts, ImportHistoryRepo, ImportRow, LedgerTx, LedgerValuation, MerchantRepo,
-    PersonRepo, PlannedApplication, ProviderRepo, ReportCategory, ReportRepo, RuleRepo,
-    SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo, StockPriceCacheRepo,
-    TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
+    HousePricerSubscription, ImportCounts, ImportHistoryRepo, ImportRow, LedgerTx, LedgerValuation,
+    MerchantRepo, PersonRepo, PlannedApplication, ProviderRepo, ReportCategory, ReportRepo,
+    RuleRepo, SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo,
+    StockPriceCacheRepo, TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
     CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, ForecastAssumption,
-    ForecastEvent, ForecastTargetType, HoldingLot, ImportRecord, IncomeStream, LinkProviderAccount,
-    LinkProviderGroup, LinkRequest, Merchant, NewCurrency, NewValuation, Ownership, Person,
-    Provider, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult,
-    SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent,
-    SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
-    SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
-    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
-    VestingStatus,
+    ForecastEvent, ForecastTargetType, HoldingLot, HousePricerLink, ImportRecord, IncomeStream,
+    LinkProviderAccount, LinkProviderGroup, LinkRequest, Merchant, NewCurrency, NewValuation,
+    Ownership, Person, Provider, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind,
+    RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption,
+    SaveForecastEvent, SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson,
+    SaveProvider, SaveRule, SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale,
+    SyncOutcome, TaxScaleId, Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation,
+    ValuationQuery, VestingStatus,
 };
 
 use crate::Db;
@@ -104,6 +104,27 @@ impl AccountRepo for SqliteStore {
                 exchange: t.exchange,
             })
             .collect())
+    }
+
+    async fn list_house_pricer_subscriptions(&self) -> AppResult<Vec<HousePricerSubscription>> {
+        Ok(crate::accounts::list_house_pricer_subscriptions(&self.db)
+            .await?
+            .into_iter()
+            .map(|s| HousePricerSubscription {
+                account_id: s.account_id,
+                account_name: s.account_name,
+                currency_code: s.currency_code,
+                link: s.link,
+            })
+            .collect())
+    }
+
+    async fn set_house_pricer_link(
+        &self,
+        account_id: i64,
+        link: Option<HousePricerLink>,
+    ) -> AppResult<Account> {
+        crate::accounts::set_house_pricer_link(&self.db, account_id, link).await
     }
 
     async fn set_credit_limit(&self, account_id: i64, credit_limit_minor: i64) -> AppResult<()> {
@@ -403,6 +424,19 @@ impl ValuationRepo for SqliteStore {
         ccy: &str,
     ) -> AppResult<()> {
         crate::valuations::upsert_from_provider(&self.db, account_id, as_of, value_minor, ccy)
+            .await
+            .map(|_| ())
+    }
+
+    async fn upsert_from_estimate(
+        &self,
+        account_id: i64,
+        as_of: &str,
+        value_minor: i64,
+        ccy: &str,
+        note: &str,
+    ) -> AppResult<()> {
+        crate::valuations::upsert_from_estimate(&self.db, account_id, as_of, value_minor, ccy, note)
             .await
             .map(|_| ())
     }

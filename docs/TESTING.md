@@ -182,7 +182,7 @@ Four things catch people:
   registering two stubs with `times: 1`: the first match wins and retires. That ordering is
   pinned by `packages/providers/tests/proxy_contract.rs`, not assumed.
 * **A query carrying a clock reading needs canonicalising before it can be replayed.** The replay
-  index compares `(method, path + query verbatim, sha256(body))`, and two of the three feeds put
+  index compares `(method, path + query verbatim, sha256(body))`, and two of the four feeds put
   the current time in the query: Yahoo's `?period1=&period2=` come from today's date, Akahu's
   `?start=` from the last successful sync. Recorded verbatim, both stop matching the day after
   they are taken. `CanonicaliseQuery` rewrites the parameters each `Upstream` declares volatile to
@@ -214,23 +214,32 @@ recording is not written by hand and nobody proofreads it before it lands.
 **Frankfurter and Yahoo are public market data.** An ECB rate table and a daily close series say
 nothing about whose money it is, so recordings of those two may be committed.
 
-**Akahu is a real bank feed, and its traffic is never recorded into this repository.** Account
-numbers, balances, transaction memos and payee names — exactly what rule 3 exists to keep out,
-arriving by the hundred. No scrub gets them back out of history afterwards; the last attempt cost
-a 58-commit rewrite. So the policy is categorical rather than per-literal, and two guards enforce
-it and must keep agreeing with each other:
+**Two upstreams are never recorded into this repository** — `scripts/pii-scan.mjs`'s
+`PRIVATE_UPSTREAMS`:
 
-* `.gitignore` excludes `/packages/api-tests/snapshots/akahu/`, which is where a local recording
-  belongs if you make one.
-* `scripts/pii-scan.mjs` fails on a staged Akahu recording **by path** (`AKAHU_SNAPSHOT_PATH` —
-  for the `git add -f` that walks past the ignore rule) **and by content** (`"upstream":"akahu"`
-  on any NDJSON line, with a textual fallback so a truncated line still trips it — for the
-  recording dropped somewhere the ignore rule does not name). Neither check consults `data/sure.db`
-  or the allowlist: the finding is not "that literal might be real", it is "this file cannot be in
-  this repository at all".
+* **akahu**, a real bank feed. Account numbers, balances, transaction memos and payee names —
+  exactly what rule 3 exists to keep out, arriving by the hundred.
+* **house_pricer**, an automated property valuation. One `/match` response carries a street
+  address, a GPS centroid, a title boundary polygon, a legal description and a land value. It
+  reads like market data because it is a price, but the subject is *where somebody lives*, and a
+  single exchange is a dossier on one dwelling.
 
-A committable Akahu fixture is hand-authored with invented identifiers, and it can still exercise
-the replay path: a stub-served exchange *is* recorded, so a hand-written fixture can be
+No scrub gets either back out of history afterwards; the last attempt cost a 58-commit rewrite. So
+the policy is categorical rather than per-literal, and two guards enforce it and must keep
+agreeing with each other:
+
+* `.gitignore` excludes `/packages/api-tests/snapshots/akahu/` and
+  `/packages/api-tests/snapshots/house_pricer/`, which is where a local recording belongs if you
+  make one.
+* `scripts/pii-scan.mjs` fails on a staged recording of either **by path**
+  (`PRIVATE_SNAPSHOT_PATH` — for the `git add -f` that walks past the ignore rule) **and by
+  content** (`"upstream":"akahu"`/`"house_pricer"` on any NDJSON line, with a textual fallback so
+  a truncated line still trips it — for the recording dropped somewhere the ignore rule does not
+  name). Neither check consults `data/sure.db` or the allowlist: the finding is not "that literal
+  might be real", it is "this file cannot be in this repository at all".
+
+A committable fixture for either is hand-authored with invented identifiers, and it can still
+exercise the replay path: a stub-served exchange *is* recorded, so a hand-written fixture can be
 materialised into a snapshot file without an upstream ever being contacted
 (`providers/tests/proxy_contract.rs`).
 
@@ -250,15 +259,15 @@ and writes the whole finding off as a false positive.
 
 ## Record and replay
 
-Two of the three upstreams are recorded. `packages/providers/tests/snapshots/frankfurter.ndjson`
+Two of the four upstreams are recorded. `packages/providers/tests/snapshots/frankfurter.ndjson`
 and `yahoo_finance.ndjson` are committed captures of what those APIs really sent, replayed by
 `packages/providers/tests/recorded_upstreams.rs`.
 
-**Why those two and not the third.** Both are public market data, so a capture carries nothing
-personal. Akahu's traffic *is* the personal data — real account numbers, balances, transaction
-memos, payee names — so it is never recorded into this repository, and `pii-scan` fails a commit
-that tries, by path and by content (see the section above). Its fixtures are hand-authored with
-invented identifiers.
+**Why those two and not the other two.** Both are public market data, so a capture carries nothing
+personal. Akahu's and House Pricer's traffic *is* the personal data — account numbers and
+transaction memos in one, a street address and title boundary in the other — so neither is ever
+recorded into this repository, and `pii-scan` fails a commit that tries, by path and by content
+(see the section above). Their fixtures are hand-authored with invented identifiers.
 
 **What a recording buys that a stub cannot.** A hand-written body contains the fields the person
 writing it knew to include, so it pins what we *believe* the API returns — and a belief can be

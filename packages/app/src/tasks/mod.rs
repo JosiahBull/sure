@@ -3,5 +3,6 @@
 
 pub mod balance_delta;
 pub mod exchange_rates;
+pub mod property_estimates;
 pub mod provider_poll;
 pub mod transfer_link;

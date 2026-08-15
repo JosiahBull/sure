@@ -17,8 +17,8 @@
 // Recorded HTTP snapshots (`*.ndjson`) need a decode before any of that applies: they are
 // text, so they sail past the binary check in `wholeTree`, but their request and response
 // bodies are base64 and every pattern below matches nothing against base64. See
-// `expandSnapshots` — and `AKAHU_SNAPSHOT_PATH` for the one upstream whose recordings are
-// not committable at all.
+// `expandSnapshots` — and `PRIVATE_UPSTREAMS` for the two upstreams whose recordings are not
+// committable at all.
 //
 // A commit *message* is history too, and the two file modes below never see one: both read
 // blobs. That gap was not theoretical — the commit that introduced this script quoted, in its
@@ -350,34 +350,50 @@ function scannedPaths() {
 const NDJSON_FILE = /\.ndjson$/i;
 
 /**
- * Akahu recordings, which must never be committed.
+ * The upstreams whose recordings must never be committed, by `Upstream::name()`.
  *
- * The other two upstreams are public market data — a Frankfurter rate table and a Yahoo
- * close series say nothing about whose money it is — so those snapshots *may* be recorded and
- * committed. Akahu's traffic *is* the personal data: real account numbers, real balances,
- * real transaction memos and payee names, in bulk. No scrub survives that, so the policy is
- * categorical rather than per-literal: an Akahu fixture is hand-authored with invented
- * identifiers, and a real recording is a local developer tool that never lands.
+ * Two of the four are public market data — a Frankfurter rate table and a Yahoo close series
+ * say nothing about whose money it is — so those snapshots *may* be recorded and committed, and
+ * are (`packages/providers/tests/snapshots/`). That is what makes this guard load-bearing rather
+ * than theoretical: the recorder that wrote those two is one `--upstream` away from writing one
+ * of these.
  *
- * Frankfurter and Yahoo *are* recorded and committed — `packages/providers/tests/snapshots/`
- * — which is what makes this guard load-bearing rather than theoretical: the recorder that
- * wrote those two is one `Upstream` away from writing a third.
+ * For both of these the traffic *is* the personal data, so the policy is categorical rather
+ * than per-literal: the fixture is hand-authored with invented identifiers, and a real
+ * recording is a local developer tool that never lands.
  *
- * `.gitignore` covers the directory; this covers the `git add -f` that walks past it, and the
- * recording dropped somewhere the ignore rule does not name.
+ * - **akahu** — real account numbers, balances, transaction memos and payee names, in bulk. No
+ *   scrub gets them back out once they are in history; the last one cost a 58-commit rewrite.
+ * - **house_pricer** — a dossier on one dwelling: street address, GPS centroid, title boundary
+ *   polygon, legal description, land and improvement values. It is not market data about a
+ *   security, it is *where somebody lives*, and a single recorded exchange carries the lot.
  *
- * Two spellings, because there are two ways an Akahu recording gets its name. A per-upstream
- * *directory* is the layout `.gitignore` names. But `sure_testproxy` names snapshot files from
- * `Upstream::name()` — `<name>.ndjson`, side by side — which is the layout the committed
- * captures actually use, and where a recorder pointed at all three upstreams would drop
- * `akahu.ndjson` beside the two public ones. The content check below would catch that file once
- * it had a line in it; it would not catch an *empty* one, which is exactly what a
- * credential-less recording run leaves behind.
+ * `.gitignore` covers the directories; this covers the `git add -f` that walks past them, and
+ * the recording dropped somewhere an ignore rule does not name.
  */
-const AKAHU_SNAPSHOT_PATH = /(?:^|\/)(?:snapshots\/akahu\/[^/]*|akahu)\.ndjson$/i;
+const PRIVATE_UPSTREAMS = ["akahu", "house_pricer"];
+
+/**
+ * Whether a path is one of those recordings, by name.
+ *
+ * Two spellings per upstream, because there are two ways a recording gets its name. A
+ * per-upstream *directory* is the layout `.gitignore` names. But `sure_testproxy` names snapshot
+ * files from `Upstream::name()` — `<name>.ndjson`, side by side — which is the layout the
+ * committed captures actually use, and where a recorder pointed at every upstream would drop
+ * these beside the public ones. The content check below would catch such a file once it had a
+ * line in it; it would not catch an *empty* one, which is exactly what a credential-less
+ * recording run leaves behind.
+ */
+const PRIVATE_SNAPSHOT_PATH = new RegExp(
+  `(?:^|/)(?:snapshots/(?:${PRIVATE_UPSTREAMS.join("|")})/[^/]*|(?:${PRIVATE_UPSTREAMS.join("|")}))\\.ndjson$`,
+  "i",
+);
 
 /** As `serde_json` writes it, plus tolerance for a re-serialiser that adds spaces. */
-const AKAHU_UPSTREAM = /"upstream"\s*:\s*"akahu"/i;
+const PRIVATE_UPSTREAM_FIELD = new RegExp(
+  `"upstream"\\s*:\\s*"(?:${PRIVATE_UPSTREAMS.join("|")})"`,
+  "i",
+);
 
 /**
  * Ceiling on what one *decompression* may produce, which is the only step here whose output
@@ -391,7 +407,7 @@ const MAX_DECODED_BYTES = 64 << 20;
 
 /**
  * Expand each `*.ndjson` row into itself plus a row per decoded body, and note which files
- * turn out to be Akahu recordings.
+ * turn out to be recordings of a [`PRIVATE_UPSTREAMS`] host.
  *
  * The raw row is always kept, and kept first: header values, the URI, `labels` and anything
  * else stored as plain text are already scannable as JSON, and a body that turns out not to
@@ -404,21 +420,27 @@ const MAX_DECODED_BYTES = 64 << 20;
  * that, a reviewer checking the finding by hand concludes it was a false positive.
  */
 function expandSnapshots(rows) {
-  const akahuFiles = new Map();
+  const privateFiles = new Map();
   /** First reason wins: the path is the more actionable one to report when both apply. */
-  const flagAkahu = (file, why) => {
-    if (!akahuFiles.has(file)) akahuFiles.set(file, why);
+  const flagPrivate = (file, why) => {
+    if (!privateFiles.has(file)) privateFiles.set(file, why);
   };
   for (const file of scannedPaths()) {
-    // The two spellings AKAHU_SNAPSHOT_PATH covers report differently, because the fix differs:
-    // a directory is a whole recording tree to move, a bare `akahu.ndjson` is one file a
-    // three-upstream recorder dropped beside the public captures.
-    if (AKAHU_SNAPSHOT_PATH.test(file)) {
-      flagAkahu(
+    // The two spellings PRIVATE_SNAPSHOT_PATH covers report differently, because the fix
+    // differs: a directory is a whole recording tree to move, a bare `<name>.ndjson` is one file
+    // an all-upstreams recorder dropped beside the public captures.
+    const match = PRIVATE_SNAPSHOT_PATH.exec(file);
+    if (match) {
+      const bare = PRIVATE_UPSTREAMS.find(
+        (name) =>
+          new RegExp(`(?:^|/)${name}\\.ndjson$`, "i").test(file) &&
+          !new RegExp(`/${name}/`, "i").test(file),
+      );
+      flagPrivate(
         file,
-        /akahu\.ndjson$/i.test(file) && !/\/akahu\//i.test(file)
-          ? "is an Akahu snapshot file (named from Upstream::name())"
-          : "sits under a snapshots/akahu/ path",
+        bare
+          ? `is a ${bare} snapshot file (named from Upstream::name())`
+          : `sits under a snapshots/<upstream>/ path for a feed that may not be recorded`,
       );
     }
   }
@@ -435,14 +457,14 @@ function expandSnapshots(rows) {
       // Fail soft, never throw: a gate that crashes is a gate that gets bypassed, and the
       // raw line is already in `out` so nothing goes unscanned — only the decode is lost.
       // A truncated line must still trip the Akahu guard, hence the textual fallback.
-      if (AKAHU_UPSTREAM.test(row.text)) {
-        flagAkahu(row.file, `line ${row.line} records akahu`);
+      if (PRIVATE_UPSTREAM_FIELD.test(row.text)) {
+        flagPrivate(row.file, `line ${row.line} records a feed that may not be recorded`);
       }
       continue;
     }
     if (exchange === null || typeof exchange !== "object") continue;
-    if (exchange.upstream === "akahu") {
-      flagAkahu(row.file, `line ${row.line} records akahu`);
+    if (PRIVATE_UPSTREAMS.includes(exchange.upstream)) {
+      flagPrivate(row.file, `line ${row.line} records ${exchange.upstream}`);
     }
 
     // `outcome` is internally tagged: only `kind: "response"` carries a body at all, an
@@ -464,7 +486,7 @@ function expandSnapshots(rows) {
       });
     }
   }
-  return { rows: out, akahuFiles };
+  return { rows: out, privateFiles };
 }
 
 /** `METHOD /path` when the exchange has one, for orienting a reader inside a long file. */
@@ -520,10 +542,11 @@ function decompressed(bytes) {
 // ------------------------------------------------------------------------------------- scan
 
 // Snapshot expansion is a file-mode concern: it decodes `*.ndjson` bodies and judges staged
-// *paths* for the Akahu guard, and a message has neither. Skipping it also skips the `git diff`
-// it runs, which is most of why the commit-msg hook costs a file read and nothing else.
-const { rows, akahuFiles } = messageFile
-  ? { rows: commitMessage(messageFile), akahuFiles: new Map() }
+// *paths* for the never-record guard, and a message has neither. Skipping it also skips the
+// `git diff` it runs, which is most of why the commit-msg hook costs a file read and nothing
+// else.
+const { rows, privateFiles } = messageFile
+  ? { rows: commitMessage(messageFile), privateFiles: new Map() }
   : expandSnapshots(all ? wholeTree() : stagedAdditions());
 
 const findings = [];
@@ -541,26 +564,29 @@ for (const row of rows) {
 
 // Reported first, and separately: this one does not go through ALLOWED or the provenance
 // grep, because the failure is not "that literal might be real" but "this file cannot be in
-// this repository at all" — a hand-authored Akahu fixture with invented identifiers has
-// nothing to record and so never reaches here.
-if (akahuFiles.size > 0) {
-  console.error(`\n✗ recorded Akahu traffic cannot be committed\n`);
-  for (const [file, why] of akahuFiles) console.error(`  ${file}  (${why})`);
+// this repository at all" — a hand-authored fixture with invented identifiers has nothing to
+// record and so never reaches here.
+if (privateFiles.size > 0) {
+  console.error(`\n✗ recorded traffic from a private upstream cannot be committed\n`);
+  for (const [file, why] of privateFiles) console.error(`  ${file}  (${why})`);
   console.error(`
-Frankfurter and Yahoo snapshots are public market data and may be committed. Akahu's may not:
-that traffic is real account numbers, balances, transaction memos and payee names, and no
-scrub gets them back out once they are in history — the last one cost a 58-commit rewrite.
+Frankfurter and Yahoo snapshots are public market data and may be committed. These may not:
 
-  * Record Akahu locally if you need to, under packages/api-tests/snapshots/akahu/, which
+  * akahu — real account numbers, balances, transaction memos and payee names. No scrub gets
+    them back out once they are in history; the last one cost a 58-commit rewrite.
+  * house_pricer — a street address, GPS centroid, title boundary polygon, legal description
+    and land value. One exchange is a dossier on where somebody lives.
+
+  * Record either locally if you need to, under packages/api-tests/snapshots/<upstream>/, which
     .gitignore already excludes. Do not \`git add -f\` it.
-  * A committed Akahu fixture is hand-authored with invented identifiers. The proxy records
+  * A committed fixture for these is hand-authored with invented identifiers. The proxy records
     a stub-served exchange (see packages/providers/tests/proxy_contract.rs), so a fixture
     can be built that way without an upstream ever being contacted.
 `);
 }
 
 if (findings.length === 0) {
-  if (akahuFiles.size === 0) {
+  if (privateFiles.size === 0) {
     console.log(`✓ no personal-data shapes in ${scope}`);
     process.exit(0);
   }

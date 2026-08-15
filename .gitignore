@@ -45,14 +45,17 @@ dist-ssr
 # Exports from asb.
 asb-export/
 
-# Recorded Akahu traffic (see scripts/pii-scan.mjs) — real account numbers, balances and
-# transaction memos, never publish this. The reason this is not merely theoretical: Frankfurter
-# and Yahoo recordings *are* committed, in packages/providers/tests/snapshots/, being public
-# market data — so a recorder already exists and is one `Upstream` away from writing a third
-# file. This rule plus pii-scan's are what keep that one local rather than making it a decision
-# someone has to remember. An Akahu fixture that lands is hand-authored with invented
-# identifiers, so nothing legitimate ever arrives in this directory.
+# Recorded traffic from the two upstreams that may never be published (see
+# scripts/pii-scan.mjs's PRIVATE_UPSTREAMS). Akahu's is real account numbers, balances and
+# transaction memos; House Pricer's is a street address, GPS centroid, title boundary and land
+# value — a dossier on one dwelling per exchange. The reason this is not merely theoretical:
+# Frankfurter and Yahoo recordings *are* committed, in packages/providers/tests/snapshots/, being
+# public market data — so a recorder already exists and is one `--upstream` away from writing one
+# of these. These rules plus pii-scan's are what keep such a capture local rather than making it
+# a decision someone has to remember. A fixture for either that lands is hand-authored with
+# invented identifiers, so nothing legitimate ever arrives in these directories.
 /packages/api-tests/snapshots/akahu/
+/packages/api-tests/snapshots/house_pricer/
 
 # Env / editor
 .env

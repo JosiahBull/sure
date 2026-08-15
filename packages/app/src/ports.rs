@@ -19,15 +19,15 @@ use serde_json::Value;
 use sure_core::{
     Account, AccountEquity, AccountKind, AppResult, BulkUpdate, Category, CategoryKind,
     CategoryNode, Cron, CronRun, CronRunResult, Currency, DividendDetail, EquityExercise,
-    EquityGrant, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot, ImportRecord,
-    ImportSource, IncomeStream, LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind,
-    McpMode, Merchant, NewCurrency, NewValuation, Ownership, Person, Provider, ProviderAccount,
-    ProviderKind, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult,
-    SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent,
-    SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
-    SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
-    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
-    VestingStatus,
+    EquityGrant, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot,
+    HousePricerLink, ImportRecord, ImportSource, IncomeStream, LinkProviderAccount,
+    LinkProviderGroup, LinkRequest, LotKind, McpMode, Merchant, NewCurrency, NewValuation,
+    Ownership, Person, Provider, ProviderAccount, ProviderKind, ProviderSync, Rule,
+    RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
+    SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
+    SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTaxScale,
+    SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId, Transaction,
+    TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery, VestingStatus,
 };
 
 // ---- Clock ------------------------------------------------------------------
@@ -343,6 +343,49 @@ pub trait ExchangeRateProvider: Send + Sync {
     async fn fetch_rates(&self, base: &str) -> anyhow::Result<Vec<ExchangeRateQuote>>;
 }
 
+/// One automated valuation model's answer for a property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyEstimate {
+    /// The upstream's stable id for the property this answer is about — checked against the
+    /// subscription's pinned id before anything is written, since the lookup is a fuzzy address
+    /// match (see [`sure_core::HousePricerLink::property_id`]).
+    pub property_id: String,
+    /// The upstream's own normalised address for that property, so a caller can show what the
+    /// query actually resolved to rather than echoing what was asked.
+    pub matched_address: String,
+    /// The estimate, in minor units of [`Self::currency_code`].
+    pub value_minor: i64,
+    pub currency_code: String,
+    /// Which of the upstream's models produced [`Self::value_minor`], and what the others said
+    /// — recorded on the valuation, because the response carries several and the number stored
+    /// is meaningless without knowing which one it is. Free text: it is a human-facing
+    /// provenance note, not a value anything branches on.
+    pub model_note: String,
+}
+
+/// The integration point for third-party property valuation estimates. Implemented by
+/// `sure-providers`' `HousePricerProvider`.
+///
+/// Deliberately *not* modelled on [`StockPriceProvider`]: there is no historical series to
+/// backfill and no cache to keep warm. An automated valuation model answers one question —
+/// "what is this property worth now?" — so a lookup is a single point, and history accumulates
+/// only because the poll runs monthly.
+#[async_trait]
+pub trait PropertyEstimateProvider: Send + Sync {
+    /// Stable identifier for this source (e.g. `"house_pricer"`).
+    fn kind(&self) -> &'static str;
+    /// Human-facing description.
+    fn description(&self) -> &'static str;
+    /// The region this source can answer for, for a UI that has to explain a miss ("House
+    /// Pricer covers Christchurch, New Zealand"). Free text — it is shown, never matched on.
+    fn coverage(&self) -> &'static str;
+    /// Look up an address. `Ok(None)` means the upstream had no match for it — the ordinary
+    /// answer for a property outside [`Self::coverage`] or an address with a typo in it, and
+    /// not an error: both the pre-flight route and the monthly poll treat it as "nothing to
+    /// record". An `Err` is reserved for the upstream being unreachable or unintelligible.
+    async fn fetch_estimate(&self, query: &str) -> anyhow::Result<Option<PropertyEstimate>>;
+}
+
 // ---- shared row shapes --------------------------------------------------------
 // Plain data the SQLite adapter maps its own row types into. Not persistence types —
 // see the module doc comment for why these are freshly defined here rather than reused
@@ -390,6 +433,21 @@ pub struct Activity30dRow {
 pub struct SharesTicker {
     pub ticker: String,
     pub exchange: String,
+}
+
+/// One property account's opted-in estimate subscription, flattened for the poll.
+///
+/// Carries the account's own currency because that is what the valuation is written in: the
+/// upstream quotes NZD and says so, and the poll refuses a mismatch rather than booking a
+/// foreign figure at parity (see `crate::tasks::property_estimates`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HousePricerSubscription {
+    pub account_id: i64,
+    /// For the log line when a poll skips or fails this account — an id alone makes an
+    /// operator go and look the account up.
+    pub account_name: String,
+    pub currency_code: String,
+    pub link: HousePricerLink,
 }
 
 /// A currency's minor-unit scale, for converting minor units to major.
@@ -725,6 +783,21 @@ pub trait AccountRepo: Send + Sync {
     async fn list_shares_tickers(&self) -> AppResult<Vec<SharesTicker>>;
     /// Distinct tickers ever traded on any brokerage account's holdings ledger.
     async fn list_brokerage_tickers(&self) -> AppResult<Vec<SharesTicker>>;
+    /// Every property account that has opted in to a third-party estimate feed — i.e. whose
+    /// `PropertyMeta.house_pricer` is set. Archived accounts are excluded: a poll of one would
+    /// reach a third party once a month on behalf of a property the person has put away.
+    async fn list_house_pricer_subscriptions(&self) -> AppResult<Vec<HousePricerSubscription>>;
+    /// Subscribe a property account to a third-party estimate feed, or (`None`) unsubscribe it.
+    ///
+    /// The link is always built from a match the server itself just made, never from client
+    /// input — see `sure_api::routes::property_estimates`. That is what keeps the pinned
+    /// `property_id` meaningful: a caller that could name its own would defeat the drift guard
+    /// the monthly poll relies on.
+    async fn set_house_pricer_link(
+        &self,
+        account_id: i64,
+        link: Option<HousePricerLink>,
+    ) -> AppResult<Account>;
     async fn set_credit_limit(&self, account_id: i64, credit_limit_minor: i64) -> AppResult<()>;
     async fn set_original_amount(
         &self,
@@ -846,6 +919,17 @@ pub trait ValuationRepo: Send + Sync {
         as_of: &str,
         value_minor: i64,
         ccy: &str,
+    ) -> AppResult<()>;
+    /// Record a third-party valuation model's estimate for a property. `note` carries which
+    /// model the figure came from — see `sure_dal::valuations::upsert_from_estimate` for why
+    /// this one upsert takes a note when the two above don't.
+    async fn upsert_from_estimate(
+        &self,
+        account_id: i64,
+        as_of: &str,
+        value_minor: i64,
+        ccy: &str,
+        note: &str,
     ) -> AppResult<()>;
 }
 

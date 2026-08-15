@@ -27,6 +27,7 @@
     provider: "synced",
     brokerage: "from holdings",
     equity: "from grant",
+    estimate: "estimated",
   };
 
   let rows = $state<Valuation[]>([]);

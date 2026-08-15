@@ -159,6 +159,7 @@
     provider: "synced",
     brokerage: "from holdings",
     equity: "from grant",
+    estimate: "estimated",
   };
   const accountOwnership = $derived(new Map(accounts.map((a) => [a.id, a.ownership])));
   /**

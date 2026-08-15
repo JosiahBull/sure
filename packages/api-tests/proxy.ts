@@ -169,7 +169,8 @@ export async function startProxy(binary: string): Promise<StartedProxy> {
 /**
  * The environment a `sure-api` needs to talk to this cluster and nothing else.
  *
- * The three `*_BASE_URL` values come straight from the handshake. `SURE_SANDBOX_CONNECT_PORTS`
+ * The `*_BASE_URL` values come straight from the handshake (one per `Upstream::ALL`, so a new
+ * upstream needs no change here). `SURE_SANDBOX_CONNECT_PORTS`
  * is the part that is easy to leave out and expensive to debug: on Linux the server's default
  * Landlock policy permits outbound TCP on 443 and 53 only (`packages/server/src/sandbox.rs`),
  * deliberately *not* deriving anything from the configured endpoints — so a proxy on an

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM scheduled_task_runs WHERE task_name IN (?1, ?2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "7e3a7803c5a4e394955f9cd7b44539a7e7f42def7926cc520e67bf817bf1705e"
+}
