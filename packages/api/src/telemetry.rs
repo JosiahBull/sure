@@ -25,7 +25,11 @@
 //! Turn the volume up or down with `RUST_LOG`, e.g.
 //! `RUST_LOG=info` (just the per-request line), or
 //! `RUST_LOG=info,sure_api=debug,sure_dal=debug,sqlx::query=trace` (everything).
+//!
+//! Lines are **plain text unless `SURE_COLOR` asks otherwise** — see [`ColorChoice`].
 
+use std::io::IsTerminal;
+use std::str::FromStr;
 use std::time::Duration;
 
 use axum::extract::{MatchedPath, Request};
@@ -63,8 +67,89 @@ const DEFAULT_FILTER: &str = "info,\
     tower_http=warn,\
     sqlx=warn";
 
+/// Selects [`ColorChoice`]. Named for the `--color` flag it spells, not for the subscriber.
+const COLOR_ENV: &str = "SURE_COLOR";
+
+/// Whether log lines carry ANSI colour — the tri-state the `--color` flag has, spelled the
+/// way `git` and `ls` spell it.
+///
+/// [`Never`](ColorChoice::Never) is the default, which is a deliberate break with the usual
+/// `auto`. This binary's normal home is a container: its stdout is a pipe handed to a log
+/// driver, and what you read later is `docker logs`, `journalctl`, or a TrueNAS app's log
+/// pane — none of which interpret the escapes, so every line arrives wearing runs of
+/// `ESC[2m`. `auto` gets that right only if the check happens where the bytes are *written*,
+/// and by then the process that could have chosen differently is long gone. Defaulting to
+/// no colour makes the deployed reading — the one nobody can fix from a terminal — the
+/// legible one, and leaves the interactive nicety as a one-word opt-in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorChoice {
+    /// Plain text, whatever the output is attached to. The default.
+    #[default]
+    Never,
+    /// Colour only when the stream the subscriber writes to is a terminal.
+    Auto,
+    /// Colour unconditionally — for a pager, or a CI log viewer that renders ANSI out of a
+    /// pipe it has no way to prove is a terminal.
+    Always,
+}
+
+impl ColorChoice {
+    /// Whether to emit ANSI, given whether the stream this subscriber writes to is a
+    /// terminal.
+    ///
+    /// Taking that as an argument rather than probing in here does two things: it makes the
+    /// rule testable without a pty, and it forces the caller to name *which* stream it
+    /// means. Probing the wrong one is the classic way `auto` ends up wrong — under
+    /// `sure-api | tee` stderr is still a terminal while stdout, where these lines actually
+    /// go, is not.
+    pub fn ansi(self, sink_is_terminal: bool) -> bool {
+        match self {
+            ColorChoice::Never => false,
+            ColorChoice::Auto => sink_is_terminal,
+            ColorChoice::Always => true,
+        }
+    }
+}
+
+impl FromStr for ColorChoice {
+    type Err = String;
+
+    /// The env edge, where the value is still text — the one place a wildcard arm over these
+    /// spellings is the point rather than a missed variant.
+    ///
+    /// The boolean spellings are the ones `sure-server`'s `flag` already accepts, and there
+    /// is only one way they can read here: asking for colour is asking for it
+    /// unconditionally, exactly as a bare `--color` does. Someone who wants the sink
+    /// consulted has a word for that, and it is `auto`.
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "never" | "off" | "0" | "false" | "no" => Ok(ColorChoice::Never),
+            "auto" => Ok(ColorChoice::Auto),
+            "always" | "on" | "1" | "true" | "yes" | "force" => Ok(ColorChoice::Always),
+            other => Err(format!("unknown colour choice {other:?}")),
+        }
+    }
+}
+
+/// Read [`COLOR_ENV`], falling back to [`ColorChoice::Never`] when it is unset or blank —
+/// set-but-empty reading as unset the way `WEB_DIR` and the provider endpoints treat a blank
+/// line in a `.env`.
+///
+/// The `Err` is a complaint to log rather than a reason to stop, but it deliberately isn't
+/// logged *here*: this runs while deciding how to build the subscriber, so a `warn!` at this
+/// point has nothing installed to receive it and would vanish. [`init_tracing`] carries it
+/// across and emits it once there is somewhere for it to go.
+fn color_from_env() -> Result<ColorChoice, String> {
+    match std::env::var(COLOR_ENV) {
+        Err(_) => Ok(ColorChoice::default()),
+        Ok(raw) if raw.trim().is_empty() => Ok(ColorChoice::default()),
+        Ok(raw) => raw.parse(),
+    }
+}
+
 /// Initialise the global tracing subscriber from `RUST_LOG`, falling back to
-/// [`DEFAULT_FILTER`]. Idempotent: safe to call more than once (later calls no-op).
+/// [`DEFAULT_FILTER`], with colour from `SURE_COLOR` (see [`ColorChoice`] — off by default).
+/// Idempotent: safe to call more than once (later calls no-op).
 pub fn init_tracing() {
     use tracing_subscriber::fmt::format::FmtSpan;
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -74,8 +159,20 @@ pub fn init_tracing() {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
 
+    // A bad value falls back rather than failing, as `Config::from_env` does for a tunable —
+    // and it falls back to no colour, the direction that can only ever make a log easier to
+    // read. The complaint waits for the subscriber being built two statements down.
+    let (color, complaint) = match color_from_env() {
+        Ok(color) => (color, None),
+        Err(err) => (ColorChoice::default(), Some(err)),
+    };
+    // `stdout`, because that is where `fmt::layer` writes: this has to be the stream the
+    // lines go down, not merely a stream this process happens to hold.
+    let ansi = color.ansi(std::io::stdout().is_terminal());
+
     let output = tracing_subscriber::fmt::layer()
         .with_target(true)
+        .with_ansi(ansi)
         // Emit one line when a span closes. For the INFO `http.request` span this is the
         // single per-request summary; for the DEBUG handler/DAL spans it's the timed
         // breadcrumb trail beneath it.
@@ -87,6 +184,14 @@ pub fn init_tracing() {
     let _ = tracing_subscriber::registry()
         .with(output.with_filter(filter))
         .try_init();
+
+    if let Some(err) = complaint {
+        tracing::warn!(
+            env = COLOR_ENV,
+            reason = %err,
+            "unrecognised colour choice; using the default (never)"
+        );
+    }
 }
 
 /// Build the request span for a single incoming HTTP request, populated with the
@@ -269,4 +374,66 @@ fn rewrite_body(response: Response, detail: ErrorDetail) -> Response {
     // The body no longer matches whatever validator described the original.
     parts.headers.remove(header::ETAG);
     Response::from_parts(parts, axum::body::Body::from(json))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole rule in one table: output is plain unless colour was asked for, and `auto`
+    /// is the only spelling that lets the sink have a say. The `(Never, false)` cell is the
+    /// one that matters in production — it is what a container's piped stdout gets, and it
+    /// must not depend on `is_terminal` having been asked.
+    #[test]
+    fn colour_is_emitted_only_when_it_was_asked_for() {
+        for (choice, on_a_terminal, on_a_pipe) in [
+            (ColorChoice::Never, false, false),
+            (ColorChoice::Auto, true, false),
+            (ColorChoice::Always, true, true),
+        ] {
+            assert_eq!(choice.ansi(true), on_a_terminal, "{choice:?} on a terminal");
+            assert_eq!(choice.ansi(false), on_a_pipe, "{choice:?} on a pipe");
+        }
+    }
+
+    /// An unset `SURE_COLOR` is the overwhelmingly common case — a fresh checkout, and every
+    /// container — so what `Default` resolves to *is* the shipped behaviour.
+    #[test]
+    fn the_default_is_no_colour_at_all() {
+        assert_eq!(ColorChoice::default(), ColorChoice::Never);
+    }
+
+    /// Read alongside `flag` in `packages/server/src/config.rs`: the boolean spellings mean
+    /// here what they mean there, so `SURE_COLOR=on` can't quietly land on `auto` and give a
+    /// container plain text when it was told to colour.
+    #[test]
+    fn the_spellings_people_type() {
+        for raw in ["never", "NEVER", " off ", "0", "false", "no"] {
+            assert_eq!(
+                raw.parse::<ColorChoice>(),
+                Ok(ColorChoice::Never),
+                "{raw:?}"
+            );
+        }
+        for raw in ["auto", "Auto", " auto\n"] {
+            assert_eq!(raw.parse::<ColorChoice>(), Ok(ColorChoice::Auto), "{raw:?}");
+        }
+        for raw in ["always", "ALWAYS", "on", "1", "true", "yes", "force"] {
+            assert_eq!(
+                raw.parse::<ColorChoice>(),
+                Ok(ColorChoice::Always),
+                "{raw:?}"
+            );
+        }
+    }
+
+    /// A typo is reported, not guessed at — and the message quotes what was typed, because
+    /// the operator's next move is to look at the line they wrote.
+    #[test]
+    fn a_typo_is_rejected_and_names_itself() {
+        let err = " Aut "
+            .parse::<ColorChoice>()
+            .expect_err("not a colour choice");
+        assert!(err.contains("\"aut\""), "{err}");
+    }
 }
