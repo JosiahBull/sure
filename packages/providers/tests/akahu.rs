@@ -28,6 +28,8 @@
 //! "the credentials reach the wire" and "the credentials never reach a snapshot" cannot be one
 //! test.
 
+use std::time::Duration;
+
 use bytes::Bytes;
 use http::{Method, StatusCode};
 use partly_proxy_lib::{
@@ -36,7 +38,7 @@ use partly_proxy_lib::{
 };
 use sure_app::ports::{AccountDisconnected, SyncContext, TransactionProvider};
 use sure_core::AccountKind;
-use sure_providers::{AkahuCredentials, AkahuProvider, Endpoint, MissingToken};
+use sure_providers::{AkahuCredentials, AkahuProvider, Endpoint, MissingToken, Pacing};
 use sure_testproxy::RedactCredentials;
 
 mod common;
@@ -70,6 +72,14 @@ impl Fixture {
         credentials: Result<AkahuCredentials, MissingToken>,
         middleware: Vec<SharedMiddleware>,
     ) -> Self {
+        Self::start_with(credentials, middleware, Pacing::unpaced()).await
+    }
+
+    async fn start_with(
+        credentials: Result<AkahuCredentials, MissingToken>,
+        middleware: Vec<SharedMiddleware>,
+        pacing: Pacing,
+    ) -> Self {
         // `add_stub` forces this upstream to `Mode::Replay` with no snapshot storage, so an
         // unstubbed request is answered by the proxy's own 503 rather than forwarded anywhere.
         // Recording still happens: the *builder's* default mode is `Record`, and it is the
@@ -87,13 +97,31 @@ impl Fixture {
             .expect("loopback plaintext is the one non-TLS endpoint Endpoint will represent");
         Self {
             cluster,
-            provider: AkahuProvider::new(endpoint, credentials),
+            provider: AkahuProvider::new(endpoint, credentials, pacing),
         }
     }
 
     /// A fixture with credentials and nothing between the wire and the recorder.
     async fn configured() -> Self {
         Self::start(credentials(), Vec::new()).await
+    }
+
+    /// The same, but with the discovery cache live.
+    ///
+    /// Every other test here takes `Pacing::unpaced()`, whose zero TTL is already expired — so
+    /// each of them sees every call reach the proxy, which is what their stub counts and
+    /// `times: Some(1)` assertions are written against. Only the cache test wants the window
+    /// open, and it says so rather than turning it on for everybody.
+    async fn caching() -> Self {
+        Self::start_with(
+            credentials(),
+            Vec::new(),
+            Pacing {
+                discovery_ttl: Duration::from_secs(60),
+                ..Pacing::unpaced()
+            },
+        )
+        .await
     }
 
     async fn stub_matching(
@@ -1112,6 +1140,110 @@ async fn an_unconfigured_provider_names_the_missing_variable_and_never_opens_a_s
     assert!(
         fixture.requests().await.is_empty(),
         "an unconfigured provider reached the network before checking its credentials",
+    );
+
+    fixture.stop().await;
+}
+
+/// Repeated account listings inside the TTL reach Akahu once.
+///
+/// `GET /api/provider-kinds/akahu/accounts` asked Akahu on every request, and the connect dialog
+/// asks on open, on kind change, and after every link — so opening it and linking two accounts
+/// was a handful of identical listings, each one a `GET /v1/accounts` against a per-household
+/// rate limit. `SyncService::adopt_account_numbers` asks again on each link on top of that.
+///
+/// The stub is `times: None`, so a second request would be answered rather than refused: a count
+/// of one is the adapter's cache and not a retired stub. The returned listing is asserted equal
+/// across all three calls, because a cache that hands back something different from the request
+/// it replaces is worse than no cache.
+#[tokio::test]
+async fn repeated_account_listings_inside_the_ttl_reach_akahu_once() {
+    let fixture = Fixture::caching().await;
+    fixture
+        .stub(
+            ACCOUNTS_PATH,
+            r#"{
+                "success": true,
+                "items": [
+                    {
+                        "_id": "acc_spend01",
+                        "_authorisation": "auth_login01",
+                        "connection": { "_id": "conn_bank01", "name": "ASB", "connection_type": "official" },
+                        "name": "Everyday Spending",
+                        "formatted_account": "12-3456-0000001-51",
+                        "status": "ACTIVE",
+                        "refreshed": { "balance": "2026-01-07T02:00:00.000Z" },
+                        "balance": { "current": 2480.15, "available": 2480.15, "currency": "NZD" },
+                        "type": "CHECKING",
+                        "attributes": ["TRANSACTIONS", "PAYMENT_FROM"]
+                    }
+                ]
+            }"#,
+            None,
+        )
+        .await;
+
+    let mut listings = Vec::new();
+    for attempt in 0..3 {
+        let accounts = fixture
+            .provider
+            .list_accounts()
+            .await
+            .unwrap_or_else(|e| panic!("listing {attempt} failed: {e}"));
+        listings.push(
+            accounts
+                .into_iter()
+                .map(|a| format!("{} {} {}", a.external_id, a.name, a.balance_minor))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    assert_eq!(
+        listings[0],
+        vec!["acc_spend01 Everyday Spending 248015".to_string()],
+    );
+    assert_eq!(listings[1], listings[0], "the cached listing must match");
+    assert_eq!(listings[2], listings[0], "the cached listing must match");
+    assert_eq!(
+        fixture.requests().await.len(),
+        1,
+        "three listings inside the TTL must reach Akahu once",
+    );
+
+    fixture.stop().await;
+}
+
+/// An unconfigured install keeps answering with the variable to set, cache or no cache.
+///
+/// The failure this prevents is a blank connect dialog on a fresh install: if the credentials
+/// check sat behind the cache — or if an error were ever cached — the message
+/// `specs/akahu.spec.ts` reads out of a 422 would be replaced by an empty account list, and
+/// "Akahu is not set up" would look identical to "you have no accounts".
+#[tokio::test]
+async fn an_unconfigured_listing_still_names_the_missing_variable_every_time() {
+    let fixture = Fixture::start_with(
+        Err(MissingToken::AppToken),
+        Vec::new(),
+        Pacing {
+            discovery_ttl: Duration::from_secs(60),
+            ..Pacing::unpaced()
+        },
+    )
+    .await;
+
+    for attempt in 0..2 {
+        let err = fixture
+            .provider
+            .list_accounts()
+            .await
+            .expect_err("no credentials, no listing")
+            .to_string();
+        assert_eq!(err, "AKAHU_APP_TOKEN is not set", "attempt {attempt}");
+    }
+
+    assert!(
+        fixture.requests().await.is_empty(),
+        "an unconfigured provider must not reach the wire at all",
     );
 
     fixture.stop().await;

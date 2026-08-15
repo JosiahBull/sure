@@ -15,6 +15,7 @@
 //! which mutates state shared with every other test in the binary. What must **not** move is
 //! *when* a missing token is reported: see [`AkahuProvider::credentials`].
 
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use akahu_client::{AccountId, AkahuClient, AkahuError, Attribute, BankAccountKind, UserToken};
@@ -28,7 +29,7 @@ use sure_app::ports::{
 };
 use sure_core::{AccountKind, IsoDate, ProviderAccount};
 
-use crate::http::Endpoint;
+use crate::http::{Endpoint, Pacing, Throttle};
 
 /// The real API. `pub` because the composition root owns the decision of where this provider
 /// points (it is the only place configuration is read) and needs a default to fall back to.
@@ -126,6 +127,27 @@ pub struct AkahuProvider {
     /// satisfies both: nothing looks at it until [`AkahuProvider::client`] does, and by then
     /// there is a request to fail and a message to fail it with.
     credentials: Result<AkahuCredentials, MissingToken>,
+    /// Pacing between requests to Akahu, and the window this process stands down for when
+    /// Akahu says it is sending too many.
+    ///
+    /// This is the upstream the pacing matters most for, and for a reason the other two do not
+    /// share: Akahu's limits and bans are **per household**, not per app, so the cost of a
+    /// burst is paid by the one person whose data this is. The burst it bounds is real — a
+    /// first sync walks up to [`MAX_PAGES`] pages back to back, and before this there was
+    /// nothing at all between them.
+    throttle: Throttle,
+    /// The last account listing and when it stops being reused.
+    ///
+    /// `GET /api/provider-kinds/akahu/accounts` reached Akahu on every request, and the connect
+    /// dialog asks on open, on kind change, and after every link — a handful of identical
+    /// upstream calls for one dialog. `SyncService::adopt_account_numbers` asks again on each
+    /// link on top of that. Which accounts a set of credentials can see does not change between
+    /// two clicks, so within [`Pacing::discovery_ttl`] the answer is reused.
+    ///
+    /// In memory rather than in SQLite deliberately: this is an Akahu payload — real account
+    /// names and numbers — and CLAUDE.md rule 3 is about not acquiring places that data comes
+    /// to rest in. A process-lifetime cache with a 60s TTL adds no such place.
+    accounts: Mutex<Option<(Instant, Vec<ProviderAccount>)>>,
 }
 
 #[async_trait]
@@ -151,11 +173,16 @@ impl TransactionProvider for AkahuProvider {
             .map(|dt| dt.with_timezone(&chrono::Utc) - OVERLAP);
 
         let started = Instant::now();
+        // Time this sweep spent *deliberately not* talking to Akahu — see [`next_step`], which
+        // subtracts it before comparing against [`SWEEP_BUDGET`]. Measured rather than derived
+        // from `pages × min_request_interval`, because the first wait of a sweep is whatever
+        // remained of an interval some other caller started.
+        let mut paced = Duration::ZERO;
         let mut out = Vec::new();
         let mut cursor = None;
         let mut pages = 0usize;
         loop {
-            match next_step(started.elapsed(), pages) {
+            match next_step(started.elapsed(), paced, pages) {
                 SweepStep::Fetch => {}
                 // Deliberately an error, not the partial result. `sure_app::sync` only reaches
                 // `update_last_synced` when `fetch` returns `Ok`, so failing here leaves the
@@ -186,10 +213,20 @@ impl TransactionProvider for AkahuProvider {
                 }
             }
 
-            let page = client
-                .get_account_transactions(&user_token, &account_id, start, None, cursor)
-                .await
-                .map_err(|e| classify(&account_id, e))?;
+            // Every page, not just the first: a first sync is the single largest burst this
+            // app makes at anyone, and it used to go out as fast as Akahu would answer.
+            let pace_started = Instant::now();
+            self.throttle.acquire("Akahu").await?;
+            paced += pace_started.elapsed();
+
+            let page = self
+                .sent(
+                    Some(&account_id),
+                    client
+                        .get_account_transactions(&user_token, &account_id, start, None, cursor)
+                        .await,
+                )
+                .await?;
             pages += 1;
             out.extend(page.items.into_iter().filter_map(map_transaction));
             match page.cursor.next {
@@ -211,9 +248,26 @@ impl TransactionProvider for AkahuProvider {
     /// which one. Each survivor is independent of the others, so each is offered on its own
     /// merits and the ones that failed are named in the log.
     async fn list_accounts(&self) -> anyhow::Result<Vec<ProviderAccount>> {
+        if let Some(cached) = self.cached_accounts() {
+            tracing::debug!(
+                accounts = cached.len(),
+                "reusing the cached Akahu account list"
+            );
+            return Ok(cached);
+        }
+
+        // The credentials check stays *outside* the cache, above and below: an unconfigured
+        // install must keep answering "AKAHU_APP_TOKEN is not set" (the message
+        // `specs/akahu.spec.ts` reads out of a 422) rather than an empty list, and an error is
+        // never what gets cached.
         let (client, user_token) = self.client()?;
-        let accounts = client.get_accounts(&user_token).await?;
-        Ok(accounts
+        self.throttle.acquire("Akahu").await?;
+        // `None`: a 404 on the *listing* is not one account being retired, so it must not be
+        // classified as a disconnection of whichever account happens to be linked.
+        let accounts = self
+            .sent(None, client.get_accounts(&user_token).await)
+            .await?;
+        let accounts: Vec<ProviderAccount> = accounts
             .items
             .into_iter()
             .filter_map(|a| {
@@ -231,7 +285,13 @@ impl TransactionProvider for AkahuProvider {
                     }
                 }
             })
-            .collect())
+            .collect();
+
+        // Only the accounts that survived are cached, which is the right half to keep: the
+        // dropped ones could not be offered for linking anyway, and re-deriving that on every
+        // cache hit would re-log the same warning for an account nobody can act on.
+        self.remember_accounts(&accounts);
+        Ok(accounts)
     }
 
     async fn current_balance(
@@ -240,10 +300,13 @@ impl TransactionProvider for AkahuProvider {
     ) -> anyhow::Result<Option<ProviderBalance>> {
         let account_id = external_account_id(ctx.config)?;
         let (client, user_token) = self.client()?;
-        let resp = client
-            .get_account(&user_token, &account_id)
-            .await
-            .map_err(|e| classify(&account_id, e))?;
+        self.throttle.acquire("Akahu").await?;
+        let resp = self
+            .sent(
+                Some(&account_id),
+                client.get_account(&user_token, &account_id).await,
+            )
+            .await?;
         Ok(Some(map_balance(&resp.item)?))
     }
 }
@@ -296,8 +359,17 @@ enum SweepStep {
 /// Time is checked *before* pages: both being exhausted at once means the upstream was slow
 /// enough to matter, and "ran out of time" is the diagnosis an operator can act on — retry —
 /// where "hit the page cap" would send them looking for 10,000 missing transactions.
-fn next_step(elapsed: Duration, pages_fetched: usize) -> SweepStep {
-    if elapsed >= SWEEP_BUDGET {
+///
+/// `paced` — time this sweep spent waiting on its own throttle rather than on Akahu — is
+/// subtracted before the comparison, and that is load-bearing rather than a nicety.
+/// [`SWEEP_BUDGET`] exists to bound how long *a sick upstream* can hold a scheduler task; at
+/// the default 500ms interval, a 100-page sweep spends 50s of a 60s budget being deliberately
+/// polite, so charging pacing to the budget would turn "Akahu is slow" and "we are being
+/// careful" into the same failure and make a first sync near-impossible to complete. What the
+/// budget still bounds is unchanged: the wall-clock of a sweep is `SWEEP_BUDGET + paced`, and
+/// `paced` is a number this process chose.
+fn next_step(elapsed: Duration, paced: Duration, pages_fetched: usize) -> SweepStep {
+    if elapsed.saturating_sub(paced) >= SWEEP_BUDGET {
         SweepStep::OutOfTime
     } else if pages_fetched >= MAX_PAGES {
         SweepStep::OutOfPages
@@ -337,11 +409,72 @@ impl AkahuProvider {
     /// `endpoint` is where the API lives ([`DEFAULT_BASE_URL`] in production, a loopback proxy
     /// in a fixture); `credentials` is whatever the composition root got from the environment,
     /// error and all — see the field.
-    pub fn new(endpoint: Endpoint, credentials: Result<AkahuCredentials, MissingToken>) -> Self {
+    pub fn new(
+        endpoint: Endpoint,
+        credentials: Result<AkahuCredentials, MissingToken>,
+        pacing: Pacing,
+    ) -> Self {
         Self {
             endpoint,
             credentials,
+            throttle: Throttle::new(pacing),
+            accounts: Mutex::new(None),
         }
+    }
+
+    /// Hand an `akahu-client` result on, arming the stand-down window first if what came back
+    /// was Akahu refusing on volume.
+    ///
+    /// The long way round to what [`Throttle::note_refusal`] does for the other two adapters:
+    /// `akahu-client` reads and discards the response itself, so there is no `Retry-After` to
+    /// read here and no `Response` to inspect — only an `AkahuError::RateLimited` carrying a
+    /// message. [`crate::http::DEFAULT_BACKOFF`] is the answer for "we were not told".
+    ///
+    /// A `matches!` rather than a `match`, so adding a variant upstream does not need a
+    /// decision here: everything that is not a rate limit is passed through unchanged, which is
+    /// what the `?` at every call site did before.
+    ///
+    /// It is also the one place an `AkahuError` becomes an `anyhow::Error`, which makes it the
+    /// only place [`classify`] can run — hence `account`. Pass the account a call was *about*
+    /// and a `404` becomes an [`AccountDisconnected`] rather than a bare failure; pass `None`
+    /// for a call that is about no single account (the listing), where a `404` says nothing
+    /// about any one of them. Doing it here rather than at each call site is what keeps the two
+    /// concerns from having to be remembered separately: every Akahu request now gets both the
+    /// stand-down and the classification, and a new call site gets them by construction.
+    async fn sent<T>(
+        &self,
+        account: Option<&AccountId>,
+        result: Result<T, akahu_client::AkahuError>,
+    ) -> anyhow::Result<T> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(err) => {
+                if matches!(err, akahu_client::AkahuError::RateLimited { .. }) {
+                    tracing::warn!(
+                        backoff = ?crate::http::DEFAULT_BACKOFF,
+                        "Akahu refused on volume; standing down"
+                    );
+                    self.throttle.back_off(crate::http::DEFAULT_BACKOFF).await;
+                }
+                Err(match account {
+                    Some(account_id) => classify(account_id, err),
+                    None => err.into(),
+                })
+            }
+        }
+    }
+
+    /// The cached account listing, if it has not expired.
+    fn cached_accounts(&self) -> Option<Vec<ProviderAccount>> {
+        let cached = self.accounts.lock().unwrap_or_else(PoisonError::into_inner);
+        let (expires, accounts) = cached.as_ref()?;
+        (*expires > Instant::now()).then(|| accounts.clone())
+    }
+
+    fn remember_accounts(&self, accounts: &[ProviderAccount]) {
+        let expires = Instant::now() + self.throttle.pacing().discovery_ttl;
+        *self.accounts.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((expires, accounts.to_vec()));
     }
 
     /// Build an authenticated client. Returns a clear error naming the missing var rather
@@ -607,6 +740,7 @@ mod tests {
         AkahuProvider::new(
             Endpoint::parse("http://127.0.0.1:1/v1").expect("loopback plaintext is allowed"),
             Err(missing),
+            Pacing::unpaced(),
         )
     }
 
@@ -645,6 +779,7 @@ mod tests {
                 app_token: "app_token_test".to_string(),
                 user_token: "user_token_test".to_string(),
             }),
+            Pacing::unpaced(),
         );
         assert!(provider.client().is_ok());
     }
@@ -1116,21 +1251,64 @@ mod tests {
     /// so the test costs microseconds instead of the 100 slow pages the real thing would need.
     #[test]
     fn bounds_the_sweep_in_time_as_well_as_in_pages() {
+        // No time spent on the throttle: the original two-argument behaviour, unchanged.
+        let unpaced = |elapsed, pages| next_step(elapsed, Duration::ZERO, pages);
+
         // Ordinary progress: plenty of budget left, plenty of pages left.
-        assert_eq!(next_step(Duration::ZERO, 0), SweepStep::Fetch);
+        assert_eq!(unpaced(Duration::ZERO, 0), SweepStep::Fetch);
         assert_eq!(
-            next_step(SWEEP_BUDGET - Duration::from_millis(1), 5),
+            unpaced(SWEEP_BUDGET - Duration::from_millis(1), 5),
             SweepStep::Fetch
         );
         // The budget is inclusive: reaching it stops the sweep rather than allowing one more
         // page (which could itself take another `REQUEST_TIMEOUT`).
-        assert_eq!(next_step(SWEEP_BUDGET, 5), SweepStep::OutOfTime);
-        assert_eq!(next_step(SWEEP_BUDGET * 2, 5), SweepStep::OutOfTime);
+        assert_eq!(unpaced(SWEEP_BUDGET, 5), SweepStep::OutOfTime);
+        assert_eq!(unpaced(SWEEP_BUDGET * 2, 5), SweepStep::OutOfTime);
         // The page cap, likewise inclusive: `MAX_PAGES` fetched means no more.
-        assert_eq!(next_step(Duration::ZERO, MAX_PAGES - 1), SweepStep::Fetch);
-        assert_eq!(next_step(Duration::ZERO, MAX_PAGES), SweepStep::OutOfPages);
+        assert_eq!(unpaced(Duration::ZERO, MAX_PAGES - 1), SweepStep::Fetch);
+        assert_eq!(unpaced(Duration::ZERO, MAX_PAGES), SweepStep::OutOfPages);
         // Both exhausted: time wins, because "retry" is the actionable diagnosis.
-        assert_eq!(next_step(SWEEP_BUDGET, MAX_PAGES), SweepStep::OutOfTime);
+        assert_eq!(unpaced(SWEEP_BUDGET, MAX_PAGES), SweepStep::OutOfTime);
+    }
+
+    /// The budget measures time spent waiting on *Akahu*, not time spent being polite to it.
+    ///
+    /// The regression this pins is a first sync that can never finish: at the default 500ms
+    /// interval a 100-page sweep spends 50s of a 60s budget inside its own throttle, so
+    /// charging that to the budget would fail the sweep — and, `OutOfTime` being fatal so the
+    /// watermark holds, fail it identically on every retry forever. Adding pacing without this
+    /// subtraction is the shape of that bug.
+    #[test]
+    fn time_spent_on_the_throttle_is_not_charged_to_the_sweep_budget() {
+        // A sweep 50s into its wall clock, all but 1s of which was pacing: barely any of
+        // Akahu's budget is used, so it carries on.
+        let paced = Duration::from_secs(49);
+        assert_eq!(
+            next_step(Duration::from_secs(50), paced, 98),
+            SweepStep::Fetch
+        );
+        // The same wall clock with none of it paced is a slow upstream, and does count.
+        assert_eq!(
+            next_step(Duration::from_secs(50), Duration::ZERO, 98),
+            SweepStep::Fetch
+        );
+        assert_eq!(
+            next_step(SWEEP_BUDGET, Duration::ZERO, 98),
+            SweepStep::OutOfTime
+        );
+        // And the budget still bites once the *upstream* has genuinely spent it, however much
+        // pacing sits alongside — this is not a way to opt out of the ceiling.
+        assert_eq!(
+            next_step(SWEEP_BUDGET + paced, paced, 98),
+            SweepStep::OutOfTime
+        );
+        // `saturating_sub`, not `-`: a paced total that rounds above the elapsed total (both
+        // are separately-sampled `Instant` deltas) must read as "no upstream time spent",
+        // not panic in a debug build mid-sweep.
+        assert_eq!(
+            next_step(Duration::from_millis(10), Duration::from_millis(11), 1),
+            SweepStep::Fetch
+        );
     }
 
     /// The number the budget exists to make impossible. A slow-but-up upstream at 5s/page —

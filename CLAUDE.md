@@ -184,6 +184,21 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   would carry. Nothing re-checks them against the live API, so a capture is evidence about the day
   it was taken — `pnpm fixtures:record` and read the diff when a price or FX path misbehaves
   against the real app but not in the suite. Tiers, fixtures and the traps: `docs/TESTING.md`.
+- **Every outbound call is paced, and every upstream answer is worth reusing.** A third party's
+  rate limits are enforced on the *household*, not on this app, so a burst costs the one person
+  whose data it is. Three guards, all injected as `Pacing`/`ProviderLimits` from `sure-server`
+  alongside the `Endpoint` (nothing in `sure-providers` reads configuration): a 500ms floor on
+  the gap between two requests to one host, applied inside the adapter — including between the
+  pages of an Akahu sweep; a stand-down window that a `429` arms, checked *before*
+  `error_for_status` so a rate limit is never flattened into a generic 4xx and retried straight
+  away; and a TTL on the answers that describe what exists (Akahu's account listing, Yahoo's
+  `404` for a symbol), because the UI asks for those once per render and neither changes minute
+  to minute. Pacing **sleeps**, a cooldown **refuses** — five minutes of `Retry-After` slept
+  inside a request would blow the 30s route deadline. On top of that `sure_app::sync` will not
+  start a second *successful* sync of one provider inside `PROVIDER_SYNC_COOLDOWN_SECS`; it
+  replays the last run as `SyncReport { fresh: false }`, which is what stops the UI reporting an
+  import that never happened. Adding an adapter means adding a `Throttle`, not just a client.
+  The numbers and their env vars: `docs/HTTP.md`.
 - **Every query is compile-time checked; `.sqlx/` is how.** All SQL in `sure-dal` goes through
   `sqlx::query!` / `query_as!` / `query_scalar!`, so a column that doesn't exist, a bind count
   that doesn't match, or a row struct whose types disagree with the table is a build error

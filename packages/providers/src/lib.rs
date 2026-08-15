@@ -45,9 +45,11 @@ pub mod zipfile;
 
 pub use akahu::{AkahuCredentials, AkahuProvider, MissingToken};
 pub use frankfurter::FrankfurterProvider;
-// `http` is private — it is this crate's own outbound-client plumbing — but `Endpoint` is half
-// of every adapter's constructor, so the composition root has to be able to name it.
-pub use http::Endpoint;
+// `http` is private — it is this crate's own outbound-client plumbing — but these two are the
+// rest of every adapter's constructor, so the composition root has to be able to name them.
+// `Throttle` is deliberately *not* here: how an adapter paces itself is its own business, and
+// what the caller decides is the numbers.
+pub use http::{Endpoint, Pacing};
 pub use yahoo_finance::YahooFinanceProvider;
 
 /// The set of transaction-provider implementations the server knows about. Implements

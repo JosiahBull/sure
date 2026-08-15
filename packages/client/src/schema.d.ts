@@ -3735,6 +3735,10 @@ export interface paths {
          *     Single-flight per provider: while one sync of this provider is running — whether started
          *     here, by the initial sync after linking, or by the 6-hourly poll — a second request gets a
          *     409 instead of a duplicate run.
+         *
+         *     Rate limited per provider on top of that: within the cooldown of a *successful* sync, the
+         *     upstream is not contacted and the previous run is returned with `fresh: false`. A failed
+         *     sync can be retried immediately.
          */
         post: {
             parameters: {
@@ -3756,7 +3760,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["ProviderSync"];
+                        "application/json": components["schemas"]["SyncReport"];
                     };
                 };
                 404: {
@@ -7822,6 +7826,38 @@ export interface components {
          * @enum {string}
          */
         SyncOutcome: "ok" | "error" | "disconnected";
+        /**
+         * @description What `POST /providers/{id}/sync` answers: a run, and whether it is one this request caused.
+         *
+         *     A separate type from [`ProviderSync`] rather than a `fresh` field on it, because the two are
+         *     answers to different questions. `ProviderSync` is a `provider_syncs` row and is also what
+         *     `GET /providers/{id}/syncs` lists; "did *your* request cause this?" is meaningless for a row
+         *     in a history and would have to be filled in with a lie there.
+         *
+         *     The distinction exists because a sync is rate-limited (`sure_app::sync`'s cooldown): inside
+         *     the window the upstream is not contacted and the previous run is returned instead. Without
+         *     the flag, the client cannot tell that apart from a real sync and shows an old run's counts
+         *     as if they had just happened — "Imported 5" a second time when nothing was imported at all.
+         */
+        SyncReport: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            provider_id: number;
+            /** Format: int64 */
+            imported: number;
+            /** Format: int64 */
+            skipped: number;
+            status: components["schemas"]["SyncOutcome"];
+            detail?: string | null;
+            created_at: string;
+            /**
+             * @description `true` when this request reached the upstream; `false` when the cooldown was in force
+             *     and this is the previous run replayed. Always `true` for payload-based providers (a CSV
+             *     sync parses what the request carried and contacts nobody).
+             */
+            fresh: boolean;
+        };
         SyncRequest: {
             /** @description Inline data for payload-based providers (e.g. CSV text). */
             payload?: string | null;

@@ -9,6 +9,7 @@ pub mod http;
 pub mod sandbox;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use sure_app::SystemClock;
 use sure_app::brokerage::BrokerageService;
@@ -80,6 +81,7 @@ fn build_state(
     stock_price_provider: Arc<dyn StockPriceProvider>,
     shutdown: Shutdown,
     mcp_ceiling: sure_mcp::McpMode,
+    sync_cooldown: Duration,
 ) -> (sure_api::State, sure_mcp::McpState) {
     let store = Arc::new(SqliteStore::new(db));
     let clock = Arc::new(SystemClock);
@@ -109,6 +111,7 @@ fn build_state(
         registry.clone(),
         clock.clone(),
         rules.clone(),
+        sync_cooldown,
     ));
     let forecast = Arc::new(ForecastService::new(
         store.clone(),
@@ -203,6 +206,7 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         // sync, which is why the provider keeps the `Result`: `specs/akahu.spec.ts` asserts
         // the 422 from `/api/provider-kinds/akahu/accounts` says `AKAHU_APP_TOKEN`.
         sure_providers::AkahuCredentials::from_env(),
+        config.provider_limits.pacing,
     );
     let registry: Arc<dyn ProviderRegistry> = Arc::new(sure_providers::Registry::new(akahu));
     // The file-import adapters. Nothing to configure — a parser has no endpoint and reads no
@@ -212,6 +216,7 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
     let stock_price_provider: Arc<dyn StockPriceProvider> =
         Arc::new(sure_providers::YahooFinanceProvider::with_endpoint(
             config.provider_endpoints.yahoo_finance.clone(),
+            config.provider_limits.pacing,
         ));
 
     // Opt-out (`BACKGROUND_TASKS=off`) because the scheduler's first check runs
@@ -245,6 +250,11 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
             registry.clone(),
             clock.clone(),
             Arc::new(RuleService::new(store.clone())),
+            // The same window the HTTP path gets, and it costs the poll nothing: its interval
+            // is six hours. What it does buy is the collision this whole guard is about — a
+            // poll firing seconds after a human pressed "Sync now" now reuses that run instead
+            // of sweeping the same window again.
+            config.provider_limits.sync_cooldown,
         ));
 
         scheduler.register(Box::new(
@@ -254,6 +264,7 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
                 // rates — so unlike Yahoo's it is built here rather than above.
                 Arc::new(sure_providers::FrankfurterProvider::with_endpoint(
                     config.provider_endpoints.frankfurter.clone(),
+                    config.provider_limits.pacing,
                 )),
             ),
         ));
@@ -310,6 +321,7 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         stock_price_provider,
         shutdown.clone(),
         config.mcp.ceiling,
+        config.provider_limits.sync_cooldown,
     );
     let app = sure_api::build_app(
         state,

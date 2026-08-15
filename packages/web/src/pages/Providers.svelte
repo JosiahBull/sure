@@ -105,12 +105,22 @@
       body: {},
     });
     if (e) error = apiErrorMessage(e, "Sync failed.");
+    // Ahead of the cooldown check on purpose: a *replayed* disconnected run is still a
+    // disconnected connection, and "already up to date" would be a comfortable lie about an
+    // account that has stopped arriving at all.
     else if (data?.status === "disconnected") {
       // A 200 the user must not read as success. The server answers `Ok` deliberately — a
       // retired account is a state, not a failed request — so the wording has to carry the
       // difference the status code no longer does.
       error = data.detail ?? "This account is no longer connected upstream.";
-    } else if (data) notice = `Imported ${data.imported}, skipped ${data.skipped}.`;
+    }
+    // `fresh: false` means the cooldown was in force and this is the previous run coming back,
+    // not a sync that just happened. Reporting its counts as new would claim an import that
+    // did not occur — and the counts of a busy first sync would keep being re-announced on
+    // every press.
+    else if (data?.fresh === false)
+      notice = `Already up to date — last synced ${formatDate(data.created_at)}. Not re-fetched.`;
+    else if (data) notice = `Imported ${data.imported}, skipped ${data.skipped}.`;
     syncing = null;
     load();
   }
@@ -131,24 +141,32 @@
     notice = null;
     let imported = 0;
     let synced = 0;
+    let skippedByCooldown = 0;
     const disconnected: string[] = [];
     const failed: string[] = [];
+
 
     for (const p of autoSyncable) {
       const { data, error: e } = await api.POST("/api/providers/{id}/sync", {
         params: { path: { id: p.id } },
         body: {},
       });
+      // Same precedence as `runSync`, and for the same reason.
       if (e) failed.push(p.name);
       else if (data?.status === "disconnected") disconnected.push(p.name);
+      else if (data?.fresh === false) skippedByCooldown += 1;
       else if (data) {
         synced += 1;
         imported += data.imported;
       }
     }
 
+    // `synced` is counted from the runs that actually happened rather than derived by
+    // subtracting from `autoSyncable.length`, now that a connection can leave the loop three
+    // other ways: "Synced 3" must never mean "asked about 3 and contacted none".
     const plural = (n: number) => (n === 1 ? "" : "s");
-    notice = `Synced ${synced} connection${plural(synced)} · ${imported} imported.`;
+    const upToDate = skippedByCooldown > 0 ? ` · ${skippedByCooldown} already up to date` : "";
+    notice = `Synced ${synced} connection${plural(synced)} · ${imported} imported${upToDate}.`;
     // Both lists are named rather than counted: "1 disconnected" out of four connections sends
     // the user hunting for which one, and the badges below are the only other place it is said.
     const trouble = [
@@ -156,6 +174,7 @@
       failed.length > 0 ? `Failed: ${failed.join(", ")}.` : null,
     ].filter(Boolean);
     if (trouble.length > 0) error = trouble.join(" ");
+
 
     syncingAll = false;
     load();

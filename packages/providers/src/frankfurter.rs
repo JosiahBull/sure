@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use sure_app::ports::{ExchangeRateProvider, ExchangeRateQuote};
 
-use crate::http::Endpoint;
+use crate::http::{Endpoint, Pacing, Throttle};
 
 /// The real API. `pub` because the composition root owns the decision of where this provider
 /// points (it is the only place configuration is read) and needs a default to fall back to.
@@ -20,6 +20,7 @@ pub const DEFAULT_BASE_URL: &str = "https://api.frankfurter.dev/v1";
 pub struct FrankfurterProvider {
     endpoint: Endpoint,
     client: reqwest::Client,
+    throttle: Throttle,
 }
 
 impl FrankfurterProvider {
@@ -37,9 +38,13 @@ impl FrankfurterProvider {
     /// The client is built from the endpoint rather than shared: whether a plaintext request
     /// is refused is a property of the `Client`, fixed when it is built, not something a
     /// per-request URL can override.
-    pub fn with_endpoint(endpoint: Endpoint) -> Self {
+    pub fn with_endpoint(endpoint: Endpoint, pacing: Pacing) -> Self {
         let client = crate::http::client(&endpoint);
-        Self { endpoint, client }
+        Self {
+            endpoint,
+            client,
+            throttle: Throttle::new(pacing),
+        }
     }
 }
 
@@ -61,10 +66,16 @@ impl ExchangeRateProvider for FrankfurterProvider {
 
     async fn fetch_rates(&self, base: &str) -> anyhow::Result<Vec<ExchangeRateQuote>> {
         let url = format!("{}/latest?base={base}", self.endpoint.url());
-        let response = self.client.get(&url).send().await?.error_for_status()?;
+        self.throttle.acquire("Frankfurter").await?;
+        let response = self.client.get(&url).send().await?;
+        // Before `error_for_status`, which cannot tell a refusal-on-volume from any other 4xx
+        // and would lose the fact that retrying shortly makes it worse.
+        if let Some(refused) = self.throttle.note_refusal(&response).await {
+            return Err(refused);
+        }
         // `json_capped`, not `.json()`: the whole rate table is ~2KB, and the request timeout
         // bounds how long an upstream may talk, not how much it may say. See `http.rs`.
-        let body: LatestResponse = crate::http::json_capped(response).await?;
+        let body: LatestResponse = crate::http::json_capped(response.error_for_status()?).await?;
         Ok(parse_quotes(body))
     }
 }

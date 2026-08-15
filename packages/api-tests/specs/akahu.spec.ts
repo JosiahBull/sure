@@ -64,13 +64,27 @@ const MAX_SYNC_DETAIL_CHARS = 500;
  * `packages/providers/tests/akahu.rs` already uses — a real token in a fixture is a leak, not a
  * shortcut, and these two never leave loopback.
  */
-async function configured(): Promise<{ server: StartedServer; api: SureClient }> {
+async function configured(
+  env: Record<string, string> = {},
+): Promise<{ server: StartedServer; api: SureClient }> {
   const server = await startServer({
     AKAHU_APP_TOKEN: "app_token_test",
     AKAHU_USER_TOKEN: "user_token_test",
+    ...env,
   });
   return { server, api: createSureClient(server.baseURL) };
 }
+
+/**
+ * Turn the per-provider sync cooldown off for one server.
+ *
+ * The cooldown (`sure_app::sync`, 60s by default) refuses a second *successful* sync of one
+ * provider and replays the first instead — which is the right production behaviour and the
+ * wrong fixture for any test whose subject is what a second sweep does. `specs/provider-sync-
+ * behaviour.spec.ts` owns the cooldown itself and configures it deliberately; everything here
+ * predates it and wants it out of the way.
+ */
+const NO_COOLDOWN = { PROVIDER_SYNC_COOLDOWN_SECS: "0" };
 
 /** One settled transaction, as Akahu sends it. */
 function txn(opts: {
@@ -278,7 +292,8 @@ test("an akahu sync imports the feed's transactions and advances the watermark",
 test("akahu sync imports, then dedupes the overlap it deliberately re-fetches", async ({
   testproxy,
 }) => {
-  const { server, api } = await configured();
+  // Two real sweeps is the whole point here, and the cooldown would collapse them into one.
+  const { server, api } = await configured(NO_COOLDOWN);
   try {
     const acc = await createAccount(api, "Everyday", "bank");
     const provider = await akahuProvider(api, acc.id);

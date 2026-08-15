@@ -179,6 +179,244 @@ pub(crate) fn client(endpoint: &Endpoint) -> reqwest::Client {
         .expect("build a bounded HTTP client")
 }
 
+/// How long to stand down when an upstream refuses on volume without saying for how long.
+///
+/// A 429 with no `Retry-After` is the common case (Yahoo's undocumented endpoint sends none at
+/// all, and answers a burst with a temporary IP block rather than a header). Long enough that
+/// the next scheduled poll is the thing that retries rather than the next page render; short
+/// enough that one spurious refusal does not cost a household its prices for the afternoon.
+///
+/// `pub(crate)` for Akahu, which reaches it the long way round: `akahu-client` consumes the
+/// response, so the only evidence that arrives here is an `AkahuError::RateLimited` carrying a
+/// message and no headers. One const for both, so "how long do we stand down when we were not
+/// told?" has a single answer.
+pub(crate) const DEFAULT_BACKOFF: Duration = Duration::from_secs(60);
+
+/// How often this process may talk to one upstream host, and how long it stands down when that
+/// host tells it to.
+///
+/// Injected, not read here: `docs/ARCHITECTURE.md` has it that nothing in this crate reads
+/// configuration, for the same reason [`Endpoint`] is injected — the composition root owns
+/// every decision an operator can change, and an adapter that reached for the environment on a
+/// request path would put a second one behind its back. `sure-server`'s `Config::from_env`
+/// parses these three from `PROVIDER_MIN_REQUEST_INTERVAL_MS`, `PROVIDER_MAX_BACKOFF_SECS` and
+/// `PROVIDER_DISCOVERY_TTL_SECS`; [`Pacing::default`] is what those defaults are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pacing {
+    /// Floor on the gap between any two requests this process sends to one host.
+    ///
+    /// Deliberately a *sleep*, not a refusal: it is sub-second, so paying it is invisible next
+    /// to the request it precedes, and a caller that queues behind it still gets its answer.
+    pub min_request_interval: Duration,
+    /// Ceiling on a `Retry-After` this process will honour.
+    ///
+    /// An upstream must not be able to disable an integration for an hour by saying so —
+    /// `Retry-After: 86400` is a header, not a contract, and the scheduled polls behind it are
+    /// hours apart anyway. Clamping keeps a hostile or misconfigured value from outliving the
+    /// interval that would have retried past it.
+    pub max_backoff: Duration,
+    /// How long an upstream's answer about *what exists* may be reused without asking again.
+    ///
+    /// Two things share it because they are the same question in two shapes: which accounts a
+    /// set of Akahu credentials can see (`AkahuProvider::list_accounts`), and whether Yahoo has
+    /// any price data at all for a symbol (`YahooFinanceProvider`'s empty-result memo). Neither
+    /// changes minute to minute, and both are asked once per page render by a UI that has no
+    /// idea it is reaching a third party.
+    pub discovery_ttl: Duration,
+}
+
+impl Default for Pacing {
+    fn default() -> Self {
+        Self {
+            min_request_interval: Duration::from_millis(500),
+            max_backoff: Duration::from_secs(300),
+            discovery_ttl: Duration::from_secs(60),
+        }
+    }
+}
+
+impl Pacing {
+    /// Every window zeroed — for a test whose subject is not the pacing.
+    ///
+    /// A fixture that fires six requests at its own loopback proxy has no upstream to be polite
+    /// to, and paying [`Pacing::default`]'s 500ms six times turns a millisecond test into a
+    /// three-second one. The tests that *are* about pacing (`tests/yahoo_finance.rs`) pass a
+    /// real [`Pacing`] instead, and measure it.
+    ///
+    /// Note what stays live: [`Self::max_backoff`] keeps its real value, so
+    /// [`Throttle::note_refusal`] still arms a cooldown and [`Throttle::acquire`] still refuses
+    /// inside one — a test can exercise the 429 path without waiting out a pacing interval it
+    /// does not care about. What goes to zero is the sleep, and the
+    /// [`Self::discovery_ttl`] — a zero TTL is already expired, so a fixture sees every call
+    /// reach its proxy unless the test is specifically about the cache.
+    pub fn unpaced() -> Self {
+        Self {
+            min_request_interval: Duration::ZERO,
+            discovery_ttl: Duration::ZERO,
+            ..Self::default()
+        }
+    }
+}
+
+/// One upstream host's share of this process's outbound budget: pacing between requests, and a
+/// stand-down window the host itself can arm.
+///
+/// Per adapter *instance*, which is per host — each adapter is built once in the composition
+/// root and talks to exactly one API, so "this instance's last request" and "this host's last
+/// request" are the same fact. A `static` keyed by hostname would say the same thing and would
+/// also leak between the tests in a binary, each of which stands up its own proxy.
+///
+/// The two mechanisms are deliberately different in kind, and must stay that way:
+///
+/// * **Pacing sleeps.** [`Pacing::min_request_interval`] is sub-second, and the lock is held
+///   across the sleep so concurrent callers *queue* rather than all waking together and firing
+///   at once — the property `tests/yahoo_finance.rs`'s concurrency test pins.
+/// * **A cooldown refuses.** [`Pacing::max_backoff`] is up to five minutes; sleeping that out
+///   inside a request would blow the 30s route deadline (`sure-api`'s `cache::timeout`) and
+///   hold an in-flight permit while doing nothing. Erroring immediately is what lets the caller
+///   fall back to what it already has — the whole point of the exercise.
+pub(crate) struct Throttle {
+    pacing: Pacing,
+    state: tokio::sync::Mutex<ThrottleState>,
+}
+
+#[derive(Default)]
+struct ThrottleState {
+    /// When the last request *left*, stamped before it is sent rather than after it returns:
+    /// the interval is about how often this host is contacted, not about how long it takes to
+    /// answer.
+    last_request: Option<std::time::Instant>,
+    /// Set by [`Throttle::note_refusal`]; cleared lazily by [`Throttle::acquire`] once it has
+    /// elapsed, so nothing has to run on a timer to forget it.
+    cooldown_until: Option<std::time::Instant>,
+}
+
+impl Throttle {
+    pub(crate) fn new(pacing: Pacing) -> Self {
+        Self {
+            pacing,
+            state: tokio::sync::Mutex::new(ThrottleState::default()),
+        }
+    }
+
+    pub(crate) fn pacing(&self) -> Pacing {
+        self.pacing
+    }
+
+    /// Clear this request to go out: wait out the pacing interval, or refuse if `host` has
+    /// asked this process to stand down and the window has not elapsed.
+    ///
+    /// `host` is only for the message, and the message matters — it is what lands in
+    /// `provider_syncs.detail` and in a 422 body, so it has to say that the request was never
+    /// sent rather than that the upstream failed.
+    pub(crate) async fn acquire(&self, host: &str) -> anyhow::Result<()> {
+        let mut state = self.state.lock().await;
+
+        if let Some(until) = state.cooldown_until {
+            let remaining = until.saturating_duration_since(std::time::Instant::now());
+            anyhow::ensure!(
+                remaining.is_zero(),
+                "{host} asked this process to stop sending requests and {remaining:?} of that \
+                 window remains, so this request was not sent"
+            );
+            // Elapsed: forget it here rather than on a timer.
+            state.cooldown_until = None;
+        }
+
+        if let Some(last) = state.last_request {
+            let elapsed = last.elapsed();
+            if elapsed < self.pacing.min_request_interval {
+                tokio::time::sleep(self.pacing.min_request_interval - elapsed).await;
+            }
+        }
+        state.last_request = Some(std::time::Instant::now());
+        Ok(())
+    }
+
+    /// Was this response the upstream refusing on volume? If so, arm the cooldown from its
+    /// `Retry-After` and hand back the error to fail this call with; `None` means carry on with
+    /// the response.
+    ///
+    /// Both statuses that mean it are covered. `429` is the unambiguous one; `503` is not — it
+    /// is also what an ordinary outage looks like — so a `503` only counts when it *names* a
+    /// `Retry-After`, which is a server saying "come back then" rather than "I am broken".
+    /// Backing off on every 503 would turn one bad minute at Yahoo into a five-minute one.
+    pub(crate) async fn note_refusal(&self, response: &reqwest::Response) -> Option<anyhow::Error> {
+        let status = response.status();
+        let asked_for = retry_after(response.headers(), chrono::Utc::now());
+        let refusing = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || (status == reqwest::StatusCode::SERVICE_UNAVAILABLE && asked_for.is_some());
+        if !refusing {
+            return None;
+        }
+
+        let window = asked_for
+            .unwrap_or(DEFAULT_BACKOFF)
+            .min(self.pacing.max_backoff);
+        let host = response
+            .url()
+            .host_str()
+            .unwrap_or("the upstream")
+            .to_string();
+        self.back_off(window).await;
+
+        tracing::warn!(
+            %host,
+            status = status.as_u16(),
+            backoff = ?window,
+            "upstream refused on volume; standing down"
+        );
+        Some(anyhow::anyhow!(
+            "{host} refused this request with {status} and this process is standing down for \
+             {window:?} before contacting it again"
+        ))
+    }
+
+    /// Arm the stand-down window, clamped to [`Pacing::max_backoff`].
+    ///
+    /// Separate from [`Self::note_refusal`] because Akahu cannot use that one: `akahu-client`
+    /// consumes the response itself, so the only evidence reaching this crate is an
+    /// `AkahuError::RateLimited` with no headers on it. `akahu.rs` calls this directly with
+    /// [`DEFAULT_BACKOFF`].
+    ///
+    /// Never shortens a window already in force — two refusals in flight at once must not let
+    /// the second one's smaller number undo the first's.
+    pub(crate) async fn back_off(&self, window: Duration) {
+        let until = std::time::Instant::now() + window.min(self.pacing.max_backoff);
+        let mut state = self.state.lock().await;
+        state.cooldown_until = Some(match state.cooldown_until {
+            Some(existing) => existing.max(until),
+            None => until,
+        });
+    }
+}
+
+/// How long a `Retry-After` asks for, in either of the two forms RFC 9110 allows.
+///
+/// Delay-seconds is what every upstream here would send; the HTTP-date form is parsed via
+/// `chrono`'s RFC 2822 reader, which accepts IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`)
+/// — the same grammar with a fixed offset — so honouring it costs no new dependency. A date
+/// already in the past reads as zero rather than as an error: the upstream is saying "now".
+fn retry_after(
+    headers: &reqwest::header::HeaderMap,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<Duration> {
+    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let raw = raw.trim();
+
+    if let Ok(seconds) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+
+    let at = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
+    // `to_std` refuses a negative span; a date already past means "now", not "unparseable".
+    Some(
+        (at.with_timezone(&chrono::Utc) - now)
+            .to_std()
+            .unwrap_or(Duration::ZERO),
+    )
+}
+
 /// Read a JSON response body into `T`, refusing to buffer more than [`MAX_BODY_BYTES`].
 ///
 /// Two guards, because either alone is bypassable. `Content-Length` is checked first so a
@@ -229,6 +467,164 @@ mod tests {
 
     fn url() -> reqwest::Url {
         reqwest::Url::parse("https://api.frankfurter.dev/v1/latest?base=NZD").unwrap()
+    }
+
+    fn headers(retry_after: &str) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            retry_after.parse().expect("a header value"),
+        );
+        headers
+    }
+
+    fn at(rfc3339: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(rfc3339)
+            .expect("a fixed instant")
+            .with_timezone(&chrono::Utc)
+    }
+
+    /// The form every upstream here would actually send.
+    #[test]
+    fn retry_after_reads_delay_seconds() {
+        let now = at("2026-08-16T03:00:00Z");
+        assert_eq!(
+            retry_after(&headers("120"), now),
+            Some(Duration::from_secs(120))
+        );
+        // Surrounding whitespace is legal in a header value and means nothing.
+        assert_eq!(
+            retry_after(&headers("  30  "), now),
+            Some(Duration::from_secs(30))
+        );
+        // `0` is a real answer — "try again immediately" — and must not read as absent, which
+        // would silently substitute `DEFAULT_BACKOFF`'s minute for the nothing it asked for.
+        assert_eq!(retry_after(&headers("0"), now), Some(Duration::ZERO));
+    }
+
+    /// The other form RFC 9110 allows. Parsed through `chrono`'s RFC 2822 reader, which is why
+    /// honouring it needs no new dependency — and why it is worth a test that the grammar
+    /// really does overlap.
+    #[test]
+    fn retry_after_reads_an_http_date() {
+        let now = at("2026-08-16T03:00:00Z");
+        assert_eq!(
+            retry_after(&headers("Sun, 16 Aug 2026 03:02:00 GMT"), now),
+            Some(Duration::from_secs(120))
+        );
+        // Already past: the upstream is saying "now", which is a window of zero rather than an
+        // unparseable value — `chrono`'s `to_std` refuses a negative span, and taking that as
+        // `None` would substitute a minute nobody asked for.
+        assert_eq!(
+            retry_after(&headers("Sun, 16 Aug 2026 02:00:00 GMT"), now),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn an_absent_or_unreadable_retry_after_is_none() {
+        let now = at("2026-08-16T03:00:00Z");
+        assert_eq!(retry_after(&reqwest::header::HeaderMap::new(), now), None);
+        // Neither form. The caller falls back to `DEFAULT_BACKOFF` rather than to no wait at
+        // all, which is the safe direction: the upstream did refuse.
+        assert_eq!(retry_after(&headers("soon"), now), None);
+        // A negative delay-seconds is not a `u64` and is not a date; same answer.
+        assert_eq!(retry_after(&headers("-5"), now), None);
+    }
+
+    /// The distinction the two mechanisms rest on: pacing sleeps, a cooldown refuses.
+    ///
+    /// Asserted with a zero pacing interval so the test measures the refusal and not a sleep —
+    /// `acquire` must return `Err` immediately while the window holds, because sleeping out a
+    /// five-minute `Retry-After` inside a request would blow the 30s route deadline and hold an
+    /// in-flight permit doing nothing.
+    #[tokio::test]
+    async fn a_cooldown_refuses_rather_than_waiting() {
+        let throttle = Throttle::new(Pacing::unpaced());
+        throttle
+            .acquire("Frankfurter")
+            .await
+            .expect("nothing armed");
+
+        throttle.back_off(Duration::from_secs(30)).await;
+        let err = throttle
+            .acquire("Frankfurter")
+            .await
+            .expect_err("the window is still open")
+            .to_string();
+        // The message is what lands in `provider_syncs.detail` and in a 422 body, so it has to
+        // say the request was never sent rather than that the upstream failed.
+        assert!(err.contains("Frankfurter"), "{err}");
+        assert!(err.contains("not sent"), "{err}");
+    }
+
+    /// An elapsed window is forgotten on the next attempt, with nothing running on a timer to
+    /// do it — the property that lets the cooldown be one `Option<Instant>` rather than a task.
+    #[tokio::test]
+    async fn an_elapsed_cooldown_lets_the_next_request_through() {
+        let throttle = Throttle::new(Pacing::unpaced());
+        throttle.back_off(Duration::ZERO).await;
+        throttle
+            .acquire("Yahoo Finance")
+            .await
+            .expect("a zero-length window is already over");
+    }
+
+    /// Two refusals in flight at once must not let the second one's smaller number undo the
+    /// first's. The shape in production: a burst of price lookups, each getting its own 429,
+    /// the last of which carries a shorter `Retry-After` than the first.
+    #[tokio::test]
+    async fn a_second_backoff_never_shortens_the_window_already_in_force() {
+        let throttle = Throttle::new(Pacing::unpaced());
+        throttle.back_off(Duration::from_secs(300)).await;
+        throttle.back_off(Duration::from_secs(1)).await;
+        assert!(
+            throttle.acquire("Yahoo Finance").await.is_err(),
+            "the longer window has to survive the shorter one"
+        );
+    }
+
+    /// An upstream must not be able to disable an integration for a day by saying so.
+    #[tokio::test]
+    async fn a_retry_after_is_clamped_to_max_backoff() {
+        let pacing = Pacing {
+            min_request_interval: Duration::ZERO,
+            max_backoff: Duration::from_millis(50),
+            discovery_ttl: Duration::ZERO,
+        };
+        let throttle = Throttle::new(pacing);
+        // A day, asked for; 50ms, honoured.
+        throttle.back_off(Duration::from_secs(86_400)).await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        throttle
+            .acquire("Yahoo Finance")
+            .await
+            .expect("the clamped window has elapsed");
+    }
+
+    /// Pacing, as distinct from the cooldown above: it delays, it does not fail.
+    #[tokio::test]
+    async fn pacing_spaces_requests_without_refusing_them() {
+        let pacing = Pacing {
+            min_request_interval: Duration::from_millis(80),
+            ..Pacing::unpaced()
+        };
+        let throttle = Throttle::new(pacing);
+
+        let started = std::time::Instant::now();
+        for _ in 0..3 {
+            throttle
+                .acquire("Yahoo Finance")
+                .await
+                .expect("pacing delays, it never refuses");
+        }
+        // Three requests, two gaps. The first goes out immediately: the interval is about the
+        // gap between requests, not a toll on the first one.
+        assert!(
+            started.elapsed() >= Duration::from_millis(160),
+            "three paced requests took {:?}; two 80ms gaps is the floor",
+            started.elapsed()
+        );
     }
 
     #[test]

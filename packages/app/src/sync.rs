@@ -5,8 +5,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
-use sure_core::{AppError, AppResult, Provider, ProviderAccount, ProviderSync, SyncOutcome};
+use sure_core::{AppError, AppResult, Provider, ProviderAccount, SyncOutcome, SyncReport};
 
 use crate::ports::{
     AccountDisconnected, AccountRepo, Clock, ImportRow, ProviderRegistry, ProviderRepo,
@@ -142,6 +143,26 @@ pub struct SyncService {
     /// per-household), two write transactions contending for SQLite's single writer, and
     /// duplicate work everywhere in between.
     in_flight: Mutex<HashSet<i64>>,
+    /// How soon after a *successful* sync another one may reach the upstream.
+    ///
+    /// [`Self::in_flight`] above stops two syncs of one provider running at the same time; it
+    /// does nothing about a second one starting the moment the first returns. Pressing "Sync
+    /// now" twenty times is twenty complete paginated sweeps of somebody else's API, none of
+    /// which can find anything the first did not — Akahu refreshes an official bank connection
+    /// a few times a day, so a re-sweep seconds later is guaranteed to return the same
+    /// transactions and pay a per-household rate limit for them.
+    ///
+    /// Keyed on `providers.last_synced_at`, which is set by `update_last_synced` and therefore
+    /// only advances when a sync *succeeded* — so a failed sync can be retried immediately,
+    /// which is the behaviour anyone hitting the button after an error expects. That is a
+    /// dependency on where `update_last_synced` sits in [`Self::sync_provider`], not a
+    /// coincidence; moving it onto the error path would silently make failures rate-limited
+    /// too.
+    ///
+    /// Injected (`PROVIDER_SYNC_COOLDOWN_SECS`, see `sure-server`'s `Config::from_env`) rather
+    /// than a const, so the e2e suite can shrink it: "the cooldown expires and the next sync
+    /// really runs" is otherwise a test that has to sit out the production window.
+    cooldown: Duration,
 }
 
 impl SyncService {
@@ -152,6 +173,7 @@ impl SyncService {
         registry: Arc<dyn ProviderRegistry>,
         clock: Arc<dyn Clock>,
         categorize: Arc<dyn AutoCategorize>,
+        cooldown: Duration,
     ) -> Self {
         Self {
             providers,
@@ -161,7 +183,23 @@ impl SyncService {
             clock,
             categorize,
             in_flight: Mutex::new(HashSet::new()),
+            cooldown,
         }
+    }
+
+    /// How much of the cooldown is left after a provider's last successful sync, if any.
+    ///
+    /// `None` — go ahead and sync — covers four cases that all mean the same thing: the
+    /// cooldown is off, this provider has never synced, its watermark is unparseable (bad data
+    /// must not wedge the button), or enough time has passed.
+    fn cooldown_remaining(&self, provider: &Provider) -> Option<Duration> {
+        if self.cooldown.is_zero() {
+            return None;
+        }
+        let last =
+            chrono::DateTime::parse_from_rfc3339(provider.last_synced_at.as_deref()?).ok()?;
+        let elapsed = self.clock.now().signed_duration_since(last).to_std().ok()?;
+        self.cooldown.checked_sub(elapsed).filter(|d| !d.is_zero())
     }
 
     /// Copy the account number every linked account of `kind` reports upstream into that
@@ -496,11 +534,18 @@ impl SyncService {
     /// route's 300s deadline open, and re-do work whose only outcome is `skipped` counts.
     /// Different providers are unaffected and still sync concurrently. See
     /// [`Self::in_flight`] for why the guard sits here rather than on the route.
+    ///
+    /// **Rate limited per provider**, which is the other half: within [`Self::cooldown`] of a
+    /// *successful* sync the upstream is not contacted at all, and the previous run comes back
+    /// as [`SyncReport::replayed`] — `fresh: false`, so no caller reports counts for an import
+    /// that did not happen. Payload-based providers are exempt, and a *failed* sync is not rate
+    /// limited (the watermark it keys on only advances on success), so the retry after an
+    /// outage runs immediately.
     pub async fn sync_provider(
         &self,
         provider: Provider,
         payload: Option<&str>,
-    ) -> AppResult<ProviderSync> {
+    ) -> AppResult<SyncReport> {
         let id = provider.id;
         // Claimed before any I/O — and released by `Drop`, so no exit path leaks it.
         let _slot = SyncSlot::claim(&self.in_flight, id).ok_or_else(|| {
@@ -513,6 +558,27 @@ impl SyncService {
         let p = self.registry.get(&provider.kind).ok_or_else(|| {
             AppError::validation(format!("unknown provider kind '{}'", provider.kind))
         })?;
+
+        // The two guards compose: the slot above refuses a *concurrent* second sync with a 409,
+        // and this refuses a *sequential* one — the twenty-clicks case a single-flight set
+        // cannot see, because each of those syncs starts after the last one finished.
+        //
+        // Only for providers that actually leave the process. A payload-based one (CSV) parses
+        // what the request carried and contacts nobody, so there is no upstream to protect and
+        // no reason to make a user re-upload later; `accepts_payload` is the registry's own
+        // statement of which is which.
+        if !p.accepts_payload()
+            && let Some(remaining) = self.cooldown_remaining(&provider)
+            && let Some(last) = self.providers.latest_sync(id).await?
+        {
+            tracing::debug!(
+                provider_id = id,
+                ?remaining,
+                "inside the sync cooldown; returning the last recorded run instead of syncing"
+            );
+            return Ok(SyncReport::replayed(last));
+        }
+
         let ctx = SyncContext {
             config: &provider.config,
             account_currency: &account_ccy,
@@ -701,6 +767,8 @@ impl SyncService {
             }
         }
 
+        // Where the cooldown's watermark comes from, and why only a *successful* sync is rate
+        // limited: this line is not reached by the `return Err` a failed fetch takes above.
         self.providers.update_last_synced(id).await?;
         // The transaction import that `imported`/`skipped` describe did succeed either way, so
         // both of these are `Ok` at the call site — what differs is what the row says happened.
@@ -711,9 +779,11 @@ impl SyncService {
             Some(detail) => (SyncOutcome::Disconnected, Some(detail)),
             None => (SyncOutcome::Ok, refused),
         };
-        self.providers
+        let sync = self
+            .providers
             .record_sync(id, imported, skipped, status, detail.as_deref())
-            .await
+            .await?;
+        Ok(SyncReport::fresh(sync))
     }
 
     /// Record a fetch that produced nothing, and decide whether it was a failure at all.
@@ -727,7 +797,7 @@ impl SyncService {
     ///
     /// Neither path advances the watermark (`update_last_synced` is not called), so the next
     /// poll asks for exactly the window this one never read.
-    async fn record_failed_fetch(&self, id: i64, e: &anyhow::Error) -> AppResult<ProviderSync> {
+    async fn record_failed_fetch(&self, id: i64, e: &anyhow::Error) -> AppResult<SyncReport> {
         // One bounded rendering, used for both the durable row and the 422 — see `sync_detail`
         // for what an unbounded one would leak.
         let detail = sync_detail(e);
@@ -737,10 +807,13 @@ impl SyncService {
                 detail = %detail,
                 "the upstream no longer has this account; recording the connection as disconnected"
             );
-            return self
-                .providers
-                .record_sync(id, 0, 0, SyncOutcome::Disconnected, Some(&detail))
-                .await;
+            // `fresh`: this request did reach the upstream — that is *how* it found out the
+            // account was gone. Only the cooldown replays a previous run.
+            return Ok(SyncReport::fresh(
+                self.providers
+                    .record_sync(id, 0, 0, SyncOutcome::Disconnected, Some(&detail))
+                    .await?,
+            ));
         }
         let _ = self
             .providers
@@ -776,6 +849,10 @@ impl SyncService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Only the fake `ProviderRepo` below still names the row type; the service itself now
+    // answers with `SyncReport`.
+    use sure_core::ProviderSync;
 
     /// Stands in for any provider error whose `Display` appends the payload it choked on —
     /// `akahu-client`'s deser error did exactly this before 0.3, and nothing stops the next
@@ -894,6 +971,10 @@ mod tests {
         recorded: Mutex<Vec<RecordedSync>>,
         /// The `providers` rows `adopt_account_numbers` walks. Empty for every sync test.
         rows: Vec<Provider>,
+        /// The newest row `record_sync` produced, which is what `latest_sync` hands back — so
+        /// the cooldown test replays a run this fake actually recorded rather than one it
+        /// invented.
+        last: Mutex<Option<ProviderSync>>,
     }
 
     #[async_trait]
@@ -921,6 +1002,9 @@ mod tests {
         }
         async fn list_syncs(&self, _provider_id: i64) -> AppResult<Vec<ProviderSync>> {
             unreachable!("SyncService never lists sync history")
+        }
+        async fn latest_sync(&self, _provider_id: i64) -> AppResult<Option<ProviderSync>> {
+            Ok(self.last.lock().expect("test mutex").clone())
         }
         async fn account_currency(&self, _account_id: i64) -> AppResult<String> {
             Ok(self.account_currency.clone())
@@ -954,7 +1038,7 @@ mod tests {
                     status,
                     detail: detail.clone(),
                 });
-            Ok(ProviderSync {
+            let sync = ProviderSync {
                 id: 1,
                 provider_id,
                 imported,
@@ -962,7 +1046,9 @@ mod tests {
                 status,
                 detail,
                 created_at: format!("{TODAY}T00:00:00.000Z"),
-            })
+            };
+            *self.last.lock().expect("test mutex") = Some(sync.clone());
+            Ok(sync)
         }
     }
 
@@ -1326,6 +1412,7 @@ mod tests {
                 account_currency: account_ccy.to_string(),
                 recorded: Mutex::new(Vec::new()),
                 rows: Vec::new(),
+                last: Mutex::new(None),
             });
             let accounts = Arc::new(FakeAccounts {
                 kind,
@@ -1349,6 +1436,10 @@ mod tests {
                 registry,
                 Arc::new(FixedClock(today())),
                 categorize.clone(),
+                // Off: every test in this file drives one sync at a time and is about what that
+                // sync does. `the_cooldown_*` tests below construct their own service with a
+                // real window.
+                Duration::ZERO,
             ));
             Self {
                 service,
@@ -1441,6 +1532,7 @@ mod tests {
             account_currency: "NZD".to_string(),
             recorded: Mutex::new(Vec::new()),
             rows,
+            last: Mutex::new(None),
         });
         let accounts = Arc::new(FakeAccounts::default());
         let registry = Arc::new(FakeRegistry {
@@ -1459,6 +1551,7 @@ mod tests {
             registry,
             Arc::new(FixedClock(today())),
             Arc::new(FakeCategorize::default()),
+            Duration::ZERO,
         ));
         (service, accounts)
     }
@@ -1969,6 +2062,7 @@ mod tests {
             }),
             Arc::new(FixedClock(today())),
             categorize.clone(),
+            Duration::ZERO,
         ));
 
         let sync = h

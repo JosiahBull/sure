@@ -43,7 +43,7 @@ use partly_proxy_lib::{
     StubbedResponse, UpstreamTarget, shared,
 };
 use sure_app::ports::{ExchangeRateProvider, ExchangeRateQuote};
-use sure_providers::{Endpoint, FrankfurterProvider};
+use sure_providers::{Endpoint, FrankfurterProvider, Pacing};
 use sure_testproxy::{CanonicaliseQuery, ClusterConfig, RedactCredentials, Started, Upstream};
 
 mod common;
@@ -113,6 +113,8 @@ fn frankfurter_from(started: &Started) -> FrankfurterProvider {
         .expect("the cluster reports a Frankfurter endpoint");
     FrankfurterProvider::with_endpoint(
         Endpoint::parse(url).expect("a loopback proxy URL is plaintext-legal"),
+        // Not what this file is about, and every request here is to a proxy on this machine.
+        Pacing::unpaced(),
     )
 }
 
@@ -121,6 +123,7 @@ fn frankfurter_at(addr: SocketAddr) -> FrankfurterProvider {
     let url = format!("http://{addr}{}", Upstream::Frankfurter.path_prefix());
     FrankfurterProvider::with_endpoint(
         Endpoint::parse(&url).expect("a loopback proxy URL is plaintext-legal"),
+        Pacing::unpaced(),
     )
 }
 

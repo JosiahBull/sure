@@ -290,6 +290,153 @@ test("a sync that fails hands its slot back, so the next one is accepted rather 
   }
 });
 
+/**
+ * A second sync straight after a successful one is answered from the record, not from Akahu.
+ *
+ * The gap the single-flight guard above cannot close. It refuses a *concurrent* second sync;
+ * it has nothing to say about a sequential one, because by then the first has finished and
+ * given its slot back. Twenty clicks of "Sync now" were therefore twenty complete paginated
+ * sweeps of somebody else's API — against limits that are per *household*, so the cost lands
+ * on the one person whose data it is — and not one of them could find anything the first did
+ * not: Akahu refreshes an official bank connection a few times a day.
+ *
+ * `fresh: false` is what makes this safe to show. Returning the previous run unmarked would
+ * have the UI report "Imported 1" a second time for an import that never happened.
+ */
+test("a second sync inside the cooldown replays the last run instead of sweeping again", async ({
+  testproxy,
+}) => {
+  // One sweep's worth of stubs, and `times: 1` on each: a second sweep would find nothing left
+  // to answer it and take the proxy's replay-miss 503, so a lost cooldown fails here loudly
+  // rather than by an off-by-one in a count.
+  await stubOneSync(testproxy, SPENDING, ["trans_9001"]);
+
+  const server = await startServer({ ...AKAHU_TOKENS, PROVIDER_SYNC_COOLDOWN_SECS: "60" });
+  try {
+    const api = createSureClient(server.baseURL);
+    const provider = await akahuProvider(api, "Everyday", SPENDING);
+
+    const first = await sync(api, provider.id);
+    expect(first.response.status, JSON.stringify(first.error)).toBe(200);
+    expect(first.data).toMatchObject({ status: "ok", imported: 1, fresh: true });
+
+    // Sequential, not concurrent — awaited above, so the slot is already back.
+    const replayed = await sync(api, provider.id);
+    expect(replayed.response.status, "a cooled-down sync is not an error").toBe(200);
+    expect(replayed.data).toMatchObject({ status: "ok", imported: 1, fresh: false });
+    // The *same row*, not a new one that happens to carry the same counts.
+    expect(replayed.data!.id).toBe(first.data!.id);
+
+    // One run on the record: a replay is not a sync, so it must not appear in the history as
+    // one. A user reading this list would otherwise see runs that never happened.
+    const recorded = await syncs(api, provider.id);
+    expect(recorded.data!.length).toBe(1);
+
+    // And the harm the guard exists to prevent, counted where it is actually paid.
+    const swept = await testproxy.assertCount(
+      { upstream: "akahu", path_pattern: `^/v1/accounts/${SPENDING}/transactions$` },
+      1,
+    );
+    expect(swept.passed, swept.message).toBe(true);
+  } finally {
+    server.stop();
+  }
+});
+
+/**
+ * …and once it expires, the next sync really does go out.
+ *
+ * The half that a cooldown test is worthless without: a guard that never lets go is
+ * indistinguishable from one that works, right up until someone's bank feed has been frozen
+ * since the process started. This is also the reason the window is configuration rather than a
+ * constant — at the production 60s this test would be a minute of wall clock, and a suite pays
+ * that on every run forever.
+ */
+test("once the cooldown expires the next sync reaches the upstream again", async ({ testproxy }) => {
+  const COOLDOWN_SECS = 1;
+  // Two sweeps' worth, each stub firing once. The second sync can only succeed by reaching the
+  // upstream, and can only reach it if the window really elapsed.
+  await stubOneSync(testproxy, SPENDING, ["trans_9001"]);
+  await stubOneSync(testproxy, SPENDING, ["trans_9002"]);
+
+  const server = await startServer({
+    ...AKAHU_TOKENS,
+    PROVIDER_SYNC_COOLDOWN_SECS: String(COOLDOWN_SECS),
+  });
+  try {
+    const api = createSureClient(server.baseURL);
+    const provider = await akahuProvider(api, "Everyday", SPENDING);
+
+    const first = await sync(api, provider.id);
+    expect(first.data).toMatchObject({ status: "ok", imported: 1, fresh: true });
+
+    // Comfortably past the window, and bounded by it: the cooldown is measured against
+    // `providers.last_synced_at` on the server's own clock, so there is nothing here to race.
+    await new Promise((r) => setTimeout(r, (COOLDOWN_SECS + 1) * 1000));
+
+    const second = await sync(api, provider.id);
+    expect(second.response.status, JSON.stringify(second.error)).toBe(200);
+    expect(second.data, "the expired cooldown still refused a real sync").toMatchObject({
+      fresh: true,
+      status: "ok",
+      imported: 1,
+    });
+    expect(second.data!.id).not.toBe(first.data!.id);
+
+    const recorded = await syncs(api, provider.id);
+    expect(recorded.data!.length).toBe(2);
+
+    const swept = await testproxy.assertCount(
+      { upstream: "akahu", path_pattern: `^/v1/accounts/${SPENDING}/transactions$` },
+      2,
+    );
+    expect(swept.passed, swept.message).toBe(true);
+  } finally {
+    server.stop();
+  }
+});
+
+/**
+ * A *failed* sync is not rate limited: the retry after an outage works immediately.
+ *
+ * The cooldown is keyed on `providers.last_synced_at`, which `sync_provider` only advances on
+ * the success path — so this falls out of where one line sits rather than from a second check,
+ * and that is exactly why it is worth pinning. Move `update_last_synced` onto the error path
+ * and every transient upstream failure would lock the button for a minute, at the one moment a
+ * user is most likely to press it again.
+ */
+test("a failed sync is not rate limited, so the retry after an outage runs immediately", async ({
+  testproxy,
+}) => {
+  await testproxy.stub({
+    upstream: "akahu",
+    method: "GET",
+    path_pattern: `^/v1/accounts/${SPENDING}/transactions$`,
+    status: 500,
+    response_headers: { "content-type": "application/json" },
+    body: JSON.stringify({ success: false, message: "the upstream is having a bad day" }),
+    times: 1,
+  });
+
+  const server = await startServer({ ...AKAHU_TOKENS, PROVIDER_SYNC_COOLDOWN_SECS: "3600" });
+  try {
+    const api = createSureClient(server.baseURL);
+    const provider = await akahuProvider(api, "Everyday", SPENDING);
+
+    const failed = await sync(api, provider.id);
+    expect(failed.response.status, "an upstream 500 is a failed sync").toBe(422);
+
+    // An hour-long cooldown, and this still has to go out — because the failure above never
+    // moved the watermark.
+    await stubOneSync(testproxy, SPENDING, ["trans_9001"]);
+    const retried = await sync(api, provider.id);
+    expect(retried.response.status, "a failed sync must not start the cooldown").toBe(200);
+    expect(retried.data).toMatchObject({ status: "ok", imported: 1, fresh: true });
+  } finally {
+    server.stop();
+  }
+});
+
 test("SIGTERM with a sync stalled on its upstream still drains cleanly", async ({ testproxy }) => {
   // The case `sure_providers::http`'s `REQUEST_TIMEOUT` comment is about: 6s, chosen to stay
   // "well under the 10s drain grace, so the scheduler always finishes the task it is on".

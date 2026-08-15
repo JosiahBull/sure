@@ -4,33 +4,50 @@
 //! library wraps). It's undocumented and could change without notice, same caveat as
 //! depending on Frankfurter for exchange rates.
 
-use std::time::{Duration, Instant};
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
 use serde::Deserialize;
-use tokio::sync::Mutex;
 
 use sure_app::ports::{StockPriceProvider, StockPriceQuote};
 
-use crate::http::Endpoint;
+use crate::http::{Endpoint, Pacing, Throttle};
 
 /// The real endpoint. `pub` because the composition root owns the decision of where this
 /// provider points (it is the only place configuration is read) and needs a default to fall
 /// back to.
 pub const DEFAULT_BASE_URL: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
 
-/// Yahoo has no published rate limit for this endpoint, but hammering it risks a
-/// temporary IP block — this keeps consecutive requests from this provider instance
-/// spaced at least this far apart, regardless of how many callers share it.
-const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(500);
-
 pub struct YahooFinanceProvider {
     endpoint: Endpoint,
     client: reqwest::Client,
-    last_request: Mutex<Option<Instant>>,
+    /// Yahoo publishes no rate limit for this endpoint, but hammering it risks a temporary IP
+    /// block: [`Pacing::min_request_interval`] spaces consecutive requests from this instance
+    /// apart however many callers share it, and a `429` arms a stand-down window through
+    /// [`Throttle::note_refusal`].
+    throttle: Throttle,
+    /// Symbols Yahoo has answered `404` for, and when that answer stops being reused.
+    ///
+    /// The loop this closes: a delisted or mistyped ticker 404s → this adapter reports it as
+    /// "no prices" (an empty vec, see [`StockPriceProvider::fetch_daily_prices`]) → nothing
+    /// lands in the `stock_prices` table → `sure_app::stock_prices::price_at` misses again next
+    /// time and asks again. One dead symbol in an account therefore reached Yahoo on *every*
+    /// render of the page showing it, forever; the throttle spaced those requests out but did
+    /// not remove them.
+    ///
+    /// Populated **only** from a `404`, never from a `200` carrying no closes. A 404 is Yahoo
+    /// saying the symbol does not exist, which is true of every date range; an empty 200 says
+    /// only that this *window* was empty, and memoising that would suppress a later valid
+    /// request for a range the symbol does cover (an IPO asked about before it listed).
+    ///
+    /// A `std::sync::Mutex`, not tokio's: every critical section is one map lookup with no
+    /// `.await` in it.
+    absent: Mutex<HashMap<String, Instant>>,
 }
 
 impl YahooFinanceProvider {
@@ -45,32 +62,41 @@ impl YahooFinanceProvider {
     /// test binds on loopback, which is the only way the fetch path below is exercisable at all
     /// without reaching an undocumented endpoint that could change without notice.
     ///
-    /// The throttle is per-instance: [`MIN_REQUEST_INTERVAL`] is about not getting this app's
-    /// IP blocked, so it belongs to whichever upstream the instance talks to. A test that pays
-    /// 500ms between two requests to its own proxy is paying it in exactly the place production
-    /// does, which is the point of not special-casing it.
-    pub fn with_endpoint(endpoint: Endpoint) -> Self {
+    /// The throttle is per-instance, and [`Pacing`] is injected for the same reason
+    /// [`Endpoint`] is: not getting this app's IP blocked is a property of whichever upstream
+    /// the instance talks to, and how hard to try is the composition root's decision to make.
+    /// A test that pays the interval between two requests to its own proxy is paying it in
+    /// exactly the place production does, which is the point of not special-casing it —
+    /// `Pacing::unpaced()` is there for the tests that are about something else.
+    pub fn with_endpoint(endpoint: Endpoint, pacing: Pacing) -> Self {
         let client = crate::http::client(&endpoint);
         Self {
             endpoint,
             client,
-            last_request: Mutex::new(None),
+            throttle: Throttle::new(pacing),
+            absent: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Block until at least [`MIN_REQUEST_INTERVAL`] has elapsed since the last call
-    /// returned from this method. Holding the lock across the sleep serializes
-    /// concurrent callers (cron + on-demand lookups sharing one `Arc<Self>|`) instead of
-    /// letting them all wake up and fire at once.
-    async fn throttle(&self) {
-        let mut last_request = self.last_request.lock().await;
-        if let Some(last) = *last_request {
-            let elapsed = last.elapsed();
-            if elapsed < MIN_REQUEST_INTERVAL {
-                tokio::time::sleep(MIN_REQUEST_INTERVAL - elapsed).await;
-            }
-        }
-        *last_request = Some(Instant::now());
+    /// Whether Yahoo's `404` for `symbol` is still worth believing.
+    ///
+    /// Sweeps the expired entries while it is in there, which is all the bounding this map
+    /// needs: its keys are the distinct symbols one household holds, so it is tens of entries
+    /// even before anything expires — unlike `sure-api`'s per-IP bucket map, which faces the
+    /// open internet and needs a real sweep threshold and ceiling.
+    fn is_known_absent(&self, symbol: &str) -> bool {
+        let now = Instant::now();
+        let mut absent = self.absent.lock().unwrap_or_else(PoisonError::into_inner);
+        absent.retain(|_, expires| *expires > now);
+        absent.contains_key(symbol)
+    }
+
+    fn remember_absent(&self, symbol: &str) {
+        let expires = Instant::now() + self.throttle.pacing().discovery_ttl;
+        self.absent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(symbol.to_string(), expires);
     }
 }
 
@@ -147,6 +173,16 @@ impl StockPriceProvider for YahooFinanceProvider {
         to: NaiveDate,
     ) -> anyhow::Result<Vec<StockPriceQuote>> {
         let symbol = symbol_for(ticker, exchange);
+
+        // Asked and answered, inside the TTL: Yahoo has already said this symbol does not
+        // exist, and saying it again costs a request against an endpoint that answers a burst
+        // with an IP block. Same empty vec the 404 below returns, so no caller can tell the
+        // difference between the memo and the request it replaces.
+        if self.is_known_absent(&symbol) {
+            tracing::debug!(%symbol, "no price data (remembered from an earlier 404)");
+            return Ok(Vec::new());
+        }
+
         // Pad the requested range by a day on each side: Yahoo buckets timestamps by
         // the exchange's local trading day, so a UTC-midnight boundary can otherwise
         // clip the first or last day depending on which side of UTC the exchange sits.
@@ -157,13 +193,21 @@ impl StockPriceProvider for YahooFinanceProvider {
             self.endpoint.url()
         );
 
-        self.throttle().await;
+        self.throttle.acquire("Yahoo Finance").await?;
         let response = self
             .client
             .get(&url)
             .header("User-Agent", "Mozilla/5.0")
             .send()
             .await?;
+
+        // Before `error_for_status`, which would flatten a 429 into the same generic status
+        // error as any other 4xx and lose the one thing that distinguishes it: that trying
+        // again shortly makes it worse. Arms the cooldown, so the *next* caller is refused
+        // here rather than adding to the burst that caused this.
+        if let Some(refused) = self.throttle.note_refusal(&response).await {
+            return Err(refused);
+        }
 
         // A delisted stock (e.g. RBD after its 2019 takeover) or an expired instrument
         // (e.g. a lapsed "…RG" rights issue) comes back as 404 with a "symbol may be
@@ -173,6 +217,7 @@ impl StockPriceProvider for YahooFinanceProvider {
         // error that the backfill/poller then logs as a warning for every delisted ticker.
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             tracing::debug!(%symbol, "no price data (delisted, expired, or unknown symbol)");
+            self.remember_absent(&symbol);
             return Ok(Vec::new());
         }
 

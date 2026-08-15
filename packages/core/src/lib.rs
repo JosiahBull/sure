@@ -64,7 +64,7 @@ pub use people::{
 };
 pub use providers::{
     LinkGroupMember, LinkProviderAccount, LinkProviderGroup, Provider, ProviderAccount,
-    ProviderKind, ProviderSync, SaveProvider, SyncOutcome, SyncRequest,
+    ProviderKind, ProviderSync, SaveProvider, SyncOutcome, SyncReport, SyncRequest,
 };
 pub use rules::{
     PreviewMatch, PreviewRequest, Rule, RuleApplicationDetail, RulePreview, RuleRun, RuleRunKind,

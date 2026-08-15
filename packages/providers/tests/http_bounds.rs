@@ -36,7 +36,7 @@ use partly_proxy_lib::{
     ClusterHandle, Command, ProxyClusterBuilder, RecordedExchange, RequestMatcher, StubbedResponse,
 };
 use sure_app::ports::ExchangeRateProvider;
-use sure_providers::{Endpoint, FrankfurterProvider};
+use sure_providers::{Endpoint, FrankfurterProvider, Pacing};
 
 mod common;
 use common::ephemeral;
@@ -52,6 +52,7 @@ fn frankfurter_at(addr: SocketAddr) -> FrankfurterProvider {
     FrankfurterProvider::with_endpoint(
         Endpoint::parse(&format!("http://{addr}"))
             .expect("a loopback proxy URL is plaintext-legal"),
+        Pacing::unpaced(),
     )
 }
 

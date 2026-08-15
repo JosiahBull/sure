@@ -177,6 +177,57 @@ pub struct ProviderSync {
     pub created_at: String,
 }
 
+/// What `POST /providers/{id}/sync` answers: a run, and whether it is one this request caused.
+///
+/// A separate type from [`ProviderSync`] rather than a `fresh` field on it, because the two are
+/// answers to different questions. `ProviderSync` is a `provider_syncs` row and is also what
+/// `GET /providers/{id}/syncs` lists; "did *your* request cause this?" is meaningless for a row
+/// in a history and would have to be filled in with a lie there.
+///
+/// The distinction exists because a sync is rate-limited (`sure_app::sync`'s cooldown): inside
+/// the window the upstream is not contacted and the previous run is returned instead. Without
+/// the flag, the client cannot tell that apart from a real sync and shows an old run's counts
+/// as if they had just happened — "Imported 5" a second time when nothing was imported at all.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SyncReport {
+    pub id: i64,
+    pub provider_id: i64,
+    pub imported: i64,
+    pub skipped: i64,
+    pub status: SyncOutcome,
+    pub detail: Option<String>,
+    pub created_at: String,
+    /// `true` when this request reached the upstream; `false` when the cooldown was in force
+    /// and this is the previous run replayed. Always `true` for payload-based providers (a CSV
+    /// sync parses what the request carried and contacts nobody).
+    pub fresh: bool,
+}
+
+impl SyncReport {
+    /// A run this request caused.
+    pub fn fresh(sync: ProviderSync) -> Self {
+        Self::new(sync, true)
+    }
+
+    /// A previous run, returned because the cooldown refused to start another.
+    pub fn replayed(sync: ProviderSync) -> Self {
+        Self::new(sync, false)
+    }
+
+    fn new(sync: ProviderSync, fresh: bool) -> Self {
+        Self {
+            id: sync.id,
+            provider_id: sync.provider_id,
+            imported: sync.imported,
+            skipped: sync.skipped,
+            status: sync.status,
+            detail: sync.detail,
+            created_at: sync.created_at,
+            fresh,
+        }
+    }
+}
+
 /// An upstream account surfaced by a provider that supports account discovery
 /// (see `sure_app::ports::TransactionProvider::list_accounts`) — not yet linked to a
 /// local `Account`. Surfaced by `GET /provider-kinds/{kind}/accounts`. Lives here, with
