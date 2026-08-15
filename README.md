@@ -111,6 +111,7 @@ which the server loads on startup unless `SURE_ENV_FILE` says otherwise. See
 | `BIND_ADDR` | `127.0.0.1:8080` | Address to listen on |
 | `WEB_DIR` | *(unset)* | Serve the SPA from this directory |
 | `RUST_LOG` | `info` | Log filter |
+| `SURE_COLOR` | `never` | ANSI colour in the logs — `never`/`auto`/`always`. Off by default because `docker logs`, `journalctl` and the like don't interpret the escapes; `auto` colours only when stdout is a terminal |
 | `BACKGROUND_TASKS` | on | Set to `off` to stop the scheduler (exchange rates, provider polling, stock prices, transfer linking) |
 | `SURE_MCP` | `off` | Ceiling on the MCP endpoint at `/mcp` — `off`/`read`/`write`, with the working mode chosen in the app ([docs/MCP.md](docs/MCP.md)) |
 | `SURE_SANDBOX` | `best-effort` | Set to `enforce` to refuse to start if the kernel can't apply the whole sandbox |

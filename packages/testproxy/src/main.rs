@@ -15,12 +15,13 @@
 //! | `SURE_TESTPROXY_SNAPSHOT_DIR` | directory of `<upstream>.ndjson` files | none — stubs only |
 //! | `SURE_TESTPROXY_CONTROL_BIND` | `SocketAddr` for the control plane | `127.0.0.1:0` |
 //! | `RUST_LOG` | tracing filter, written to **stderr** | `warn` |
+//! | `SURE_COLOR` | `never` \| `auto` \| `always` — ANSI in those log lines | `never` |
 //!
 //! Every default is the one that cannot reach the internet, and `record` without a snapshot
 //! directory persists nothing — see [`sure_testproxy::ClusterConfig`].
 
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -31,6 +32,7 @@ use tokio::io::AsyncReadExt;
 const MODE_ENV: &str = "SURE_TESTPROXY_MODE";
 const SNAPSHOT_DIR_ENV: &str = "SURE_TESTPROXY_SNAPSHOT_DIR";
 const CONTROL_BIND_ENV: &str = "SURE_TESTPROXY_CONTROL_BIND";
+const COLOR_ENV: &str = "SURE_COLOR";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -79,13 +81,37 @@ async fn main() -> anyhow::Result<()> {
 ///
 /// `warn` by default so a passing run is silent and a failing one is not — the replay-miss line
 /// in [`sure_testproxy::start`] is WARN precisely so it survives this filter.
+///
+/// Plain text unless [`COLOR_ENV`] asks otherwise, matching `sure-api` — a failing run's proxy
+/// output is read out of a Playwright report or a CI pane, neither of which is a terminal.
 fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_ansi(ansi_from_env())
         .init();
+}
+
+/// [`COLOR_ENV`]: `never` (the default) | `auto`, which colours only when stderr is a terminal
+/// | `always`. The same three `sure_api::telemetry::ColorChoice` parses, restated here rather
+/// than shared: this crate deliberately depends on nothing else in the workspace, because
+/// `sure-providers` dev-depends on *it*, and one match is a cheaper duplicate than that edge
+/// would be.
+///
+/// Silent on a typo, where `sure-api` warns. There is no subscriber to warn through yet, and
+/// unlike the server this binary is only ever run by a test harness — one that parses stdout
+/// and would rather have plain stderr than a diagnosis.
+fn ansi_from_env() -> bool {
+    let raw = std::env::var(COLOR_ENV).unwrap_or_default();
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" => std::io::stderr().is_terminal(),
+        "always" | "on" | "1" | "true" | "yes" | "force" => true,
+        // A genuinely open string, not a closed set: unset, blank, `never` and its spellings,
+        // and anything mistyped all land here, and they all mean the same plain text.
+        _ => false,
+    }
 }
 
 /// Read [`MODE_ENV`], refusing anything that is not one of the two spellings.
