@@ -7,7 +7,7 @@ use anyhow::Context;
 use sure_api::config::{ApiConfig, DEFAULT_CORS_ORIGINS, Limits};
 use sure_appbase::LifecycleConfig;
 use sure_mcp::config::{DEFAULT_MAX_ROWS, McpConfig, McpMode};
-use sure_providers::Endpoint;
+use sure_providers::{Endpoint, Pacing};
 
 use crate::http::HttpConfig;
 use crate::sandbox::{SandboxConfig, SandboxMode};
@@ -41,6 +41,8 @@ pub struct Config {
     pub background_tasks: bool,
     /// Where the three network-facing provider adapters point.
     pub provider_endpoints: ProviderEndpoints,
+    /// How hard this process is allowed to lean on those three upstreams.
+    pub provider_limits: ProviderLimits,
     /// The Landlock self-sandbox: how hard to insist on it, and anything to allow beyond
     /// what the server needs on its own.
     pub sandbox: SandboxConfig,
@@ -73,6 +75,48 @@ pub struct ProviderEndpoints {
     /// `AKAHU_BASE_URL` — NZ bank feeds. The tokens that go with it are not part of `Config`;
     /// see the note on [`Config`].
     pub akahu: Endpoint,
+}
+
+/// How much traffic this process may send a third party, and how long it remembers what one
+/// said.
+///
+/// Configuration for the same reason [`ProviderEndpoints`] is, plus one of its own. The
+/// adapters read nothing themselves (`docs/ARCHITECTURE.md`), so every number they run on has
+/// to arrive from here; and these particular numbers are *windows*, which makes them the one
+/// kind of setting a test cannot work around. "The cooldown expires and the next sync really
+/// reaches the upstream" is a minute of wall-clock at the production value and two seconds at
+/// a configured one, which is the difference between a suite that checks it and a suite that
+/// does not.
+///
+/// The defaults are the production values, so an install that sets none of these behaves as
+/// intended — see [`Pacing::default`] and [`DEFAULT_SYNC_COOLDOWN`].
+#[derive(Clone, Copy, Debug)]
+pub struct ProviderLimits {
+    /// `PROVIDER_MIN_REQUEST_INTERVAL_MS`, `PROVIDER_MAX_BACKOFF_SECS`,
+    /// `PROVIDER_DISCOVERY_TTL_SECS` — handed to all three adapters.
+    pub pacing: Pacing,
+    /// `PROVIDER_SYNC_COOLDOWN_SECS` — how soon after a successful sync another one may reach
+    /// the upstream. Handed to `SyncService`, so it covers the manual route, the sync after a
+    /// link, and the 6-hourly poll alike.
+    pub sync_cooldown: Duration,
+}
+
+/// A minute between real syncs of one provider.
+///
+/// Chosen against what is upstream rather than against how fast a person can click: Akahu
+/// refreshes an official bank connection a few times a day, so two sweeps a minute apart see
+/// byte-identical data and the second one buys nothing but a per-household rate limit. Short
+/// enough that "sync, notice something missing, sync again" still works within the minute the
+/// user would spend looking.
+const DEFAULT_SYNC_COOLDOWN: Duration = Duration::from_secs(60);
+
+impl Default for ProviderLimits {
+    fn default() -> Self {
+        Self {
+            pacing: Pacing::default(),
+            sync_cooldown: DEFAULT_SYNC_COOLDOWN,
+        }
+    }
 }
 
 /// Fold a `.env` file into the process environment, before anything reads it, and return
@@ -193,6 +237,31 @@ impl Config {
             akahu: endpoint("AKAHU_BASE_URL", sure_providers::akahu::DEFAULT_BASE_URL)?,
         };
 
+        // Warn-and-continue, like every other limit in this file and unlike the endpoints
+        // above: a mistyped interval still points the same requests at the same host, where a
+        // mistyped URL points them somewhere else entirely.
+        let provider_defaults = ProviderLimits::default();
+        let provider_limits = ProviderLimits {
+            pacing: Pacing {
+                min_request_interval: millis(
+                    "PROVIDER_MIN_REQUEST_INTERVAL_MS",
+                    provider_defaults.pacing.min_request_interval,
+                ),
+                max_backoff: secs(
+                    "PROVIDER_MAX_BACKOFF_SECS",
+                    provider_defaults.pacing.max_backoff,
+                ),
+                discovery_ttl: secs(
+                    "PROVIDER_DISCOVERY_TTL_SECS",
+                    provider_defaults.pacing.discovery_ttl,
+                ),
+            },
+            sync_cooldown: secs(
+                "PROVIDER_SYNC_COOLDOWN_SECS",
+                provider_defaults.sync_cooldown,
+            ),
+        };
+
         let lifecycle_defaults = LifecycleConfig::default();
         let lifecycle = LifecycleConfig {
             // Zero by default. Nothing routes to this process — it is a single binary a
@@ -218,6 +287,7 @@ impl Config {
             http,
             background_tasks: flag("BACKGROUND_TASKS", true),
             provider_endpoints,
+            provider_limits,
             sandbox,
             lifecycle,
             mcp,
@@ -262,6 +332,12 @@ fn parsed<T: FromStr>(name: &str, default: T) -> T {
 
 fn secs(name: &str, default: Duration) -> Duration {
     Duration::from_secs(parsed(name, default.as_secs()))
+}
+
+/// The same, for a window short enough that whole seconds are the wrong unit — the pacing
+/// between two requests to one host is 500ms, and [`secs`] cannot express it.
+fn millis(name: &str, default: Duration) -> Duration {
+    Duration::from_millis(parsed(name, default.as_millis() as u64))
 }
 
 /// Read `name` as a provider base URL, falling back to the adapter's own production const

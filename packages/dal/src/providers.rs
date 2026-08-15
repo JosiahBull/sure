@@ -595,9 +595,17 @@ async fn latest_syncs(db: &Db) -> AppResult<HashMap<i64, ProviderSync>> {
     .collect()
 }
 
-/// The newest sync attempt for one provider, or `None` if it has never been tried.
+/// The most recent recorded run of one provider, or `None` if it has never been tried.
+///
+/// Two callers, wanting the same row for different reasons: the sync cooldown, on every
+/// `POST /providers/{id}/sync`, and [`get`]/[`update`], which hang it off the returned
+/// `Provider` so a client can tell a connection that works from one that merely exists.
+///
+/// `LIMIT 1` rather than taking the head of [`list_syncs`], which is the same query without the
+/// limit: reading a household's entire sync history to discard all but the newest is work that
+/// grows with every poll, forever. [`latest_syncs`] is the same reasoning across the whole list.
 #[tracing::instrument(level = "debug", skip_all)]
-async fn latest_sync(db: &Db, provider_id: i64) -> AppResult<Option<ProviderSync>> {
+pub async fn latest_sync(db: &Db, provider_id: i64) -> AppResult<Option<ProviderSync>> {
     sqlx::query_as!(
         ProviderSyncRow,
         r#"SELECT id AS "id!", provider_id, imported, skipped, status, detail, created_at

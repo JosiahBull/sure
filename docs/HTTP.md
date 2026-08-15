@@ -205,6 +205,40 @@ time out together, having each held a connection and a database handle on the wa
 Loopback is exempt from the rate limit by default: the same host runs `pnpm seed`, ad-hoc
 `curl`, and the e2e suite.
 
+### Outbound, per upstream ([`providers/src/http.rs`](../packages/providers/src/http.rs))
+
+The guards above bound what reaches *this* server. These bound what this server sends someone
+else — Akahu, Yahoo Finance and Frankfurter — which is a limit somebody else enforces, and
+enforces on the *household* rather than on the app.
+
+| Guard | Default | Env |
+| --- | --- | --- |
+| Gap between two requests to one host | 500ms | `PROVIDER_MIN_REQUEST_INTERVAL_MS` |
+| Stand-down after a `429` with no `Retry-After` | 60s | — (`DEFAULT_BACKOFF`) |
+| ↳ longest `Retry-After` honoured | 300s | `PROVIDER_MAX_BACKOFF_SECS` |
+| Reuse of an Akahu account listing / a Yahoo `404` | 60s | `PROVIDER_DISCOVERY_TTL_SECS` |
+| Gap between real syncs of one provider | 60s | `PROVIDER_SYNC_COOLDOWN_SECS` |
+
+Set any of them to `0` to turn that one off. All are parsed in
+[`server/src/config.rs`](../packages/server/src/config.rs) and injected: `sure-providers` reads
+no configuration of its own, the same way it does not choose its own base URL.
+
+The two mechanisms behave differently on purpose. **Pacing sleeps** — it is sub-second, so a
+caller that queues behind it still gets its answer. **A cooldown refuses**, because sleeping out
+a five-minute `Retry-After` inside a request would blow the 30s deadline above while holding an
+in-flight permit and doing nothing; the caller falls back to whatever it already has.
+
+`PROVIDER_SYNC_COOLDOWN_SECS` is the one with a visible API consequence. Inside the window,
+`POST /api/providers/{id}/sync` does not contact the upstream and answers `200` with the
+previous run and `fresh: false` — the response is a `SyncReport`, not a `ProviderSync`, and that
+flag is the difference. It keys off `providers.last_synced_at`, which only advances on success,
+so a *failed* sync can be retried immediately. Payload-based providers (CSV) are exempt
+entirely: they parse what the request carried and contact nobody.
+
+A `429` is the one status that is never just an error — retrying it immediately is what turns a
+temporary throttle into an IP block — so it is caught before `error_for_status` and arms the
+stand-down window for the whole process.
+
 ### Headers and CORS ([`api/src/security.rs`](../packages/api/src/security.rs))
 
 Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,

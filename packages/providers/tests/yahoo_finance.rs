@@ -40,7 +40,7 @@ use partly_proxy_lib::{
     SharedMiddleware, SharedStorage, StubbedResponse, UpstreamTarget, shared,
 };
 use sure_app::ports::{StockPriceProvider, StockPriceQuote};
-use sure_providers::{Endpoint, YahooFinanceProvider};
+use sure_providers::{Endpoint, Pacing, YahooFinanceProvider};
 use sure_testproxy::{CanonicaliseQuery, Upstream};
 
 mod common;
@@ -79,6 +79,15 @@ const DELISTED_BODY: &str = r#"{"chart":{"result":null,"error":{"code":"Not Foun
 /// separating "no prices" from "the upstream broke" is the status, so a test that pinned the
 /// difference while also varying the body would not have pinned much.
 const BROKEN_UPSTREAM_BODY: &str = r#"{"chart":{"result":null,"error":{"code":"Internal Server Error","description":"Internal Server Error"}}}"#;
+
+/// A 429 from Yahoo, in the same `result: null` shape and for the same reason: what separates
+/// a refusal-on-volume from any other failure is the status, not the body.
+///
+/// Deliberately **no** `Retry-After` header on the stub that carries it — Yahoo's undocumented
+/// endpoint sends none, which is exactly the case `DEFAULT_BACKOFF` exists for. A test that
+/// supplied one would be checking the header parser (`http.rs`'s unit tests do that) instead of
+/// the path production takes.
+const RATE_LIMITED_BODY: &str = r#"{"chart":{"result":null,"error":{"code":"Too Many Requests","description":"Too Many Requests"}}}"#;
 
 /// Stub matcher for Meridian on the NZX, as `symbol_for("mel", Some("NZX"))` resolves it.
 ///
@@ -224,6 +233,9 @@ fn provider_at(cluster: &ClusterHandle) -> YahooFinanceProvider {
     let url = format!("http://{addr}{}", Upstream::YahooFinance.path_prefix());
     YahooFinanceProvider::with_endpoint(
         Endpoint::parse(&url).expect("a loopback http:// proxy URL is the one plaintext case"),
+        // The real numbers, not `Pacing::unpaced()`: two tests below measure the interval, and
+        // a fixture that quietly turned it off would let a regression in it pass here.
+        Pacing::default(),
     )
 }
 
@@ -258,6 +270,15 @@ fn expected_quotes() -> [&'static str; 3] {
 /// has the request line, so `timestamp - duration` is the arrival, and it is the closest thing
 /// the recorder can offer to "when did the adapter send this". Wall clock in the test would be
 /// measuring the test's own scheduling instead of what the upstream saw.
+/// How many requests actually reached the proxy.
+///
+/// The only way to tell a request that was answered from one that was never made: both the
+/// delisted-symbol memo and the rate-limit cooldown produce exactly what the request they
+/// replace would have produced, so the return value cannot distinguish them.
+async fn requests_seen(cluster: &ClusterHandle) -> usize {
+    cluster.recorder().exchanges().await.len()
+}
+
 async fn arrival_gaps_ms(cluster: &ClusterHandle) -> Vec<i64> {
     let mut arrivals: Vec<DateTime<Utc>> = cluster
         .recorder()
@@ -510,6 +531,99 @@ async fn concurrent_fetches_queue_behind_the_throttle_rather_than_firing_togethe
             index + 2,
         );
     }
+
+    cluster.shutdown().await.expect("stub cluster stops");
+}
+
+/// A symbol Yahoo has 404'd for is not asked about again inside the TTL.
+///
+/// The loop this closes is a request-per-page-render, forever. A 404 makes `fetch_daily_prices`
+/// return an empty vec, so `sure_app::stock_prices::price_at` writes nothing to the
+/// `stock_prices` cache, so its next call misses again and asks again — and an account holding
+/// one delisted or mistyped ticker reaches Yahoo every single time the page showing it renders.
+/// The throttle spaced those requests out; it never removed them, and this endpoint answers a
+/// sustained trickle with an IP block on the whole machine.
+///
+/// Counted at the proxy rather than inferred from the return value, because the two agree by
+/// construction: the memo returns the same empty vec the request would have. The count is the
+/// only thing that can tell them apart.
+#[tokio::test]
+async fn a_delisted_symbol_is_remembered_rather_than_asked_about_again() {
+    let cluster = stub_cluster().await;
+    stub_chart(&cluster, RBD_PATH, StatusCode::NOT_FOUND, DELISTED_BODY).await;
+
+    let provider = provider_at(&cluster);
+    let (from, to) = trading_week();
+    for attempt in 0..3 {
+        let quotes = provider
+            .fetch_daily_prices("rbd", Some("NZX"), from, to)
+            .await
+            .unwrap_or_else(|e| panic!("attempt {attempt} must report 'no prices', not fail: {e}"));
+        assert!(
+            quotes.is_empty(),
+            "attempt {attempt} came back with quotes for a delisted symbol: {quotes:?}",
+        );
+    }
+
+    assert_eq!(
+        requests_seen(&cluster).await,
+        1,
+        "three lookups of one delisted symbol must reach Yahoo once",
+    );
+
+    cluster.shutdown().await.expect("stub cluster stops");
+}
+
+/// A 429 stands the adapter down: the next call fails without a request going out.
+///
+/// The behaviour that distinguishes a rate limit from every other error, and the reason it
+/// cannot just be an error: retrying a 429 immediately is what turns a temporary throttle into
+/// the IP block. Before this, `error_for_status` flattened it into the same generic status
+/// error as any 4xx, and the next caller — a page render, a multi-symbol backfill loop — went
+/// straight back out.
+///
+/// The stub is `times: None`, so a second request would be *answered*, not refused. A count of
+/// one is therefore the adapter's own doing rather than a retired stub's 503.
+#[tokio::test]
+async fn a_rate_limit_stands_the_adapter_down_without_a_second_request() {
+    let cluster = stub_cluster().await;
+    stub_chart(
+        &cluster,
+        MEL_PATH,
+        StatusCode::TOO_MANY_REQUESTS,
+        RATE_LIMITED_BODY,
+    )
+    .await;
+
+    let provider = provider_at(&cluster);
+    let (from, to) = trading_week();
+
+    let refused = provider
+        .fetch_daily_prices("mel", Some("NZX"), from, to)
+        .await
+        .expect_err("a 429 is a failure, not an empty result")
+        .to_string();
+    assert!(
+        refused.contains("429"),
+        "the error has to name the status: {refused}",
+    );
+
+    // The one that matters: this call never reaches the wire at all.
+    let stood_down = provider
+        .fetch_daily_prices("mel", Some("NZX"), from, to)
+        .await
+        .expect_err("the cooldown is still in force")
+        .to_string();
+    assert!(
+        stood_down.contains("not sent"),
+        "the second call must be refused locally, not sent and refused again: {stood_down}",
+    );
+
+    assert_eq!(
+        requests_seen(&cluster).await,
+        1,
+        "the second lookup must not have reached Yahoo",
+    );
 
     cluster.shutdown().await.expect("stub cluster stops");
 }

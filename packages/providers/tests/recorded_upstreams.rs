@@ -39,7 +39,7 @@ use partly_proxy_lib::{
 };
 use rust_decimal::Decimal;
 use sure_app::ports::{ExchangeRateProvider, StockPriceProvider};
-use sure_providers::{Endpoint, FrankfurterProvider, YahooFinanceProvider};
+use sure_providers::{Endpoint, FrankfurterProvider, Pacing, YahooFinanceProvider};
 use sure_testproxy::{CanonicaliseQuery, RedactCredentials, Upstream};
 
 mod common;
@@ -133,7 +133,10 @@ fn endpoint(cluster: &ClusterHandle, upstream: Upstream) -> Endpoint {
 #[tokio::test]
 async fn the_real_frankfurter_table_parses_in_full() {
     let cluster = replaying(Upstream::Frankfurter).await;
-    let provider = FrankfurterProvider::with_endpoint(endpoint(&cluster, Upstream::Frankfurter));
+    let provider = FrankfurterProvider::with_endpoint(
+        endpoint(&cluster, Upstream::Frankfurter),
+        Pacing::unpaced(),
+    );
 
     let quotes = provider
         .fetch_rates("NZD")
@@ -196,7 +199,10 @@ async fn the_real_frankfurter_table_parses_in_full() {
 #[tokio::test]
 async fn the_real_yahoo_chart_parses_for_both_symbol_conventions() {
     let cluster = replaying(Upstream::YahooFinance).await;
-    let provider = YahooFinanceProvider::with_endpoint(endpoint(&cluster, Upstream::YahooFinance));
+    let provider = YahooFinanceProvider::with_endpoint(
+        endpoint(&cluster, Upstream::YahooFinance),
+        Pacing::unpaced(),
+    );
     let (from, to) = (day(WINDOW.0), day(WINDOW.1));
 
     for (ticker, exchange, currency) in [("VOO", "NYSE Arca", "USD"), ("MEL", "NZX", "NZD")] {
@@ -267,7 +273,10 @@ async fn the_real_yahoo_chart_parses_for_both_symbol_conventions() {
 #[tokio::test]
 async fn a_capture_answers_a_window_nowhere_near_the_one_it_was_taken_for() {
     let cluster = replaying(Upstream::YahooFinance).await;
-    let provider = YahooFinanceProvider::with_endpoint(endpoint(&cluster, Upstream::YahooFinance));
+    let provider = YahooFinanceProvider::with_endpoint(
+        endpoint(&cluster, Upstream::YahooFinance),
+        Pacing::unpaced(),
+    );
 
     let quotes = provider
         .fetch_daily_prices(
@@ -341,8 +350,10 @@ async fn record_the_public_upstreams() {
 
         match upstream {
             Upstream::Frankfurter => {
-                let provider =
-                    FrankfurterProvider::with_endpoint(endpoint(&cluster, Upstream::Frankfurter));
+                let provider = FrankfurterProvider::with_endpoint(
+                    endpoint(&cluster, Upstream::Frankfurter),
+                    Pacing::unpaced(),
+                );
                 let quotes = provider
                     .fetch_rates("NZD")
                     .await
@@ -350,8 +361,10 @@ async fn record_the_public_upstreams() {
                 println!("recorded {} rates from Frankfurter", quotes.len());
             }
             Upstream::YahooFinance => {
-                let provider =
-                    YahooFinanceProvider::with_endpoint(endpoint(&cluster, Upstream::YahooFinance));
+                let provider = YahooFinanceProvider::with_endpoint(
+                    endpoint(&cluster, Upstream::YahooFinance),
+                    Pacing::unpaced(),
+                );
                 let (from, to) = (day(WINDOW.0), day(WINDOW.1));
                 for (ticker, exchange) in [("VOO", "NYSE Arca"), ("MEL", "NZX")] {
                     let quotes = provider

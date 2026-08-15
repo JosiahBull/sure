@@ -241,6 +241,7 @@ use utoipa::OpenApi;
         crate::routes::providers::LinkGroupMember,
         crate::routes::providers::SyncRequest,
         crate::routes::providers::ProviderSync,
+        crate::routes::providers::SyncReport,
         crate::routes::providers::SyncOutcome,
         sure_core::ProviderKind,
         sure_core::ProviderAccount,

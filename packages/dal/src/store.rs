@@ -697,6 +697,10 @@ impl ProviderRepo for SqliteStore {
         crate::providers::link_group(&self.db, input).await
     }
 
+    async fn latest_sync(&self, provider_id: i64) -> AppResult<Option<ProviderSync>> {
+        crate::providers::latest_sync(&self.db, provider_id).await
+    }
+
     async fn list_syncs(&self, provider_id: i64) -> AppResult<Vec<ProviderSync>> {
         crate::providers::list_syncs(&self.db, provider_id).await
     }

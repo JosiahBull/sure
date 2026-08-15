@@ -59,6 +59,14 @@ pub async fn price_at(
     exchange: &str,
     as_of: NaiveDate,
 ) -> AppResult<Option<StockPrice>> {
+    // This read is also the "serve the last result when the upstream is unavailable" path, and
+    // it is worth saying so because it does not look like one: `get_at` matches
+    // `as_of <= requested` and takes the newest, so a cached close from any earlier day answers
+    // and the provider is never reached. A Yahoo outage — or the stand-down window a `429` arms
+    // in `sure_providers::http` — is therefore invisible to every position that has ever been
+    // priced. Only a position that has *never* been priced falls through to the fetch below,
+    // and for that one there is no last result to serve; the `AppError::Upstream` it takes is
+    // the honest answer rather than a missing one.
     if let Some(cached) = prices.get_at(ticker, exchange, &as_of.to_string()).await? {
         return Ok(Some(cached));
     }
@@ -76,6 +84,14 @@ pub async fn price_at(
     // `YahooFinanceProvider` already returns as an empty vec, and a quote in a currency the
     // price table will not take, which the loop below drops. Both mean "no price", and the
     // caller handles that as `None`.
+    //
+    // And deliberately *not* softened to `Ok(None)` when the cache is empty, which is the shape
+    // "serve the last result on an outage" reaches for and the wrong answer here. Nothing was
+    // read above, so there is no last result — swapping the 502 for `None` would only relabel
+    // "we could not find out" as "there is no such price", which reads identically to a
+    // delisted symbol on every screen and in every log, and takes with it the two guarantees
+    // `specs/stock-prices.spec.ts` pins: that an unstubbed upstream fails loudly rather than
+    // quietly, and that the failure it produces is scrubbed of the upstream's own words.
     let quotes = provider
         .fetch_daily_prices(ticker, exchange_hint, from, as_of)
         .await

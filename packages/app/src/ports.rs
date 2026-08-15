@@ -951,6 +951,9 @@ pub trait ProviderRepo: Send + Sync {
     async fn link(&self, input: LinkProviderAccount) -> AppResult<Provider>;
     async fn link_group(&self, input: LinkProviderGroup) -> AppResult<Vec<Provider>>;
     async fn list_syncs(&self, provider_id: i64) -> AppResult<Vec<ProviderSync>>;
+    /// The newest recorded run of one provider — what [`crate::sync::SyncService`] returns
+    /// instead of starting a second sync inside the cooldown window.
+    async fn latest_sync(&self, provider_id: i64) -> AppResult<Option<ProviderSync>>;
     async fn account_currency(&self, account_id: i64) -> AppResult<String>;
     async fn import_transactions(
         &self,

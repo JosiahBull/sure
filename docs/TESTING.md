@@ -339,6 +339,20 @@ answered from a snapshot is not recorded ("A snapshot-served request is not reco
 * **A `record`-mode proxy would pass every test while dialling the real internet.** Which is why
   both harnesses state the mode rather than inheriting it, and then assert `mode === "replay"`
   off the handshake line — the one place the property can be confirmed instead of assumed.
+* **A second sync of one provider does not reach the upstream.** `PROVIDER_SYNC_COOLDOWN_SECS`
+  (60s) makes the second of two successful syncs answer from `provider_syncs` without a sweep,
+  so a spec that syncs twice and expects two sets of stubs to fire gets a replay-miss 503 on the
+  stubs it registered for the second one — and, before that, `imported: 0` where it wanted a
+  number. Set `PROVIDER_SYNC_COOLDOWN_SECS: "0"` on `startServer` when the second sweep is the
+  point (as `specs/akahu.spec.ts`'s dedupe test does), or a real value when the cooldown *is*
+  the point (`specs/provider-sync-behaviour.spec.ts`). The same applies to Yahoo and Akahu's
+  in-adapter caches in tier 1: `Pacing::unpaced()` is the fixture default and leaves both TTLs
+  at zero, so a test wanting the cache has to ask for one.
+
+  This is why those windows are configuration rather than constants at all. "The cooldown
+  expires and the next sync really runs" is the half a rate-limit test is worthless without —
+  a guard that never lets go looks exactly like one that works — and at the production 60s it
+  would cost the suite a minute of wall clock on every run.
 
 ## Verifying the guards themselves
 
