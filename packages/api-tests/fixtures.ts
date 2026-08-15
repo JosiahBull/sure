@@ -260,7 +260,7 @@ export async function startServer(
       // above already makes reaching a third party impossible, whatever the scheduler does.
       // `specs/shutdown.spec.ts` overrides this to drain a sweep that is really in flight.
       BACKGROUND_TASKS: "off",
-      // Points all three provider adapters at this worker's proxy, and opens the sandbox port
+      // Points every provider adapter at this worker's proxy, and opens the sandbox port
       // they need on Linux — see `proxyEnvironment` for why every server gets this. Before
       // `...env` so a spec can still override an individual endpoint; none does, and one that
       // did would be opting out of the guarantee above.

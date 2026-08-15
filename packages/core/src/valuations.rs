@@ -21,6 +21,13 @@ pub enum ValuationSource {
     Brokerage,
     /// Snapshotted from an equity grant's computed intrinsic value.
     Equity,
+    /// A third-party automated valuation model's estimate for a property
+    /// (`sure_app::tasks::property_estimates`). Its own source — not [`Self::Provider`] —
+    /// because it is a *model's guess*, not a balance anybody reported: the UI has to be able
+    /// to label it that way, and a property account that is also balance-linked must not have
+    /// the two upserts fight over one row per day (each source has its own partial unique
+    /// index; see `0036_estimate_valuations.sql`).
+    Estimate,
 }
 
 /// How much of an account's valuation history to read.
@@ -52,6 +59,7 @@ impl ValuationSource {
             Provider => "provider",
             Brokerage => "brokerage",
             Equity => "equity",
+            Estimate => "estimate",
         }
     }
 }
@@ -67,6 +75,7 @@ impl std::str::FromStr for ValuationSource {
             "provider" => Provider,
             "brokerage" => Brokerage,
             "equity" => Equity,
+            "estimate" => Estimate,
             other => return Err(format!("unknown valuation source '{other}'")),
         })
     }

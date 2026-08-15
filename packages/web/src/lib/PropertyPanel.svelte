@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { api, formatMoney, type Schemas } from "./api";
   import ValuationPanel from "./ValuationPanel.svelte";
+  import PropertyEstimatePanel from "./PropertyEstimatePanel.svelte";
 
   let { accountId, onchange }: { accountId: number; onchange?: () => void } = $props();
 
@@ -25,6 +26,12 @@
   );
   const ccy = $derived(position?.currency ?? "NZD");
   const pct = $derived(Math.round(position?.paid_off_pct ?? 0));
+  // This panel serves every asset-class account, vehicles included, and only real estate has a
+  // property estimate to fetch. Read off the list already loaded above rather than a second
+  // request for the one account.
+  const isRealEstate = $derived(
+    accounts.find((a) => a.id === accountId)?.kind === "real_estate"
+  );
 
   async function link(id: number) {
     await api.PUT("/api/accounts/{id}/secured-by", {
@@ -86,6 +93,16 @@
         </select>
         <button class="btn btn-sm btn-primary" onclick={() => linkId !== "" && link(linkId)} disabled={linkId === ""}>Link</button>
       </div>
+    {/if}
+
+    {#if isRealEstate}
+      <PropertyEstimatePanel
+        {accountId}
+        onchange={() => {
+          load();
+          onchange?.();
+        }}
+      />
     {/if}
   {/if}
 </div>

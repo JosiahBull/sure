@@ -353,6 +353,38 @@ pub struct PropertyMeta {
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// Opt-in subscription to the House Pricer estimate feed. `None` — the default, and the
+    /// state every existing row deserialises to — means this account is never polled and its
+    /// address never leaves the machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub house_pricer: Option<HousePricerLink>,
+}
+
+/// An opted-in subscription to House Pricer's monthly estimate for one property (see
+/// `sure_providers::house_pricer`).
+///
+/// Whole-struct rather than three sibling `Option`s on [`PropertyMeta`], because the useful
+/// invariant is that they arrive together: the id is what pins the subscription to the
+/// property the person actually confirmed, and it is meaningless without the `query` that
+/// found it. `Option<HousePricerLink>` makes "a query with no pinned id" unrepresentable
+/// instead of a state every reader has to re-check.
+#[derive(Serialize, Deserialize, ToSchema, Clone, Debug, PartialEq, Eq)]
+pub struct HousePricerLink {
+    /// The address query that matched, verbatim. Stored rather than rebuilt from the address
+    /// fields because it is what the upstream is known to answer — `q` is a fuzzy match, so a
+    /// later edit to `city` or `address_line1` must not silently re-aim the subscription — and
+    /// because `q` is required on every request (`propertyId` alone answers `400`).
+    pub query: String,
+    /// `unitOfPropertyId` from the match the person opted in to.
+    ///
+    /// The drift guard, and the reason the pre-flight exists: `q` is a fuzzy address match, so
+    /// an upstream re-index can quietly start resolving the same string to the *neighbouring*
+    /// house. A poll whose match returns a different id writes nothing and warns — see
+    /// `sure_app::tasks::property_estimates`.
+    pub property_id: String,
+    /// The upstream's own normalised `streetAddress` for that match, so the UI can show what
+    /// the subscription actually locked on to rather than echoing what was typed.
+    pub matched_address: String,
 }
 
 /// A mortgage secured against a property (link it with `secured_by_account_id`).

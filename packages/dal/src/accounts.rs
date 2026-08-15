@@ -2,8 +2,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 pub use sure_core::{Account, SaveAccount, SetSecuredBy};
 use sure_core::{
-    AccountClass, AccountKind, AccountMetadata, AppError, AppResult, IsoDate, Ownership,
-    ValidationMode, ValuationSource,
+    AccountClass, AccountKind, AccountMetadata, AppError, AppResult, HousePricerLink, IsoDate,
+    Ownership, ValidationMode, ValuationSource,
 };
 
 use crate::Db;
@@ -117,6 +117,50 @@ pub async fn list(db: &Db, include_archived: bool) -> AppResult<Vec<Account>> {
 pub struct SharesTicker {
     pub ticker: String,
     pub exchange: String,
+}
+
+/// One property account's opted-in House Pricer subscription (see
+/// `sure_app::tasks::property_estimates`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HousePricerSubscription {
+    pub account_id: i64,
+    pub account_name: String,
+    pub currency_code: String,
+    pub link: HousePricerLink,
+}
+
+/// Every non-archived property account that has opted in to House Pricer.
+///
+/// Goes through [`list`] rather than a `json_extract` over `accounts.metadata`, like
+/// [`list_shares_tickers`] beside it: the opt-in lives inside the typed metadata blob, and
+/// `TryFrom<AccountRow>` is the one place that JSON is turned into `AccountMetadata`. A SQL
+/// predicate reaching into the same blob would be a second, untyped copy of that mapping — the
+/// thing CLAUDE.md rule 1 exists to prevent — and it would silently miss a row whose profile
+/// discriminant changed.
+///
+/// `list(db, false)` excludes archived accounts, which is load-bearing rather than incidental:
+/// the caller reaches a third party once a month per row here, and a property somebody archived
+/// is not one they want still being looked up.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn list_house_pricer_subscriptions(db: &Db) -> AppResult<Vec<HousePricerSubscription>> {
+    Ok(list(db, false)
+        .await?
+        .into_iter()
+        .filter_map(|a| {
+            // Matched on the metadata variant, not on `a.kind`: the profile is derived from the
+            // kind (`AccountMetadata::profile_for`), so this is the same test with one less
+            // thing to keep in step, and a `house_pricer` link can only exist on a property.
+            let AccountMetadata::Property(meta) = a.metadata else {
+                return None;
+            };
+            Some(HousePricerSubscription {
+                account_id: a.id,
+                account_name: a.name,
+                currency_code: a.currency_code,
+                link: meta.house_pricer?,
+            })
+        })
+        .collect())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -776,6 +820,34 @@ pub async fn set_credit_limit(db: &Db, account_id: i64, credit_limit_minor: i64)
     };
     meta.credit_limit_minor = Some(credit_limit_minor);
     write_metadata(db, account_id, &AccountMetadata::Depository(meta)).await
+}
+
+/// Subscribe a property account to (or unsubscribe it from) a third-party estimate feed,
+/// leaving every other metadata field untouched.
+///
+/// Refuses anything that isn't property-profiled with a `Validation` error rather than the silent
+/// `Ok(())` [`set_credit_limit`] returns, and the difference is deliberate: those two are called
+/// by a *sync* reconciling whatever an upstream volunteered, where "this account has no such
+/// concept" is ordinary and not worth failing a sync over. This one is called by a person
+/// pressing a button, and quietly doing nothing would leave the UI showing a subscription that
+/// was never stored.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn set_house_pricer_link(
+    db: &Db,
+    account_id: i64,
+    link: Option<HousePricerLink>,
+) -> AppResult<Account> {
+    let account = get(db, account_id).await?;
+    let AccountMetadata::Property(mut meta) = account.metadata else {
+        return Err(AppError::validation(
+            "only a real-estate account can subscribe to a property estimate feed",
+        ));
+    };
+    meta.house_pricer = link;
+    write_metadata(db, account_id, &AccountMetadata::Property(meta)).await?;
+    // Re-read rather than patching the in-memory copy: `write_metadata` also moves
+    // `updated_at`, and the caller returns this to the client as the account's new state.
+    get(db, account_id).await
 }
 
 /// Update just the original-borrowed-amount hint on a mortgage/loan account's metadata

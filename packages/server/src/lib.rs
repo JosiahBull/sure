@@ -15,7 +15,9 @@ use sure_app::SystemClock;
 use sure_app::brokerage::BrokerageService;
 use sure_app::forecast::ForecastService;
 use sure_app::import::ImportService;
-use sure_app::ports::{ImportRegistry, ProviderRegistry, StockPriceProvider};
+use sure_app::ports::{
+    ImportRegistry, PropertyEstimateProvider, ProviderRegistry, StockPriceProvider,
+};
 use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
 use sure_app::sync::SyncService;
@@ -79,6 +81,7 @@ fn build_state(
     registry: Arc<dyn ProviderRegistry>,
     imports: Arc<dyn ImportRegistry>,
     stock_price_provider: Arc<dyn StockPriceProvider>,
+    property_estimate_provider: Arc<dyn PropertyEstimateProvider>,
     shutdown: Shutdown,
     mcp_ceiling: sure_mcp::McpMode,
     sync_cooldown: Duration,
@@ -175,6 +178,7 @@ fn build_state(
         providers: store,
         provider_registry: registry,
         stock_price_provider,
+        property_estimate_provider,
         shutdown,
         mcp_ceiling,
     };
@@ -217,6 +221,13 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         Arc::new(sure_providers::YahooFinanceProvider::with_endpoint(
             config.provider_endpoints.yahoo_finance.clone(),
             config.provider_limits.pacing,
+        ));
+    // Built once and shared by the two things that reach it: the monthly poll below and the
+    // pre-flight lookup the opt-in route runs. Unlike Frankfurter's — used by one task, so built
+    // at its registration — this one has a second caller, so it is built up here like Yahoo's.
+    let property_estimate_provider: Arc<dyn PropertyEstimateProvider> =
+        Arc::new(sure_providers::HousePricerProvider::with_endpoint(
+            config.provider_endpoints.house_pricer.clone(),
         ));
 
     // Opt-out (`BACKGROUND_TASKS=off`) because the scheduler's first check runs
@@ -289,9 +300,20 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         scheduler.register(Box::new(sure_app::stock_prices::StockPriceTask::new(
             store.clone(),
             store.clone(),
-            clock,
+            clock.clone(),
             stock_price_provider.clone(),
         )));
+        // Monthly, and only for accounts that have opted in through the pre-flight flow — an
+        // account with no `PropertyMeta.house_pricer` is never looked up, so this reaches a third
+        // party exactly as often as somebody has asked it to.
+        scheduler.register(Box::new(
+            sure_app::tasks::property_estimates::PropertyEstimateTask::new(
+                store.clone(),
+                store.clone(),
+                clock,
+                property_estimate_provider.clone(),
+            ),
+        ));
         scheduler.register(Box::new(
             sure_app::tasks::transfer_link::TransferLinkTask::new(store),
         ));
@@ -319,6 +341,7 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         registry,
         imports,
         stock_price_provider,
+        property_estimate_provider,
         shutdown.clone(),
         config.mcp.ceiling,
         config.provider_limits.sync_cooldown,

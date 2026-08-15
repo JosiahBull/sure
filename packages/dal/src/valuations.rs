@@ -181,6 +181,52 @@ pub async fn upsert_from_brokerage(
     .try_into()
 }
 
+/// Record (or refresh, if one already exists for this account today) a third-party automated
+/// valuation model's estimate for a property — today House Pricer, via
+/// `sure_app::tasks::property_estimates`.
+///
+/// Takes a `note`, unlike the two upserts above, because an estimate is the one derived
+/// valuation whose *provenance is not obvious from its value*: a brokerage row can be
+/// recomputed from the holdings ledger and a provider row is whatever the bank said, but an
+/// estimate is one model's guess among several the same response carried. The note is where the
+/// caller records which — see `sure_app::tasks::property_estimates::NOTE_PREFIX`.
+///
+/// Its own `source='estimate'` tag and partial unique index (`0036_estimate_valuations.sql`)
+/// keep it from colliding with a `provider` sync on the same account and day.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn upsert_from_estimate(
+    db: &Db,
+    account_id: i64,
+    as_of: &str,
+    value_minor: i64,
+    currency_code: &str,
+    note: &str,
+) -> AppResult<Valuation> {
+    // The partial unique index's predicate (`0036_estimate_valuations.sql`) is a fixed part of
+    // the schema and can't take a bound parameter, so it stays a literal — but it must always
+    // match this bound value.
+    let source = ValuationSource::Estimate.as_str();
+    sqlx::query_as!(
+        ValuationRow,
+        r#"INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(account_id, as_of) WHERE source='estimate' DO UPDATE SET
+            value_minor = excluded.value_minor, currency_code = excluded.currency_code,
+            note = excluded.note
+         RETURNING id AS "id!", account_id, as_of, value_minor, currency_code, source, note,
+                   created_at"#,
+        account_id,
+        as_of,
+        value_minor,
+        currency_code,
+        source,
+        note
+    )
+    .fetch_one(db)
+    .await?
+    .try_into()
+}
+
 /// Change a valuation someone entered by hand: its date, its amount, or its note.
 ///
 /// **Manual valuations only.** The other sources are derived, and editing one is either futile

@@ -914,17 +914,23 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         "DELETE FROM currencies",
     );
 
-    // The wipe above clears `exchange_rates`, and a snapshot taken before the poller existed
-    // (or from a database that never polled) restores none — so import can leave the FX table
-    // empty and every foreign-currency figure at parity. `scheduled_task_runs` is *not*
-    // wiped (it is process state, not user data, and re-running every task on import would be
-    // worse), which means the scheduler still believes the rate poll ran recently and would
-    // sit on that parity for up to the 24h poll interval. Forget just that task's last run so
-    // the next scheduler tick re-polls immediately.
+    // `scheduled_task_runs` is *not* wiped (it is process state, not user data, and re-running
+    // every task on import would be worse), so the scheduler still believes every poll ran
+    // recently — against data that has just been replaced wholesale underneath it. Two tasks
+    // cannot wait that out, so their last run is forgotten and the next tick re-polls:
+    //
+    // * the FX poll, because the wipe clears `exchange_rates` and a snapshot taken before the
+    //   poller existed (or from a database that never polled) restores none — leaving every
+    //   foreign-currency figure at parity for up to the 24h interval.
+    // * the property-estimate poll, because the wipe clears `valuations` while the restored
+    //   accounts keep their `house_pricer` subscriptions — so a subscribed property would show
+    //   whatever estimate the snapshot happened to carry, for up to a *month*.
     let rate_poll = sure_app::tasks::exchange_rates::TASK_NAME;
+    let estimate_poll = sure_app::tasks::property_estimates::TASK_NAME;
     sqlx::query!(
-        "DELETE FROM scheduled_task_runs WHERE task_name = ?1",
-        rate_poll
+        "DELETE FROM scheduled_task_runs WHERE task_name IN (?1, ?2)",
+        rate_poll,
+        estimate_poll
     )
     .execute(&mut *txn)
     .await?;

@@ -430,6 +430,10 @@ fn every_upstream_forwards_to_the_endpoint_its_adapter_defaults_to() {
             sure_providers::yahoo_finance::DEFAULT_BASE_URL,
         ),
         (Upstream::Akahu, sure_providers::akahu::DEFAULT_BASE_URL),
+        (
+            Upstream::HousePricer,
+            sure_providers::house_pricer::DEFAULT_BASE_URL,
+        ),
     ];
     // A new upstream has to be paired here, not silently left uncovered — the compiler cannot
     // see that this array is meant to be exhaustive over `Upstream::ALL`.

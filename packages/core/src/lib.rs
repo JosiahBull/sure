@@ -84,8 +84,8 @@ pub use transactions::{
 };
 pub use types::{
     Account, AccountClass, AccountKind, AccountMetadata, AreaUnit, BrokerageMeta, CryptoMeta,
-    DepositoryMeta, GenericMeta, GroupBy, Interval, LoanMeta, MileageUnit, MortgageMeta,
-    PropertyMeta, RateType, RepaymentFrequency, SaveAccount, SetExcludedFromNetWorth, SetSecuredBy,
-    SharesMeta, StudentLoanMeta, TaxTreatment, ValidationMode, VehicleMeta,
+    DepositoryMeta, GenericMeta, GroupBy, HousePricerLink, Interval, LoanMeta, MileageUnit,
+    MortgageMeta, PropertyMeta, RateType, RepaymentFrequency, SaveAccount, SetExcludedFromNetWorth,
+    SetSecuredBy, SharesMeta, StudentLoanMeta, TaxTreatment, ValidationMode, VehicleMeta,
 };
 pub use valuations::{NewValuation, Valuation, ValuationQuery, ValuationSource};

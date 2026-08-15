@@ -75,6 +75,8 @@ pub struct ProviderEndpoints {
     /// `AKAHU_BASE_URL` — NZ bank feeds. The tokens that go with it are not part of `Config`;
     /// see the note on [`Config`].
     pub akahu: Endpoint,
+    /// `HOUSE_PRICER_BASE_URL` — Christchurch property estimates.
+    pub house_pricer: Endpoint,
 }
 
 /// How much traffic this process may send a third party, and how long it remembers what one
@@ -235,6 +237,10 @@ impl Config {
                 sure_providers::yahoo_finance::DEFAULT_BASE_URL,
             )?,
             akahu: endpoint("AKAHU_BASE_URL", sure_providers::akahu::DEFAULT_BASE_URL)?,
+            house_pricer: endpoint(
+                "HOUSE_PRICER_BASE_URL",
+                sure_providers::house_pricer::DEFAULT_BASE_URL,
+            )?,
         };
 
         // Warn-and-continue, like every other limit in this file and unlike the endpoints

@@ -527,6 +527,18 @@ mod tests {
         async fn list_brokerage_tickers(&self) -> AppResult<Vec<SharesTicker>> {
             Ok(self.brokerage.clone())
         }
+        async fn list_house_pricer_subscriptions(
+            &self,
+        ) -> AppResult<Vec<crate::ports::HousePricerSubscription>> {
+            unreachable!("StockPriceTask never lists property-estimate subscriptions")
+        }
+        async fn set_house_pricer_link(
+            &self,
+            _account_id: i64,
+            _link: Option<sure_core::HousePricerLink>,
+        ) -> AppResult<Account> {
+            unreachable!("StockPriceTask never subscribes an account to an estimate feed")
+        }
         async fn set_credit_limit(
             &self,
             _account_id: i64,

@@ -176,10 +176,13 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   the test author did not mean to exercise, it now **fails the test that made it**
   (`failOnUnstubbedRequests` in `packages/api-tests/fixtures.ts`, and the run-level equivalent in
   `packages/web/tests/global-teardown.ts`). A test that means to provoke one declares it with
-  `allowUnstubbed({ upstream, path_pattern, why })`. **Akahu traffic is never recorded into this repo** —
-  `scripts/pii-scan.mjs` refuses one by path *and* by content, and decodes base64 bodies so an
-  `.ndjson` cannot smuggle an account number past it. Frankfurter and Yahoo are public market
-  data and *are* recorded, in `packages/providers/tests/snapshots/`: those captures are what prove
+  `allowUnstubbed({ upstream, path_pattern, why })`. **Akahu and House Pricer traffic is never
+  recorded into this repo** — `scripts/pii-scan.mjs`'s `PRIVATE_UPSTREAMS` refuses either by path
+  *and* by content, and decodes base64 bodies so an `.ndjson` cannot smuggle an account number
+  past it. Akahu's traffic is account numbers and transaction memos; House Pricer's is a street
+  address, GPS centroid, title boundary polygon and land value, so one exchange is a dossier on
+  where somebody lives — neither is market data about an instrument. Frankfurter and Yahoo are
+  public market data and *are* recorded, in `packages/providers/tests/snapshots/`: those captures are what prove
   the adapters still parse the real document, rather than the subset of it a hand-written fixture
   would carry. Nothing re-checks them against the live API, so a capture is evidence about the day
   it was taken — `pnpm fixtures:record` and read the diff when a price or FX path misbehaves

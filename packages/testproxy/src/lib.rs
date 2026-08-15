@@ -56,6 +56,7 @@ pub enum Upstream {
     Frankfurter,
     YahooFinance,
     Akahu,
+    HousePricer,
 }
 
 impl Upstream {
@@ -66,10 +67,11 @@ impl Upstream {
     /// is the prompt to extend this array as well. `all_names_are_distinct` below is the
     /// backstop for the copy-paste failure that survives the compiler: two variants claiming
     /// one name, which `ProxyClusterBuilder::run` rejects at bind time as a duplicate.
-    pub const ALL: [Upstream; 3] = [
+    pub const ALL: [Upstream; 4] = [
         Upstream::Frankfurter,
         Upstream::YahooFinance,
         Upstream::Akahu,
+        Upstream::HousePricer,
     ];
 
     /// Cluster-facing name. Also the snapshot filename stem, and the `upstream` field on every
@@ -82,6 +84,7 @@ impl Upstream {
             Upstream::Frankfurter => "frankfurter",
             Upstream::YahooFinance => "yahoo_finance",
             Upstream::Akahu => "akahu",
+            Upstream::HousePricer => "house_pricer",
         }
     }
 
@@ -94,6 +97,7 @@ impl Upstream {
             Upstream::Frankfurter => "https://api.frankfurter.dev",
             Upstream::YahooFinance => "https://query1.finance.yahoo.com",
             Upstream::Akahu => "https://api.akahu.io",
+            Upstream::HousePricer => "https://www.housepricer.co.nz",
         }
     }
 
@@ -116,6 +120,7 @@ impl Upstream {
             Upstream::Frankfurter => "/v1",
             Upstream::YahooFinance => "/v8/finance/chart",
             Upstream::Akahu => "/v1",
+            Upstream::HousePricer => "/api/property/core",
         }
     }
 
@@ -125,6 +130,7 @@ impl Upstream {
             Upstream::Frankfurter => "FRANKFURTER_BASE_URL",
             Upstream::YahooFinance => "YAHOO_FINANCE_BASE_URL",
             Upstream::Akahu => "AKAHU_BASE_URL",
+            Upstream::HousePricer => "HOUSE_PRICER_BASE_URL",
         }
     }
 
@@ -132,17 +138,21 @@ impl Upstream {
     /// canonicalised before a snapshot key is computed.
     ///
     /// The replay index compares the query **verbatim** (`SPECIFICATION.md` §8.1), and two of
-    /// these three feeds put the current time in it: `yahoo_finance.rs` derives
+    /// these four feeds put the current time in it: `yahoo_finance.rs` derives
     /// `?period1=<epoch>&period2=<epoch>` from today's date, and `akahu.rs` sends
     /// `?start=<rfc3339>` derived from the last successful sync. Recorded verbatim, both
     /// snapshots stop matching the day after they are taken. Frankfurter's query is just
-    /// `?base=NZD`, which is already stable, so it has nothing to canonicalise — an empty list
-    /// rather than a special case at the call site.
+    /// `?base=NZD` and House Pricer's just `?q=<address>`, both already stable, so they have
+    /// nothing to canonicalise — an empty list rather than a special case at the call site.
     pub fn volatile_query_params(self) -> &'static [&'static str] {
         match self {
             Upstream::Frankfurter => &[],
             Upstream::YahooFinance => &["period1", "period2"],
             Upstream::Akahu => &["start"],
+            // `?q=<address>` — the same string every month, so there is nothing clock-derived
+            // to canonicalise. (Nothing from this host may be *recorded* into the repo anyway;
+            // see `scripts/pii-scan.mjs`. A test stubs it instead.)
+            Upstream::HousePricer => &[],
         }
     }
 

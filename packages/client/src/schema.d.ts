@@ -906,6 +906,197 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/{id}/property-estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Subscribe this account to monthly estimates, and record one immediately.
+         * @description The lookup runs again here rather than trusting what the preview returned, which is what makes
+         *     the stored `property_id` trustworthy: it is a match this server made, so the poll's drift
+         *     check compares against something real. The immediate valuation means the feature does
+         *     something visible now instead of in thirty days.
+         */
+        post: {
+            parameters: {
+                query?: {
+                    /**
+                     * @description The address to look up. Defaults to the account's own stored address — so the common
+                     *     case is a button with nothing to type — and can be overridden when the stored one doesn't
+                     *     match (the upstream normalises to `"<street>, <suburb>"`, which is not always what a
+                     *     person typed into the address fields).
+                     */
+                    q?: string;
+                };
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Account"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                502: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        /**
+         * Stop polling this account. Idempotent, and leaves every estimate already recorded in place —
+         *     they are history, not a live subscription, and deleting someone's valuation series as a side
+         *     effect of turning a feed off would be a surprise.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Account"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/property-estimate/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Look up an address against the configured estimate source without storing anything.
+         * @description The **pre-flight**: this is what makes the opt-in informed rather than a guess, so it exists
+         *     as its own route rather than as a side effect of subscribing. A `404` is the ordinary answer
+         *     for a property the source doesn't cover, and its body names the coverage area so the UI can
+         *     say why.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /**
+                     * @description The address to look up. Defaults to the account's own stored address — so the common
+                     *     case is a button with nothing to type — and can be overridden when the stored one doesn't
+                     *     match (the upstream normalises to `"<street>, <suburb>"`, which is not always what a
+                     *     person typed into the address fields).
+                     */
+                    q?: string;
+                };
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EstimatePreview"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                502: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}/secured-by": {
         parameters: {
             query?: never;
@@ -3369,6 +3560,44 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/property-estimate-source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Which source is configured and what it covers — so the UI can label the button and explain a
+         *     miss without hardcoding "Christchurch" in the web layer.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EstimateCoverage"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -5955,6 +6184,46 @@ export interface components {
             /** @description Human-readable description. */
             message: string;
         };
+        /** @description The area the configured source covers, so a `404` can be explained rather than just reported. */
+        EstimateCoverage: {
+            source: string;
+            coverage: string;
+        };
+        /**
+         * @description What a pre-flight found. Deliberately not the whole upstream response: the fields below are
+         *     what a person needs to decide "yes, that is my house", and every other field in that payload
+         *     is a detail of somebody's home that has no reason to cross this boundary.
+         */
+        EstimatePreview: {
+            /**
+             * @description The query that produced this match — echoed back because it is what gets stored, and the
+             *     client may not have supplied it (it defaults to the account's address).
+             */
+            query: string;
+            /**
+             * @description The upstream's own normalised address for the match. **The field the UI must show**: it
+             *     is how someone confirms the feed found their property and not one nearby.
+             */
+            matched_address: string;
+            /** @description The upstream's stable id for the matched property. */
+            property_id: string;
+            /**
+             * Format: int64
+             * @description The estimate, in minor units of `currency_code`.
+             */
+            value_minor: number;
+            currency_code: string;
+            /**
+             * @description Which model produced `value_minor`, and what the other said — shown so the choice of
+             *     model, and the spread between them, is visible before subscribing rather than only
+             *     afterwards on the valuation.
+             */
+            model_note: string;
+            /** @description Which source answered (`"house_pricer"`). */
+            source: string;
+            /** @description The area this source can answer for, for the UI to explain a miss with. */
+            coverage: string;
+        };
         /**
          * @description How an event actually landed across the simulated paths — not what was typed.
          *
@@ -6196,6 +6465,39 @@ export interface components {
             external_id?: string | null;
             provider?: string | null;
             created_at: string;
+        };
+        /**
+         * @description An opted-in subscription to House Pricer's monthly estimate for one property (see
+         *     `sure_providers::house_pricer`).
+         *
+         *     Whole-struct rather than three sibling `Option`s on [`PropertyMeta`], because the useful
+         *     invariant is that they arrive together: the id is what pins the subscription to the
+         *     property the person actually confirmed, and it is meaningless without the `query` that
+         *     found it. `Option<HousePricerLink>` makes "a query with no pinned id" unrepresentable
+         *     instead of a state every reader has to re-check.
+         */
+        HousePricerLink: {
+            /**
+             * @description The address query that matched, verbatim. Stored rather than rebuilt from the address
+             *     fields because it is what the upstream is known to answer — `q` is a fuzzy match, so a
+             *     later edit to `city` or `address_line1` must not silently re-aim the subscription — and
+             *     because `q` is required on every request (`propertyId` alone answers `400`).
+             */
+            query: string;
+            /**
+             * @description `unitOfPropertyId` from the match the person opted in to.
+             *
+             *     The drift guard, and the reason the pre-flight exists: `q` is a fuzzy address match, so
+             *     an upstream re-index can quietly start resolving the same string to the *neighbouring*
+             *     house. A poll whose match returns a different id writes nothing and warns — see
+             *     `sure_app::tasks::property_estimates`.
+             */
+            property_id: string;
+            /**
+             * @description The upstream's own normalised `streetAddress` for that match, so the UI can show what
+             *     the subscription actually locked on to rather than echoing what was typed.
+             */
+            matched_address: string;
         };
         /** @description One item's unresolved conflict: nothing of it was written, and here is what it would take. */
         ImportBlock: {
@@ -6984,6 +7286,7 @@ export interface components {
             /** @description A link to the listing, council valuation, etc. */
             url?: string | null;
             notes?: string | null;
+            house_pricer?: null | components["schemas"]["HousePricerLink"];
         };
         Provider: {
             /** Format: int64 */
@@ -7982,7 +8285,7 @@ export interface components {
          *     (`sure_dal::equity::revalue`) are written too and belong here just the same).
          * @enum {string}
          */
-        ValuationSource: "manual" | "cron" | "provider" | "brokerage" | "equity";
+        ValuationSource: "manual" | "cron" | "provider" | "brokerage" | "equity" | "estimate";
         /** @description A vehicle. Attach financing as a separate loan account secured against it. */
         VehicleMeta: {
             make?: string | null;

@@ -1,6 +1,7 @@
 //! Concrete external-provider adapters. Each implements a port trait defined in
 //! `sure_app::ports` — [`TransactionProvider`] (CSV, Akahu), `StockPriceProvider`
-//! (Yahoo Finance), `ExchangeRateProvider` (Frankfurter), and `ImportAdapter` over each
+//! (Yahoo Finance), `ExchangeRateProvider` (Frankfurter), `PropertyEstimateProvider`
+//! (House Pricer), and `ImportAdapter` over each
 //! manual-upload export parser ([`sharesies::parse_export`], [`myir::parse_export`],
 //! [`asb::parse_upload`], [`csv::parse_rows`]). Two registries implement the two lookup ports:
 //! [`Registry`] enumerates the transaction providers for the sync service, and
@@ -36,6 +37,7 @@ pub mod akahu;
 pub mod asb;
 pub mod csv;
 pub mod frankfurter;
+pub mod house_pricer;
 mod http;
 pub mod import;
 pub mod myir;
@@ -45,6 +47,7 @@ pub mod zipfile;
 
 pub use akahu::{AkahuCredentials, AkahuProvider, MissingToken};
 pub use frankfurter::FrankfurterProvider;
+pub use house_pricer::HousePricerProvider;
 // `http` is private — it is this crate's own outbound-client plumbing — but these two are the
 // rest of every adapter's constructor, so the composition root has to be able to name them.
 // `Throttle` is deliberately *not* here: how an adapter paces itself is its own business, and

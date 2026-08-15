@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)\n         VALUES (?1, ?2, ?3, ?4, ?5, ?6)\n         ON CONFLICT(account_id, as_of) WHERE source='estimate' DO UPDATE SET\n            value_minor = excluded.value_minor, currency_code = excluded.currency_code,\n            note = excluded.note\n         RETURNING id AS \"id!\", account_id, as_of, value_minor, currency_code, source, note,\n                   created_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "as_of",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "as_of"
+          }
+        }
+      },
+      {
+        "name": "value_minor",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "value_minor"
+          }
+        }
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "currency_code"
+          }
+        }
+      },
+      {
+        "name": "source",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "name": "note",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "note"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "909ae30de93d613acb31de0a182d69446f18a7dc0f730699a19a86d83d9a63cd"
+}

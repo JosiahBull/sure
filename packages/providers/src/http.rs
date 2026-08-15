@@ -1,6 +1,6 @@
 //! Outbound HTTP clients for the provider adapters.
 //!
-//! Every provider here reaches a third-party host, and three of them are driven by
+//! Every provider here reaches a third-party host, and four of them are driven by
 //! `sure-scheduler` — which cancels *between* tasks, never during one, so a request in
 //! flight when the shutdown signal lands is waited out rather than dropped. `reqwest`
 //! sets no timeout of any kind by default (`timeout`, `connect_timeout` and

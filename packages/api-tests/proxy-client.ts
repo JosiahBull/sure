@@ -19,7 +19,7 @@
 import * as net from "node:net";
 
 /** The upstreams `sure-testproxy` binds. Must match `sure_testproxy::Upstream::name()`. */
-export type Upstream = "frankfurter" | "yahoo_finance" | "akahu";
+export type Upstream = "frankfurter" | "yahoo_finance" | "akahu" | "house_pricer";
 
 /** Filter shared by AssertCount and QueryTraffic. All conditions AND together. */
 export interface TrafficFilter {

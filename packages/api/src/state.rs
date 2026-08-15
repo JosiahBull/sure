@@ -5,8 +5,8 @@ use sure_app::forecast::ForecastService;
 use sure_app::import::ImportService;
 use sure_app::ports::{
     AccountRepo, CategoryRepo, CronRepo, CurrencyRepo, EquityRepo, MerchantRepo, PersonRepo,
-    ProviderRegistry, ProviderRepo, SettingsRepo, SnapshotRepo, StockPriceCacheRepo,
-    StockPriceProvider, TransactionRepo, ValuationRepo,
+    PropertyEstimateProvider, ProviderRegistry, ProviderRepo, SettingsRepo, SnapshotRepo,
+    StockPriceCacheRepo, StockPriceProvider, TransactionRepo, ValuationRepo,
 };
 use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
@@ -49,6 +49,11 @@ pub struct AppState {
     /// The stock-price feed (Yahoo Finance), injected for the on-demand price lookups the
     /// brokerage/stock-price routes drive.
     pub stock_price_provider: Arc<dyn StockPriceProvider>,
+    /// The property-estimate feed (House Pricer), injected for the pre-flight lookup that gates
+    /// the opt-in in `routes::property_estimates`. The monthly poll holds its own handle on the
+    /// same adapter; this one exists because the *confirm* step re-runs the lookup here rather
+    /// than trusting an id from the request body.
+    pub property_estimate_provider: Arc<dyn PropertyEstimateProvider>,
     /// The process lifecycle handle, for the handful of handlers that start work outliving
     /// the response they return (today: the post-import valuation backfill in
     /// `routes::brokerage`).

@@ -18,10 +18,15 @@
 //! and pinning today's closing price would only mean a re-record churns the test.
 //!
 //! **Why only these two.** Both are public market data, so a recording carries no personal
-//! information and can be committed (CLAUDE.md rule 3). Akahu is the opposite — real account
-//! numbers, balances, payee names — and is never recorded into this repo at all;
-//! `scripts/pii-scan.mjs` fails a commit that tries. Its fixtures are hand-authored with
-//! invented identifiers, in `akahu.rs`.
+//! information and can be committed (CLAUDE.md rule 3). The other two upstreams are the
+//! opposite and are never recorded into this repo at all; `scripts/pii-scan.mjs` fails a commit
+//! that tries, and both have hand-authored fixtures with invented identifiers instead
+//! (`akahu.rs`, `house_pricer.rs`):
+//!
+//! * **Akahu** — real account numbers, balances, payee names.
+//! * **House Pricer** — a price, so it *looks* like market data, but the subject is one
+//!   dwelling: the response carries its street address, GPS centroid, title boundary polygon,
+//!   legal description and land value.
 //!
 //! **Why the middleware chain here matches `sure_testproxy::start`'s exactly.** A snapshot is
 //! keyed on the request *after* every middleware's `redact_request_for_snapshot`, so a capture
@@ -376,9 +381,12 @@ async fn record_the_public_upstreams() {
                     println!("recorded {} bars for {ticker}", quotes.len());
                 }
             }
-            // Not recorded, ever: Akahu carries real bank data. See the module docs, and
-            // `scripts/pii-scan.mjs`, which fails a commit that tries.
-            Upstream::Akahu => unreachable!("the loop above lists the two public upstreams"),
+            // Not recorded, ever. Akahu carries real bank data; House Pricer's `/match` is a
+            // dossier on one dwelling — address, GPS centroid, title boundary, land value. See
+            // the module docs, and `scripts/pii-scan.mjs`, which fails a commit that tries.
+            Upstream::Akahu | Upstream::HousePricer => {
+                unreachable!("the loop above lists the two public upstreams")
+            }
         }
 
         // Flushes the NDJSON backend, so the file is complete before the next iteration.

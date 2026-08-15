@@ -1115,6 +1115,18 @@ mod tests {
         async fn list_brokerage_tickers(&self) -> AppResult<Vec<SharesTicker>> {
             unreachable!("SyncService never lists tickers")
         }
+        async fn list_house_pricer_subscriptions(
+            &self,
+        ) -> AppResult<Vec<crate::ports::HousePricerSubscription>> {
+            unreachable!("SyncService never lists property-estimate subscriptions")
+        }
+        async fn set_house_pricer_link(
+            &self,
+            _account_id: i64,
+            _link: Option<sure_core::HousePricerLink>,
+        ) -> AppResult<Account> {
+            unreachable!("SyncService never subscribes an account to an estimate feed")
+        }
         async fn set_credit_limit(
             &self,
             account_id: i64,
@@ -1208,6 +1220,16 @@ mod tests {
                 ccy.to_string(),
             ));
             Ok(())
+        }
+        async fn upsert_from_estimate(
+            &self,
+            _account_id: i64,
+            _as_of: &str,
+            _value_minor: i64,
+            _ccy: &str,
+            _note: &str,
+        ) -> AppResult<()> {
+            unreachable!("SyncService never records a property estimate")
         }
     }
 
