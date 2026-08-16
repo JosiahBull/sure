@@ -1,11 +1,12 @@
 //! `FrankfurterProvider`'s fetch path — the half of the adapter no unit test can reach.
 //!
-//! `parse_quotes` is already covered in `src/frankfurter.rs` (`parses_a_typical_response`,
-//! `decodes_the_body_bytes_the_capped_reader_accumulates`), and nothing here repeats the mapping
-//! they pin. What is left once they have run is everything between `fetch_rates` being called and
-//! `parse_quotes` being handed a `LatestResponse`: the URL the request is built from, the client it
-//! goes out on, and `json_capped` reading the body back off the socket. All three were previously
-//! exercisable only against the live API.
+//! Two cheaper tiers run first and nothing here repeats them: `frankfurter-client` unit-tests the
+//! wire format (`parses_a_typical_response`, `decodes_the_body_bytes_the_capped_reader_
+//! accumulates`), and `src/frankfurter.rs` unit-tests the mapping onto a quote. What is left once
+//! both have run is everything between `fetch_rates` being called and `parse_quotes` being handed
+//! a `LatestRates`: the URL the request is built from, the client it goes out on, and the client
+//! reading the body back off the socket. All three were previously exercisable only against the
+//! live API.
 //!
 //! The first test drives `sure_testproxy::start()` rather than a hand-built cluster, because the
 //! wiring is itself worth exercising: `start()` binds every upstream with the production
@@ -37,6 +38,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use frankfurter_client::FrankfurterError;
 use http::{Method, StatusCode};
 use partly_proxy_lib::{
     ClusterHandle, Command, Mode, ProxyClusterBuilder, ProxyConfig, RequestMatcher,
@@ -231,8 +233,8 @@ async fn the_fetch_asks_latest_for_the_base_it_was_given() {
 ///
 /// `proxy_contract.rs` proves the proxy can do this with a bare `reqwest::get`. What is left, and
 /// what this covers, is that the *adapter* goes through it: the URL it builds in production is the
-/// key it later looks up under, and the bytes that come back off disk survive `json_capped` and
-/// `parse_quotes` unchanged. Frankfurter is the right adapter to prove the plain round-trip on
+/// key it later looks up under, and the bytes that come back off disk survive the client's capped
+/// read and `parse_quotes` unchanged. Frankfurter is the right adapter to prove the round-trip on
 /// because its query carries no clock reading — nothing is canonicalised away, so a failure here is
 /// about the round-trip and not about `CanonicaliseQuery`.
 #[tokio::test]
@@ -276,17 +278,27 @@ async fn a_recorded_rate_table_replays_from_its_snapshot_file() {
     );
 
     // The control: replay matches a *key*, it does not answer everything. `?base=AUD` was never
-    // recorded, so it gets the replay-miss 503 — and because that is a 5xx, `error_for_status`
-    // turns it into an adapter error. A missing fixture therefore fails loudly instead of falling
-    // through to the internet.
+    // recorded, so it gets the replay-miss 503 — and because that is a 5xx, the client turns it
+    // into a status error. A missing fixture therefore fails loudly instead of falling through to
+    // the internet.
+    //
+    // Specifically a `503` with no `Retry-After` on it, which is why this is `Http` and not
+    // `RateLimited`: the client only reads a `503` as a refusal-on-volume when the upstream names
+    // how long to wait. A replay miss naming one would stand the adapter down for a minute and
+    // make the *next* test in the file fail instead of this one.
     let miss = provider
         .fetch_rates("AUD")
         .await
         .expect_err("a base nobody recorded must not answer");
+    // `if let` rather than a catch-all match: `FrankfurterError` is `#[non_exhaustive]`, so this
+    // way there is no wildcard arm to justify (CLAUDE.md rule 2).
+    let status = if let Some(FrankfurterError::Http { status, .. }) = miss.downcast_ref() {
+        Some(*status)
+    } else {
+        None
+    };
     assert_eq!(
-        miss.downcast_ref::<reqwest::Error>()
-            .and_then(reqwest::Error::status)
-            .map(|code| code.as_u16()),
+        status,
         Some(503),
         "an unrecorded request must arrive as the replay-miss status: {miss:#}"
     );

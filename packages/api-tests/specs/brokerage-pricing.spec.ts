@@ -31,7 +31,8 @@ import { createAccount, createTransaction, makeZip } from "../helpers";
  * A near-copy of stock-prices.spec.ts's, which documents which of these fields the adapter
  * actually reads and which it ignores. Duplicated rather than shared because the alternative is
  * a third file (`helpers.ts`) that both specs import a Yahoo-specific body builder from, and
- * because the two copies answer to the same `ChartResponse`: if one stops deserialising, so does
+ * because the two copies answer to the same `yahoo-finance-client` models: if one stops
+ * deserialising, so does
  * the other, and both fail rather than one silently drifting.
  *
  * The timestamps sit at local midday (`+ 12h - gmtoffset`), because the adapter adds `gmtoffset`
