@@ -901,6 +901,9 @@ mod tests {
             config: serde_json::Value::Null,
             enabled,
             last_synced_at: None,
+            // Routing an upload never reads a connection's sync history — it cares which
+            // account a feed points at, not how that feed last got on.
+            last_sync: None,
             created_at: "2026-01-01T00:00:00+00:00".to_string(),
             updated_at: "2026-01-01T00:00:00+00:00".to_string(),
         }

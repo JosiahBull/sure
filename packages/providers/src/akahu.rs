@@ -17,13 +17,14 @@
 
 use std::time::{Duration, Instant};
 
-use akahu_client::{AccountId, AkahuClient, Attribute, BankAccountKind, UserToken};
+use akahu_client::{AccountId, AkahuClient, AkahuError, Attribute, BankAccountKind, UserToken};
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use serde_json::Value;
 use sure_app::ports::{
-    ProviderBalance, ProviderCategory, ProviderTransaction, SyncContext, TransactionProvider,
+    AccountDisconnected, ProviderBalance, ProviderCategory, ProviderTransaction, SyncContext,
+    TransactionProvider,
 };
 use sure_core::{AccountKind, IsoDate, ProviderAccount};
 
@@ -187,7 +188,8 @@ impl TransactionProvider for AkahuProvider {
 
             let page = client
                 .get_account_transactions(&user_token, &account_id, start, None, cursor)
-                .await?;
+                .await
+                .map_err(|e| classify(&account_id, e))?;
             pages += 1;
             out.extend(page.items.into_iter().filter_map(map_transaction));
             match page.cursor.next {
@@ -199,10 +201,37 @@ impl TransactionProvider for AkahuProvider {
         Ok(out)
     }
 
+    /// Every account these credentials can see, minus any this side of the boundary cannot
+    /// represent.
+    ///
+    /// Dropping rather than propagating is the whole behaviour worth naming here. One account
+    /// whose balance will not fit in minor units used to fail the *listing*, which is the only
+    /// way into the connect dialog — so a single absurd figure on an account the user has no
+    /// interest in meant no account at all could be linked, and the message said nothing about
+    /// which one. Each survivor is independent of the others, so each is offered on its own
+    /// merits and the ones that failed are named in the log.
     async fn list_accounts(&self) -> anyhow::Result<Vec<ProviderAccount>> {
         let (client, user_token) = self.client()?;
         let accounts = client.get_accounts(&user_token).await?;
-        accounts.items.into_iter().map(map_account).collect()
+        Ok(accounts
+            .items
+            .into_iter()
+            .filter_map(|a| {
+                let id = a.id.clone();
+                match map_account(a) {
+                    Ok(account) => Some(account),
+                    Err(e) => {
+                        tracing::warn!(
+                            account = %id,
+                            error = %e,
+                            "skipping an Akahu account this build cannot represent; the rest of \
+                             the listing is still offered"
+                        );
+                        None
+                    }
+                }
+            })
+            .collect())
     }
 
     async fn current_balance(
@@ -211,9 +240,39 @@ impl TransactionProvider for AkahuProvider {
     ) -> anyhow::Result<Option<ProviderBalance>> {
         let account_id = external_account_id(ctx.config)?;
         let (client, user_token) = self.client()?;
-        let resp = client.get_account(&user_token, &account_id).await?;
+        let resp = client
+            .get_account(&user_token, &account_id)
+            .await
+            .map_err(|e| classify(&account_id, e))?;
         Ok(Some(map_balance(&resp.item)?))
     }
+}
+
+/// Turn one `akahu-client` failure into the shape [`sure_app::sync`] can act on.
+///
+/// Akahu answers `404` for an account it will not serve any more, and that is not a bad minute
+/// at the bank: the connection behind it has been removed or has expired, or the household has
+/// re-authorised the bank — and a re-authorisation mints a *new* `_id`, so the one stored in
+/// this provider's `config` is gone permanently. Left as an ordinary error it recorded a failed
+/// sync every six hours forever, indistinguishable in the history from a timeout, with nothing
+/// anywhere saying the account had to be re-linked.
+///
+/// Only the message is kept from the upstream error, and it is one Akahu wrote about a resource
+/// rather than about its holder — but it is still third-party text, so what reaches a durable
+/// column is bounded by `sure_app::sync::sync_detail` like every other provider message.
+///
+/// An `if let` rather than a `match`: exactly one variant is special, so there is no wildcard
+/// arm here to justify (CLAUDE.md rule 2) even though `AkahuError` is not `#[non_exhaustive]`.
+fn classify(account_id: &AccountId, e: AkahuError) -> anyhow::Error {
+    if let AkahuError::NotFound { message } = &e {
+        return anyhow::Error::new(AccountDisconnected::new(format!(
+            "Akahu no longer has account {account_id}. The bank connection behind it has been \
+             removed, has expired, or has been re-authorised — a re-authorisation issues a new \
+             account id, so this link cannot be repaired. Reconnect the bank in Akahu, then link \
+             the account here again. Akahu said: {message}"
+        )));
+    }
+    anyhow::Error::new(e)
 }
 
 /// What the paginated sweep does next.

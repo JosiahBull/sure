@@ -4,14 +4,31 @@ use utoipa::ToSchema;
 
 use crate::types::{AccountKind, SaveAccount};
 
-/// Whether a sync attempt succeeded. Stored as `provider_syncs.status` (plain `TEXT`).
+/// How a sync attempt ended. Stored as `provider_syncs.status` (plain `TEXT`).
 /// Named `SyncOutcome` rather than `SyncStatus` so `SyncOutcome::Ok` doesn't shadow
 /// `Result::Ok` at use sites.
+///
+/// The column has no `CHECK` constraint (migration 0005's comment lists the values it knew
+/// about at the time), so a new variant needs no migration — but it does need every reader to
+/// decide what it means, which is what [`SyncOutcome::as_str`] and the exhaustive matches over
+/// this enum force.
 #[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncOutcome {
     Ok,
     Error,
+    /// The upstream will not serve the account this connection points at any more — Akahu
+    /// answers `404` for one whose bank connection has been removed, has expired, or has been
+    /// re-authorised (a re-authorisation mints a *new* account id, so the linked one is gone
+    /// for good).
+    ///
+    /// Deliberately **not** [`SyncOutcome::Error`], which the whole system treats as "this may
+    /// work next time": a disconnected account never recovers on its own, so recording it as a
+    /// failure buries a thing the user has to act on under six-hourly noise that looks
+    /// identical to a bad minute at the bank. It is a *state* of the connection, and the one
+    /// the UI has to surface — see `sure_app::ports::AccountDisconnected` for how an adapter
+    /// says so and `sure_app::sync` for why it does not fail the sync that found it.
+    Disconnected,
 }
 
 impl SyncOutcome {
@@ -22,6 +39,19 @@ impl SyncOutcome {
         match self {
             SyncOutcome::Ok => "ok",
             SyncOutcome::Error => "error",
+            SyncOutcome::Disconnected => "disconnected",
+        }
+    }
+
+    /// Whether this outcome is something the household has to do something about.
+    ///
+    /// One definition rather than one per surface: the API's provider list, the poll task's
+    /// summary and the web UI's badge all answer "is this connection healthy?" and would
+    /// otherwise each re-derive it — and disagree the next time a variant is added.
+    pub fn needs_attention(self) -> bool {
+        match self {
+            SyncOutcome::Ok => false,
+            SyncOutcome::Error | SyncOutcome::Disconnected => true,
         }
     }
 }
@@ -33,6 +63,7 @@ impl std::str::FromStr for SyncOutcome {
         Ok(match s {
             "ok" => SyncOutcome::Ok,
             "error" => SyncOutcome::Error,
+            "disconnected" => SyncOutcome::Disconnected,
             other => return Err(format!("unknown sync outcome '{other}'")),
         })
     }
@@ -46,7 +77,24 @@ pub struct Provider {
     pub account_id: i64,
     pub config: Value,
     pub enabled: bool,
+    /// When this connection last *succeeded*. Left alone by a failed or disconnected sync, so
+    /// it is the age of the data rather than the time of the last attempt — see
+    /// [`Self::last_sync`] for the attempt.
     pub last_synced_at: Option<String>,
+    /// The most recent sync attempt, whatever came of it, or `None` if this connection has
+    /// never been tried.
+    ///
+    /// Carried on the connection rather than left to `GET /api/providers/{id}/syncs` because
+    /// every client that lists connections needs it: "connected" is not a fact about a
+    /// `providers` row existing, it is a fact about what the upstream last said, and a UI that
+    /// reads the row alone shows a green tick over a feed that has been
+    /// [`SyncOutcome::Disconnected`] for a month. One extra query for the whole list (see
+    /// `sure_dal::providers::latest_syncs`), against one per connection if a client had to ask
+    /// per row.
+    ///
+    /// `None` on the responses that *create* a connection, which is the truth: nothing has
+    /// synced it yet at the moment it is returned.
+    pub last_sync: Option<ProviderSync>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -116,7 +164,9 @@ pub struct LinkGroupMember {
     pub name: String,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+// `Clone` because `Provider::last_sync` embeds one, and `Provider` is cloned by the sync
+// service and by every repo fake in the tests.
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ProviderSync {
     pub id: i64,
     pub provider_id: i64,

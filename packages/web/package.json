@@ -8,7 +8,7 @@
     "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
     "build:fast": "vite build",
     "preview": "vite preview --port 4173 --strictPort",
-    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "check": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit -p tsconfig.tests.json",
     "test": "playwright test",
     "test:expr": "node scripts/expr-roundtrip.mjs"
   },
@@ -18,11 +18,13 @@
   },
   "//typescript": "Held on 5.x with the rest of the workspace. TypeScript 7 is not a bump but a migration: `svelte-check@4.7.5` (which peers `^5.0.0 || ^6.0.0`) refuses to even start on it — \"TypeScript 7 support currently requires both TypeScript 7 and TypeScript 6 installed in your project, and requires using the --tsgo or --tsgo-experimental-api flag\", i.e. a dual install via an npm alias. Measured 2026-08-11. The 5.x ceiling itself comes from openapi-typescript; see the note in packages/client.",
   "//@playwright/test": "Keep in lockstep with the pinned `mcr.microsoft.com/playwright:vX-noble` image in .github/workflows/{checks,snapshots}.yml — the committed *-linux.png baselines are only reproducible against the Chromium build and font stack that image ships. Currently both are 1.62.1.",
+  "//@types/node": "For `tests/` only (tsconfig.tests.json), never for `src/` — the app has no Node globals and must not typecheck as though it did. Same range as packages/api-tests for the same reason: it tracks the Node major this repo runs (`engines.node` >=24, every workflow pins node-version 24), not npm `latest`. Raise it together with the Node pin.",
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "@tsconfig/svelte": "^5.0.8",
     "@types/d3-sankey": "^0.12.5",
+    "@types/node": "^24.13.3",
     "svelte": "^5.56.8",
     "svelte-check": "^4.7.5",
     "typescript": "^5.9.3",

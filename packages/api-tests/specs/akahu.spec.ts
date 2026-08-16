@@ -555,6 +555,244 @@ test("an upstream failure is recorded as an error sync whose detail is capped", 
   }
 });
 
+/**
+ * An account Akahu will not serve any more, end to end.
+ *
+ * `404` is what a retired connection answers with: the bank link behind the account was removed,
+ * expired, or re-authorised — and a re-authorisation mints a new account id, so the one stored on
+ * this `providers` row is gone permanently. It used to arrive here as an ordinary failed sync: a
+ * 422 to whoever asked, an `error` row every six hours forever, and nothing anywhere saying the
+ * fix was to link the account again.
+ *
+ * Four things are asserted because each fails independently, and out here is the only place the
+ * first two are visible at all:
+ *
+ * 1. the sync answers **200**, not 422 — it is a state of the connection, not a request that
+ *    failed, and a batch walking the household's feeds has to be able to keep going;
+ * 2. `GET /api/providers` carries the state on the connection, which is what lets the UI say
+ *    "reconnect this" instead of showing a green tick over a feed that died a month ago;
+ * 3. the detail says what to do, because it is the only place anyone is ever told;
+ * 4. the watermark does not move and nothing lands in the ledger.
+ */
+test("an account akahu no longer has is recorded as disconnected, not as a failure", async ({
+  testproxy,
+}) => {
+  const { server, api } = await configured();
+  try {
+    const acc = await createAccount(api, "Everyday", "bank");
+    const provider = await akahuProvider(api, acc.id);
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: `^/v1/accounts/${EXTERNAL_ID}/transactions$`,
+      status: 404,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({ success: false, message: "account not found" }),
+    });
+
+    const synced = await api.POST("/api/providers/{id}/sync", {
+      params: { path: { id: provider.id } },
+      body: {},
+    });
+    expect(synced.response.status, "a retired account is not a failed request").toBe(200);
+    expect(synced.data?.status).toBe("disconnected");
+    expect(synced.data?.imported).toBe(0);
+    const detail = synced.data?.detail ?? "";
+    expect(detail).toContain(EXTERNAL_ID);
+    expect(detail).toContain("link the account here again");
+
+    // The connection itself reports it, which is the whole point of `last_sync` existing: a
+    // client listing connections must not have to ask per row what state each one is in.
+    const providers = await api.GET("/api/providers", {});
+    const listed = providers.data?.find((p) => p.id === provider.id);
+    expect(listed?.last_sync?.status).toBe("disconnected");
+    expect(listed?.last_sync?.detail).toBe(detail);
+    // `last_synced_at` is the age of the *data*, and no data arrived — so it stays empty and the
+    // next poll asks for the same window rather than skipping history nobody read.
+    expect(listed?.last_synced_at).toBeFalsy();
+
+    const txns = await api.GET("/api/transactions", { params: { query: { account_id: acc.id } } });
+    expect(txns.data?.length).toBe(0);
+
+    // Durably recorded, and distinguishable from the `error` rows beside it in the same history.
+    const syncs = await api.GET("/api/providers/{id}/syncs", {
+      params: { path: { id: provider.id } },
+    });
+    expect(syncs.data?.length).toBe(1);
+    expect(syncs.data![0].status).toBe("disconnected");
+  } finally {
+    server.stop();
+  }
+});
+
+/**
+ * The degradation that matters: one dead connection must cost only itself.
+ *
+ * A household has several feeds and they fail independently — one bank re-authorised, the others
+ * untouched. Both the six-hourly poll and the "Sync all" button walk the whole list, so the
+ * question this answers is whether reaching a retired account leaves the *rest* of the household
+ * synced. Nothing about it is specific to a bank account: the same path carries a mortgage, a
+ * credit card and a brokerage wallet, which is why the live account here is a loan rather than a
+ * second chequing account.
+ */
+test("a retired connection does not stop the household's other accounts syncing", async ({
+  testproxy,
+}) => {
+  const LIVE_ID = "acc_mortgage01";
+  const { server, api } = await configured();
+  try {
+    const dead = await akahuProvider(api, (await createAccount(api, "Old Everyday", "bank")).id);
+    const liveAccount = await createAccount(api, "Prime Housing Lending", "mortgage", "NZD", {
+      metadata: {
+        profile: "mortgage",
+        lender: "ASB",
+        original_amount_minor: 48_500_000,
+        interest_rate_bps: 549,
+        rate_type: "floating",
+        term_months: 360,
+        start_date: "2024-01-01",
+      },
+    });
+    const { data: live, response: created } = await api.POST("/api/providers", {
+      body: {
+        name: "Akahu — Prime Housing Lending",
+        kind: "akahu",
+        account_id: liveAccount.id,
+        enabled: true,
+        config: { external_account_id: LIVE_ID },
+      },
+    });
+    expect(created.status, "create the second provider").toBe(201);
+
+    // The retired one, and beside it a perfectly healthy loan.
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: `^/v1/accounts/${EXTERNAL_ID}/transactions$`,
+      status: 404,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({ success: false, message: "account not found" }),
+    });
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: `^/v1/accounts/${LIVE_ID}/transactions$`,
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        success: true,
+        items: [
+          {
+            ...txn({
+              id: "trans_live01",
+              date: "2026-03-31T00:00:00.000Z",
+              description: "Interest",
+              amount: -2_310,
+            }),
+            _account: LIVE_ID,
+          },
+        ],
+        cursor: { next: null },
+      }),
+    });
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: `^/v1/accounts/${LIVE_ID}$`,
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        success: true,
+        item: { ...account({ balance: -484_210, kind: "LOAN", name: "Prime Housing Lending" }), _id: LIVE_ID },
+      }),
+    });
+
+    // Exactly what "Sync all" does: every pollable connection in turn, dead one first so a
+    // regression that aborts the batch cannot pass by accident.
+    const results = [];
+    for (const id of [dead.id, live!.id]) {
+      const r = await api.POST("/api/providers/{id}/sync", { params: { path: { id } }, body: {} });
+      results.push(r);
+    }
+    expect(results.every((r) => r.response.status === 200)).toBe(true);
+    expect(results[0].data?.status).toBe("disconnected");
+    expect(results[1].data?.status).toBe("ok");
+    expect(results[1].data?.imported).toBe(1);
+
+    // The live account is fully synced — transactions *and* the balance valuation, which is the
+    // half that would go missing if a shared failure path had been taken.
+    const txns = await api.GET("/api/transactions", {
+      params: { query: { account_id: liveAccount.id } },
+    });
+    expect(txns.data?.length).toBe(1);
+    expect(txns.data![0].amount_minor).toBe(-231_000);
+    const valuations = await api.GET("/api/accounts/{id}/valuations", {
+      params: { path: { id: liveAccount.id } },
+    });
+    expect(valuations.data?.length).toBe(1);
+    expect(valuations.data![0].value_minor).toBe(-48_421_000);
+
+    // And the two connections read back with different states from one list call.
+    const providers = await api.GET("/api/providers", {});
+    const byId = new Map(providers.data?.map((p) => [p.id, p]));
+    expect(byId.get(dead.id)?.last_sync?.status).toBe("disconnected");
+    expect(byId.get(live!.id)?.last_sync?.status).toBe("ok");
+    expect(byId.get(live!.id)?.last_synced_at).toBeTruthy();
+  } finally {
+    server.stop();
+  }
+});
+
+/**
+ * One account this build cannot represent must not cost the user every other one.
+ *
+ * Discovery is the only way into the connect dialog, and `list_accounts` used to collect its
+ * mapped accounts into a single `Result` — so one absurd balance among a household's accounts
+ * meant *nothing* could be linked, with a message naming none of them. The bad row is now
+ * dropped (named in the server log) and its neighbours are offered as usual.
+ */
+test("discovery still offers the accounts it can read when one of them is unrepresentable", async ({
+  testproxy,
+}) => {
+  const { server, api } = await configured();
+  try {
+    // Spelled out as JSON text rather than built with `JSON.stringify`, and that is not a
+    // stylistic choice. A balance big enough to overflow when scaled to cents is past 2^53, so
+    // it cannot survive as a JS number: `JSON.stringify` renders it in exponent form with a
+    // rounded mantissa, and rounding *up* puts it past `Decimal::MAX` — which fails the whole
+    // page at deserialisation instead of the one account, testing something else entirely.
+    // 1e27 is comfortably inside `Decimal`'s range and 1e29 (its value in cents) is not, which
+    // is exactly the boundary `decimal_to_minor` refuses at.
+    const overflowing = `{
+      "_id": "acc_absurd01",
+      "_authorisation": "auth_e2e01",
+      "connection": { "_id": "${CONNECTION_ID}", "name": "${INSTITUTION}", "connection_type": "official" },
+      "name": "Overflowing",
+      "status": "ACTIVE",
+      "refreshed": {},
+      "balance": { "current": 1000000000000000000000000000, "currency": "NZD" },
+      "type": "CHECKING",
+      "attributes": ["TRANSACTIONS"]
+    }`;
+    await testproxy.stub({
+      upstream: "akahu",
+      method: "GET",
+      path_pattern: "^/v1/accounts$",
+      status: 200,
+      response_headers: { "content-type": "application/json" },
+      body: `{ "success": true, "items": [${overflowing}, ${JSON.stringify(account({ balance: 1234.56 }))}] }`,
+    });
+
+    const discovered = await api.GET("/api/provider-kinds/{kind}/accounts", {
+      params: { path: { kind: "akahu" } },
+    });
+    expect(discovered.response.status, "one bad account is not a failed discovery").toBe(200);
+    expect(discovered.data?.map((a) => a.external_id)).toEqual([EXTERNAL_ID]);
+  } finally {
+    server.stop();
+  }
+});
+
 // ---- an unconfigured install, which is what a fresh checkout and every CI run is -----------
 
 test("provider kinds list akahu as credential-based and discovery-capable", async ({ api }) => {

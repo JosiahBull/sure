@@ -280,6 +280,12 @@ pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResul
 /// Sync a provider: fetch upstream transactions, import new ones (dedupe on
 /// external id), and record the result.
 ///
+/// **A 200 is not the same as a healthy sync.** Read `status` on the body: `disconnected` means
+/// the upstream no longer has the account this connection points at, which is a state of the
+/// connection rather than a request that failed — the only fix is to link the account again, and
+/// `detail` says so. It answers 200 rather than 4xx deliberately, so a caller syncing several
+/// connections in turn keeps going; a failure that may not recur is still a 422.
+///
 /// Single-flight per provider: while one sync of this provider is running — whether started
 /// here, by the initial sync after linking, or by the 6-hourly poll — a second request gets a
 /// 409 instead of a duplicate run.

@@ -83,6 +83,11 @@ impl From<ProviderRow> for Provider {
             account_id: r.account_id,
             enabled: r.enabled,
             last_synced_at: r.last_synced_at,
+            // Filled in by the read paths (`list`, `get`, `update`), which join the history on.
+            // `None` here is the honest answer for the *write* paths this conversion also
+            // serves: `create`/`link`/`link_group` return a connection that has, by
+            // construction, never been synced.
+            last_sync: None,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -122,7 +127,14 @@ pub async fn list(db: &Db) -> AppResult<Vec<Provider>> {
     )
     .fetch_all(db)
     .await?;
-    Ok(rows.into_iter().map(Provider::from).collect())
+    let mut newest = latest_syncs(db).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| Provider {
+            last_sync: newest.remove(&r.id),
+            ..Provider::from(r)
+        })
+        .collect())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -137,7 +149,10 @@ pub async fn get(db: &Db, id: i64) -> AppResult<Provider> {
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound("provider"))?;
-    Ok(row.into())
+    Ok(Provider {
+        last_sync: latest_sync(db, id).await?,
+        ..Provider::from(row)
+    })
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -186,7 +201,13 @@ pub async fn update(db: &Db, id: i64, input: SaveProvider) -> AppResult<Provider
     .await
     .map_err(map_fk)?
     .ok_or(AppError::NotFound("provider"))?;
-    Ok(row.into())
+    // Editing a connection does not sync it, so its history is whatever it already was —
+    // returning `None` here would tell a client that had just renamed a healthy connection it
+    // had never been synced.
+    Ok(Provider {
+        last_sync: latest_sync(db, id).await?,
+        ..Provider::from(row)
+    })
 }
 
 /// Link an upstream account to a local one, creating the local account first if
@@ -544,6 +565,51 @@ pub async fn record_sync(
     .try_into()
 }
 
+/// The newest sync attempt for every provider that has one, keyed by provider id.
+///
+/// One query for the whole connection list, rather than one per row: `GET /api/providers` is
+/// read on every visit to the Bank sync page, and a per-row lookup would turn a page render
+/// into N+1 round trips for a fact the UI needs on every single row.
+///
+/// `MAX(id)` rather than `MAX(created_at)`. The timestamp is `strftime('%Y-%m-%dT%H:%M:%fZ')`,
+/// so two attempts inside the same millisecond — which the initial sync after a group link
+/// routinely produces — carry the same value and `MAX` picks one arbitrarily. The id is
+/// monotonic and always breaks the tie the right way round.
+#[tracing::instrument(level = "debug", skip_all)]
+async fn latest_syncs(db: &Db) -> AppResult<HashMap<i64, ProviderSync>> {
+    sqlx::query_as!(
+        ProviderSyncRow,
+        r#"SELECT s.id AS "id!", s.provider_id, s.imported, s.skipped, s.status, s.detail,
+                  s.created_at
+             FROM provider_syncs s
+             JOIN (SELECT provider_id, MAX(id) AS id FROM provider_syncs GROUP BY provider_id) n
+               ON n.id = s.id"#
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(|r| {
+        let provider_id = r.provider_id;
+        ProviderSync::try_from(r).map(|s| (provider_id, s))
+    })
+    .collect()
+}
+
+/// The newest sync attempt for one provider, or `None` if it has never been tried.
+#[tracing::instrument(level = "debug", skip_all)]
+async fn latest_sync(db: &Db, provider_id: i64) -> AppResult<Option<ProviderSync>> {
+    sqlx::query_as!(
+        ProviderSyncRow,
+        r#"SELECT id AS "id!", provider_id, imported, skipped, status, detail, created_at
+             FROM provider_syncs WHERE provider_id=?1 ORDER BY id DESC LIMIT 1"#,
+        provider_id
+    )
+    .fetch_optional(db)
+    .await?
+    .map(ProviderSync::try_from)
+    .transpose()
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_syncs(db: &Db, provider_id: i64) -> AppResult<Vec<ProviderSync>> {
     sqlx::query_as!(
@@ -869,6 +935,161 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(AppError::Validation(_))));
+    }
+
+    // ---- the health a connection carries with it ------------------------------------
+
+    /// A connection reports the last thing that happened to it, and reports it from the *list*.
+    ///
+    /// The `providers` row existing says nothing about whether the feed works, and every client
+    /// that renders a connection needs both facts. Reading them per row would be N+1 queries on
+    /// a page load; reading them from a second query, as `list` does, is one.
+    #[tokio::test]
+    async fn a_listed_connection_carries_its_most_recent_sync() {
+        let db = test_db().await;
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
+        let synced = link_to(&db, account.id, "acc_synced").await;
+        let never = link_to(&db, account.id, "acc_never").await.id;
+
+        record_sync(&db, synced.id, 3, 0, SyncOutcome::Ok, None)
+            .await
+            .unwrap();
+
+        let listed = list(&db).await.unwrap();
+        let by_id: HashMap<i64, &Provider> = listed.iter().map(|p| (p.id, p)).collect();
+        let last = by_id[&synced.id]
+            .last_sync
+            .as_ref()
+            .expect("a synced connection reports its sync");
+        assert_eq!(last.status, SyncOutcome::Ok);
+        assert_eq!(last.imported, 3);
+        // Not "some sync": the one belonging to *this* connection. A join keyed wrongly would
+        // otherwise hand every row the same history.
+        assert_eq!(last.provider_id, synced.id);
+        assert!(
+            by_id[&never].last_sync.is_none(),
+            "a connection nothing has synced must not borrow a neighbour's history"
+        );
+
+        // …and one connection at a time reads the same way.
+        assert_eq!(
+            get(&db, synced.id).await.unwrap().last_sync.map(|s| s.id),
+            Some(last.id)
+        );
+        assert!(get(&db, never).await.unwrap().last_sync.is_none());
+    }
+
+    /// "Most recent" is decided by id, and it has to be.
+    ///
+    /// `created_at` is `strftime('%Y-%m-%dT%H:%M:%fZ')` — millisecond resolution — and these
+    /// three rows are written well inside one millisecond, which is also what the initial sync
+    /// after a group link produces. `MAX(created_at)` would pick among the ties arbitrarily, so
+    /// a connection that had just been recorded as disconnected could keep reporting the `ok`
+    /// from the attempt before it.
+    #[tokio::test]
+    async fn the_newest_sync_wins_even_when_the_timestamps_tie() {
+        let db = test_db().await;
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
+        let provider = link_to(&db, account.id, "acc_1").await;
+
+        for status in [
+            SyncOutcome::Ok,
+            SyncOutcome::Error,
+            SyncOutcome::Disconnected,
+        ] {
+            record_sync(&db, provider.id, 0, 0, status, Some("detail"))
+                .await
+                .unwrap();
+        }
+        // The tie is *forced* rather than hoped for. Three `record_sync` calls usually do land
+        // inside one millisecond, but "usually" is a flaky test — and the timestamps are the
+        // only thing being staged here, so the ids stay exactly the ones the real writer
+        // assigned, in the real order.
+        sqlx::query!("UPDATE provider_syncs SET created_at='2026-08-16T00:00:00.000Z'")
+            .execute(&db)
+            .await
+            .unwrap();
+        let history = list_syncs(&db, provider.id).await.unwrap();
+        assert!(
+            history
+                .iter()
+                .all(|s| s.created_at == history[0].created_at),
+            "these rows share a timestamp, so only the id can order them"
+        );
+
+        for last in [
+            list(&db).await.unwrap()[0].last_sync.clone(),
+            get(&db, provider.id).await.unwrap().last_sync,
+        ] {
+            assert_eq!(
+                last.expect("a synced connection").status,
+                SyncOutcome::Disconnected
+            );
+        }
+    }
+
+    /// A brand-new connection has no history, and saying so is the honest answer rather than an
+    /// omission — nothing has synced it at the moment it is returned. Editing one, by contrast,
+    /// must not *lose* the history it already had: a rename would otherwise tell a client that a
+    /// healthy connection had never been synced.
+    #[tokio::test]
+    async fn creating_a_connection_reports_no_history_and_editing_one_keeps_it() {
+        let db = test_db().await;
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
+        let provider = link_to(&db, account.id, "acc_1").await;
+        assert!(provider.last_sync.is_none(), "nothing has synced it yet");
+
+        record_sync(
+            &db,
+            provider.id,
+            0,
+            0,
+            SyncOutcome::Disconnected,
+            Some("gone"),
+        )
+        .await
+        .unwrap();
+        let renamed = update(
+            &db,
+            provider.id,
+            SaveProvider {
+                name: "Akahu — renamed".to_string(),
+                kind: "akahu".to_string(),
+                account_id: account.id,
+                config: Some(provider.config.clone()),
+                enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(renamed.name, "Akahu — renamed");
+        assert_eq!(
+            renamed.last_sync.map(|s| s.status),
+            Some(SyncOutcome::Disconnected),
+        );
+    }
+
+    /// Link a feed to an existing account, for the tests above that only care that a
+    /// `providers` row exists.
+    async fn link_to(db: &Db, account_id: i64, external_id: &str) -> Provider {
+        link(
+            db,
+            LinkProviderAccount {
+                kind: "akahu".to_string(),
+                external_id: external_id.to_string(),
+                name: format!("Akahu — {external_id}"),
+                new_account: None,
+                existing_account_id: Some(account_id),
+            },
+        )
+        .await
+        .unwrap()
     }
 
     async fn imported_row(db: &Db, external_id: &str) -> sure_core::Transaction {

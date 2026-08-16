@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use sure_core::{AppError, AppResult, Provider, ProviderAccount, ProviderSync, SyncOutcome};
 
 use crate::ports::{
-    AccountRepo, Clock, ImportRow, ProviderRegistry, ProviderRepo, SyncContext, ValuationRepo,
+    AccountDisconnected, AccountRepo, Clock, ImportRow, ProviderRegistry, ProviderRepo,
+    SyncContext, ValuationRepo,
 };
 use crate::rules::AutoCategorize;
 
@@ -214,9 +215,23 @@ impl SyncService {
             let Some(number) = external_id.and_then(|id| numbers.get(id)) else {
                 continue;
             };
-            self.accounts
+            // Per account, not for the batch: this is a backfill over every already-linked
+            // account of the kind, so one that will not take its number (a row deleted between
+            // the list and the write, a lost race for SQLite's single writer) must not stop the
+            // siblings that would. Best-effort is already this function's contract with its
+            // caller; it now holds *inside* it too.
+            if let Err(e) = self
+                .accounts
                 .set_account_number_if_unset(row.account_id, number)
-                .await?;
+                .await
+            {
+                tracing::warn!(
+                    account_id = row.account_id,
+                    error = %e,
+                    "could not record an upstream account number; continuing with the rest"
+                );
+                continue;
+            }
             filled += 1;
         }
         tracing::debug!(
@@ -457,6 +472,23 @@ impl SyncService {
     /// external id), and durably record the outcome. A fetch failure is still recorded
     /// (as an "error" sync row) before the error is propagated.
     ///
+    /// **A disconnected account is not a failure.** When the upstream says it no longer has
+    /// this account — an [`AccountDisconnected`] anywhere in the error's chain — this records a
+    /// [`SyncOutcome::Disconnected`] row and returns it as `Ok`. Three things follow from that,
+    /// and all three are the point:
+    ///
+    /// * the six-hourly poll ([`crate::tasks::provider_poll`]) walks past it without logging a
+    ///   warning per connection per run, and a "sync all" over the household keeps going;
+    /// * the connection list carries the state ([`Provider::last_sync`]), so the UI can say
+    ///   "reconnect this" instead of a green tick over a feed that died a month ago;
+    /// * nothing about it is Akahu-specific. The judgement is the adapter's — it is the only
+    ///   layer that can read its own upstream's spelling of "gone" — and the handling is here,
+    ///   so a broker or a payroll feed that retires an account gets the same treatment.
+    ///
+    /// The alternative, which is what this did before, was an `error` row every six hours
+    /// forever: identical in the history to a timeout, and with no way for anyone to find out
+    /// that the fix was to re-link.
+    ///
     /// **Single-flight per provider.** A second concurrent sync of the *same* provider is
     /// refused outright with [`AppError::Conflict`] (a 409 at the HTTP edge) rather than
     /// started: it would double the outbound requests to an upstream that rate-limits per
@@ -490,16 +522,7 @@ impl SyncService {
 
         let fetched = match p.fetch(ctx).await {
             Ok(txns) => txns,
-            Err(e) => {
-                // One bounded rendering, used for both the durable row and the 422 — see
-                // `sync_detail` for what an unbounded one would leak.
-                let detail = sync_detail(&e);
-                let _ = self
-                    .providers
-                    .record_sync(id, 0, 0, SyncOutcome::Error, Some(&detail))
-                    .await?;
-                return Err(AppError::validation(format!("sync failed: {detail}")));
-            }
+            Err(e) => return self.record_failed_fetch(id, &e).await,
         };
 
         let provider_tag = format!("{}#{}", provider.kind, id);
@@ -536,6 +559,12 @@ impl SyncService {
         // the refusal is visible in `GET /api/providers/{id}/syncs` and in the sync-now
         // response instead of living only in a server log line nobody reads.
         let mut refused: Option<String> = None;
+        // Set when the *balance* leg is the one that discovers the account is gone. Reachable
+        // on its own because the two legs are different upstream calls: a balance-only account
+        // (one the feed will not give transactions for) has an unremarkable empty fetch and
+        // then a 404 on the refetch, so keying the state off the fetch alone would leave that
+        // account reporting a clean sync forever while its balance quietly stopped moving.
+        let mut disconnected: Option<String> = None;
 
         // Best-effort: a provider's transaction history often doesn't reach back to when
         // the account was opened (a mortgage's full term, say), so the imported
@@ -659,18 +688,65 @@ impl SyncService {
                 }
             }
             Ok(None) => {}
+            Err(e) if AccountDisconnected::seen_in(&e) => {
+                tracing::warn!(
+                    provider_id = id,
+                    account_id = provider.account_id,
+                    "the upstream no longer has this account; recording the connection as disconnected"
+                );
+                disconnected = Some(sync_detail(&e));
+            }
             Err(e) => {
                 tracing::warn!(provider_id = id, error = %e, "could not fetch provider balance");
             }
         }
 
         self.providers.update_last_synced(id).await?;
-        // Still `Ok`: the transaction import that `imported`/`skipped` describe did succeed,
-        // and a currency-mismatched balance is not a failed sync. `detail` is what makes the
-        // refusal visible without overstating it.
+        // The transaction import that `imported`/`skipped` describe did succeed either way, so
+        // both of these are `Ok` at the call site — what differs is what the row says happened.
+        // A currency-mismatched balance is a refusal on an otherwise healthy sync; a
+        // disconnected account is a state of the connection, and takes the status so the
+        // connection list and the poll summary can see it.
+        let (status, detail) = match disconnected {
+            Some(detail) => (SyncOutcome::Disconnected, Some(detail)),
+            None => (SyncOutcome::Ok, refused),
+        };
         self.providers
-            .record_sync(id, imported, skipped, SyncOutcome::Ok, refused.as_deref())
+            .record_sync(id, imported, skipped, status, detail.as_deref())
             .await
+    }
+
+    /// Record a fetch that produced nothing, and decide whether it was a failure at all.
+    ///
+    /// The two answers differ in every way that matters. A disconnected account is a durable
+    /// state: the row says [`SyncOutcome::Disconnected`], the caller gets it back as `Ok`, and
+    /// neither the poll nor a "sync all" treats it as something that went wrong — it is
+    /// something to *report*, not something to retry. Anything else is a failure that may not
+    /// recur, so it keeps the old behaviour: an `error` row, then a 422 whose message is the
+    /// same bounded rendering the row holds.
+    ///
+    /// Neither path advances the watermark (`update_last_synced` is not called), so the next
+    /// poll asks for exactly the window this one never read.
+    async fn record_failed_fetch(&self, id: i64, e: &anyhow::Error) -> AppResult<ProviderSync> {
+        // One bounded rendering, used for both the durable row and the 422 — see `sync_detail`
+        // for what an unbounded one would leak.
+        let detail = sync_detail(e);
+        if AccountDisconnected::seen_in(e) {
+            tracing::warn!(
+                provider_id = id,
+                detail = %detail,
+                "the upstream no longer has this account; recording the connection as disconnected"
+            );
+            return self
+                .providers
+                .record_sync(id, 0, 0, SyncOutcome::Disconnected, Some(&detail))
+                .await;
+        }
+        let _ = self
+            .providers
+            .record_sync(id, 0, 0, SyncOutcome::Error, Some(&detail))
+            .await?;
+        Err(AppError::validation(format!("sync failed: {detail}")))
     }
 
     /// Run the rule set over what is still uncategorised, and never let it fail the sync.
@@ -797,6 +873,9 @@ mod tests {
             config: serde_json::json!({}),
             enabled: true,
             last_synced_at: None,
+            // `sync_provider` is handed a row and writes the next history entry; it never
+            // reads the previous one, so every fixture here starts with none.
+            last_sync: None,
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
             updated_at: "2026-01-01T00:00:00.000Z".to_string(),
         }
@@ -1046,6 +1125,17 @@ mod tests {
         }
     }
 
+    /// What a disconnected upstream says, in the fakes.
+    ///
+    /// Shaped like the real adapter's — an explanation plus the action that fixes it — because
+    /// the message is the whole payload of a disconnection: it is what lands in
+    /// `provider_syncs.detail` and what the connection list shows the user.
+    const GONE: &str = "the upstream no longer has this account; reconnect it and link it again";
+
+    fn disconnected() -> anyhow::Error {
+        anyhow::Error::new(AccountDisconnected::new(GONE))
+    }
+
     /// How long a fake `fetch` stays inside the provider — the lever the single-flight tests
     /// pull to hold one sync open while a second one is attempted.
     enum Gate {
@@ -1054,6 +1144,10 @@ mod tests {
         /// Fail the fetch, exercising `sync_provider`'s early `return Err` — the exit path a
         /// hand-written `remove` at the end of the function would leak the slot on.
         Fail,
+        /// Fail the fetch the way an upstream that has retired the account does. Distinct from
+        /// [`Gate::Fail`] in exactly the way the service has to notice: same exit path, a
+        /// different durable outcome and an `Ok` for the caller.
+        Gone,
         /// Hand out a permit on `entered` (so a test knows the fetch is in flight), then wait
         /// for one on `release`. Semaphore permits are sticky, so neither side can miss the
         /// other's signal however the runtime schedules them.
@@ -1067,9 +1161,31 @@ mod tests {
         Rendezvous(Arc<Barrier>),
     }
 
+    /// What the fake's `current_balance` answers with.
+    ///
+    /// Three cases rather than the `Option<ProviderBalance>` this used to be, because the third
+    /// one is only reachable here: a balance-only account (one the feed will not give
+    /// transactions for) has a perfectly ordinary empty fetch and then a "gone" on the balance
+    /// refetch, so that leg has to be able to report a disconnection independently.
+    enum BalanceAnswer {
+        /// The provider has no concept of a balance — a CSV feed.
+        Absent,
+        Reported(ProviderBalance),
+        Gone,
+    }
+
+    impl From<Option<ProviderBalance>> for BalanceAnswer {
+        fn from(balance: Option<ProviderBalance>) -> Self {
+            match balance {
+                Some(balance) => BalanceAnswer::Reported(balance),
+                None => BalanceAnswer::Absent,
+            }
+        }
+    }
+
     struct FakeProvider {
         fetches: Arc<AtomicUsize>,
-        balance: Option<ProviderBalance>,
+        balance: BalanceAnswer,
         gate: Gate,
         /// Upstream accounts this provider can enumerate. Empty means it can't discover any,
         /// which is what every sync test wants.
@@ -1097,6 +1213,7 @@ mod tests {
             match &self.gate {
                 Gate::Open => {}
                 Gate::Fail => anyhow::bail!("upstream refused the request"),
+                Gate::Gone => return Err(disconnected()),
                 Gate::Held { entered, release } => {
                     entered.add_permits(1);
                     release
@@ -1115,7 +1232,11 @@ mod tests {
             &self,
             _ctx: SyncContext<'_>,
         ) -> anyhow::Result<Option<ProviderBalance>> {
-            Ok(self.balance.clone())
+            match &self.balance {
+                BalanceAnswer::Absent => Ok(None),
+                BalanceAnswer::Reported(balance) => Ok(Some(balance.clone())),
+                BalanceAnswer::Gone => Err(disconnected()),
+            }
         }
     }
 
@@ -1176,10 +1297,27 @@ mod tests {
             Self::of_kind(None, "NZD", None, Gate::Open, history)
         }
 
+        /// A sync whose transaction fetch is unremarkable and whose *balance* refetch reports
+        /// the account gone — the shape a balance-only account takes when its connection is
+        /// retired, and the one case the fetch leg alone cannot see.
+        fn balance_gone() -> Self {
+            Self::build(None, "NZD", BalanceAnswer::Gone, Gate::Open, Vec::new())
+        }
+
         fn of_kind(
             kind: Option<AccountKind>,
             account_ccy: &str,
             balance: Option<ProviderBalance>,
+            gate: Gate,
+            history: Vec<ProviderTransaction>,
+        ) -> Self {
+            Self::build(kind, account_ccy, balance.into(), gate, history)
+        }
+
+        fn build(
+            kind: Option<AccountKind>,
+            account_ccy: &str,
+            balance: BalanceAnswer,
             gate: Gate,
             history: Vec<ProviderTransaction>,
         ) -> Self {
@@ -1308,7 +1446,7 @@ mod tests {
         let registry = Arc::new(FakeRegistry {
             provider: FakeProvider {
                 fetches: Arc::new(AtomicUsize::new(0)),
-                balance: None,
+                balance: BalanceAnswer::Absent,
                 gate: Gate::Open,
                 discoverable: upstream,
                 history,
@@ -1823,7 +1961,7 @@ mod tests {
             Arc::new(FakeRegistry {
                 provider: FakeProvider {
                     fetches: h.fetches.clone(),
-                    balance: None,
+                    balance: BalanceAnswer::Absent,
                     gate: Gate::Open,
                     discoverable: Vec::new(),
                     history: vec![movement("2026-02-01", -4_50, "COUNTDOWN ALBANY")],
@@ -1958,5 +2096,105 @@ mod tests {
                 .iter()
                 .all(|r| r.status == SyncOutcome::Error && r.provider_id == 1)
         );
+    }
+
+    // ---- a connection the upstream has retired -------------------------------------
+    //
+    // Everything below is about one distinction: "this failed" versus "this is gone". They
+    // reach `sync_provider` through the same `Err` and have to come out of it differently,
+    // because only one of them will ever work again.
+
+    /// The headline: an account the upstream no longer has is recorded as a *state* and handed
+    /// back as `Ok`.
+    ///
+    /// Both halves matter and neither implies the other. The status is what the connection list
+    /// and the poll summary read, so an `error` here would show the user "sync failing, try
+    /// again" for a thing retrying cannot fix. The `Ok` is what keeps a batch going: the poll
+    /// and the UI's "Sync all" both walk a household's connections, and an `Err` from one of
+    /// them used to be the last word anyone saw about the run.
+    #[tokio::test]
+    async fn a_disconnected_account_is_recorded_as_a_state_not_a_failure() {
+        let h = Harness::new("NZD", None, Gate::Gone);
+
+        let sync = h
+            .service
+            .sync_provider(provider_row(1), None)
+            .await
+            .expect("a disconnected account is not an error the caller has to handle");
+        assert_eq!(sync.status, SyncOutcome::Disconnected);
+        assert_eq!((sync.imported, sync.skipped), (0, 0));
+
+        let recorded = h.recorded();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].status, SyncOutcome::Disconnected);
+        // The adapter's message reaches the row verbatim (under the cap). It is the only place
+        // the user is ever told what to do about it, so a status with no detail would be a
+        // dead end.
+        assert_eq!(recorded[0].detail.as_deref(), Some(GONE));
+        assert_eq!(sync.detail.as_deref(), Some(GONE));
+    }
+
+    /// The same conclusion reached down the other leg.
+    ///
+    /// A balance-only account — one the feed will not give transactions for — sails through the
+    /// fetch with an empty page and only meets the 404 on the balance refetch. That leg is
+    /// best-effort by design (a balance we could not read must not fail an import that already
+    /// happened), so before this the disconnection was swallowed as a WARN and the sync went on
+    /// reporting `ok` for an account that had stopped existing.
+    #[tokio::test]
+    async fn a_disconnection_found_on_the_balance_leg_still_reaches_the_row() {
+        let h = Harness::balance_gone();
+
+        let sync = h
+            .service
+            .sync_provider(provider_row(1), None)
+            .await
+            .expect("the transaction import succeeded, so this is still Ok");
+        assert_eq!(sync.status, SyncOutcome::Disconnected);
+        assert_eq!(sync.detail.as_deref(), Some(GONE));
+        // Nothing was written from a balance we never got — the point of refusing rather than
+        // guessing, exactly as the currency-mismatch path does.
+        assert!(h.valuations.rows.lock().expect("test mutex").is_empty());
+    }
+
+    /// A disconnected account does not wedge the single-flight slot either.
+    ///
+    /// The `Ok` return is a *different exit path* from the `Err` that
+    /// `releases_the_slot_when_the_fetch_fails` covers, and the guard is released by `Drop`
+    /// precisely so nobody has to remember to add the release to each new one. Worth pinning
+    /// separately: a wedged slot on a disconnected feed would answer 409 forever, so the user
+    /// could not even retry after re-linking.
+    #[tokio::test]
+    async fn a_disconnected_sync_releases_the_single_flight_slot() {
+        let h = Harness::new("NZD", None, Gate::Gone);
+
+        for _ in 0..2 {
+            let sync = h
+                .service
+                .sync_provider(provider_row(1), None)
+                .await
+                .expect("not wedged as 'already syncing'");
+            assert_eq!(sync.status, SyncOutcome::Disconnected);
+        }
+        assert_eq!(h.fetch_count(), 2);
+    }
+
+    /// An ordinary failure must keep behaving like one.
+    ///
+    /// The inverse of the tests above, and the one that would fail if the disconnection check
+    /// were ever loosened into "any error from a feed is a disconnection": a timeout, a 500, a
+    /// schema change are all things that work on the next poll, and reporting them as
+    /// "reconnect this account" would send the user to re-link a connection that is fine.
+    #[tokio::test]
+    async fn an_ordinary_upstream_failure_is_still_an_error() {
+        let h = Harness::new("NZD", None, Gate::Fail);
+
+        let err = h
+            .service
+            .sync_provider(provider_row(1), None)
+            .await
+            .expect_err("a failure the caller has to handle");
+        assert_eq!(err.code(), "validation");
+        assert_eq!(h.recorded()[0].status, SyncOutcome::Error);
     }
 }
