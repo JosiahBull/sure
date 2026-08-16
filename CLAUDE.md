@@ -257,20 +257,35 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   transaction list's optional filters, `bulk_update`/`bulk_delete`, the chunked provider import
   — keep `QueryBuilder`/`format!` and each says so at the call site; they are the only unchecked
   SQL left.
-- **Pre-commit** (`.githooks/pre-commit`, wired by the `prepare` script): runs
+- **Pre-commit** (`.githooks/pre-commit`, wired by the `prepare` script): **one gate per
+  required status check**, and the hook's header carries the mapping so a gap is visible rather
+  than inferred. `main` requires ten contexts; the hook covers nine, in cheapest-first order:
   `node scripts/pii-scan.mjs` (rule 3; first, because it is the cheapest gate and the only
-  one guarding something a later gate cannot undo), then `node scripts/sqlx-prepare.mjs --check`
+  one guarding something a later gate cannot undo), `./scripts/check-dependabot.sh` and
+  `./scripts/check-versions.sh` (a second each, and each guards a hand-edited file nobody can
+  check by eye), then `node scripts/sqlx-prepare.mjs --check`
   (before the compilers, so stale query metadata reports itself instead of surfacing as a
   baffling query error out of clippy), then `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
   `cargo test --workspace --all-features` (directly after clippy, which has already
   compiled the workspace, so the marginal cost is linking and running the test binaries;
   CI runs the same command as the `test` job in `checks.yml`),
-  `pnpm test:api`, `pnpm --filter @sure/web check`. It deliberately skips the web
+  `pnpm test:api`, and **both** halves of the `Typecheck` job —
+  `pnpm --filter @sure/web check` *and* `pnpm --filter @sure/api-tests check`, which check
+  different trees. It deliberately skips the web
   *visual* Playwright suite (only deterministic in CI's pinned container — `pnpm snapshots:verify`
   runs that container locally, and `pnpm snapshots:update` regenerates the `-linux.png` baselines
-  so they land in the commit that moved them; see `docs/TESTING.md`). Bypass in
-  an emergency with `git commit --no-verify`, not by weakening a lint.
+  so they land in the commit that moved them; see `docs/TESTING.md`). That is the **one**
+  intentional omission; anything else missing is a bug in the hook.
+
+  **Run the hook, or run the gates — never a hand-picked subset piped through `tail`.** Three
+  rows of that mapping were missing at once until 2026-08-16, so a commit could pass every gate
+  a contributor had been told to run and still be blocked by CI; and the failure that exposed it
+  had already been hidden once by `./scripts/check-dependabot.sh | tail -2`, which printed the
+  one passing line while the failing one scrolled past and the exit code went unread. Adding a
+  required context means adding a row to the hook in the same change.
+
+  Bypass in an emergency with `git commit --no-verify`, not by weakening a lint.
 - **commit-msg** (`.githooks/commit-msg`, same `prepare` script): runs
   `node scripts/pii-scan.mjs --message "$1"` — rule 3 over the commit *message*, which the
   pre-commit scan structurally cannot see because it reads staged file diffs. The gap was
