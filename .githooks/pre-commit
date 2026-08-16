@@ -21,8 +21,9 @@
 #
 # Deliberately does NOT run the web *visual* suite (`pnpm test:web`): those
 # screenshot tests are only deterministic inside the pinned Playwright container CI uses
-# (see the `web-tests` job in checks.yml), so they stay a CI concern — regenerate their
-# baselines via .github/workflows/snapshots.yml, never from a local commit.
+# (see the `web-tests` job in checks.yml), and a run of them costs minutes. Regenerate their
+# `-linux.png` baselines with `pnpm snapshots:update`, which runs that same container locally
+# (scripts/linux-snapshots.mjs), never from a bare local `playwright test --update-snapshots`.
 #
 # Bypass in an emergency with `git commit --no-verify`.
 set -euo pipefail

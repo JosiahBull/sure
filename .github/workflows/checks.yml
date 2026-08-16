@@ -103,8 +103,8 @@ jobs:
   # OpenAPI spec + typed client are produced first (`pnpm gen:client`, which builds and
   # runs the gen-openapi binary).
   #
-  # The pnpm/setup-node pair below is repeated in api-tests, web-tests and snapshots.yml, and
-  # both halves are load bearing:
+  # The pnpm/setup-node pair below is repeated in the api-tests and web-tests jobs, and both
+  # halves are load bearing:
   #   * pnpm FIRST, always. setup-node's `cache: pnpm` resolves the store directory by
   #     shelling out to `pnpm store path`, so pnpm has to be installed before it runs;
   #     reordering these two lines fails the cache step, not the install.
@@ -168,8 +168,15 @@ jobs:
   # the Playwright image ships neither cargo nor a C toolchain.
   #
   # Runs INSIDE the pinned Playwright image so the Chromium build + font stack exactly match
-  # the committed *-linux.png baselines — keep the image tag in lockstep with @playwright/test
-  # (regenerate via snapshots.yml).
+  # the committed *-linux.png baselines — keep the image tag in lockstep with @playwright/test.
+  # The `image:` line below is not only read by Actions: scripts/linux-snapshots.mjs parses it out
+  # of this file so `pnpm snapshots:update` regenerates those baselines in whatever image this job
+  # uses, rather than in a copy of the tag that can drift. Moving or reformatting it fails that
+  # script with a message; hard-coding a second tag anywhere is what it exists to prevent.
+  #
+  # On failure the artifact below carries test-results/**/<name>-actual.png — byte-identical to
+  # what a local container run produces, so it is the no-Docker way to obtain a new baseline
+  # (docs/TESTING.md).
   web-tests:
     name: Web visual tests
     runs-on: ubuntu-latest

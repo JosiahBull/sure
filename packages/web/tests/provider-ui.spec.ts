@@ -13,10 +13,12 @@
 // whole notice is under 24,000. "Excludes AUD", or a notice that named the wrong report currency,
 // is a green screenshot.
 //
-// No `toHaveScreenshot` here on purpose. A baseline is per-platform (`*-darwin.png` in this tree,
-// `*-linux.png` in the container CI pins), so a new one minted on a developer's machine is a file
-// that looks authoritative and pins nothing anyone has checked — and at a 3% tolerance it can be
-// wrong and still pass. A spec added outside that container asserts on DOM text or asserts nothing.
+// No `toHaveScreenshot` here on purpose: at a 3% tolerance a screenshot cannot pin a word, and a
+// word is the whole of what this spec asserts. The other half of that reasoning has since changed
+// and is worth not re-deriving — a baseline is still per-platform (`*-darwin.png` in this tree,
+// `*-linux.png` in the image CI pins), but `pnpm snapshots:update` renders the Linux half in that
+// same image locally (docs/TESTING.md), so adding one is now a judgement about tolerance rather
+// than about who is able to produce the file.
 
 import { type Page } from "@playwright/test";
 
@@ -127,8 +129,7 @@ async function showConnections(page: Page, rows: Schemas["Provider"][]): Promise
  * stored one is gone for good), which is why the row offers Reconnect instead of Sync now.
  *
  * DOM text, not a screenshot: at this suite's 3% tolerance a badge reading the wrong word is a
- * green baseline, and a new baseline minted outside CI's pinned container pins nothing anyway
- * (see the note at the top of this file).
+ * green baseline (see the note at the top of this file).
  */
 test("a connection the upstream has retired says so, and offers the fix", async ({ page }) => {
   await showConnections(page, [
