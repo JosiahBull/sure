@@ -27,7 +27,12 @@ use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
 use sure_app::ports::{PropertyEstimate, PropertyEstimateProvider};
 
-use crate::http::Endpoint;
+use crate::http::{Endpoint, Pacing, Throttle};
+
+/// The name that reaches a user, in both messages this adapter can produce it in — the
+/// stand-down the throttle arms, and the refusal it hands back while one is in force. One const
+/// because two messages carry it, exactly as the other three adapters do it.
+const HOST: &str = "House Pricer";
 
 /// The real endpoint. `pub` because the composition root owns the decision of where this
 /// provider points (it is the only place configuration is read) and needs a default to fall
@@ -54,6 +59,18 @@ const MINOR_UNITS_PER_DOLLAR: i64 = 100;
 
 pub struct HousePricerProvider {
     client: HousePricerClient,
+    /// This adapter's share of the process's outbound budget.
+    ///
+    /// The last of the four to get one, and the gap was visible in the telemetry before it was
+    /// visible anywhere else: every other adapter reports `provider.throttle.wait.duration`, so
+    /// a `provider=house_pricer` series appeared on request duration with no matching wait
+    /// series — a feed that looked infinitely fast to pace because it was not being paced.
+    ///
+    /// It matters least here and is still worth having. The poll is monthly and the pre-flight
+    /// is a button someone pressed, so the *pacing* almost never fires; what it buys is the
+    /// stand-down, on an undocumented endpoint belonging to a small operator who has published
+    /// no rate limit and could reasonably start refusing without warning.
+    throttle: Throttle,
 }
 
 impl HousePricerProvider {
@@ -75,10 +92,19 @@ impl HousePricerProvider {
     /// something a crate that only knows a JSON shape should have an opinion about. The body
     /// ceiling comes from the same place for the same reason, so this process has one answer to
     /// "how much of a response may we buffer?" rather than one per upstream.
-    pub fn with_endpoint(endpoint: Endpoint) -> Self {
+    ///
+    /// [`Pacing`] is injected for the same reason [`Endpoint`] is, and the same reason the other
+    /// three adapters take it: how hard to lean on somebody else's server is the composition
+    /// root's decision, and a test that pays the interval against its own proxy is paying it
+    /// where production does. `Pacing::unpaced()` is there for the tests that are about
+    /// something else.
+    pub fn with_endpoint(endpoint: Endpoint, pacing: Pacing) -> Self {
         let client = HousePricerClient::new(crate::http::client(&endpoint), endpoint.url())
             .with_max_response_bytes(crate::http::MAX_BODY_BYTES);
-        Self { client }
+        Self {
+            client,
+            throttle: Throttle::new(pacing),
+        }
     }
 }
 
@@ -107,8 +133,21 @@ impl PropertyEstimateProvider for HousePricerProvider {
         // upstream answered, and "nothing here" is the answer. The label set is closed and
         // carries no part of `query`, which is a street address.
         crate::http::timed("house_pricer", "fetch_estimate", async {
+            // Inside the timing, deliberately, as in the other three: waiting for a permit is
+            // time the caller spent on this call, and a metric that measured only the flight
+            // would look healthy while every request queued behind the pacer.
+            self.throttle.acquire(HOST).await?;
             match self.client.match_address(query).await {
                 Ok(property) => parse_estimate(property).map(Some),
+                // The one outcome that changes what this process does next rather than only what
+                // it reports: a refusal arms a stand-down window, so the *next* caller is turned
+                // away before a request goes out instead of adding to whatever caused this. The
+                // client recognised it, because it owns the response the `Retry-After` arrived
+                // on; the window it becomes is this crate's policy.
+                Err(HousePricerError::RateLimited {
+                    status,
+                    retry_after,
+                }) => Err(self.throttle.note_refusal(HOST, status, retry_after).await),
                 // No match is the ordinary answer, not a failure: House Pricer covers one city,
                 // so every address outside it answers this way, as does one with a typo. The
                 // caller — a pre-flight the person is watching, or the monthly poll — decides
@@ -120,8 +159,8 @@ impl PropertyEstimateProvider for HousePricerProvider {
                 // CLAUDE.md rule 2's escape hatch: `HousePricerError` is `#[non_exhaustive]`, so
                 // a catch-all is the only option — and it is the right answer anyway, because
                 // every remaining variant means the same thing to this caller (the estimate
-                // could not be fetched) and differs only in the message. `NotFound` above is the
-                // one that changes behaviour, and it is named.
+                // could not be fetched) and differs only in the message. The two above are the
+                // ones that change behaviour, and they are named.
                 Err(other) => Err(anyhow::Error::new(other)),
             }
         })

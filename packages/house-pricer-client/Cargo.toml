@@ -14,6 +14,10 @@ path = "src/lib.rs"
 # not a part of Sure: it knows the wire format and nothing about accounts, valuations or minor
 # units. That is the whole point of the split — see the crate docs.
 [dependencies]
+# Only for the HTTP-date form of `Retry-After` — RFC 9110 allows it alongside delay-seconds, and
+# chrono's RFC 2822 reader accepts IMF-fixdate, so honouring it costs a dependency the other two
+# client crates already carry rather than a hand-rolled date parser.
+chrono = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

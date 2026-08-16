@@ -77,6 +77,23 @@ impl HousePricerClient {
         let response = self.http.get(url).send().await?;
 
         let status = response.status();
+
+        // Before the other status checks, because a refusal-on-volume must not be flattened into
+        // a generic `Http` that loses the one thing distinguishing it: that retrying shortly
+        // makes it worse. Both statuses that mean it are covered. `429` is unambiguous; `503` is
+        // not — it is also what an ordinary outage looks like — so a `503` only counts when it
+        // *names* a `Retry-After`, which is a server saying "come back then" rather than "I am
+        // broken".
+        let retry_after = retry_after(response.headers(), chrono::Utc::now());
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || (status == reqwest::StatusCode::SERVICE_UNAVAILABLE && retry_after.is_some())
+        {
+            return Err(HousePricerError::RateLimited {
+                status: status.as_u16(),
+                retry_after,
+            });
+        }
+
         if status == reqwest::StatusCode::NOT_FOUND {
             // The body says `{"_embedded":{"errors":[{"message":"No matching house found"}]}}`;
             // it is not read, because the status alone carries the same meaning and the body
@@ -128,9 +145,79 @@ impl HousePricerClient {
     }
 }
 
+/// How long a `Retry-After` asks for, in either of the two forms RFC 9110 allows.
+///
+/// Delay-seconds is what this upstream would send; the HTTP-date form is parsed via `chrono`'s
+/// RFC 2822 reader, which accepts IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) — the same
+/// grammar with a fixed offset — so honouring it costs no new dependency. A date already in the
+/// past reads as zero rather than as an error: the upstream is saying "now".
+///
+/// Duplicated from `frankfurter-client` and `yahoo-finance-client` rather than shared, for the
+/// reason those two already record: a fourth crate existing to hold twenty lines of header
+/// parsing would couple three clients that are otherwise independent, which is the property that
+/// stops any of them growing a domain concept. Each copy is tested where it lives.
+fn retry_after(
+    headers: &reqwest::header::HeaderMap,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<std::time::Duration> {
+    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let raw = raw.trim();
+
+    if let Ok(seconds) = raw.parse::<u64>() {
+        return Some(std::time::Duration::from_secs(seconds));
+    }
+
+    let at = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
+    // `to_std` refuses a negative span; a date already past means "now", not "unparseable".
+    Some(
+        (at.with_timezone(&chrono::Utc) - now)
+            .to_std()
+            .unwrap_or(std::time::Duration::ZERO),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn headers(value: &str) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            value.parse().expect("a header value"),
+        );
+        headers
+    }
+
+    fn at(raw: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(raw)
+            .expect("a fixture timestamp")
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn reads_both_spellings_of_retry_after() {
+        let now = at("2026-08-16T00:00:00Z");
+        // Delay-seconds, which is what this upstream would actually send.
+        assert_eq!(
+            retry_after(&headers("120"), now),
+            Some(std::time::Duration::from_secs(120))
+        );
+        // IMF-fixdate, the other form RFC 9110 allows.
+        assert_eq!(
+            retry_after(&headers("Sun, 16 Aug 2026 00:02:00 GMT"), now),
+            Some(std::time::Duration::from_secs(120))
+        );
+        // Already past: the upstream is saying "now", not sending something unparseable.
+        assert_eq!(
+            retry_after(&headers("Sat, 15 Aug 2026 00:00:00 GMT"), now),
+            Some(std::time::Duration::ZERO)
+        );
+        // Absent and unparseable both mean "it did not say", which the caller answers with its
+        // own default window rather than treating as an error.
+        assert_eq!(retry_after(&reqwest::header::HeaderMap::new(), now), None);
+        assert_eq!(retry_after(&headers("soon"), now), None);
+    }
 
     fn client() -> HousePricerClient {
         // Aimed at a port nothing is listening on: every test here asserts on a refusal that
