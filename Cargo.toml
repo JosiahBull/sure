@@ -2,11 +2,14 @@
 resolver = "2"
 members = [
     "packages/appbase",
-    # A client for somebody else's API, and nothing else: it knows House Pricer's wire format
+    # Clients for somebody else's API, and nothing else: each knows one upstream's wire format
     # and cannot name an account, a valuation or a minor unit, because it depends on no other
-    # member. Separate so a field rename upstream is a one-line fix in one crate — the same
-    # reasoning that keeps `akahu-client` outside this tree. See its crate docs.
+    # member — not even on its siblings here. Separate so a field rename upstream is a one-line
+    # fix in one crate, recompiling no domain logic — the same reasoning that keeps
+    # `akahu-client` outside this tree. See each crate's docs.
+    "packages/frankfurter-client",
     "packages/house-pricer-client",
+    "packages/yahoo-finance-client",
     "packages/core",
     "packages/scheduler",
     "packages/dal",
@@ -198,9 +201,13 @@ rmcp = { version = "3", features = [
 
 # Internal crates
 sure-appbase = { path = "packages/appbase" }
-# Not `sure-`prefixed on purpose: it is a client for House Pricer, not a part of Sure, and the
-# name should keep saying so if it is ever published.
+# None of these three is `sure-`prefixed, on purpose: each is a client for somebody else's API
+# rather than a part of Sure, and the name should keep saying so if one is ever published. They
+# are listed apart from the crates below because they sit outside the dependency chain entirely
+# — `sure-providers` is the only member that may name one, and none of them may name a member.
+frankfurter-client = { path = "packages/frankfurter-client" }
 house-pricer-client = { path = "packages/house-pricer-client" }
+yahoo-finance-client = { path = "packages/yahoo-finance-client" }
 sure-core = { path = "packages/core" }
 sure-scheduler = { path = "packages/scheduler" }
 sure-dal = { path = "packages/dal" }

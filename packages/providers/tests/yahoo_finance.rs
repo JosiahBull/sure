@@ -1,10 +1,10 @@
 //! The Yahoo Finance fetch path, end to end over a loopback proxy.
 //!
 //! Until the [`Endpoint`] constructors landed, `yahoo_finance.rs` could only be tested from
-//! `parse_quotes` inwards: everything between "here is a ticker and a date range" and "here is
-//! a `ChartResponse`" was reachable only by calling an undocumented endpoint that could change
-//! without notice. That is the half of the adapter carrying the four behaviours below, and
-//! every one of them is there because of something that actually happened:
+//! `parse_quotes` inwards: everything between "here is a ticker and a date range" and "here is a
+//! parsed chart" was reachable only by calling an undocumented endpoint that could change without
+//! notice. That is the half of the adapter carrying the four behaviours below, and every one of
+//! them is there because of something that actually happened:
 //!
 //! - the requested window is **padded by a day on each side**, because Yahoo buckets bars by
 //!   the exchange's local trading day and a UTC-midnight boundary clips the edge day;
@@ -46,7 +46,7 @@ use sure_testproxy::{CanonicaliseQuery, Upstream};
 mod common;
 use common::ephemeral;
 
-/// Three days of NZX closes in the shape `ChartResponse` deserialises.
+/// Three days of NZX closes in the shape `yahoo-finance-client` deserialises.
 ///
 /// The timestamps are the load-bearing part. Yahoo stamps a daily bar at the exchange's local
 /// market open — NZX opens 10:00, and early March is inside NZDT (UTC+13, hence
@@ -69,10 +69,11 @@ const CHART_BODY: &str = r#"{"chart":{"result":[{"meta":{"currency":"NZD","symbo
 /// What Yahoo answers a 404 with. Restaurant Brands NZ was taken over in 2019 and its ticker
 /// stopped resolving; the adapter's comment names it, so the fixture uses it.
 ///
-/// The body is deliberately one the parser *would* choke on (`result: null` becomes "no chart
-/// data returned"), because that is what distinguishes the two possible implementations: the
-/// early return on 404 gives `Ok(vec![])`, and the same code with that check moved below
-/// `error_for_status()` gives an error instead.
+/// The body is deliberately one the parser *would* choke on (`result: null` is
+/// `YahooFinanceError::NoChartData`, "no chart data returned"), because that is what
+/// distinguishes the two possible implementations: the client's early return on 404 becomes the
+/// adapter's `Ok(vec![])`, and the same code with that check moved below the status check gives
+/// an error instead. The two are separate variants for exactly this reason.
 const DELISTED_BODY: &str = r#"{"chart":{"result":null,"error":{"code":"Not Found","description":"No data found, symbol may be delisted"}}}"#;
 
 /// A 5xx from Yahoo. Same `result: null` shape as a 404 body, on purpose: the only thing
@@ -404,10 +405,11 @@ async fn the_exchange_resolved_symbol_is_what_the_url_asks_for() {
 /// An account's historical holdings routinely include symbols that have stopped resolving — a
 /// company taken over (Restaurant Brands, 2019), a lapsed rights issue — and a poller that
 /// treats each one as an error turns an ordinary portfolio into a hard failure and a warning
-/// per ticker per run. So a 404 returns an empty vector *before* `error_for_status()`, and this
-/// test is the thing that notices if those two lines are ever reordered: the 404 body here is
-/// one the parser would reject, so a 404 that reached the parser would surface as "no chart
-/// data returned" rather than as an empty result.
+/// per ticker per run. So a 404 becomes `UnknownSymbol` *before* the client's status check, the
+/// adapter turns that one variant into an empty vector, and this test is the thing that notices
+/// if either half is ever reordered or collapsed: the 404 body here is one the parser would
+/// reject, so a 404 that reached the parser would surface as "no chart data returned" rather
+/// than as an empty result.
 ///
 /// The other direction is the reason the two cases are one test. Widening the empty-vector
 /// return to cover any non-success status would make a Yahoo outage look exactly like a

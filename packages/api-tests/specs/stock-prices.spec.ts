@@ -189,8 +189,11 @@ test("a Sunday as_of resolves to the preceding Friday's close", async ({ testpro
  * hands the recorder the request *after* every middleware's `redact_request_for_snapshot`
  * (`build_recorded`, its `listener.rs`), so the recorded URI reads
  * `?interval=1d&period1=CANONICAL&period2=CANONICAL`. The values survive only in the backend's
- * own log, via reqwest rendering the URL it was given into the error. If reqwest ever stops
- * naming the URL there, this fails with the captured line in the message, which is the right way
+ * own log, via the URL `YahooFinanceError::Http` renders into its message. That variant carries
+ * the URL *because* of this test as much as for an operator reading a scheduler log: reqwest's
+ * own status error used to supply it, and when the wire format moved into `yahoo-finance-client`
+ * the first draft of that error dropped it and this was the only thing that noticed. If it stops
+ * naming the URL again, this fails with the captured line in the message, which is the right way
  * for it to go.
  *
  * `packages/providers/tests/{yahoo_finance,akahu}.rs` hit the same wall and build middleware-free

@@ -40,12 +40,19 @@ tokio = { workspace = true }
 # dependency, and `http` had two byte-identical builders because the two `ClientBuilder`s were
 # different types.
 akahu-client = "0.3"
-# The House Pricer wire format, in a crate that knows nothing else — so an undocumented
+# The other three wire formats, each in a crate that knows nothing else — so an undocumented
 # endpoint renaming a field is a one-line fix there rather than an edit to an adapter that also
-# decides what a valuation is. Same shape as `akahu-client` above, including taking this
-# crate's bounded `reqwest::Client` and its `MAX_BODY_BYTES`; the only difference is that it
-# lives in this repository because it has no users outside it yet.
+# decides what a valuation, a rate or a stored price is. Same shape as `akahu-client` above,
+# including taking this crate's bounded `reqwest::Client` and its `MAX_BODY_BYTES`; the only
+# difference is that these live in this repository because they have no users outside it yet.
+#
+# This crate is the only workspace member that may name one of them, and none of them may name
+# a workspace member — including each other. That edge is the whole point: it is what stops a
+# wire crate growing a domain concept, and it is why each carries its own copy of the twenty
+# lines that parse a `Retry-After`.
+frankfurter-client = { workspace = true }
 house-pricer-client = { workspace = true }
+yahoo-finance-client = { workspace = true }
 # Opens the three archive uploads (`zipfile.rs`, and `asb`/`myir`/`sharesies` through it).
 # `deflate` is the one codec an upload here actually uses — a real `.xlsx` is deflated, and
 # dropping the defaults leaves out aes-crypto, bzip2, lzma, ppmd, xz and zstd, none of which

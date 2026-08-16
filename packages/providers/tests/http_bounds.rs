@@ -1,22 +1,30 @@
 //! The bounds `sure_providers::http` puts on every outbound provider request, exercised through
 //! a real adapter instead of asserted about a `ClientBuilder`.
 //!
-//! Until the proxy landed, the only part of that module a test could reach was `enforce_cap` — an
-//! integer comparison. Everything else is a property of a built `reqwest::Client` that only shows
-//! itself when the server on the other end does something hostile, and the only server available
-//! was the live API. A stubbed proxy is a server that will misbehave to order: redirect, overrun
-//! the byte ceiling, answer malformed JSON, fail outright, or go quiet.
+//! Until the proxy landed, the only part of that module a test could reach was its byte-ceiling
+//! comparison — an integer against an integer. Everything else is a property of a built
+//! `reqwest::Client` that only shows itself when the server on the other end does something
+//! hostile, and the only server available was the live API. A stubbed proxy is a server that will
+//! misbehave to order: redirect, overrun the byte ceiling, answer malformed JSON, fail outright,
+//! or go quiet.
 //!
 //! `FrankfurterProvider` is the vehicle here, not the subject. It is the thinnest adapter over
-//! `http::client` + `http::json_capped` — one GET, no credentials, no pagination — so a failure
-//! in this file indicts the transport rather than the adapter. What that now covers, and did not
-//! until the workspace reached reqwest 0.13: `http::client` is the *only* builder in the crate, so
-//! the client under test here is the same one `AkahuProvider` hands to `akahu-client` — the three
-//! bounds no longer need pinning twice. (They used to: `akahu-client` held that path to a second
+//! `http::client` — one GET, no credentials, no pagination — so a failure in this file indicts
+//! the transport rather than the adapter. What that now covers, and did not until the workspace
+//! reached reqwest 0.13: `http::client` is the *only* builder in the crate, so the client under
+//! test here is the same one every adapter hands to its wire crate — the three bounds no longer
+//! need pinning once per upstream. (They used to: `akahu-client` held that path to a second
 //! reqwest major, and its byte-identical builder was unreachable from here.) What is still
-//! Akahu-only is what this adapter does not have — credentials, pagination, and a response body
-//! read inside `akahu-client` rather than by `json_capped` — and that belongs to the Akahu
-//! fixture, which already stands a cluster up.
+//! Akahu-only is what this adapter does not have — credentials and pagination — and that belongs
+//! to the Akahu fixture, which already stands a cluster up.
+//!
+//! **The ceiling and the decode moved, and this file followed them.** `http::json_capped` is
+//! gone: every body is now read inside the wire crate that knows what it is, so the two failures
+//! this file provokes — a body past the ceiling, and one that will not deserialise — arrive as
+//! `FrankfurterError` variants rather than as `anyhow` context over a reqwest error. That is why
+//! the assertions below downcast to a `FrankfurterError` where they used to downcast to a
+//! `reqwest::Error`. The bound itself did not move: `http::MAX_BODY_BYTES` is still the one
+//! number, handed to the client at construction.
 //!
 //! Every cluster below is an `add_stub` cluster: `Mode::Replay`, no snapshot, a dummy upstream
 //! target. So even a stub that failed to match could not reach a host — the replay-miss 503 is
@@ -31,6 +39,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use frankfurter_client::FrankfurterError;
 use http::{Method, StatusCode};
 use partly_proxy_lib::{
     ClusterHandle, Command, ProxyClusterBuilder, RecordedExchange, RequestMatcher, StubbedResponse,
@@ -103,10 +112,13 @@ async fn exchanges_for(cluster: &ClusterHandle, upstream: &str) -> Vec<RecordedE
 /// succeeded with plausible-looking data and nothing would have looked wrong.
 ///
 /// The second half is the mechanism, and it is not the one this used to claim: reqwest returns a
-/// 3xx as-is under `Policy::none()` (tower-http's `Action::Stop`), and `error_for_status` fails
-/// only on 4xx/5xx, so the redirect arrives as `Ok` and its HTML body dies in `json_capped`.
-/// Which means a regression that swapped `Policy::none()` for `limited(1)` would not announce
-/// itself as a status error at all — it would show up only as the leak above.
+/// 3xx as-is under `Policy::none()` (tower-http's `Action::Stop`), and `frankfurter-client`
+/// treats exactly what `error_for_status` treats as a failure — 4xx/5xx — so the redirect arrives
+/// as an ordinary response and its HTML body dies in the decoder. Which means a regression that
+/// swapped `Policy::none()` for `limited(1)` would not announce itself as a status error at all —
+/// it would show up only as the leak above. That the client passes a 3xx through rather than
+/// widening its status check to "not 2xx" is therefore load-bearing here, and is why its own
+/// `Http` variant says so.
 #[tokio::test]
 async fn a_redirect_is_not_followed_and_the_location_host_is_never_contacted() {
     let cluster = ProxyClusterBuilder::new()
@@ -147,12 +159,15 @@ async fn a_redirect_is_not_followed_and_the_location_host_is_never_contacted() {
     let chain = format!("{err:#}");
     assert!(
         chain.contains("decode the JSON body from"),
-        "a 3xx reaches `json_capped` as ordinary body bytes; it must surface as the decode \
-         failure that actually happens: {chain}"
+        "a 3xx reaches the body reader as ordinary bytes; it must surface as the decode failure \
+         that actually happens: {chain}"
     );
     assert!(
-        err.downcast_ref::<reqwest::Error>().is_none(),
-        "`error_for_status` returns Ok on 3xx, so no reqwest error should be in this chain: \
+        matches!(
+            err.downcast_ref::<FrankfurterError>(),
+            Some(FrankfurterError::Deserialization { .. })
+        ),
+        "a 3xx is not a status failure, so this must be the decode variant and not `Http`: \
          {chain}"
     );
 
@@ -185,6 +200,11 @@ async fn a_redirect_is_not_followed_and_the_location_host_is_never_contacted() {
 /// message names a different number and this fails; raise it and the oversized body is accepted
 /// and `expect_err` fails. Both directions are loud, which is the most a duplicated constant can
 /// offer.
+///
+/// That it is *this* number and not the client's own is the other half of what is being pinned.
+/// `frankfurter-client` ships a 1MiB default for callers with no policy of their own, and
+/// `FrankfurterProvider::with_endpoint` overrides it with `MAX_BODY_BYTES` — so a body of 1MiB+1
+/// passing and one of 8MiB+1 failing is the evidence that the override happened at all.
 #[tokio::test]
 async fn a_body_over_the_ceiling_is_refused_naming_the_host_and_the_size() {
     /// Must equal `sure_providers::http::MAX_BODY_BYTES` (8 MiB). See the doc comment above for
@@ -217,7 +237,14 @@ async fn a_body_over_the_ceiling_is_refused_naming_the_host_and_the_size() {
     // hyper sets `Content-Length` from the stub body's exact size hint, so the cheap guard — the
     // declared length, checked before a single allocation — is the one that fires here. The
     // running-total guard behind it has no reachable trigger through a stub, and its boundary is
-    // what `enforce_cap`'s unit tests pin.
+    // what the client's own unit tests pin.
+    assert!(
+        matches!(
+            err.downcast_ref::<FrankfurterError>(),
+            Some(FrankfurterError::ResponseTooLarge { .. })
+        ),
+        "an oversized body must be refused as such, not surface as a decode failure: {chain}"
+    );
     assert!(
         chain.contains(&CEILING_BYTES.to_string()),
         "the error must name the ceiling it enforced, and it must be the one in http.rs: {chain}"
@@ -234,13 +261,63 @@ async fn a_body_over_the_ceiling_is_refused_naming_the_host_and_the_size() {
     cluster.shutdown().await.expect("stub cluster stops");
 }
 
+/// …and the ceiling in force is *this* crate's, not the wire crate's own default.
+///
+/// `frankfurter-client` defaults to 1MiB, which is ample for a 2KB rate table and would be a
+/// silent downgrade for the process as a whole — Yahoo's backfill asks for a decade of daily
+/// closes in one response. `with_endpoint` overrides it with `http::MAX_BODY_BYTES`, and the
+/// only way to see that the override happened is a body in the gap between the two numbers: 1MiB
+/// would refuse it, 8MiB accepts it.
+///
+/// Without this, dropping `.with_max_response_bytes(..)` in a refactor breaks nothing any test
+/// can see, and the failure surfaces in production as an unexplained provider error on exactly
+/// the adapter with the largest responses.
+#[tokio::test]
+async fn a_body_between_the_clients_own_default_and_the_ceiling_is_accepted() {
+    /// Comfortably past `frankfurter_client::DEFAULT_MAX_RESPONSE_BYTES` (1MiB) and nowhere near
+    /// `http::MAX_BODY_BYTES` (8MiB).
+    const PADDING_BYTES: usize = 2 * 1024 * 1024;
+
+    let cluster = ProxyClusterBuilder::new()
+        .add_stub("frankfurter", ephemeral(), Vec::new())
+        .run()
+        .await
+        .expect("bind the stub cluster");
+    let feed = cluster.addr("frankfurter").expect("frankfurter is bound");
+
+    // A valid table with a large ignored field on it, so the response is oversized in exactly
+    // the way a real one would be — deserialisable, just big — rather than failing the decode
+    // and passing this test for the wrong reason.
+    let padded = format!(
+        r#"{{"amount":1.0,"base":"NZD","date":"2026-07-16","note":"{}","rates":{{"AUD":0.92413}}}}"#,
+        "x".repeat(PADDING_BYTES)
+    );
+    stub_latest(
+        &cluster,
+        "frankfurter",
+        StubbedResponse::new(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Bytes::from(padded.into_bytes())),
+    )
+    .await;
+
+    let quotes = frankfurter_at(feed)
+        .fetch_rates("NZD")
+        .await
+        .expect("2MiB is under this process's 8MiB ceiling, whatever the client's own default is");
+    assert_eq!(quotes.len(), 1);
+    assert_eq!(quotes[0].quote_code, "AUD");
+
+    cluster.shutdown().await.expect("stub cluster stops");
+}
+
 /// A body that is not JSON fails by naming the URL it came from.
 ///
-/// The URL is the whole diagnostic value of this error: three adapters share `json_capped`, and
-/// the message is what tells an operator reading a scheduler log which feed broke and on what
-/// query. A truncated table is the realistic shape — a response cut off mid-flight, or an upstream
-/// that started answering HTML — and it is the failure a 3xx also arrives as, which is why the
-/// message has to carry more than "invalid JSON".
+/// The URL is the whole diagnostic value of this error: four adapters write into one scheduler
+/// log, and the message is what tells an operator which feed broke and on what query. A truncated
+/// table is the realistic shape — a response cut off mid-flight, or an upstream that started
+/// answering HTML — and it is the failure a 3xx also arrives as, which is why the message has to
+/// carry more than "invalid JSON".
 #[tokio::test]
 async fn a_malformed_body_surfaces_as_a_decode_error_naming_the_url() {
     let cluster = ProxyClusterBuilder::new()
@@ -280,12 +357,13 @@ async fn a_malformed_body_surfaces_as_a_decode_error_naming_the_url() {
 
 /// A 5xx surfaces as a status error, which is the contrast that makes the 3xx test worth having.
 ///
-/// `error_for_status` fails on exactly `is_client_error() || is_server_error()`. So a 500 is the
-/// case the adapter's error handling was written for and a 3xx is the case it silently is not —
-/// two statuses, both non-success to a reader, arriving as two entirely different kinds of error.
-/// Asserting the status off the reqwest error rather than grepping its text also pins that the
-/// code survives the trip: `sure-app`'s sync bookkeeping records the failure, and a status is what
-/// distinguishes "the feed is down, retry next poll" from "we asked wrong".
+/// The client fails on exactly what `error_for_status` fails on: `is_client_error() ||
+/// is_server_error()`. So a 500 is the case the adapter's error handling was written for and a
+/// 3xx is the case it silently is not — two statuses, both non-success to a reader, arriving as
+/// two entirely different kinds of error. Asserting the status off the typed error rather than
+/// grepping its text also pins that the code survives the trip: `sure-app`'s sync bookkeeping
+/// records the failure, and a status is what distinguishes "the feed is down, retry next poll"
+/// from "we asked wrong".
 #[tokio::test]
 async fn an_upstream_500_surfaces_as_a_status_error() {
     let cluster = ProxyClusterBuilder::new()
@@ -308,13 +386,19 @@ async fn an_upstream_500_surfaces_as_a_status_error() {
         .fetch_rates("NZD")
         .await
         .expect_err("a 500 is not a rate table");
-    let status = err
-        .downcast_ref::<reqwest::Error>()
-        .and_then(reqwest::Error::status);
+    // `if let`, not a `match` with a catch-all: `FrankfurterError` is `#[non_exhaustive]`, and
+    // this way there is no wildcard arm to justify (CLAUDE.md rule 2). Anything that is not an
+    // `Http` — a decode failure, a rate limit, an untyped `anyhow` — is the regression being
+    // watched for, and reads here as `None`.
+    let status = if let Some(FrankfurterError::Http { status, .. }) = err.downcast_ref() {
+        Some(*status)
+    } else {
+        None
+    };
     assert_eq!(
-        status.map(|code| code.as_u16()),
+        status,
         Some(500),
-        "a 5xx must arrive as a reqwest status error, not as a decode failure: {err:#}"
+        "a 5xx must arrive as a status error carrying the code, not as a decode failure: {err:#}"
     );
 
     cluster.shutdown().await.expect("stub cluster stops");
@@ -377,13 +461,18 @@ async fn a_stalled_upstream_fails_at_the_request_timeout_instead_of_hanging() {
         .expect_err("a stalled upstream must not be waited out");
     let elapsed = started.elapsed();
 
-    let transport = err
-        .downcast_ref::<reqwest::Error>()
-        .unwrap_or_else(|| panic!("a stall must fail in the transport, not in parsing: {err:#}"));
+    // The reqwest error is one layer in now — the wire crate wraps it as `Network` — but it is
+    // the same error, and `is_timeout()` is still the only thing that distinguishes "we gave up"
+    // from "they hung up". `if let` rather than a catch-all match, for the reason above.
+    let timed_out = if let Some(FrankfurterError::Network(transport)) = err.downcast_ref() {
+        transport.is_timeout()
+    } else {
+        false
+    };
     assert!(
-        transport.is_timeout(),
-        "the client must fail on its own timeout rather than on anything the upstream said: \
-         {err:#}"
+        timed_out,
+        "the client must fail on its own timeout, in the transport rather than in parsing, and \
+         not on anything the upstream said: {err:#}"
     );
     assert!(
         elapsed < STALL,

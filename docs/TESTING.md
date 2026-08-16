@@ -25,9 +25,11 @@ is the one that can actually see a provider bug.
 No binary, no SQLite, no HTTP server, no Playwright — a few milliseconds each. This is where an
 adapter's *fetch path* belongs, and that is most of where the bugs are: the URL it builds, the
 headers it sends, the window it asks for, whether its pagination loop follows the cursor, and
-what `json_capped` does with a body that overruns the ceiling or arrives malformed. All of it
-was previously reachable only against the live API, which is why none of it was covered. A
-parsing test needs no proxy at all and stays a `#[cfg(test)]` module beside the parser.
+what its wire crate's capped body reader does with a response that overruns the ceiling or
+arrives malformed. All of it was previously reachable only against the live API, which is why
+none of it was covered. A parsing test needs no proxy at all and stays a `#[cfg(test)]` module
+beside the parser — which, for an upstream's JSON, means beside the struct in its client crate
+(`packages/{frankfurter,house-pricer,yahoo-finance}-client`) rather than beside the adapter.
 
 This is also the tier that replays the committed recordings, and the only one that should: a
 capture proves the *real document* still parses, which is an adapter's concern, and reading one
@@ -298,7 +300,8 @@ evidence about the API *on the day it was taken*, and nothing in CI will tell yo
 being true — running `pnpm fixtures:record` and reading the diff is the only thing that will.
 
 Worth doing when a price or FX path misbehaves against the live app but not in the suite, and
-after any change to `ChartResponse` or the Frankfurter response structs. If the fresh capture
+after any change to the wire structs in `packages/yahoo-finance-client` or
+`packages/frankfurter-client`. If the fresh capture
 still parses, the schema is compatible; if it does not, the upstream moved. (An automated version
 of that check was written and deliberately dropped — it needs two third parties to be reachable
 from a runner, which no pull request controls, so it would have failed for reasons nobody could

@@ -325,7 +325,8 @@ async fn a_capture_answers_a_window_nowhere_near_the_one_it_was_taken_for() {
 /// green suite means "the adapters parse the document we captured", not "…that the API sends
 /// today" — which is the right guarantee for a fixture, as long as nobody reads it as the other
 /// one. Reach for this when a price or FX path misbehaves against the real app but not here, and
-/// after any change to `ChartResponse` or Frankfurter's response structs.
+/// after any change to the wire structs in `yahoo-finance-client` or `frankfurter-client` —
+/// which, being the only place either document is described, is now the one place to look.
 #[tokio::test]
 #[ignore = "reaches the real Frankfurter and Yahoo APIs; run explicitly to re-record"]
 async fn record_the_public_upstreams() {

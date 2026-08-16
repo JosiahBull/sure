@@ -1,0 +1,23 @@
+[package]
+name = "frankfurter-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# Deliberately depends on nothing in this workspace. It is a client for somebody else's API, not
+# a part of Sure: it knows the wire format and nothing about a quote, a currency pair or a minor
+# unit. That is the whole point of the split — see the crate docs. `chrono` is here for one
+# reason only, and it is not dates: `Retry-After` has an HTTP-date form, and parsing it is the
+# one piece of HTTP the caller cannot do once this crate owns the response.
+[dependencies]
+chrono = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

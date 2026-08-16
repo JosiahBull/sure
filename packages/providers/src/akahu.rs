@@ -495,11 +495,11 @@ impl AkahuProvider {
             credentials.app_token.clone(),
             Some(self.endpoint.url().to_string()),
         )
-        // The one bound `crate::http` cannot apply from the outside: `akahu-client` reads the
-        // response body itself, so `json_capped` never sees a `Response` to cut short. Passing
-        // `MAX_BODY_BYTES` explicitly — rather than accepting the crate's own default, which
-        // happens to be the same 8MiB today — is what keeps the two providers on one number
-        // when either side changes its mind.
+        // The one bound `crate::http` cannot apply from the outside: a `ClientBuilder` has
+        // nowhere to put a byte ceiling, and `akahu-client` reads the response body itself.
+        // Passing `MAX_BODY_BYTES` explicitly — rather than accepting the crate's own default,
+        // which happens to be the same 8MiB today — is what keeps every adapter here on one
+        // number when either side changes its mind. All four wire crates take it the same way.
         .with_max_response_bytes(crate::http::MAX_BODY_BYTES);
         Ok((client, UserToken::new(credentials.user_token.clone())))
     }

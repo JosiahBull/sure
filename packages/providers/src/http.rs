@@ -39,11 +39,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// reason to send, while capping the damage a compromised or malfunctioning upstream can do
 /// to this process's memory.
 ///
-/// `pub(crate)` because Akahu needs the same number and cannot get it the same way: that
-/// body is read inside `akahu-client`, so the ceiling is handed to `AkahuClient` instead of
-/// being enforced by [`json_capped`] here — see `akahu::AkahuProvider::client`. One const for
-/// both, so "how much of a response may this process buffer?" has a single answer rather than
-/// two that drift apart.
+/// `pub(crate)` because every adapter needs the same number and none of them can enforce it
+/// itself: each body is read inside a wire crate (`akahu-client`, `frankfurter-client`,
+/// `house-pricer-client`, `yahoo-finance-client`), so the ceiling is handed to each client's
+/// `with_max_response_bytes` at construction. One const for all four, so "how much of a response
+/// may this process buffer?" has a single answer rather than four that drift apart — each client
+/// ships its own, smaller default for callers who have no such policy.
 pub(crate) const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Where a provider is allowed to point, and what that implies for the transport.
@@ -132,8 +133,8 @@ impl Endpoint {
     }
 }
 
-/// The bounded client **every** provider here shares — Frankfurter, Yahoo, and the one handed
-/// to `akahu-client` — aimed at `endpoint`.
+/// The bounded client **every** provider here shares — the one handed to each of the four wire
+/// crates — aimed at `endpoint`.
 ///
 /// One function rather than two only since reqwest 0.13: `akahu-client` needs 0.13, so while
 /// the workspace was on 0.12 this crate carried a renamed second copy of reqwest and a second,
@@ -143,9 +144,8 @@ impl Endpoint {
 /// TLS decision are one set of answers for every host this process talks to.
 ///
 /// The one bound that is *not* on this client is the byte ceiling, because a `ClientBuilder`
-/// has nowhere to put it: Frankfurter and Yahoo get it from [`json_capped`], and Akahu — whose
-/// body is read inside `akahu-client` — from the [`MAX_BODY_BYTES`] its own client-construction
-/// passes to `AkahuClient::with_max_response_bytes`.
+/// has nowhere to put it. Every body is read inside a wire crate, so each adapter passes
+/// [`MAX_BODY_BYTES`] to its client's `with_max_response_bytes` at construction instead.
 ///
 /// Panics only where `reqwest::Client::new()` — the call this replaces — already did: a
 /// TLS backend that could not initialise. Deliberately not a fallback to the default
@@ -163,12 +163,13 @@ pub(crate) fn client(endpoint: &Endpoint) -> reqwest::Client {
         // redirects, so refusing outright costs nothing.
         //
         // What a 3xx then *does* cost is worth stating exactly, because it is not what it looks
-        // like: `Policy::none()` returns the redirect response as-is, and `error_for_status()`
-        // fails only on `is_client_error() || is_server_error()`. So the 3xx arrives as `Ok`,
-        // and its body — empty, or the HTML a redirect usually carries — reaches [`json_capped`]
-        // and fails to deserialise. The error is "decode the JSON body from <url>", not a status
-        // error. `tests/http_bounds.rs` pins that, and pins the part that actually matters: the
-        // host named in `Location` is never contacted.
+        // like: `Policy::none()` returns the redirect response as-is, and a wire crate treats
+        // exactly what `error_for_status()` treats as a failure — `is_client_error() ||
+        // is_server_error()`. So the 3xx arrives as `Ok`, and its body — empty, or the HTML a
+        // redirect usually carries — reaches the client's body reader and fails to deserialise.
+        // The error is "could not decode the JSON body from <url>", not a status error.
+        // `tests/http_bounds.rs` pins that, and pins the part that actually matters: the host
+        // named in `Location` is never contacted.
         .redirect(reqwest::redirect::Policy::none())
         // No longer a blanket `true`, and still not a flag: the answer comes from the
         // [`Endpoint`], which decided it once at parse time. `https_only` rejects the request
@@ -186,10 +187,11 @@ pub(crate) fn client(endpoint: &Endpoint) -> reqwest::Client {
 /// the next scheduled poll is the thing that retries rather than the next page render; short
 /// enough that one spurious refusal does not cost a household its prices for the afternoon.
 ///
-/// `pub(crate)` for Akahu, which reaches it the long way round: `akahu-client` consumes the
-/// response, so the only evidence that arrives here is an `AkahuError::RateLimited` carrying a
-/// message and no headers. One const for both, so "how long do we stand down when we were not
-/// told?" has a single answer.
+/// Every adapter reaches it the same way now: a wire crate consumes the response, so the only
+/// evidence that arrives here is an error variant — `AkahuError::RateLimited`, which carries no
+/// header at all, or a `RateLimited { retry_after }` from the other three, which carries
+/// whatever the upstream named and `None` when it named nothing. One const for all of them, so
+/// "how long do we stand down when we were not told?" has a single answer.
 pub(crate) const DEFAULT_BACKOFF: Duration = Duration::from_secs(60);
 
 /// How often this process may talk to one upstream host, and how long it stands down when that
@@ -333,51 +335,52 @@ impl Throttle {
         Ok(())
     }
 
-    /// Was this response the upstream refusing on volume? If so, arm the cooldown from its
-    /// `Retry-After` and hand back the error to fail this call with; `None` means carry on with
-    /// the response.
+    /// An upstream has refused on volume: arm the cooldown and hand back the error to fail this
+    /// call with.
     ///
-    /// Both statuses that mean it are covered. `429` is the unambiguous one; `503` is not — it
-    /// is also what an ordinary outage looks like — so a `503` only counts when it *names* a
-    /// `Retry-After`, which is a server saying "come back then" rather than "I am broken".
-    /// Backing off on every 503 would turn one bad minute at Yahoo into a five-minute one.
-    pub(crate) async fn note_refusal(&self, response: &reqwest::Response) -> Option<anyhow::Error> {
-        let status = response.status();
-        let asked_for = retry_after(response.headers(), chrono::Utc::now());
-        let refusing = status == reqwest::StatusCode::TOO_MANY_REQUESTS
-            || (status == reqwest::StatusCode::SERVICE_UNAVAILABLE && asked_for.is_some());
-        if !refusing {
-            return None;
-        }
-
-        let window = asked_for
+    /// **Which statuses count is no longer decided here**, and cannot be: every adapter in this
+    /// crate now learns about a refusal from its wire crate's own error variant rather than from
+    /// a `reqwest::Response`, because the client consumed the response to read the body. So the
+    /// clients apply the rule (`429`, or a `503` that *names* a `Retry-After` — a plain `503` is
+    /// also what an ordinary outage looks like, and backing off on every one would turn a bad
+    /// minute at Yahoo into a five-minute one) and hand over what they parsed. What stays here
+    /// is what was always this crate's: how long "we were not told" is worth waiting
+    /// ([`DEFAULT_BACKOFF`]), the clamp that stops an upstream disabling an integration by
+    /// asking, and the message.
+    ///
+    /// `host` is the adapter's display name for the upstream, the same one it passes to
+    /// [`Self::acquire`] — so the refusal and the next call's local rejection name it
+    /// identically. Both land in `provider_syncs.detail` and in a 422 body.
+    pub(crate) async fn note_refusal(
+        &self,
+        host: &str,
+        status: u16,
+        retry_after: Option<Duration>,
+    ) -> anyhow::Error {
+        let window = retry_after
             .unwrap_or(DEFAULT_BACKOFF)
             .min(self.pacing.max_backoff);
-        let host = response
-            .url()
-            .host_str()
-            .unwrap_or("the upstream")
-            .to_string();
         self.back_off(window).await;
 
         tracing::warn!(
             %host,
-            status = status.as_u16(),
+            status,
             backoff = ?window,
             "upstream refused on volume; standing down"
         );
-        Some(anyhow::anyhow!(
-            "{host} refused this request with {status} and this process is standing down for \
-             {window:?} before contacting it again"
-        ))
+        anyhow::anyhow!(
+            "{host} refused this request with HTTP {status} and this process is standing down \
+             for {window:?} before contacting it again"
+        )
     }
 
     /// Arm the stand-down window, clamped to [`Pacing::max_backoff`].
     ///
-    /// Separate from [`Self::note_refusal`] because Akahu cannot use that one: `akahu-client`
-    /// consumes the response itself, so the only evidence reaching this crate is an
-    /// `AkahuError::RateLimited` with no headers on it. `akahu.rs` calls this directly with
-    /// [`DEFAULT_BACKOFF`].
+    /// Separate from [`Self::note_refusal`] because Akahu keeps the upstream's own error rather
+    /// than replacing it: a `404` from Akahu is classified into an `AccountDisconnected` on the
+    /// way past (see `akahu::AkahuProvider::sent`), so that path needs the window armed and the
+    /// error left alone. `akahu.rs` calls this directly with [`DEFAULT_BACKOFF`], which is also
+    /// all it could pass — `AkahuError::RateLimited` carries a message and no `Retry-After`.
     ///
     /// Never shortens a window already in force — two refusals in flight at once must not let
     /// the second one's smaller number undo the first's.
@@ -391,146 +394,9 @@ impl Throttle {
     }
 }
 
-/// How long a `Retry-After` asks for, in either of the two forms RFC 9110 allows.
-///
-/// Delay-seconds is what every upstream here would send; the HTTP-date form is parsed via
-/// `chrono`'s RFC 2822 reader, which accepts IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`)
-/// — the same grammar with a fixed offset — so honouring it costs no new dependency. A date
-/// already in the past reads as zero rather than as an error: the upstream is saying "now".
-fn retry_after(
-    headers: &reqwest::header::HeaderMap,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Option<Duration> {
-    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
-    let raw = raw.trim();
-
-    if let Ok(seconds) = raw.parse::<u64>() {
-        return Some(Duration::from_secs(seconds));
-    }
-
-    let at = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
-    // `to_std` refuses a negative span; a date already past means "now", not "unparseable".
-    Some(
-        (at.with_timezone(&chrono::Utc) - now)
-            .to_std()
-            .unwrap_or(Duration::ZERO),
-    )
-}
-
-/// Read a JSON response body into `T`, refusing to buffer more than [`MAX_BODY_BYTES`].
-///
-/// Two guards, because either alone is bypassable. `Content-Length` is checked first so a
-/// body the upstream *declares* is oversized costs no allocation at all; but that header is
-/// absent on a chunked response and is only ever a claim, so the body is then read
-/// chunk-by-chunk against a running total and abandoned — connection dropped mid-stream,
-/// rather than drained — the moment it crosses the cap.
-///
-/// `Response::chunk` rather than `bytes_stream()` on purpose: the latter lives behind
-/// reqwest's `stream` feature, which this crate does not enable (see `Cargo.toml`); the
-/// bound is identical either way.
-pub(crate) async fn json_capped<T: serde::de::DeserializeOwned>(
-    mut response: reqwest::Response,
-) -> anyhow::Result<T> {
-    // Cloned up front: `chunk()` needs `&mut response`, so the borrow `url()` hands out
-    // cannot be held across the read loop that reports it.
-    let url = response.url().clone();
-
-    if let Some(declared) = response.content_length() {
-        enforce_cap(declared, &url)?;
-    }
-
-    let mut body: Vec<u8> = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        enforce_cap(body.len() as u64 + chunk.len() as u64, &url)?;
-        body.extend_from_slice(&chunk);
-    }
-
-    serde_json::from_slice(&body).with_context(|| format!("decode the JSON body from {url}"))
-}
-
-/// The ceiling comparison itself, applied both to a declared `Content-Length` and to the
-/// running total actually read. Split out of [`json_capped`] so the boundary is unit-testable
-/// without a `reqwest::Response`: hand-constructing one needs the `http` crate (not a
-/// dependency here), and the alternative — a live socket — is far too much machinery to catch
-/// an off-by-one in a comparison.
-fn enforce_cap(bytes: u64, url: &reqwest::Url) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        bytes <= MAX_BODY_BYTES,
-        "response body from {url} is over the {MAX_BODY_BYTES} byte ceiling ({bytes} bytes)"
-    );
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn url() -> reqwest::Url {
-        reqwest::Url::parse("https://api.frankfurter.dev/v1/latest?base=NZD").unwrap()
-    }
-
-    fn headers(retry_after: &str) -> reqwest::header::HeaderMap {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::RETRY_AFTER,
-            retry_after.parse().expect("a header value"),
-        );
-        headers
-    }
-
-    fn at(rfc3339: &str) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::parse_from_rfc3339(rfc3339)
-            .expect("a fixed instant")
-            .with_timezone(&chrono::Utc)
-    }
-
-    /// The form every upstream here would actually send.
-    #[test]
-    fn retry_after_reads_delay_seconds() {
-        let now = at("2026-08-16T03:00:00Z");
-        assert_eq!(
-            retry_after(&headers("120"), now),
-            Some(Duration::from_secs(120))
-        );
-        // Surrounding whitespace is legal in a header value and means nothing.
-        assert_eq!(
-            retry_after(&headers("  30  "), now),
-            Some(Duration::from_secs(30))
-        );
-        // `0` is a real answer — "try again immediately" — and must not read as absent, which
-        // would silently substitute `DEFAULT_BACKOFF`'s minute for the nothing it asked for.
-        assert_eq!(retry_after(&headers("0"), now), Some(Duration::ZERO));
-    }
-
-    /// The other form RFC 9110 allows. Parsed through `chrono`'s RFC 2822 reader, which is why
-    /// honouring it needs no new dependency — and why it is worth a test that the grammar
-    /// really does overlap.
-    #[test]
-    fn retry_after_reads_an_http_date() {
-        let now = at("2026-08-16T03:00:00Z");
-        assert_eq!(
-            retry_after(&headers("Sun, 16 Aug 2026 03:02:00 GMT"), now),
-            Some(Duration::from_secs(120))
-        );
-        // Already past: the upstream is saying "now", which is a window of zero rather than an
-        // unparseable value — `chrono`'s `to_std` refuses a negative span, and taking that as
-        // `None` would substitute a minute nobody asked for.
-        assert_eq!(
-            retry_after(&headers("Sun, 16 Aug 2026 02:00:00 GMT"), now),
-            Some(Duration::ZERO)
-        );
-    }
-
-    #[test]
-    fn an_absent_or_unreadable_retry_after_is_none() {
-        let now = at("2026-08-16T03:00:00Z");
-        assert_eq!(retry_after(&reqwest::header::HeaderMap::new(), now), None);
-        // Neither form. The caller falls back to `DEFAULT_BACKOFF` rather than to no wait at
-        // all, which is the safe direction: the upstream did refuse.
-        assert_eq!(retry_after(&headers("soon"), now), None);
-        // A negative delay-seconds is not a `u64` and is not a date; same answer.
-        assert_eq!(retry_after(&headers("-5"), now), None);
-    }
 
     /// The distinction the two mechanisms rest on: pacing sleeps, a cooldown refuses.
     ///
@@ -625,24 +491,6 @@ mod tests {
             "three paced requests took {:?}; two 80ms gaps is the floor",
             started.elapsed()
         );
-    }
-
-    #[test]
-    fn caps_at_the_ceiling_inclusive() {
-        // A real payload (~2KB) and a body exactly at the cap both pass; one byte past it,
-        // whether declared or accumulated, does not.
-        assert!(enforce_cap(2_048, &url()).is_ok());
-        assert!(enforce_cap(MAX_BODY_BYTES, &url()).is_ok());
-        assert!(enforce_cap(MAX_BODY_BYTES + 1, &url()).is_err());
-    }
-
-    #[test]
-    fn the_cap_error_names_the_host_and_the_size() {
-        let err = enforce_cap(MAX_BODY_BYTES * 2, &url())
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("api.frankfurter.dev"), "{err}");
-        assert!(err.contains(&(MAX_BODY_BYTES * 2).to_string()), "{err}");
     }
 
     #[test]

@@ -14,14 +14,33 @@ because `sure-providers` dev-depends on *it*; see `docs/TESTING.md`).
 
 **Upstream wire formats live in their own client crates**, outside that dependency chain and
 un-prefixed because they are clients for somebody else's API rather than parts of Sure:
-`akahu-client` (published, from crates.io) and `packages/house-pricer-client` (in-tree, no
-users outside it yet). Each owns exactly one thing — what the upstream's JSON *is* — and
-depends on no other workspace member, so it cannot name an account, a valuation or a minor
-unit. The point is blast radius: these endpoints are undocumented and rename fields without
-notice, and the fix for that should be one line in one crate that recompiles no domain logic.
-The adapter in `packages/providers` keeps what is genuinely ours — which `reqwest::Client`
-policy applies (`Endpoint`, the shared body ceiling), which of two competing model outputs to
-record, and how the upstream's units become minor units. A new upstream gets the same split.
+`akahu-client` (published, from crates.io) and, in-tree because they have no users outside it
+yet, `packages/frankfurter-client`, `packages/house-pricer-client` and
+`packages/yahoo-finance-client`. Each owns exactly one thing — what the upstream's JSON *is* —
+and depends on no other workspace member, **not even on its siblings**, so it cannot name an
+account, a valuation or a minor unit. The point is blast radius: these endpoints are
+undocumented and rename fields without notice, and the fix for that should be one line in one
+crate that recompiles no domain logic. `sure-providers` is the only member that may name one.
+The division of labour, in the four that exist:
+
+- **the client** owns the URL shape, the status codes, and anything that is only true of *this
+  wire* — Yahoo's `User-Agent`, its two parallel `timestamp`/`close` arrays flattened into
+  candles, the `Retry-After` on a refusal parsed into a `Duration`. Each has a
+  `#[non_exhaustive]` error enum with a distinct variant for every outcome a caller must
+  *branch* on rather than a stringly message: Yahoo's `404` (a delisted symbol, which is not a
+  failure) is not its `NoChartData` (a `200` that said nothing, which is), and neither is
+  `RateLimited`.
+- **the adapter** keeps what is genuinely ours: which `reqwest::Client` policy applies
+  (`Endpoint`, the shared body ceiling passed to every client's `with_max_response_bytes`), the
+  `Throttle` and how long a refusal stands the process down, the caches, Sure's exchange
+  vocabulary (`"NZX"` → `.NZ` is `symbol_for`, in the adapter), and every mapping into a domain
+  type — `f64` → `Decimal`, dollars → minor units, an epoch second plus a `gmtoffset` → a
+  trading day.
+
+The duplication this buys is deliberate and small: the Frankfurter and Yahoo clients parse
+`Retry-After` identically, in twenty lines each, because a shared crate for it would be the
+first edge between two crates whose whole value is having none. Each copy is tested where it
+lives. A new upstream gets the same split.
 pnpm workspace (`pnpm-workspace.yaml`): `packages/web` (the SPA),
 `packages/client` (generated typed API client), `packages/api-tests` (Playwright
 backend e2e suite).
@@ -203,11 +222,11 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   whose data it is. Three guards, all injected as `Pacing`/`ProviderLimits` from `sure-server`
   alongside the `Endpoint` (nothing in `sure-providers` reads configuration): a 500ms floor on
   the gap between two requests to one host, applied inside the adapter — including between the
-  pages of an Akahu sweep; a stand-down window that a `429` arms, checked *before*
-  `error_for_status` so a rate limit is never flattened into a generic 4xx and retried straight
-  away; and a TTL on the answers that describe what exists (Akahu's account listing, Yahoo's
-  `404` for a symbol), because the UI asks for those once per render and neither changes minute
-  to minute. Pacing **sleeps**, a cooldown **refuses** — five minutes of `Retry-After` slept
+  pages of an Akahu sweep; a stand-down window that a `429` arms, recognised by the wire crate as
+  its own error variant so a rate limit is never flattened into a generic 4xx and retried
+  straight away; and a TTL on the answers that describe what exists (Akahu's account listing,
+  Yahoo's `404` for a symbol), because the UI asks for those once per render and neither changes
+  minute to minute. Pacing **sleeps**, a cooldown **refuses** — five minutes of `Retry-After` slept
   inside a request would blow the 30s route deadline. On top of that `sure_app::sync` will not
   start a second *successful* sync of one provider inside `PROVIDER_SYNC_COOLDOWN_SECS`; it
   replays the last run as `SyncReport { fresh: false }`, which is what stops the UI reporting an
