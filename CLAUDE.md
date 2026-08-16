@@ -11,6 +11,17 @@ draining what the process spawned — depends on nothing else in the workspace),
 `packages/testproxy` (test support: the record/replay proxy cluster standing in for every
 third-party host, so no test reaches one — also depends on nothing else in the workspace,
 because `sure-providers` dev-depends on *it*; see `docs/TESTING.md`).
+
+**Upstream wire formats live in their own client crates**, outside that dependency chain and
+un-prefixed because they are clients for somebody else's API rather than parts of Sure:
+`akahu-client` (published, from crates.io) and `packages/house-pricer-client` (in-tree, no
+users outside it yet). Each owns exactly one thing — what the upstream's JSON *is* — and
+depends on no other workspace member, so it cannot name an account, a valuation or a minor
+unit. The point is blast radius: these endpoints are undocumented and rename fields without
+notice, and the fix for that should be one line in one crate that recompiles no domain logic.
+The adapter in `packages/providers` keeps what is genuinely ours — which `reqwest::Client`
+policy applies (`Endpoint`, the shared body ceiling), which of two competing model outputs to
+record, and how the upstream's units become minor units. A new upstream gets the same split.
 pnpm workspace (`pnpm-workspace.yaml`): `packages/web` (the SPA),
 `packages/client` (generated typed API client), `packages/api-tests` (Playwright
 backend e2e suite).

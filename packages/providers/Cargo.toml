@@ -40,6 +40,12 @@ tokio = { workspace = true }
 # dependency, and `http` had two byte-identical builders because the two `ClientBuilder`s were
 # different types.
 akahu-client = "0.3"
+# The House Pricer wire format, in a crate that knows nothing else — so an undocumented
+# endpoint renaming a field is a one-line fix there rather than an edit to an adapter that also
+# decides what a valuation is. Same shape as `akahu-client` above, including taking this
+# crate's bounded `reqwest::Client` and its `MAX_BODY_BYTES`; the only difference is that it
+# lives in this repository because it has no users outside it yet.
+house-pricer-client = { workspace = true }
 # Opens the three archive uploads (`zipfile.rs`, and `asb`/`myir`/`sharesies` through it).
 # `deflate` is the one codec an upload here actually uses — a real `.xlsx` is deflated, and
 # dropping the defaults leaves out aes-crypto, bzip2, lzma, ppmd, xz and zstd, none of which
