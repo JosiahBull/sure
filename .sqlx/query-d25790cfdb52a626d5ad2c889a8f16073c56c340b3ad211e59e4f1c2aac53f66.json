@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", provider_id, imported, skipped, status, detail, created_at\n             FROM provider_syncs WHERE provider_id=?1 ORDER BY id DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "provider_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "provider_id"
+          }
+        }
+      },
+      {
+        "name": "imported",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "imported"
+          }
+        }
+      },
+      {
+        "name": "skipped",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "skipped"
+          }
+        }
+      },
+      {
+        "name": "status",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "detail",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "detail"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "d25790cfdb52a626d5ad2c889a8f16073c56c340b3ad211e59e4f1c2aac53f66"
+}

@@ -3,6 +3,7 @@
   import { api, colorFor, formatDate, type Schemas } from "../lib/api";
   import { providerInitials, providerLabel } from "../lib/providerMeta";
   import ProviderConnectModal from "../lib/ProviderConnectModal.svelte";
+  import StaleFeedNotice from "../lib/StaleFeedNotice.svelte";
 
   let providerKinds = $state<Schemas["ProviderKind"][]>([]);
   let providers = $state<Schemas["Provider"][]>([]);
@@ -32,6 +33,46 @@
     return (e as { error?: { message?: string } })?.error?.message ?? fallback;
   }
 
+  /**
+   * What the badge on a connection says, from the last sync the server recorded.
+   *
+   * The row existing is not the same fact as the feed working, and this page used to conflate
+   * them: every connection wore a green "Connected" for as long as it existed, so a bank the
+   * upstream had retired — one whose balance had silently stopped moving — looked exactly like
+   * one that synced an hour ago. `last_sync` is the server's answer to "what actually happened
+   * last time", and these four states are the whole of it.
+   *
+   * `disconnected` is the one that needs a person. It is not a bad minute at the bank: the
+   * connection behind the account was removed, expired, or re-authorised, and a re-authorisation
+   * issues a new account id — so no amount of retrying repairs it, and the only fix is to link
+   * the account again. Hence the explanation and the button rather than just a red dot.
+   *
+   * The `switch` has no `default` on purpose, and `strict` makes that load-bearing: a fourth
+   * `SyncOutcome` regenerated into `schema.d.ts` fails `pnpm check` here with "Function lacks
+   * ending return statement", which is this file's version of the exhaustive-match rule the Rust
+   * side follows. A `default` would instead render the new state as whatever it fell back to.
+   */
+  type Health = { label: string; tone: "ok" | "idle" | "warn" | "bad"; detail?: string };
+
+  function health(p: Schemas["Provider"]): Health {
+    const last = p.last_sync;
+    if (!last) return { label: "Not synced yet", tone: "idle" };
+    switch (last.status) {
+      case "ok":
+        return { label: "Connected", tone: "ok" };
+      case "disconnected":
+        return { label: "Disconnected", tone: "bad", detail: last.detail ?? undefined };
+      case "error":
+        return { label: "Sync failing", tone: "warn", detail: last.detail ?? undefined };
+    }
+  }
+
+  /** Re-link a retired connection: the same discovery dialog, opened on its kind. */
+  function reconnect(p: Schemas["Provider"]) {
+    const k = kindOf.get(p.kind);
+    if (k) openConnect(k);
+  }
+
   async function load() {
     const [pk, p, a, c, s] = await Promise.all([
       api.GET("/api/provider-kinds", {}),
@@ -58,29 +99,64 @@
   async function runSync(id: number) {
     syncing = id;
     error = null;
+    notice = null;
     const { data, error: e } = await api.POST("/api/providers/{id}/sync", {
       params: { path: { id } },
       body: {},
     });
     if (e) error = apiErrorMessage(e, "Sync failed.");
-    else if (data) notice = `Imported ${data.imported}, skipped ${data.skipped}.`;
+    else if (data?.status === "disconnected") {
+      // A 200 the user must not read as success. The server answers `Ok` deliberately — a
+      // retired account is a state, not a failed request — so the wording has to carry the
+      // difference the status code no longer does.
+      error = data.detail ?? "This account is no longer connected upstream.";
+    } else if (data) notice = `Imported ${data.imported}, skipped ${data.skipped}.`;
     syncing = null;
     load();
   }
 
+  /**
+   * Sync every pollable connection, and keep going past the ones that cannot be.
+   *
+   * A household has several banks and they fail independently, so one dead connection must not
+   * decide the fate of the run. This used to overwrite a single `error` per iteration and then
+   * suppress the summary entirely if any of them had set it — so a run where three of four
+   * connections imported normally reported one message about the fourth, and nothing at all
+   * about the work that succeeded. Now every connection is counted and the summary always says
+   * what happened to all of them.
+   */
   async function syncAll() {
     syncingAll = true;
     error = null;
+    notice = null;
     let imported = 0;
+    let synced = 0;
+    const disconnected: string[] = [];
+    const failed: string[] = [];
+
     for (const p of autoSyncable) {
       const { data, error: e } = await api.POST("/api/providers/{id}/sync", {
         params: { path: { id: p.id } },
         body: {},
       });
-      if (e) error = apiErrorMessage(e, `Sync failed for ${p.name}.`);
-      else if (data) imported += data.imported;
+      if (e) failed.push(p.name);
+      else if (data?.status === "disconnected") disconnected.push(p.name);
+      else if (data) {
+        synced += 1;
+        imported += data.imported;
+      }
     }
-    if (!error) notice = `Synced ${autoSyncable.length} connection${autoSyncable.length === 1 ? "" : "s"} · ${imported} imported.`;
+
+    const plural = (n: number) => (n === 1 ? "" : "s");
+    notice = `Synced ${synced} connection${plural(synced)} · ${imported} imported.`;
+    // Both lists are named rather than counted: "1 disconnected" out of four connections sends
+    // the user hunting for which one, and the badges below are the only other place it is said.
+    const trouble = [
+      disconnected.length > 0 ? `Disconnected: ${disconnected.join(", ")}.` : null,
+      failed.length > 0 ? `Failed: ${failed.join(", ")}.` : null,
+    ].filter(Boolean);
+    if (trouble.length > 0) error = trouble.join(" ");
+
     syncingAll = false;
     load();
   }
@@ -112,6 +188,11 @@
 {#if error}<div class="error-banner" style="margin-bottom:12px">{error}</div>{/if}
 {#if notice}<div class="badge" style="margin-bottom:12px">{notice}</div>{/if}
 
+<!-- Above the list rather than only on the rows: the same notice the overview carries, so the
+     two pages cannot end up describing the state differently. No `href` here — this *is* the
+     page it would point at. -->
+<StaleFeedNotice {providers} />
+
 {#if loading}
   <div class="row" style="justify-content:center;padding:40px"><span class="spinner"></span></div>
 {:else}
@@ -122,6 +203,7 @@
     <div class="grid" style="gap:10px;margin-bottom:8px">
       {#each providers as p (p.id)}
         {@const k = kindOf.get(p.kind)}
+        {@const state = health(p)}
         <div class="card conn">
           <div class="conn-head">
             <div class="row" style="gap:12px;min-width:0">
@@ -139,12 +221,17 @@
               </div>
             </div>
             <div class="row" style="gap:8px;margin-left:auto;flex:0 0 auto">
-              <span class="badge ok">Connected</span>
+              <span class="badge {state.tone}">{state.label}</span>
               {#if k?.accepts_payload}
                 <!-- A manual source has nothing to poll, so its rows arrive as a file — which is
                      the Import page's job, for every source at once. This link carries the
                      connection's account so the upload lands where the connection points. -->
                 <a class="btn btn-sm" href={`#/settings/import?account=${p.account_id}`}>Import</a>
+              {:else if state.tone === "bad"}
+                <!-- No "Sync now" here: the account id this connection holds is gone upstream,
+                     so a sync can only fail again. The button that helps is the one that starts
+                     a fresh discovery. -->
+                <button class="btn btn-sm btn-primary" onclick={() => reconnect(p)}>Reconnect</button>
               {:else}
                 <button class="btn btn-sm" onclick={() => runSync(p.id)} disabled={syncing === p.id}>
                   {syncing === p.id ? "Syncing…" : "Sync now"}
@@ -153,6 +240,12 @@
               <button class="btn btn-sm btn-danger" aria-label="Remove {p.name}" onclick={() => (confirmDelete = confirmDelete === p.id ? null : p.id)}>✕</button>
             </div>
           </div>
+          {#if state.detail}
+            <!-- The server's own words. For a disconnection they are the only place the fix is
+                 spelled out; for a failing sync they are the upstream's message, which is what
+                 makes "sync failing" diagnosable instead of just alarming. -->
+            <p class="small detail" class:bad={state.tone === "bad"}>{state.detail}</p>
+          {/if}
           {#if confirmDelete === p.id}
             <div class="confirm">
               <div class="small">Remove the <strong>{p.name}</strong> connection?</div>
@@ -249,9 +342,27 @@
     flex-wrap: wrap;
     gap: 8px 10px;
   }
+  /* The four connection states, in the order they escalate. `idle` keeps the default badge
+     colours: "not synced yet" is a fact about a new connection, not a problem with it. */
   .badge.ok {
     color: var(--positive);
     background: color-mix(in srgb, var(--positive) 12%, transparent);
+  }
+  .badge.warn {
+    color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 14%, transparent);
+  }
+  .badge.bad {
+    color: var(--negative);
+    background: color-mix(in srgb, var(--negative) 12%, transparent);
+  }
+  .detail {
+    margin: 10px 0 0;
+    color: var(--text-muted);
+    line-height: 1.45;
+  }
+  .detail.bad {
+    color: var(--negative);
   }
   .catalog {
     display: grid;

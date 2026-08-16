@@ -34,7 +34,7 @@ use partly_proxy_lib::{
     ClusterHandle, Command, ProxyClusterBuilder, RecordedRequest, RequestMatcher, SharedMiddleware,
     StubbedResponse, shared,
 };
-use sure_app::ports::{SyncContext, TransactionProvider};
+use sure_app::ports::{AccountDisconnected, SyncContext, TransactionProvider};
 use sure_core::AccountKind;
 use sure_providers::{AkahuCredentials, AkahuProvider, Endpoint, MissingToken};
 use sure_testproxy::RedactCredentials;
@@ -102,18 +102,45 @@ impl Fixture {
         body: impl Into<Bytes>,
         times: Option<u32>,
     ) {
+        self.stub_status(matcher, StatusCode::OK, body, times).await;
+    }
+
+    /// The same, for the answers that are not a 200.
+    ///
+    /// Only Akahu's own error envelope is worth stubbing here, and only one code of it: `404`
+    /// is what a retired account gets, and the adapter has to turn that into something the sync
+    /// path can tell apart from a bad minute at the bank.
+    async fn stub_status(
+        &self,
+        matcher: RequestMatcher,
+        status: StatusCode,
+        body: impl Into<Bytes>,
+        times: Option<u32>,
+    ) {
         self.cluster
             .command_sender()
             .send(Command::Stub {
                 upstream: Some("akahu".into()),
                 matcher,
-                response: StubbedResponse::new(StatusCode::OK)
+                response: StubbedResponse::new(status)
                     .header("content-type", "application/json")
                     .body(body),
                 times,
             })
             .await
             .expect("register a stub");
+    }
+
+    /// Answer `path` with Akahu's "no such account" envelope.
+    async fn stub_not_found(&self, path: &str) {
+        let matcher = RequestMatcher::new().method(Method::GET).path(path);
+        self.stub_status(
+            matcher,
+            StatusCode::NOT_FOUND,
+            r#"{ "success": false, "message": "account not found" }"#,
+            None,
+        )
+        .await;
     }
 
     async fn stub(&self, path: &str, body: impl Into<Bytes>, times: Option<u32>) {
@@ -889,6 +916,165 @@ async fn an_account_listing_survives_four_akahu_values_this_crate_has_never_seen
         "a recognised attribute must survive beside an unrecognised one",
     );
     assert_eq!(accounts[1].kind_hint, AccountKind::Bank);
+
+    fixture.stop().await;
+}
+
+/// The other half of "a listing survives one bad row", and the one that used to cost the whole
+/// page: an account whose *balance* this side of the boundary cannot represent.
+///
+/// `map_account` is deliberately fatal on that figure — an account offered for linking at a
+/// wrong balance is worse than one not offered — but `list_accounts` collected the results into
+/// a `Result<Vec<_>>`, so one absurd number meant the connect dialog showed nothing at all, for
+/// every account the household has, with a message naming none of them. The survivors are
+/// independent of each other and are now offered on their own merits.
+#[tokio::test]
+async fn an_account_with_an_unrepresentable_balance_is_dropped_not_fatal() {
+    let fixture = Fixture::configured().await;
+    fixture
+        .stub(
+            ACCOUNTS_PATH,
+            // `1e28` scaled to cents overflows `Decimal` before it ever reaches `i64` — the
+            // case `decimal_to_minor` returns `None` for. Absurd on purpose: what is under test
+            // is the boundary, not a balance anyone has.
+            r#"{
+                "success": true,
+                "items": [
+                    {
+                        "_id": "acc_absurd01",
+                        "_authorisation": "auth_login01",
+                        "name": "Overflowing",
+                        "status": "ACTIVE",
+                        "refreshed": {},
+                        "balance": { "current": 79228162514264337593543950335, "currency": "NZD" },
+                        "type": "CHECKING",
+                        "attributes": ["TRANSACTIONS"]
+                    },
+                    {
+                        "_id": "acc_spend01",
+                        "_authorisation": "auth_login01",
+                        "name": "Everyday Spending",
+                        "status": "ACTIVE",
+                        "refreshed": {},
+                        "balance": { "current": 2480.15, "currency": "NZD" },
+                        "type": "CHECKING",
+                        "attributes": ["TRANSACTIONS"]
+                    }
+                ]
+            }"#,
+            None,
+        )
+        .await;
+
+    let accounts = fixture
+        .provider
+        .list_accounts()
+        .await
+        .expect("one unrepresentable balance must not fail the listing");
+    assert_eq!(
+        accounts
+            .iter()
+            .map(|a| a.external_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![ACCOUNT_ID],
+        "the good account is still linkable and the bad one is simply absent",
+    );
+    assert_eq!(accounts[0].balance_minor, 248_015);
+
+    fixture.stop().await;
+}
+
+/// A `404` is Akahu saying it will not serve this account any more, and the adapter has to say
+/// so in a way `sure_app::sync` can act on.
+///
+/// The connection behind the account has been removed, has expired, or has been re-authorised —
+/// and a re-authorisation mints a new `_id`, so the one in this provider's `config` is gone for
+/// good. Left as a plain error it recorded a failed sync every six hours forever, indis-
+/// tinguishable in the history from a timeout, with nothing anywhere saying the fix was to
+/// re-link. Both legs of a sync can be the one that finds out, so both are covered: the
+/// transaction sweep, and the single-account refetch `current_balance` makes.
+///
+/// The assertion is on the *message* rather than on a type, because that is what crosses the
+/// `anyhow::Result` boundary and reaches the user — `sure_app::ports::AccountDisconnected` is
+/// what carries it, and its own recognition is pinned in `sure-app`'s unit tests.
+#[tokio::test]
+async fn a_retired_account_is_reported_as_a_disconnection_on_both_legs() {
+    let fixture = Fixture::configured().await;
+    fixture.stub_not_found(&transactions_path()).await;
+    fixture
+        .stub_not_found(&format!(r"^/v1/accounts/{ACCOUNT_ID}$"))
+        .await;
+    let config = config(ACCOUNT_ID);
+
+    for (leg, error) in [
+        (
+            "the transaction sweep",
+            fixture
+                .provider
+                .fetch(ctx(&config, None))
+                .await
+                .expect_err("a 404 cannot produce transactions"),
+        ),
+        (
+            "the balance refetch",
+            fixture
+                .provider
+                .current_balance(ctx(&config, None))
+                .await
+                .expect_err("a 404 cannot produce a balance"),
+        ),
+    ] {
+        assert!(
+            AccountDisconnected::seen_in(&error),
+            "{leg} must report a disconnection, not a bare failure: {error}",
+        );
+        let message = error.to_string();
+        // The account it is about, and the action that fixes it. Both are load-bearing: this
+        // string is `provider_syncs.detail`, which is the only place the household is ever told
+        // what happened or what to do about it.
+        assert!(message.contains(ACCOUNT_ID), "{leg}: {message}");
+        assert!(
+            message.contains("link the account here again"),
+            "{leg}: {message}"
+        );
+        // And Akahu's own words are kept rather than replaced — bounded downstream by
+        // `sure_app::sync::sync_detail` like every other provider message.
+        assert!(message.contains("account not found"), "{leg}: {message}");
+    }
+
+    fixture.stop().await;
+}
+
+/// The inverse, and the more important direction: an upstream having a bad minute is *not* a
+/// disconnection.
+///
+/// A 500 clears on its own, and telling the household to reconnect their bank because Akahu was
+/// briefly unwell is a worse failure than the one being fixed — they would delete a working
+/// connection and re-link it, losing the sync watermark for nothing.
+#[tokio::test]
+async fn an_upstream_error_that_is_not_a_404_stays_an_ordinary_failure() {
+    let fixture = Fixture::configured().await;
+    let matcher = RequestMatcher::new()
+        .method(Method::GET)
+        .path(transactions_path());
+    fixture
+        .stub_status(
+            matcher,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{ "success": false, "message": "something went wrong" }"#,
+            None,
+        )
+        .await;
+
+    let error = fixture
+        .provider
+        .fetch(ctx(&config(ACCOUNT_ID), None))
+        .await
+        .expect_err("a 500 cannot produce transactions");
+    assert!(
+        !AccountDisconnected::seen_in(&error),
+        "a transient upstream failure must not be read as a retired account: {error}",
+    );
 
     fixture.stop().await;
 }

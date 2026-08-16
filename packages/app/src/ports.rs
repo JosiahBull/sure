@@ -128,9 +128,70 @@ pub struct ProviderBalance {
     pub initial_principal_minor: Option<i64>,
 }
 
+/// The one provider failure the sync path treats as a *state* of the connection rather than as
+/// an error: the upstream will not serve this account any more.
+///
+/// **Why a marker type rather than a status code.** [`TransactionProvider`] returns
+/// `anyhow::Result`, and deliberately: an adapter's failures are its own business and the
+/// application core has no vocabulary for "a 404 from Akahu" or "a `SIGN_IN_REQUIRED` from
+/// whatever comes next. But exactly one distinction *is* the core's business, because it
+/// changes what the core does — a disconnected account is not going to start working again on
+/// the next six-hourly poll, so recording it as a plain failure buries the one thing the
+/// household has to act on under noise that looks identical to a bad minute at the bank. So the
+/// adapter, which is the only layer that can read its own upstream's spelling of it, says so by
+/// putting this in the error chain; `crate::sync::SyncService` reads it back with
+/// [`AccountDisconnected::seen_in`] and records [`sure_core::SyncOutcome::Disconnected`].
+///
+/// Nothing about it is bank-specific. Any adapter whose source can retire an account — a broker,
+/// a payroll feed, a future aggregator — signals it the same way and gets the same handling for
+/// free, which is the point of it living on the port rather than in `sure_providers::akahu`.
+///
+/// Hand-written rather than `thiserror`d only because `sure-app` does not otherwise depend on
+/// it, and one `Display` impl is cheaper than a dependency.
+#[derive(Debug)]
+pub struct AccountDisconnected {
+    message: String,
+}
+
+impl AccountDisconnected {
+    /// `message` is shown to the user (it reaches `provider_syncs.detail` and the connection
+    /// list), so it should say what happened *and* what fixes it — the household's next action
+    /// is to re-link, and nothing else in the app is going to tell them that.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// Whether `err`, or anything it wraps, is one of these.
+    ///
+    /// The whole chain rather than just the head, so an adapter is free to add `.context(..)`
+    /// on the way out — which is the natural thing to do, and would otherwise silently turn a
+    /// disconnection back into an ordinary failure.
+    pub fn seen_in(err: &anyhow::Error) -> bool {
+        err.chain().any(|cause| cause.is::<Self>())
+    }
+}
+
+impl std::fmt::Display for AccountDisconnected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for AccountDisconnected {}
+
 /// The integration point for transaction sources. One method to fetch + normalize;
 /// everything else (dedupe, persistence, audit) is handled generically by
 /// [`crate::sync::SyncService`].
+///
+/// **Partial failure is the normal case, not the exceptional one.** A household has several
+/// connections and one upstream account can be retired, renamed or malformed without the
+/// others being affected, so an adapter that can answer for *some* of what it was asked must
+/// do so: [`Self::list_accounts`] drops an account it cannot represent rather than failing the
+/// listing, and a per-row parse failure is a skipped row with a WARN. Only a request that
+/// produced nothing usable is an `Err` — and if the reason is that the account is gone, it is
+/// an [`AccountDisconnected`] rather than a bare one.
 #[async_trait]
 pub trait TransactionProvider: Send + Sync {
     /// Stable identifier used to select this provider (e.g. `"csv"`).
@@ -147,8 +208,15 @@ pub trait TransactionProvider: Send + Sync {
         false
     }
     /// Fetch and normalize transactions from the source.
+    ///
+    /// An [`AccountDisconnected`] in the returned error's chain means the upstream has retired
+    /// this account; anything else is taken as a failure that may not recur.
     async fn fetch(&self, ctx: SyncContext<'_>) -> anyhow::Result<Vec<ProviderTransaction>>;
     /// List upstream accounts available to link, for providers that support discovery.
+    ///
+    /// An account this side of the boundary cannot represent is *dropped* (with a WARN naming
+    /// it), never propagated: one unrepresentable balance among a household's accounts must not
+    /// cost the user the ability to link any of the others.
     async fn list_accounts(&self) -> anyhow::Result<Vec<ProviderAccount>> {
         Err(anyhow::anyhow!(
             "{} does not support discovering accounts",
@@ -1143,4 +1211,40 @@ pub trait SnapshotRepo: Send + Sync {
     /// which also states the residual peak.
     async fn export(&self) -> AppResult<Vec<u8>>;
     async fn import(&self, snapshot: serde_json::Value) -> AppResult<serde_json::Value>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AccountDisconnected;
+
+    #[test]
+    fn a_disconnection_is_recognised_at_the_head_of_the_chain() {
+        let err = anyhow::Error::new(AccountDisconnected::new("acc_x is gone"));
+        assert!(AccountDisconnected::seen_in(&err));
+        // And the message survives, because it is the whole payload: it becomes
+        // `provider_syncs.detail` and is the only thing telling the user to re-link.
+        assert_eq!(err.to_string(), "acc_x is gone");
+    }
+
+    /// The failure mode this walks the chain for.
+    ///
+    /// Adding `.context("while syncing …")` on the way out of an adapter is the obvious, correct
+    /// thing for an author to do, and a head-only check would silently turn the disconnection
+    /// back into an ordinary error — restoring exactly the six-hourly `error` row this whole
+    /// path exists to replace, with nothing failing to say so.
+    #[test]
+    fn a_disconnection_survives_being_wrapped_in_context() {
+        let err = anyhow::Error::new(AccountDisconnected::new("acc_x is gone"))
+            .context("while sweeping transactions")
+            .context("while syncing provider 3");
+        assert!(AccountDisconnected::seen_in(&err));
+    }
+
+    /// The inverse, which matters more: an unrelated failure must not be read as a
+    /// disconnection, or a timeout would tell the user to re-link a connection that is fine.
+    #[test]
+    fn an_ordinary_error_is_not_a_disconnection() {
+        let err = anyhow::anyhow!("upstream timed out").context("while syncing provider 3");
+        assert!(!AccountDisconnected::seen_in(&err));
+    }
 }

@@ -1,0 +1,23 @@
+{
+  // Type-checking for `tests/`, which `tsconfig.json` deliberately does not cover.
+  //
+  // Two toolchains read this directory and neither checks it: `svelte-check` is pointed at
+  // `tsconfig.json`, whose `include` is `src/**`, and Playwright transpiles specs with esbuild,
+  // which strips types without looking at them. So until this file existed a spec could assert
+  // against a response shape the server had stopped sending — the fixtures are hand-written
+  // literals, and the whole point of typing them as `Schemas[...]` is that a field renamed in
+  // Rust becomes a type error rather than a green test of nothing.
+  //
+  // A separate config rather than widening `tsconfig.json`'s `include`, because the tests need
+  // `@types/node` (`process`, `Buffer`, `node:path`) and the app must not: adding "node" to the
+  // app's `types` would make `process.env` resolve in browser code that has no such global.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Replaces the app's ["svelte", "vite/client"] rather than adding to it — nothing under
+    // `tests/` is a Svelte component or a Vite module. Playwright's own types come in through
+    // the `@playwright/test` import, not through this list.
+    "types": ["node"]
+  },
+  "include": ["tests/**/*.ts"]
+}

@@ -17,6 +17,7 @@
   // import { people } from "../lib/people.svelte";
   import Icon from "../lib/Icon.svelte";
   import FxNotice from "../lib/FxNotice.svelte";
+  import StaleFeedNotice from "../lib/StaleFeedNotice.svelte";
 
   let nw = $state<Schemas["NetWorthSeries"] | null>(null);
   let breakdown = $state<Schemas["CategoryBreakdown"] | null>(null);
@@ -84,6 +85,27 @@
   // once (shared with the account panel, which may already have triggered this).
   onMount(() => {
     if (!balances.data) refreshBalances();
+  });
+
+  /**
+   * Bank connections, for the stale-feed notice below the header.
+   *
+   * Every figure on this page is built from account balances, and a retired connection leaves
+   * one of those frozen at whatever it last was — no gap, no zero, nothing that reads as wrong.
+   * The Bank sync page knows, but nobody visits it unprompted, so the totals that are quietly
+   * wrong are the right place to say so.
+   *
+   * Fetched here rather than inside `load()` on purpose: `load()` re-runs on every change to the
+   * range, the one-off toggle and the attribution filter, and none of those change whether a
+   * bank is connected. One request per visit, not one per interaction.
+   */
+  let providers = $state<Schemas["Provider"][]>([]);
+  onMount(async () => {
+    // Silent on failure: this is a footnote about the page, and a household with no connections
+    // at all is the common case. A broken request must not put an error banner over working
+    // charts.
+    const { data } = await api.GET("/api/providers", {});
+    providers = data ?? [];
   });
   let expandedBSKinds = $state(new Set<string>());
   function toggleBSKind(kind: string) {
@@ -257,6 +279,12 @@
 {#if error}
   <div class="error-banner" style="margin-bottom:16px">{error}</div>
 {/if}
+
+<!-- Above the cards, because it is about all of them: net worth, the balance sheet and every
+     chart below are built from balances a retired connection has stopped updating. Named here,
+     unlike on the Bank sync page, since there is no list of connections in front of the reader
+     to match a count against. -->
+<StaleFeedNotice {providers} href="#/settings/providers" />
 
 <svelte:window
   onkeydown={(e) => {

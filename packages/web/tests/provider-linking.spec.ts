@@ -23,8 +23,17 @@
 // really created a brokerage account would change the Accounts page out from under them.
 
 import { type Page, type Request } from "@playwright/test";
+import type { Schemas } from "@sure/client";
 
 import { test, expect } from "./fixtures";
+
+// Both fixtures below are annotated `Schemas["ProviderAccount"]` — the type generated from the
+// OpenAPI document by `pnpm gen:client` — rather than left to inference. Inference is what let
+// the `original_amount_hint_minor` spread further down be a type error nobody saw: `tests/` was
+// outside every tsconfig until `tsconfig.tests.json`, so the field was silently absent from the
+// inferred union and the row it describes was never a mortgage the page could prefill from.
+// Naming the real type also means a field renamed in Rust fails `pnpm --filter @sure/web check`
+// here, instead of leaving a green spec asserting against a response no server sends.
 
 /** A discovered Sharesies cash wallet, shaped as `map_account` in the Akahu adapter emits one. */
 function wallet(
@@ -33,7 +42,7 @@ function wallet(
   currency: string,
   authorisation: string,
   institution = "Sharesies",
-) {
+): Schemas["ProviderAccount"] {
   return {
     external_id: externalId,
     name,
@@ -57,8 +66,8 @@ function bankAccount(
   name: string,
   institution: string,
   authorisation: string,
-  extra: { account_number?: string; joint?: boolean } = {},
-) {
+  extra: Partial<Schemas["ProviderAccount"]> = {},
+): Schemas["ProviderAccount"] {
   return {
     external_id: externalId,
     name,
@@ -80,7 +89,7 @@ function bankAccount(
  */
 async function stubDiscovery(
   page: Page,
-  wallets: (ReturnType<typeof wallet> | ReturnType<typeof bankAccount>)[],
+  wallets: Schemas["ProviderAccount"][],
 ): Promise<Request[]> {
   const linked: Request[] = [];
   await page.route("**/api/provider-kinds/akahu/accounts", (route) =>

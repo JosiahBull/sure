@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.id AS \"id!\", s.provider_id, s.imported, s.skipped, s.status, s.detail,\n                  s.created_at\n             FROM provider_syncs s\n             JOIN (SELECT provider_id, MAX(id) AS id FROM provider_syncs GROUP BY provider_id) n\n               ON n.id = s.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "provider_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "provider_id"
+          }
+        }
+      },
+      {
+        "name": "imported",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "imported"
+          }
+        }
+      },
+      {
+        "name": "skipped",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "skipped"
+          }
+        }
+      },
+      {
+        "name": "status",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "detail",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "detail"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_syncs",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "4e7127ea16bc6016236cd7b4622df1fca15f80f08c1586e221c593bb11e5864d"
+}

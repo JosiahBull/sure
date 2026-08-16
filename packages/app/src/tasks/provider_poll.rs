@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use sure_core::SyncOutcome;
 use sure_scheduler::{ScheduledTask, TaskRun};
 use tokio_util::sync::CancellationToken;
 
@@ -51,6 +52,7 @@ impl ScheduledTask for ProviderPollTask {
 
     async fn run(&self, cancel: &CancellationToken) -> anyhow::Result<TaskRun> {
         let providers = self.providers.list().await?;
+        let mut tally = Tally::default();
 
         for provider in providers {
             // Checked before each provider rather than inside one: a sync in flight is
@@ -60,7 +62,7 @@ impl ScheduledTask for ProviderPollTask {
             // a household with several connections from spending the whole drain grace on the
             // ones it hadn't got to yet.
             if cancel.is_cancelled() {
-                tracing::debug!("provider poll stopped early for shutdown");
+                tally.report("provider poll stopped early for shutdown");
                 return Ok(TaskRun::Interrupted);
             }
             if !provider.enabled {
@@ -78,13 +80,61 @@ impl ScheduledTask for ProviderPollTask {
             }
 
             let name = provider.name.clone();
-            // Each provider's failure is already durably recorded (as an "error" sync
-            // row) inside `sync_provider`, so one failing provider doesn't need to abort
-            // the rest of the batch — just log and move on.
-            if let Err(e) = self.sync.sync_provider(provider, None).await {
-                tracing::warn!(provider = %name, error = %e, "scheduled provider sync failed");
+            // Each provider's outcome is already durably recorded (as a sync row) inside
+            // `sync_provider`, so one connection that cannot be synced doesn't abort the rest
+            // of the batch — the household's other banks are unaffected by this one's bad day.
+            match self.sync.sync_provider(provider, None).await {
+                // Exhaustive on purpose (CLAUDE.md rule 2): a fourth outcome has to be decided
+                // here too, because this is where "did the poll go well?" is answered.
+                Ok(sync) => match sync.status {
+                    SyncOutcome::Ok => tally.synced += 1,
+                    // Already warned once, by `sync_provider`, with the detail attached. Not
+                    // warned again per poll: it is a standing state until someone re-links,
+                    // and a line every six hours for a month is how a real one gets ignored.
+                    SyncOutcome::Disconnected => tally.disconnected += 1,
+                    // Not reachable today — `sync_provider` returns `Err` for a failure it
+                    // recorded as `error` — but counting it is what keeps this arm honest if
+                    // that ever changes.
+                    SyncOutcome::Error => tally.failed += 1,
+                },
+                Err(e) => {
+                    tally.failed += 1;
+                    tracing::warn!(provider = %name, error = %e, "scheduled provider sync failed");
+                }
             }
         }
+        tally.report("provider poll finished");
         Ok(TaskRun::Completed)
+    }
+}
+
+/// What one poll made of the household's connections.
+///
+/// Reported as a single line rather than left implicit in per-provider logs: with several banks
+/// linked, "did anything sync?" is otherwise a question you answer by counting WARNs, and the
+/// most important state — a connection the upstream has retired — produces no line at all after
+/// the first time it is recorded.
+#[derive(Default)]
+struct Tally {
+    synced: u32,
+    disconnected: u32,
+    failed: u32,
+}
+
+impl Tally {
+    fn report(&self, message: &'static str) {
+        // At WARN when something needs a person, INFO otherwise: a healthy household polls four
+        // times a day and should not be writing warnings, while a disconnected feed silently
+        // stops updating an account's balance and is worth finding in a log.
+        if self.disconnected > 0 || self.failed > 0 {
+            tracing::warn!(
+                synced = self.synced,
+                disconnected = self.disconnected,
+                failed = self.failed,
+                "{message}"
+            );
+        } else {
+            tracing::info!(synced = self.synced, "{message}");
+        }
     }
 }

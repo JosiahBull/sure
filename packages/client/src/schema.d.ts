@@ -3726,7 +3726,13 @@ export interface paths {
         /**
          * Sync a provider: fetch upstream transactions, import new ones (dedupe on
          *     external id), and record the result.
-         * @description Single-flight per provider: while one sync of this provider is running — whether started
+         * @description **A 200 is not the same as a healthy sync.** Read `status` on the body: `disconnected` means
+         *     the upstream no longer has the account this connection points at, which is a state of the
+         *     connection rather than a request that failed — the only fix is to link the account again, and
+         *     `detail` says so. It answers 200 rather than 4xx deliberately, so a caller syncing several
+         *     connections in turn keeps going; a failure that may not recur is still a 422.
+         *
+         *     Single-flight per provider: while one sync of this provider is running — whether started
          *     here, by the initial sync after linking, or by the 6-hourly poll — a second request gets a
          *     409 instead of a duplicate run.
          */
@@ -6984,7 +6990,13 @@ export interface components {
             account_id: number;
             config: unknown;
             enabled: boolean;
+            /**
+             * @description When this connection last *succeeded*. Left alone by a failed or disconnected sync, so
+             *     it is the age of the data rather than the time of the last attempt — see
+             *     [`Self::last_sync`] for the attempt.
+             */
             last_synced_at?: string | null;
+            last_sync?: null | components["schemas"]["ProviderSync"];
             created_at: string;
             updated_at: string;
         };
@@ -7799,12 +7811,17 @@ export interface components {
             notes?: string | null;
         };
         /**
-         * @description Whether a sync attempt succeeded. Stored as `provider_syncs.status` (plain `TEXT`).
+         * @description How a sync attempt ended. Stored as `provider_syncs.status` (plain `TEXT`).
          *     Named `SyncOutcome` rather than `SyncStatus` so `SyncOutcome::Ok` doesn't shadow
          *     `Result::Ok` at use sites.
+         *
+         *     The column has no `CHECK` constraint (migration 0005's comment lists the values it knew
+         *     about at the time), so a new variant needs no migration — but it does need every reader to
+         *     decide what it means, which is what [`SyncOutcome::as_str`] and the exhaustive matches over
+         *     this enum force.
          * @enum {string}
          */
-        SyncOutcome: "ok" | "error";
+        SyncOutcome: "ok" | "error" | "disconnected";
         SyncRequest: {
             /** @description Inline data for payload-based providers (e.g. CSV text). */
             payload?: string | null;
