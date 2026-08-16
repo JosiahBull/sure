@@ -54,12 +54,34 @@ if ! command -v cc >/dev/null 2>&1; then
   apt-get update -qq
   apt-get install -y -qq --no-install-recommends build-essential pkg-config curl >/dev/null
 fi
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "▶ installing Rust into the CARGO_HOME volume (first run only)"
-  # --no-modify-path: the PATH export above is the only one that survives, and a profile edit
-  # would be written into a container filesystem that is discarded when this exits anyway.
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --profile minimal --no-modify-path >/dev/null
+# `cargo --version`, not `command -v cargo`: the shims and the toolchain they dispatch to live in
+# *different* volumes-worth of state — the shims in $CARGO_HOME/bin, the installed toolchain and
+# the `default_toolchain` setting under $RUSTUP_HOME — and the two can get out of step. When they
+# do, the shim exists, this guard passes, and the build dies twenty lines later with
+#
+#     error: rustup could not choose a version of cargo to run, because one wasn't specified
+#     explicitly, and no default is configured
+#
+# which says nothing about the actual fix. Two ways to reach it: an interrupted first run that
+# wrote the shims before the toolchain finished downloading, and a CARGO_HOME volume populated
+# before RUSTUP_HOME was pinned into it (rustup then defaulted to ~/.rustup, which the container
+# discards). Testing that cargo *runs* covers both, and costs one process on a path that is
+# otherwise about to spend minutes building.
+if ! cargo --version >/dev/null 2>&1; then
+  if command -v rustup >/dev/null 2>&1; then
+    # Repair in place rather than reinstalling: rustup-init refuses outright when it finds an
+    # existing installation, so the reinstall path below is not available here anyway.
+    echo "▶ repairing the Rust toolchain in the CARGO_HOME volume (no default was configured)"
+    rustup default stable >/dev/null
+  else
+    echo "▶ installing Rust into the CARGO_HOME volume (first run only)"
+    # --no-modify-path: the PATH export above is the only one that survives, and a profile edit
+    # would be written into a container filesystem that is discarded when this exits anyway.
+    # --default-toolchain is explicit so the setting this guard checks for is always written,
+    # rather than relying on the installer's default staying "install one and make it default".
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --no-modify-path --default-toolchain stable >/dev/null
+  fi
 fi
 
 # corepack ships with the image's Node and reads the `packageManager` field from package.json, so
