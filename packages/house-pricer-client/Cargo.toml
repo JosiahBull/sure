@@ -1,0 +1,24 @@
+[package]
+name = "house-pricer-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# Deliberately depends on nothing in this workspace. It is a client for somebody else's API,
+# not a part of Sure: it knows the wire format and nothing about accounts, valuations or minor
+# units. That is the whole point of the split — see the crate docs.
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

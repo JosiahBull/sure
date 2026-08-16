@@ -2,6 +2,11 @@
 resolver = "2"
 members = [
     "packages/appbase",
+    # A client for somebody else's API, and nothing else: it knows House Pricer's wire format
+    # and cannot name an account, a valuation or a minor unit, because it depends on no other
+    # member. Separate so a field rename upstream is a one-line fix in one crate — the same
+    # reasoning that keeps `akahu-client` outside this tree. See its crate docs.
+    "packages/house-pricer-client",
     "packages/core",
     "packages/scheduler",
     "packages/dal",
@@ -193,6 +198,9 @@ rmcp = { version = "3", features = [
 
 # Internal crates
 sure-appbase = { path = "packages/appbase" }
+# Not `sure-`prefixed on purpose: it is a client for House Pricer, not a part of Sure, and the
+# name should keep saying so if it is ever published.
+house-pricer-client = { path = "packages/house-pricer-client" }
 sure-core = { path = "packages/core" }
 sure-scheduler = { path = "packages/scheduler" }
 sure-dal = { path = "packages/dal" }
