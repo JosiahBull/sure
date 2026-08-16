@@ -33,6 +33,22 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # The OpenTelemetry family, added with `packages/telemetry`. They move as a set — an
+      # `opentelemetry_sdk` minor is matched by `opentelemetry-otlp` and `tracing-opentelemetry`
+      # in the same week — so taking one alone does not build, which is a second reason beyond
+      # the 0.x rule for these never being an unattended merge.
+      - dependency-name: "opentelemetry"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "opentelemetry-appender-tracing"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "opentelemetry-otlp"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "opentelemetry-semantic-conventions"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "opentelemetry_sdk"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "tracing-opentelemetry"
+        update-types: ["version-update:semver-minor"]
 
       # Every 0.x direct crate, withheld from *minor* bumps for the reason in the header:
       # `axum = "0.8"` does not resolve 0.9, so 0.8 -> 0.9 is a rewrite of the requirement
