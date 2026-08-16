@@ -1,6 +1,15 @@
 # Dependabot opens dependency-update PRs on a schedule. Those PRs run CI (the reusable
 # checks suite); the dependabot-auto-merge workflow turns on GitHub auto-merge so a bump
 # lands only once CI is green (requires branch protection with the checks as required).
+#
+# Unattended merging is only as safe as the classification it trusts, and Dependabot's has
+# one hole this repository has already fallen into twice: while a dependency's major is 0 it
+# calls 0.8 -> 0.9 a *minor*, but that is the compatibility boundary in both Cargo's and
+# npm's semver, so the bump is breaking. Hence the long per-name `ignore:` lists below —
+# every 0.x direct dependency is withheld from minor bumps and taken by hand, exactly like
+# a major. `scripts/check-dependabot.sh` (the `Dependabot config` job in checks.yml) is
+# what keeps those lists honest: add a 0.x dependency without listing it and CI fails,
+# printing the lines to paste. Patch bumps still flow for everything, which is the point.
 version: 2
 updates:
   # Rust crates across the whole Cargo workspace (Cargo.toml + Cargo.lock).
@@ -25,6 +34,64 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
 
+      # Every 0.x direct crate, withheld from *minor* bumps for the reason in the header:
+      # `axum = "0.8"` does not resolve 0.9, so 0.8 -> 0.9 is a rewrite of the requirement
+      # and a breaking change, however Dependabot labels it.
+      #
+      # Note what that means for the wildcard above: two of the three bumps its comment
+      # cites were not majors at all. Dependabot stamped both bbc6ba9 (sqlx 0.8.6 -> 0.9.0)
+      # and cfb6491 (tower-http 0.6.11 -> 0.7.0) `update-type: version-update:semver-minor`
+      # in their own commit trailers, so the wildcard would have let them through a second
+      # time — only zip 2.4 -> 8.6 was ever caught by it. This list is what actually closes
+      # that case, which is why it has to be enforced rather than merely written down.
+      #
+      # Cargo has no shorthand for it and Dependabot no setting, so it is a list — kept
+      # current by scripts/check-dependabot.sh, which reads the requirement out of every
+      # dependency table in Cargo.toml and packages/*/Cargo.toml and fails CI on anything
+      # missing. Alphabetical, matching the order that script prints.
+      - dependency-name: "akahu-client"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "async-trait"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "axum"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "calamine"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "chrono"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "dotenvy"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "futures-util"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "hyper-util"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "landlock"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "libc"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "log"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "rand"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "rand_distr"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "reqwest"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "sqlx"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "tokio-util"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "tower"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "tower-http"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "tracing"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "tracing-subscriber"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "zen-expression"
+        update-types: ["version-update:semver-minor"]
+
   # Node/pnpm packages across the pnpm workspace (pnpm-lock.yaml).
   - package-ecosystem: npm
     directory: "/"
@@ -43,21 +110,39 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-      # openapi-fetch 0.17.0 specifically, which cannot be taken: it wraps `data` and `error`
-      # in openapi-typescript-helpers' `Readable<T>`, whose array branch collapses tuples, so
-      # `StoredTaxScale.brackets` — generated from Rust's `Vec<(Option<i64>, i64)>` as
-      # `[number | null, number][]` — degrades to `(number | null)[][]` and fails
-      # `pnpm --filter @sure/web check` in src/pages/TaxRates.svelte. Re-verified against the
-      # real package on 2026-08-16 (PR #9), not taken on trust from the note in
-      # packages/client/package.json, which is where the full reasoning lives.
+
+      # Every 0.x direct package, withheld from minor bumps — the same rule as the cargo
+      # block, and for the same reason: `^0.16.0` caps below 0.17.0 exactly as Cargo's
+      # `0.3` caps below 0.4. scripts/check-dependabot.sh reads `dependencies` and
+      # `devDependencies` out of package.json and packages/*/package.json and fails CI on
+      # anything missing here. devDependencies are in scope deliberately: openapi-typescript
+      # generates the client every typecheck consumes, and @playwright/test decides whether
+      # the committed baselines are even comparable.
       #
-      # Pinned to the one broken release rather than `0.17.x` or a blanket minor ignore, so a
-      # fixed 0.17.1 or 0.18 is still proposed the week it appears — the upstream fixes
-      # (openapi-ts/openapi-typescript#2673, #2842) are open but unmerged, and 0.17.0 is
-      # currently the only 0.17.x. Drop this entry, and the cap in packages/client and
-      # packages/api-tests, together once one lands.
+      # openapi-fetch is why this rule exists rather than being a precaution. 0.17.0 wraps
+      # `data` and `error` in openapi-typescript-helpers' `Readable<T>`, whose array branch
+      # collapses tuples, so `StoredTaxScale.brackets` — generated from Rust's
+      # `Vec<(Option<i64>, i64)>` as `[number | null, number][]` — degrades to
+      # `(number | null)[][]` and fails `pnpm --filter @sure/web check` in
+      # src/pages/TaxRates.svelte. Verified against the real package on 2026-08-11 and again
+      # on 2026-08-16 (PR #9, closed); packages/client/package.json holds the full write-up.
+      #
+      # That supersedes the narrow `versions: ["0.17.0"]` pin PR #17 put here, and the
+      # override is deliberate. The pin named the one broken release so a *fixed* 0.17.1
+      # or 0.18 would still be proposed the week it appeared, which a blanket minor ignore
+      # withholds — but it was buying less than it looked. `^0.16.0` cannot resolve any
+      # 0.17.x, so taking one means Dependabot rewriting the range in two package.json files
+      # whose `//openapi-fetch` notes then have to be removed by hand anyway; it was never
+      # going to be an unattended merge. Meanwhile keeping both entries would be incoherent,
+      # and the pin only ever guarded the one break we had already hit rather than the class
+      # of break. So the class wins: raise both caps deliberately once
+      # openapi-ts/openapi-typescript#2673 or #2842 lands.
+      - dependency-name: "@types/d3-sankey"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "d3-sankey"
+        update-types: ["version-update:semver-minor"]
       - dependency-name: "openapi-fetch"
-        versions: ["0.17.0"]
+        update-types: ["version-update:semver-minor"]
 
   # The GitHub Actions used by the CI, release, and snapshot workflows.
   - package-ecosystem: github-actions

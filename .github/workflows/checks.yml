@@ -34,6 +34,24 @@ jobs:
           node-version: 24
       - run: node scripts/pii-scan.mjs --all
 
+  # Auto-merge is only as safe as the classification it trusts, and Dependabot's has a hole:
+  # while a dependency's major is 0 it calls 0.16 -> 0.17 a *minor*, though that is the
+  # compatibility boundary in both Cargo's and npm's semver. The rule is a per-name `ignore:`
+  # list in .github/dependabot.yml, and this asserts the list still covers every 0.x direct
+  # dependency — so adding one without listing it fails here, rather than arriving months
+  # later as an unattended merge. openapi-fetch 0.16 -> 0.17 is the break that motivated it
+  # (PR #9, closed); `./scripts/check-dependabot.sh --help` has the full reasoning.
+  #
+  # For that to be worth anything this job must be one of main's *required* status contexts —
+  # a guard that can be skipped guards nothing. No toolchain and no `pnpm install`: bash and
+  # python3 over the manifests, both already on the runner image, so nothing to cache.
+  dependabot-config:
+    name: Dependabot config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./scripts/check-dependabot.sh
+
   # Every query in `sure-dal` is compile-time checked against the committed `.sqlx/` metadata
   # (`.cargo/config.toml` pins `SQLX_OFFLINE=true`, so no build anywhere consults a live
   # database). A *missing* entry already fails clippy and the test job, because the build cannot
