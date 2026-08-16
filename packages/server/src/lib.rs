@@ -76,16 +76,35 @@ fn mcp_router(state: sure_mcp::McpState, config: &Config) -> axum::Router {
 /// response must spawn it on *this* process's tracker, so that the drain below waits for it
 /// and the shutdown report can name it if it overruns. A second, private handle would track
 /// nothing anybody waits for.
-fn build_state(
-    db: Db,
+/// The outbound adapters this process built from its configuration, bundled for the trip into
+/// [`build_state`].
+///
+/// A struct rather than four more parameters, and the reason is worth recording: this function
+/// crossed clippy's argument ceiling without anybody choosing to widen it. Two branches each
+/// added one parameter — a property-estimate feed and a sync cooldown — and neither was wrong
+/// on its own; they only collided on the way in. Grouping the things that are all the same kind
+/// of thing (an adapter the composition root injects) is what stops the next one being a
+/// judgement call about whether to suppress the lint.
+struct Adapters {
     registry: Arc<dyn ProviderRegistry>,
     imports: Arc<dyn ImportRegistry>,
-    stock_price_provider: Arc<dyn StockPriceProvider>,
-    property_estimate_provider: Arc<dyn PropertyEstimateProvider>,
+    stock_prices: Arc<dyn StockPriceProvider>,
+    property_estimates: Arc<dyn PropertyEstimateProvider>,
+}
+
+fn build_state(
+    db: Db,
+    adapters: Adapters,
     shutdown: Shutdown,
     mcp_ceiling: sure_mcp::McpMode,
     sync_cooldown: Duration,
 ) -> (sure_api::State, sure_mcp::McpState) {
+    let Adapters {
+        registry,
+        imports,
+        stock_prices: stock_price_provider,
+        property_estimates: property_estimate_provider,
+    } = adapters;
     let store = Arc::new(SqliteStore::new(db));
     let clock = Arc::new(SystemClock);
 
@@ -338,10 +357,12 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
 
     let (state, mcp_state) = build_state(
         pool.clone(),
-        registry,
-        imports,
-        stock_price_provider,
-        property_estimate_provider,
+        Adapters {
+            registry,
+            imports,
+            stock_prices: stock_price_provider,
+            property_estimates: property_estimate_provider,
+        },
         shutdown.clone(),
         config.mcp.ceiling,
         config.provider_limits.sync_cooldown,
