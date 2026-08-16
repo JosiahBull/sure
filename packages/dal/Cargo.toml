@@ -27,6 +27,10 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+# The busy-retry counter, and the `sure_dal` spans that `DurationLayer` turns into
+# `db.client.operation.duration`. `sure-telemetry` re-exports the one opentelemetry type a
+# call site needs (`KeyValue`), so no layer above it names the SDK or picks its version.
+sure-telemetry = { workspace = true }
 tracing = { workspace = true }
 log = { workspace = true }
 # `tokio::time::sleep` for `with_busy_retry`'s backoff — a retry has to yield the worker

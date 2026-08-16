@@ -21,6 +21,10 @@ chrono = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
+# Use-case level timers and counters: a provider sync's outcome, report load-vs-compute, the
+# forecast simulation, rule runs, imports, the brokerage backfill. `sure-telemetry` depends on
+# nothing else in the workspace, so this stays a leaf dependency.
+sure-telemetry = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 zen-expression = { workspace = true }

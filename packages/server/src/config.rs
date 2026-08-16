@@ -8,6 +8,7 @@ use sure_api::config::{ApiConfig, DEFAULT_CORS_ORIGINS, Limits};
 use sure_appbase::LifecycleConfig;
 use sure_mcp::config::{DEFAULT_MAX_ROWS, McpConfig, McpMode};
 use sure_providers::{Endpoint, Pacing};
+use sure_telemetry::TelemetryConfig;
 
 use crate::http::HttpConfig;
 use crate::sandbox::{SandboxConfig, SandboxMode};
@@ -53,6 +54,10 @@ pub struct Config {
     /// The MCP surface: off, read-only, or read-write. Off by default — see `docs/MCP.md`
     /// for why enabling it is a decision rather than a default.
     pub mcp: McpConfig,
+    /// Where OpenTelemetry traces, metrics and logs are pushed, and which of those are on.
+    /// Entirely off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set — see
+    /// `docs/OBSERVABILITY.md`.
+    pub telemetry: TelemetryConfig,
 }
 
 /// The base URL of each provider adapter, already checked to be somewhere a credential may
@@ -297,8 +302,111 @@ impl Config {
             sandbox,
             lifecycle,
             mcp,
+            telemetry: telemetry()?,
         })
     }
+}
+
+/// The OpenTelemetry settings. `OTEL_EXPORTER_OTLP_ENDPOINT` unset means all of this is off:
+/// no SDK, no exporter threads, no outbound sockets.
+///
+/// Two values here are **fatal** rather than warn-and-default, both for the reason [`endpoint`]
+/// gives further down. A mistyped endpoint would otherwise push this household's telemetry at
+/// whatever host the typo names, and a mistyped `SURE_OTEL_SIGNALS` would leave a dashboard
+/// permanently empty with one scrolled-past warning to explain it. Everything else — the two
+/// intervals, the log ceiling — is a knob whose wrong value is still aimed at the right place,
+/// so it goes through [`parsed`].
+///
+/// `SURE_OTEL_FILTER` is deliberately absent: it is read by `sure_api::telemetry::init_tracing`
+/// beside `RUST_LOG`, because the filter has to be fixed before this function has run at all.
+fn telemetry() -> anyhow::Result<TelemetryConfig> {
+    let defaults = TelemetryConfig::default();
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        // Set-but-empty reads as unset, as `WEB_DIR` and the provider endpoints do: a blank
+        // line in a `.env` is that file's way of spelling "no value".
+        .filter(|raw| !raw.is_empty());
+
+    // Checked even when export is off, so a broken URL is reported by the run that introduces
+    // it rather than by the one that first turns a signal on.
+    if let Some(raw) = &endpoint {
+        telemetry_endpoint(raw)?;
+    }
+
+    let signals = match std::env::var("SURE_OTEL_SIGNALS") {
+        Err(_) => defaults.signals,
+        Ok(raw) => raw.parse().map_err(|e: String| anyhow::anyhow!(e))?,
+    };
+
+    Ok(TelemetryConfig {
+        endpoint,
+        signals,
+        metrics_interval: secs("SURE_OTEL_METRICS_INTERVAL_SECS", defaults.metrics_interval),
+        sample_interval: secs("SURE_OTEL_SAMPLE_INTERVAL_SECS", defaults.sample_interval),
+        service_name: std::env::var("OTEL_SERVICE_NAME")
+            .ok()
+            .map(|raw| raw.trim().to_string())
+            .filter(|raw| !raw.is_empty())
+            .unwrap_or(defaults.service_name),
+        log_max_level: parsed("SURE_OTEL_LOG_LEVEL", defaults.log_max_level),
+    })
+}
+
+/// Check the collector URL is one this process can actually post to, and say so if it is
+/// plaintext to somewhere off this machine.
+///
+/// Deliberately **not** [`Endpoint::parse`], which the provider URLs use. That rule — `https://`
+/// anywhere, `http://` only to loopback — is right for a third-party API reached across the
+/// internet, and wrong for a collector: the ordinary OTLP deployment is a sidecar or a
+/// container on a private network, addressed as `http://otel-collector:4318`, which `Endpoint`
+/// would refuse. Rejecting the documented shape of this feature to reuse a function would be
+/// the tail wagging the dog.
+///
+/// So the fatal cases are only the ones that cannot work at all — an unparseable URL, a scheme
+/// that is not HTTP, a URL naming no host. Plaintext to a remote host *does* warrant saying
+/// something, because a span carries route templates and a log record carries whatever a
+/// handler said went wrong, so it warns and continues.
+fn telemetry_endpoint(raw: &str) -> anyhow::Result<()> {
+    let url =
+        reqwest::Url::parse(raw).with_context(|| format!("OTEL_EXPORTER_OTLP_ENDPOINT={raw}"))?;
+
+    let plaintext = match url.scheme() {
+        "https" => false,
+        "http" => true,
+        // A `&str` from the edge, not one of our enums — the open-string case CLAUDE.md rule 2
+        // exempts. `grpc://` is the one people actually try; it is not a URL scheme, and this
+        // exporter speaks OTLP over HTTP regardless.
+        other => anyhow::bail!(
+            "OTEL_EXPORTER_OTLP_ENDPOINT={raw}: {other:?} is not an HTTP scheme; \
+             OTLP is pushed over http:// or https:// here"
+        ),
+    };
+
+    let Some(host) = url.host_str() else {
+        anyhow::bail!("OTEL_EXPORTER_OTLP_ENDPOINT={raw}: names no host");
+    };
+
+    if plaintext && !is_loopback_host(host) {
+        tracing::warn!(
+            endpoint = raw,
+            "pushing telemetry in plaintext to a host that is not this machine; traces carry \
+             route templates and log records carry error detail. Fine on a private container \
+             network, worth changing to https:// over anything else"
+        );
+    }
+    Ok(())
+}
+
+/// Whether a URL host names this machine. `localhost`, or any loopback IP literal — the
+/// brackets are how a URL spells an IPv6 address, and `parse::<IpAddr>` does not want them.
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// `SURE_MCP`, or [`McpMode::Off`] when unset — the **ceiling**, not the working mode.
@@ -535,5 +643,45 @@ mod tests {
         )
         .expect("a padded loopback URL is still a loopback URL");
         assert_eq!(padded.url(), "http://127.0.0.1:53219/v1");
+    }
+
+    /// The shape the compose stack uses. It is plaintext to a name that is not this machine,
+    /// which [`Endpoint`] would refuse — and refusing it is what would make the documented way
+    /// to run this feature not work. So it warns and is accepted.
+    #[test]
+    fn a_plaintext_collector_on_a_container_network_is_accepted() {
+        telemetry_endpoint("http://otel-collector:4318")
+            .expect("the documented compose endpoint must be usable");
+    }
+
+    #[test]
+    fn a_collector_this_process_could_never_reach_stops_startup() {
+        for bad in [
+            // The mistake people actually make: OTLP/gRPC's conventional spelling, aimed at an
+            // exporter that only speaks HTTP.
+            "grpc://otel-collector:4317",
+            "otel-collector:4318",
+            "not a url",
+            // A scheme with no host to post to.
+            "http://",
+        ] {
+            let err = telemetry_endpoint(bad)
+                .expect_err("an unusable collector URL must not be silently ignored");
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.contains("OTEL_EXPORTER_OTLP_ENDPOINT"),
+                "{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn loopback_is_recognised_in_all_the_spellings_a_url_allows() {
+        for local in ["localhost", "LocalHost", "127.0.0.1", "127.9.9.9", "[::1]"] {
+            assert!(is_loopback_host(local), "{local}");
+        }
+        for remote in ["otel-collector", "10.0.0.4", "example.com", "[::2]"] {
+            assert!(!is_loopback_host(remote), "{remote}");
+        }
     }
 }

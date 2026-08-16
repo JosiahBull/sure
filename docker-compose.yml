@@ -1,0 +1,126 @@
+# Sure, and optionally an observability stack to point it at.
+#
+#   docker compose up                            # just the app
+#   docker compose --profile observability up     # + collector, VictoriaMetrics/Logs/Traces, Grafana
+#
+# The profile is what keeps the ordinary case one container. Everything under it is opt-in and
+# runs entirely on this machine — nothing here sends telemetry off the host.
+#
+# See docs/OBSERVABILITY.md, and note the one non-obvious setting on `sure` below:
+# SURE_SANDBOX_CONNECT_PORTS. The Landlock sandbox permits outbound TCP to 443 and 53 only and
+# deliberately derives nothing from configuration, so the collector's port has to be named.
+
+name: sure
+
+services:
+  sure:
+    # Built from the repo root: the Dockerfile COPYs each workspace member by name.
+    build:
+      context: .
+      dockerfile: packages/api/Dockerfile
+    image: sure:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - sure-data:/data
+    environment:
+      # The image already sets DATABASE_URL, BIND_ADDR, WEB_DIR and RUST_LOG.
+      BACKGROUND_TASKS: "on"
+      # --- telemetry -------------------------------------------------------------------
+      # Commented out by default so `docker compose up` on its own does not spend every
+      # export interval failing to reach a collector that isn't running. Uncomment these
+      # three together with the observability profile.
+      #
+      # OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # OTEL_SERVICE_NAME: sure
+      # SURE_OTEL_SIGNALS: traces,metrics
+      #
+      # Required whenever the endpoint above is plaintext on a non-443 port — the sandbox
+      # will otherwise refuse the connection, and it surfaces as an ordinary connection
+      # error naming nothing about Landlock. An https collector on 443 needs no entry here.
+      # SURE_SANDBOX_CONNECT_PORTS: "4318"
+
+  # --- observability profile ------------------------------------------------------------
+  # One collector in front of three stores, rather than the app pushing to each. It means one
+  # endpoint and one sandbox port for the app instead of three, and it holds a queue — so
+  # restarting VictoriaMetrics loses a retry rather than a window of data. The direct-to-VM
+  # alternative is documented in docs/OBSERVABILITY.md.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./deploy/otel-collector.yaml:/etc/otel/config.yaml:ro
+    depends_on:
+      - victoriametrics
+      - victorialogs
+      - victoriatraces
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.136.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - "-storageDataPath=/storage"
+      - "-retentionPeriod=13months"
+      # The app's metrics are cumulative, which is what VictoriaMetrics wants; no
+      # deduplication or downsampling is configured, which delta temporality would forbid.
+      - "-httpListenAddr=:8428"
+    ports:
+      # vmui lives at http://localhost:8428/vmui — the quickest way to check a metric arrived.
+      - "127.0.0.1:8428:8428"
+    volumes:
+      - vm-data:/storage
+
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.36.0-victorialogs
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - "-storageDataPath=/storage"
+      - "-httpListenAddr=:9428"
+    ports:
+      - "127.0.0.1:9428:9428"
+    volumes:
+      - vl-data:/storage
+
+  victoriatraces:
+    image: victoriametrics/victoria-traces:v1.0.0-victoriatraces
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - "-storageDataPath=/storage"
+      - "-httpListenAddr=:10428"
+    ports:
+      - "127.0.0.1:10428:10428"
+    volumes:
+      - vt-data:/storage
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      # Local-only, on a loopback-published port, for a single-household deployment. Do not
+      # expose this port publicly with anonymous auth on.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_INSTALL_PLUGINS: victoriametrics-logs-datasource,victoriametrics-metrics-datasource
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - victoriametrics
+
+volumes:
+  sure-data:
+  vm-data:
+  vl-data:
+  vt-data:
+  grafana-data:

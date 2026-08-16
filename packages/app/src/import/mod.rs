@@ -175,7 +175,13 @@ impl ImportService {
 
     /// Place, reconcile and (unless this is a dry run) write what [`Self::parse`] read.
     pub async fn commit(&self, upload: ParsedUpload, opts: &ImportOptions) -> AppResult<Imported> {
+        // `source` is the adapter that parsed the upload — a closed set of registered
+        // adapters, not the filename.
         let source = upload.source;
+        let _timer = sure_telemetry::instruments::Timer::new(
+            &sure_telemetry::instruments().import_duration,
+            vec![sure_telemetry::KeyValue::new("source", source.as_str())],
+        );
         let adapter = self.registry.get(source).ok_or_else(|| {
             AppError::validation(format!("'{}' is not an import source", source.as_str()))
         })?;
@@ -246,6 +252,25 @@ impl ImportService {
                 // to repeat is a worse outcome than a category they can fill in later.
                 Err(e) => {
                     tracing::warn!(error = %e, "could not categorize new transactions after import")
+                }
+            }
+        }
+
+        // A dry run wrote nothing, so counting its rows would inflate the same series a real
+        // commit reports — the preview button is pressed more often than the import one.
+        if !opts.dry_run {
+            let instruments = sure_telemetry::instruments();
+            let imported: i64 = items.iter().map(|i| i.imported).sum();
+            let skipped: i64 = items.iter().map(|i| i.skipped).sum();
+            for (disposition, count) in [("imported", imported), ("skipped", skipped)] {
+                if count > 0 {
+                    instruments.import_rows.add(
+                        u64::try_from(count).unwrap_or(0),
+                        &[
+                            sure_telemetry::KeyValue::new("source", source.as_str()),
+                            sure_telemetry::KeyValue::new("disposition", disposition),
+                        ],
+                    );
                 }
             }
         }

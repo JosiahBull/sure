@@ -1,0 +1,32 @@
+[package]
+name = "sure-telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+# The thin API crate. Every *other* workspace crate depends on this one only through
+# `sure-telemetry`'s re-exports, so a call site never names an opentelemetry version.
+opentelemetry = { workspace = true }
+# The SDK, the exporter and the two bridges are named here and nowhere else in the tree:
+# `otel::init` is the single place providers are built and registered globally.
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true }
+opentelemetry-appender-tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+tracing = { workspace = true }
+# `env-filter` is what lets the trace and log layers carry their own directives. They have
+# to: `sure_api::telemetry::init_tracing` attaches `RUST_LOG` to the fmt layer rather than
+# the registry, so a layer added beside it sees every span at every level.
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

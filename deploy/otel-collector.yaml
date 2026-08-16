@@ -1,0 +1,67 @@
+# OpenTelemetry Collector: accept OTLP from `sure` and fan it out to the three VictoriaMetrics
+# stores. See docker-compose.yml and docs/OBSERVABILITY.md.
+#
+# Each store takes OTLP over HTTP but at its *own* path, none of which is the `/v1/<signal>`
+# the OTLP spec appends to a base URL. That is the main thing this file buys: the app keeps one
+# standard endpoint and the three non-standard paths live here.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        # 0.0.0.0 inside the container; the port is not published to the host, so only other
+        # services on this compose network can reach it.
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Bounds memory if a store is down and the queue backs up. Without it a long outage grows the
+  # collector until the container is killed, which loses everything buffered.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  # Metrics. VictoriaMetrics wants protobuf and cumulative temporality — which is what the app
+  # exports (see `sure_telemetry::otel`), so nothing converts anything here.
+  otlphttp/metrics:
+    metrics_endpoint: http://victoriametrics:8428/opentelemetry/v1/metrics
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+      storage: null
+
+  otlphttp/logs:
+    logs_endpoint: http://victorialogs:9428/insert/opentelemetry/v1/logs
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+
+  otlphttp/traces:
+    traces_endpoint: http://victoriatraces:10428/insert/opentelemetry/v1/traces
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/metrics]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/logs]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/traces]

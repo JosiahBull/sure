@@ -32,6 +32,7 @@ COPY Cargo.toml Cargo.lock ./
 # `appbase` and `testproxy` are workspace members, so cargo needs their manifests to load the
 # workspace at all — even though `-p sure-server` never builds testproxy.
 COPY packages/appbase ./packages/appbase
+COPY packages/telemetry ./packages/telemetry
 COPY packages/testproxy ./packages/testproxy
 COPY packages/core ./packages/core
 COPY packages/scheduler ./packages/scheduler
@@ -92,6 +93,7 @@ COPY Cargo.toml Cargo.lock ./
 # `appbase` and `testproxy` are workspace members, so cargo needs their manifests to load the
 # workspace at all — even though `-p sure-server` never builds testproxy.
 COPY packages/appbase ./packages/appbase
+COPY packages/telemetry ./packages/telemetry
 COPY packages/testproxy ./packages/testproxy
 COPY packages/core ./packages/core
 COPY packages/scheduler ./packages/scheduler

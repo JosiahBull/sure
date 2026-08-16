@@ -821,6 +821,7 @@ impl ForecastService {
     /// thread that is allowed to block. Nothing here is expensive in CPU; the loads dominate,
     /// and they are all `await`s, so a runtime worker can park on them like any other query.
     pub async fn simulate_inputs(&self, params: &SimulationParams) -> AppResult<SimulationInputs> {
+        let _phase = sure_telemetry::instruments::ReportPhase::load("forecast");
         let today = self.clock.today();
         let horizon = params
             .horizon_months
@@ -1223,6 +1224,13 @@ impl ForecastService {
     /// The RNG is owned (`StdRng::seed_from_u64`), never thread-local, so which thread runs
     /// this cannot change a single figure.
     pub fn simulate_from(inputs: SimulationInputs) -> AppResult<ForecastResult> {
+        // Its own histogram rather than `report_duration`'s `compute` phase: this is the
+        // heaviest computation in the application and its distribution has nothing in common
+        // with a report's, so sharing buckets would flatten both.
+        let _timer = sure_telemetry::instruments::Timer::new(
+            &sure_telemetry::instruments().forecast_duration,
+            Vec::new(),
+        );
         let SimulationInputs {
             accounts,
             today,

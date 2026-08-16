@@ -97,23 +97,35 @@ impl PropertyEstimateProvider for HousePricerProvider {
     }
 
     async fn fetch_estimate(&self, query: &str) -> anyhow::Result<Option<PropertyEstimate>> {
-        match self.client.match_address(query).await {
-            Ok(property) => parse_estimate(property).map(Some),
-            // No match is the ordinary answer, not a failure: House Pricer covers one city, so
-            // every address outside it answers this way, as does one with a typo. The caller —
-            // a pre-flight the person is watching, or the monthly poll — decides what to do
-            // with "nothing".
-            Err(HousePricerError::NotFound) => {
-                tracing::debug!("no property matched the address given");
-                Ok(None)
+        // Timed at the port method, exactly as the other adapters are, and for the sharper
+        // version of the reason `crate::http::timed` gives: the request is sent inside
+        // `house-pricer-client`, so there is no `send()` in this crate to wrap. This level is
+        // also the one that matches what a caller waits for — the flight *and* the model choice
+        // and minor-unit conversion below it.
+        //
+        // `outcome` reads `ok` for a no-match, the same way Yahoo's delisted-ticker 404 does: the
+        // upstream answered, and "nothing here" is the answer. The label set is closed and
+        // carries no part of `query`, which is a street address.
+        crate::http::timed("house_pricer", "fetch_estimate", async {
+            match self.client.match_address(query).await {
+                Ok(property) => parse_estimate(property).map(Some),
+                // No match is the ordinary answer, not a failure: House Pricer covers one city,
+                // so every address outside it answers this way, as does one with a typo. The
+                // caller — a pre-flight the person is watching, or the monthly poll — decides
+                // what to do with "nothing".
+                Err(HousePricerError::NotFound) => {
+                    tracing::debug!("no property matched the address given");
+                    Ok(None)
+                }
+                // CLAUDE.md rule 2's escape hatch: `HousePricerError` is `#[non_exhaustive]`, so
+                // a catch-all is the only option — and it is the right answer anyway, because
+                // every remaining variant means the same thing to this caller (the estimate
+                // could not be fetched) and differs only in the message. `NotFound` above is the
+                // one that changes behaviour, and it is named.
+                Err(other) => Err(anyhow::Error::new(other)),
             }
-            // CLAUDE.md rule 2's escape hatch: `HousePricerError` is `#[non_exhaustive]`, so a
-            // catch-all is the only option — and it is the right answer anyway, because every
-            // remaining variant means the same thing to this caller (the estimate could not be
-            // fetched) and differs only in the message. `NotFound` above is the one that
-            // changes behaviour, and it is named.
-            Err(other) => Err(anyhow::Error::new(other)),
-        }
+        })
+        .await
     }
 }
 

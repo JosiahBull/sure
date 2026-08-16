@@ -14,7 +14,7 @@
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -90,6 +90,16 @@ impl Scheduler {
         self.tasks.push(task);
     }
 
+    /// The names of every registered task, in registration order.
+    ///
+    /// For the telemetry sampler, which reports how long ago each task last completed. Asked of
+    /// the scheduler rather than listed a second time at the call site: a hand-maintained copy
+    /// would silently stop covering a task the day one is added, which is precisely the day the
+    /// gauge matters.
+    pub fn task_names(&self) -> Vec<&'static str> {
+        self.tasks.iter().map(|task| task.name()).collect()
+    }
+
     /// Run the check loop until `cancel` fires. The first check happens immediately, so a
     /// never-run task executes on startup rather than waiting a full `check_interval`.
     ///
@@ -148,17 +158,26 @@ impl Scheduler {
             Ok(v) => v,
             Err(err) => {
                 tracing::warn!(task = task.name(), error = %err, "could not read task schedule state");
+                // Counted, because until now this path was invisible: the task silently does
+                // not run, its `last_run_at` never advances, and the only evidence is one WARN
+                // among a day's logs. A non-zero rate here means jobs are not running at all.
+                record_outcome(task.name(), JobOutcome::StateUnavailable, None);
                 return;
             }
         };
         if !is_due(last_run_at, Utc::now(), task.interval()) {
             return;
         }
-        match AssertUnwindSafe(task.run(cancel)).catch_unwind().await {
+        // Only the runs that actually happen are timed — `is_due` returning false is not a
+        // zero-length job, and recording it would bury the real durations under a check that
+        // fires every minute per task.
+        let started = Instant::now();
+        let outcome = match AssertUnwindSafe(task.run(cancel)).catch_unwind().await {
             Ok(Ok(TaskRun::Completed)) => {
                 if let Err(err) = self.store.record_run(task.name(), Utc::now()).await {
                     tracing::warn!(task = task.name(), error = %err, "could not record task run");
                 }
+                JobOutcome::Completed
             }
             // Not recorded on purpose — see `TaskRun::Interrupted`. A shutdown that lands
             // half-way through a sweep must not look like a completed run, or the work skipped
@@ -168,9 +187,11 @@ impl Scheduler {
                     task = task.name(),
                     "scheduled task stopped early for shutdown; not recorded, so it runs again on the next check"
                 );
+                JobOutcome::Interrupted
             }
             Ok(Err(err)) => {
                 tracing::warn!(task = task.name(), error = %err, "scheduled task failed");
+                JobOutcome::Failed
             }
             // ERROR, not WARN: an `Err` is a job reporting a condition it expected to be
             // possible, a panic is a bug. Without this the only trace was a default
@@ -182,8 +203,55 @@ impl Scheduler {
                     panic = panic_message(payload.as_ref()),
                     "scheduled task panicked; the scheduler survived and will retry it on the next check"
                 );
+                JobOutcome::Panicked
             }
+        };
+        record_outcome(task.name(), outcome, Some(started.elapsed()));
+    }
+}
+
+/// How a scheduled run ended.
+///
+/// An enum rather than a `&str` label built at each site (CLAUDE.md rule 1), so the five
+/// outcomes `run_if_due` can produce are a closed set and a sixth cannot be added without
+/// deciding what it means here. `StateUnavailable` is the one that is not a job result at all:
+/// the schedule could not be read, so the job never started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JobOutcome {
+    Completed,
+    Interrupted,
+    Failed,
+    Panicked,
+    StateUnavailable,
+}
+
+impl JobOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            JobOutcome::Completed => "completed",
+            JobOutcome::Interrupted => "interrupted",
+            JobOutcome::Failed => "failed",
+            JobOutcome::Panicked => "panicked",
+            JobOutcome::StateUnavailable => "state_unavailable",
         }
+    }
+}
+
+/// Count a run, and time it when there was one to time.
+///
+/// `task` is a `&'static str` from [`ScheduledTask::name`] and the outcome is a closed enum, so
+/// the label set is the five registered jobs times five outcomes at most.
+fn record_outcome(task: &'static str, outcome: JobOutcome, elapsed: Option<Duration>) {
+    let attributes = [
+        sure_telemetry::KeyValue::new("job", task),
+        sure_telemetry::KeyValue::new("outcome", outcome.as_str()),
+    ];
+    let instruments = sure_telemetry::instruments();
+    instruments.scheduler_job_total.add(1, &attributes);
+    if let Some(elapsed) = elapsed {
+        instruments
+            .scheduler_job_duration
+            .record(sure_telemetry::secs(elapsed), &attributes);
     }
 }
 

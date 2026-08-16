@@ -329,6 +329,22 @@ pub async fn load_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
 /// Deliberately a second query rather than a `WHERE` bolted onto [`load_contexts`] with a
 /// flag: `query_as!` checks its SQL as a literal, so a runtime-assembled predicate would
 /// have to give that up, and the two callers want genuinely different row sets.
+/// How many transactions have no category — the count alone.
+///
+/// A separate query from [`load_uncategorized_contexts`] rather than `.len()` on it, because the
+/// only caller is the telemetry sampler and it runs every few minutes forever. That function
+/// selects fifteen columns and joins two tables to build a `TxCtx` per row, all of which would
+/// be dropped on the floor; on a household's ledger that is tens of thousands of rows
+/// materialised to produce one integer. A gauge must not cost more than the thing it measures.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn count_uncategorized(db: &Db) -> AppResult<i64> {
+    Ok(sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM transactions WHERE category_id IS NULL"#
+    )
+    .fetch_one(db)
+    .await?)
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn load_uncategorized_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
     sqlx::query_as!(

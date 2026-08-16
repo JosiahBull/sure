@@ -1185,6 +1185,7 @@ impl ReportService {
     /// thread that is allowed to block. Nothing here is expensive in CPU: the loads dominate
     /// and they are all `await`s, so a runtime worker parks on them like any other query.
     pub async fn net_worth_inputs(&self, q: &NetWorthQuery) -> AppResult<NetWorthInputs> {
+        let _phase = sure_telemetry::instruments::ReportPhase::load("net_worth");
         let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
 
         let mut accounts = self.reports.account_currencies().await?;
@@ -1248,6 +1249,7 @@ impl ReportService {
     /// requested date range and the ledger; a daily year is 400 samples over every account.
     /// See [`NetWorthInputs`] for what running that on an async worker cost.
     pub fn net_worth_from(inputs: NetWorthInputs) -> NetWorthSeries {
+        let _phase = sure_telemetry::instruments::ReportPhase::compute("net_worth");
         let NetWorthInputs {
             base,
             fx,
@@ -1313,6 +1315,7 @@ impl ReportService {
         &self,
         q: &ReportQuery,
     ) -> AppResult<CategoryBreakdownInputs> {
+        let _phase = sure_telemetry::instruments::ReportPhase::load("category_breakdown");
         let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let cats = Categories::load(self.reports.as_ref()).await?;
         let (from, to) = self.window(q.from.as_deref(), q.to.as_deref()).await?;
@@ -1344,6 +1347,7 @@ impl ReportService {
     /// transaction on record: each row costs an ancestor walk (up to 64 hops of hash lookups)
     /// plus a currency conversion, and the sort at the end is over the surviving categories.
     pub fn category_breakdown_from(inputs: CategoryBreakdownInputs) -> CategoryBreakdown {
+        let _phase = sure_telemetry::instruments::ReportPhase::compute("category_breakdown");
         let CategoryBreakdownInputs {
             base,
             fx,
@@ -1418,6 +1422,7 @@ impl ReportService {
     /// The synchronous half of [`Self::spend_by`]: one pass over the window, keyed by
     /// `group_by`. `self`- and await-free, for the blocking pool.
     pub fn spend_by_from(inputs: CategoryBreakdownInputs, group_by: GroupBy) -> SpendByReport {
+        let _phase = sure_telemetry::instruments::ReportPhase::compute("spend_by");
         let CategoryBreakdownInputs {
             base,
             fx,
@@ -1548,6 +1553,7 @@ impl ReportService {
     /// [`Self::category_breakdown_inputs`], which reads the same rows into a different
     /// aggregation.
     pub async fn sankey_inputs(&self, q: &ReportQuery) -> AppResult<SankeyInputs> {
+        let _phase = sure_telemetry::instruments::ReportPhase::load("sankey");
         let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let cats = Categories::load(self.reports.as_ref()).await?;
         let (from, to) = self.window(q.from.as_deref(), q.to.as_deref()).await?;
@@ -1579,6 +1585,7 @@ impl ReportService {
     /// move the chart between two identical requests). Linear in the window, which defaults to
     /// every transaction on record.
     pub fn sankey_from(inputs: SankeyInputs) -> SankeyGraph {
+        let _phase = sure_telemetry::instruments::ReportPhase::compute("sankey");
         let SankeyInputs {
             base,
             fx,

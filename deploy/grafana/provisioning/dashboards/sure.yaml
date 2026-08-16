@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: sure
+    type: file
+    disableDeletion: false
+    # Editing in the UI is allowed, but the file is the source of truth and is re-read on
+    # restart — so save a change you want to keep back into deploy/grafana/dashboards/.
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

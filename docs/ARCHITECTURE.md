@@ -87,6 +87,12 @@ feature-gates its web and db concerns. These are the templates for everything be
                                   └──────────────────────┘      └────────────────────────┘
 ```
 
+Two crates sit outside that diagram because they are depended on *by* every layer in it and
+depend on nothing in the workspace themselves: `sure-appbase` (process lifecycle) and
+`sure-telemetry` (the OpenTelemetry SDK, the instrument registry, and the `tracing` layers —
+see [OBSERVABILITY.md](OBSERVABILITY.md)). A telemetry crate with dependencies of its own
+would be a layer that could not be instrumented.
+
 Target dependency arrows ("depends on"):
 
 ```

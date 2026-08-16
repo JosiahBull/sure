@@ -10,6 +10,11 @@ members = [
     "packages/frankfurter-client",
     "packages/house-pricer-client",
     "packages/yahoo-finance-client",
+    # Observability, and like `packages/appbase` it depends on nothing else in the workspace
+    # — every layer from the DAL up records into it, so anything it depended on could not
+    # then be instrumented. Holds the instrument registry, the OTLP/SDK wiring, and the
+    # span-duration layer; see docs/OBSERVABILITY.md.
+    "packages/telemetry",
     "packages/core",
     "packages/scheduler",
     "packages/dal",
@@ -147,6 +152,33 @@ anyhow = "1"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# OpenTelemetry. The whole family moves in lockstep on one minor — `tracing-opentelemetry`
+# 0.33 is the release built against `opentelemetry` 0.32 — so bump them together or not at
+# all. `sure-telemetry` is the only crate that names the SDK and the exporter; every other
+# crate takes the thin `opentelemetry` API crate and reaches the meter through it.
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
+# Deliberately on default features: they are exactly `http-proto` + `reqwest-blocking-client`
+# + `internal-logs` + all three signals, which is the transport this repo wants. Two things
+# follow that are easy to undo by accident.
+#
+# `reqwest-blocking-client`, not `reqwest-client`: in 0.32 the periodic metric reader and the
+# batch span/log processors run on plain OS threads with no tokio runtime to drive an async
+# client. Swapping to the async one needs the SDK's
+# `experimental_metrics_periodicreader_with_async_runtime` and buys nothing here.
+#
+# And *no* `reqwest-rustls*` feature. The workspace already selects reqwest's TLS backend
+# (`rustls`, system roots via rustls-platform-verifier — see the reqwest note above); asking
+# for a second roots strategy here would quietly change where certificates come from for
+# every other adapter too, through feature unification.
+#
+# `http-proto` pulls `prost` (and `opentelemetry-proto`'s `gen-tonic-messages`, which is the
+# prost *message* codegen and not a tonic client). It does not pull `tonic`: nothing in this
+# tree has a gRPC stack and this keeps it that way.
+opentelemetry-otlp = { version = "0.32", features = ["gzip-http"] }
+opentelemetry-semantic-conventions = "0.32"
+opentelemetry-appender-tracing = "0.32"
+tracing-opentelemetry = "0.33"
 # Linux-only, and only depended on by `sure-server`: the self-sandbox it applies in `main`
 # before the tokio runtime starts. See packages/server/src/sandbox.rs.
 landlock = "0.4"
@@ -208,6 +240,10 @@ sure-appbase = { path = "packages/appbase" }
 frankfurter-client = { path = "packages/frankfurter-client" }
 house-pricer-client = { path = "packages/house-pricer-client" }
 yahoo-finance-client = { path = "packages/yahoo-finance-client" }
+# Depends on nothing else in the workspace, for the same shape of reason `sure-testproxy`
+# below does: it is depended on *by* every other layer, so a dependency of its own would be
+# a layer that could never record a metric.
+sure-telemetry = { path = "packages/telemetry" }
 sure-core = { path = "packages/core" }
 sure-scheduler = { path = "packages/scheduler" }
 sure-dal = { path = "packages/dal" }

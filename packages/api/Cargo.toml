@@ -24,6 +24,9 @@ sure-providers = { workspace = true }
 # shutdown report cannot see it and cheerfully claims `clean=true` while it is cut off
 # mid-write. `sure-appbase` depends on nothing else in the workspace, so this is a leaf.
 sure-appbase = { workspace = true }
+# The reloadable-layer seam (`BoxedLayer`) that `init_tracing` installs the OTLP layers
+# through, and — from the request middleware — the HTTP instruments.
+sure-telemetry = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
