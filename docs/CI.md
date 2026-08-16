@@ -10,7 +10,6 @@ whenever a version tag is pushed. Everything lives under [`.github/`](../.github
 | `ci.yml` | push to `main`, any PR | Calls the reusable `checks.yml` suite. |
 | `checks.yml` | `workflow_call` | The merge gates (see below). Shared by CI and Release so a release runs the identical checks. |
 | `release.yml` | push tag `v*` | Runs `checks.yml`, builds + pushes the multi-arch image to GHCR, then cuts a GitHub Release. |
-| `snapshots.yml` | manual (`workflow_dispatch`) | Regenerates + commits the Playwright `-linux.png` baselines in the exact CI environment. |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Enables auto-merge so green dependency bumps land on their own. |
 
 ### Merge gates (`checks.yml`)
@@ -35,7 +34,12 @@ whenever a version tag is pushed. Everything lives under [`.github/`](../.github
 - **Typecheck** — `svelte-check` (web) + `tsc` (api-tests), after `pnpm gen:client`
 - **API e2e tests** — `pnpm test:api` (Playwright driving the real backend, no browser)
 - **Web visual tests** — `pnpm test:web` (Playwright screenshot suite), run inside the
-  pinned `mcr.microsoft.com/playwright` image so rendering matches the committed baselines
+  pinned `mcr.microsoft.com/playwright` image so rendering matches the committed baselines.
+  That image tag is also what `pnpm snapshots:update` reads out of `checks.yml` to regenerate
+  the `-linux.png` baselines locally — see
+  [Regenerating the Linux baselines](TESTING.md#regenerating-the-linux-baselines). On failure the
+  job uploads `web-playwright-report`, whose `test-results/**/<name>-actual.png` *is* the new
+  baseline if the change was intended
 - **Versions** — `scripts/check-versions.sh`: Cargo.toml and package.json must agree, and
   on a tag the tag must match
 
@@ -79,7 +83,8 @@ docker build -f packages/api/Dockerfile -t sure .
 
 ## One-time repository setup
 
-These need to be done once in the GitHub repo settings after the first push:
+These need doing once after the first push — the first two in the GitHub repo settings, the
+third from a clone:
 
 1. **Actions permissions** — Settings → Actions → General → Workflow permissions:
    allow GitHub Actions to create/write packages (the release job pushes to GHCR with
@@ -89,8 +94,15 @@ These need to be done once in the GitHub repo settings after the first push:
    metadata, Rustfmt, Clippy, Cargo tests, Typecheck, API e2e tests, Web visual tests, Versions) as status
    checks. Dependabot auto-merge relies on these being required, so a job missing from this
    list is a job a green-looking dependency bump can merge past.
-3. **Bootstrap the Linux screenshot baselines** — the committed baselines are macOS
-   (`-darwin.png`); CI runs on Linux and needs `-linux.png`. Run the **Update snapshots**
-   workflow once (Actions tab → Update snapshots → Run workflow). It generates the
-   baselines in the exact CI environment and commits them, after which the Web visual
-   tests gate is green. Re-run it after any intentional UI change.
+3. **Bootstrap the Linux screenshot baselines** — a baseline is per-platform, so a Mac's
+   `pnpm test:web` only produces `-darwin.png` while CI compares `-linux.png`. Run
+   `pnpm snapshots:update` once and commit what it writes; the Web visual tests gate is green
+   from there, and the same command regenerates them after any intentional UI change. It runs
+   the suite in the image `checks.yml` pins, so the output matches what this job compares
+   against — the reasoning, the `--platform` trap and the no-Docker fallback are in
+   [Regenerating the Linux baselines](TESTING.md#regenerating-the-linux-baselines).
+
+   There used to be an **Update snapshots** workflow doing this on a runner. It pushed with the
+   default `GITHUB_TOKEN`, which by design triggers no workflow run, so it always left a commit
+   no CI run had checked — plus a bot commit carrying pixels separated from the change that
+   caused them.

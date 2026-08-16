@@ -75,6 +75,85 @@ Both Playwright suites build what they need in `global-setup` (`sure-api` **and*
 `sure-testproxy`), so there is no separate build step to remember and a missing binary is one
 cargo error at setup rather than a handshake timeout fifteen seconds later.
 
+## Regenerating the Linux baselines
+
+A screenshot baseline is per-platform, so `packages/web/tests/app.spec.ts-snapshots/` holds two
+of every image. `pnpm test:web` on a Mac renders and compares `*-darwin.png`; CI renders
+`*-linux.png` inside `mcr.microsoft.com/playwright:<tag>`, and that pair — the Chromium build and
+the font stack the image ships — is the only environment those files are reproducible in. An
+intended UI change moves both sets, and a `-linux.png` minted anywhere else is a file that looks
+authoritative and pins nothing.
+
+```bash
+pnpm snapshots:verify    # run the visual suite in CI's image against the committed baselines
+pnpm snapshots:update    # re-render them there and copy the *-linux.png back into the tree
+```
+
+Both are `scripts/linux-snapshots.mjs`, which runs the suite in the image the `web-tests` job
+pins — parsed out of `.github/workflows/checks.yml` rather than restated, so the two cannot
+drift — with a bash inner half (`scripts/linux-snapshots.container.sh`) doing the in-container
+steps. `verify` is the mode that proves the arrangement still holds; run it before trusting an
+`update`, and after any Playwright or image bump.
+
+**This works because the rendering is byte-identical, which was measured rather than assumed.**
+Running the suite this way on an arm64 Mac under Rosetta, against the baselines CI itself had
+committed, passed all ten tests including all four `toHaveScreenshot` ones (2026-08-16). That is
+what `verify` re-checks.
+
+**It replaced a workflow, on purpose.** `snapshots.yml` did this on a runner and pushed the
+result back with the default `GITHUB_TOKEN` — and by GitHub's design a push made with that token
+starts no workflow run, so every use left a commit CI had never checked and a PR someone had to
+close and reopen to wake up. It also split a UI change in two: the change, and a bot commit
+carrying the pixels it caused, which is a diff no reviewer can read. Generating them locally puts
+the baselines in the commit that moved them.
+
+The traps, and the failure each produces:
+
+* **`--platform linux/amd64` is not optional.** The image is multi-arch, so an arm64 host without
+  that flag silently pulls arm64 Chromium, renders with a different rasteriser, and mints
+  baselines that disagree with CI while passing locally — worse than having no tooling, because
+  the output looks authoritative. The script proves the daemon can really run amd64 (it starts
+  the pinned image and checks `uname -m`) before it does anything slow, and fails with what to
+  turn on if it cannot.
+* **The cargo target directory must literally be `<workdir>/target`.** `global-setup.ts` spawns
+  `<repoRoot>/target/debug/sure-api` by path, so a redirected `CARGO_TARGET_DIR` builds perfectly
+  and then the suite dies on `spawn … ENOENT` blaming the spawn. The cache volume is mounted at
+  `/work/target` rather than pointed at.
+* **The tree is copied out of a read-only mount, not built in place.** The host's `node_modules`
+  and `target` are darwin/arm64 and would poison the container's build; mounted read-write, the
+  container's would poison the host's. `data/` is excluded outright — on a developer's machine
+  that is `data/sure.db`, the live database.
+* **Update mode passes `--update-snapshots=all`, not the bare flag.** Bare means "changed", which
+  is decided by the same comparator the assertion uses — and at this suite's
+  `maxDiffPixelRatio: 0.03` a real UI change under that tolerance leaves the stale baseline on
+  disk and the run still passes.
+* **The three caches are named Docker volumes** (`sure-linux-cargo-home`,
+  `sure-linux-cargo-target`, `sure-linux-pnpm-store`), shared across worktrees on purpose: they
+  are platform state, and the first run is an emulated cold Rust build. Two *concurrent* runs
+  contend on the cargo target lock — they block, they do not corrupt — so a run that seems to
+  hang early is usually waiting on another one. They survive `pnpm clean`, which only clears the
+  working tree; `docker volume rm sure-linux-cargo-home sure-linux-cargo-target
+  sure-linux-pnpm-store` is the reset, at the price of the cold build.
+
+### Without Docker
+
+**A failing CI visual run already uploads the exact rendered PNG.** The `web-tests` job attaches
+`packages/web/test-results` as the `web-playwright-report` artifact, and
+`test-results/**/<name>-actual.png` in it is byte-identical to what a local container run
+produces — verified. So a baseline can be updated from a red CI run alone:
+
+```bash
+gh run download <run-id> -n web-playwright-report
+cp test-results/<test-dir>/overview-actual.png \
+   packages/web/tests/app.spec.ts-snapshots/overview-linux.png
+```
+
+Two catches. The file only exists for a test that *failed*, so this covers "CI disagrees with the
+committed baseline and the new rendering is the intended one" — the common case after a UI change
+— and not much else. And the confirmation arrives after the push rather than before it: the next
+CI run is what tells you the copied pixels were the right ones, where `pnpm snapshots:verify`
+would have said so locally.
+
 ## How the proxy is wired in
 
 `partly-proxy-lib` is a **reverse** proxy, not a `CONNECT` proxy: each upstream binds its own

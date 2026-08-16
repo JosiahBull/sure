@@ -245,7 +245,9 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   compiled the workspace, so the marginal cost is linking and running the test binaries;
   CI runs the same command as the `test` job in `checks.yml`),
   `pnpm test:api`, `pnpm --filter @sure/web check`. It deliberately skips the web
-  *visual* Playwright suite (only deterministic in CI's pinned container). Bypass in
+  *visual* Playwright suite (only deterministic in CI's pinned container — `pnpm snapshots:verify`
+  runs that container locally, and `pnpm snapshots:update` regenerates the `-linux.png` baselines
+  so they land in the commit that moved them; see `docs/TESTING.md`). Bypass in
   an emergency with `git commit --no-verify`, not by weakening a lint.
 - **commit-msg** (`.githooks/commit-msg`, same `prepare` script): runs
   `node scripts/pii-scan.mjs --message "$1"` — rule 3 over the commit *message*, which the

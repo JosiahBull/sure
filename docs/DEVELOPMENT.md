@@ -73,6 +73,8 @@ themselves are listed in the [README](../README.md#running-it) and in [HTTP.md](
 | `pnpm test:api:check` | Type-check the API tests against the client contract (`tsc`) |
 | `pnpm test:web:install` | One-time: install the Chromium used by the web suite |
 | `pnpm test:web` | Web Playwright suite (builds + boots + seeds automatically) |
+| `pnpm snapshots:verify` | Run that suite in CI's pinned container against the committed `-linux.png` baselines (needs Docker) |
+| `pnpm snapshots:update` | Regenerate those baselines in the same container and copy them into the tree |
 | `pnpm lint:rust` / `pnpm fmt:rust` | clippy / rustfmt |
 | `pnpm sqlx:prepare` | Regenerate `.sqlx/`, the compile-time query metadata — after any query or migration change |
 | `pnpm sqlx:check` | Fail if `.sqlx/` is stale (what pre-commit and CI run) |
@@ -163,6 +165,12 @@ and URI logged, rather than depending on someone else's uptime.
 
 Run them with `pnpm test`, or one tier at a time (`pnpm test:rust`, `pnpm test:api`,
 `pnpm test:web`) — see [Commands](#commands).
+
+The visual suite's baselines are per-platform: `pnpm test:web` compares against `-darwin.png`
+on a Mac, while CI compares against `-linux.png` rendered in a pinned container. A UI change
+usually moves both, and `pnpm snapshots:update` regenerates the Linux half locally in that same
+container so it lands in the same commit — see
+[Regenerating the Linux baselines](TESTING.md#regenerating-the-linux-baselines).
 
 ## Further reading
 
