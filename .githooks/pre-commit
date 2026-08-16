@@ -3,9 +3,33 @@
 # Pre-commit checks for the sure repo. Mirrors the deterministic gates in
 # .github/workflows/checks.yml so most failures are caught before they reach CI.
 #
-# Runs: the personal-data scan, the sqlx offline-metadata check, rustfmt (check), clippy
-# (-D warnings), the Rust unit and integration tests, the backend e2e suite, and the web
-# type-check. The scan goes first because it costs milliseconds and guards something a later
+# ONE JOB PER REQUIRED CONTEXT, and the mapping is written out so a gap is visible rather than
+# inferred. `main`'s branch protection requires ten contexts; this hook covers nine of them:
+#
+#   checks / Personal-data scan     → scripts/pii-scan.mjs
+#   checks / Dependabot config      → scripts/check-dependabot.sh
+#   checks / Versions               → scripts/check-versions.sh
+#   checks / sqlx offline metadata  → scripts/sqlx-prepare.mjs --check
+#   checks / Rustfmt                → cargo fmt --all --check
+#   checks / Clippy                 → cargo clippy … -D warnings
+#   checks / Cargo tests            → cargo test --workspace --all-features
+#   checks / API e2e tests          → pnpm test:api
+#   checks / Typecheck              → BOTH `--filter @sure/web check` and
+#                                     `--filter @sure/api-tests check` (the CI job runs both)
+#   checks / Web visual tests       → deliberately absent; see the note below
+#
+# Adding a required context without adding it here is the failure this table exists to make
+# obvious. Three of the rows above were missing at once — `Versions`, `Dependabot config`, and
+# the api-tests half of `Typecheck` — so a commit could pass every gate a person had been told
+# to run and still be blocked by CI, which is how a broken `.github/dependabot.yml` reached
+# main on 2026-08-16.
+#
+# Corollary worth stating, because it is how that one was missed *twice*: run the gates, or run
+# this hook — do not hand-run a subset and read the tail of it. `./scripts/check-dependabot.sh
+# | tail -2` printed the one passing line while the failing one scrolled past, and the exit code
+# went unread. Every command below runs under `set -e`, which is the point of running them here.
+#
+# The scan goes first because it costs milliseconds and guards something a later
 # gate cannot undo — see CLAUDE.md rule 3, and `node scripts/pii-scan.mjs --all` to sweep the
 # whole tree rather than staged additions. `cargo test` sits directly after clippy: clippy has
 # already compiled the workspace by then, so the marginal cost is linking and running the test
@@ -36,6 +60,12 @@ run() {
 }
 
 run node scripts/pii-scan.mjs
+# Both cost about a second, and both guard a file a person edits by hand and cannot easily
+# check by eye: the 0.x ignore list (which a new dependency silently invalidates) and the two
+# version strings that have to agree. Up here with the scan for the same reason — cheapest
+# first, so a trivially-fixable mistake is not reported after ten minutes of compiling.
+run ./scripts/check-dependabot.sh
+run ./scripts/check-versions.sh
 run node scripts/sqlx-prepare.mjs --check
 run cargo fmt --all --check
 run cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -43,6 +73,11 @@ run cargo clippy --workspace --all-targets --all-features -- -D warnings
 # which for `cargo test` would drop the doctests. See the `test` job in checks.yml.
 run cargo test --workspace --all-features
 run pnpm test:api
+# Both halves, because the `Typecheck` job runs both — and they check different things: the web
+# one is svelte-check over the SPA plus `tsc` over packages/web/tests, the api-tests one is `tsc`
+# over the backend e2e suite. Running only the first is how a spec that no longer compiles
+# against a regenerated client reaches CI.
 run pnpm --filter @sure/web check
+run pnpm --filter @sure/api-tests check
 
-echo "✓ pre-commit checks passed"
+echo "✓ pre-commit checks passed (9 of main's 10 required contexts; visual suite is CI-only)"
