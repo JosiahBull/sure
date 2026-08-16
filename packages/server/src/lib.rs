@@ -248,6 +248,7 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
     let property_estimate_provider: Arc<dyn PropertyEstimateProvider> =
         Arc::new(sure_providers::HousePricerProvider::with_endpoint(
             config.provider_endpoints.house_pricer.clone(),
+            config.provider_limits.pacing,
         ));
 
     // Filled in by the scheduler block below when it runs, so the telemetry sampler reports

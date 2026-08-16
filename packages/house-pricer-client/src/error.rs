@@ -72,6 +72,24 @@ pub enum HousePricerError {
     #[error("no property matched the address given")]
     NotFound,
 
+    /// The upstream refused on volume, and asked for `retry_after` if it said so at all.
+    ///
+    /// Its own variant rather than a [`Self::Http`] with a 429 in it, because it is the one
+    /// outcome that changes what the *caller* does next rather than only what it reports:
+    /// coming back immediately makes it worse. `sure-providers` turns this into a stand-down
+    /// window so the next caller is refused before a request goes out.
+    ///
+    /// Parsing `Retry-After` is this crate's job — it owns the response the header arrived on —
+    /// while deciding what window to turn it into is the caller's policy. Same division as
+    /// `frankfurter-client` and `yahoo-finance-client`.
+    #[error("House Pricer refused this request with HTTP {status} (rate limited)")]
+    RateLimited {
+        /// The status that carried the refusal: `429`, or a `503` that named a `Retry-After`.
+        status: u16,
+        /// How long the upstream asked for, if it asked at all.
+        retry_after: Option<std::time::Duration>,
+    },
+
     /// The request was rejected as malformed — in practice, a blank or unusable `q`.
     #[error("House Pricer rejected the request: {message}")]
     BadRequest {
