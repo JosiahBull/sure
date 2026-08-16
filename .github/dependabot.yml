@@ -43,6 +43,21 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # openapi-fetch 0.17.0 specifically, which cannot be taken: it wraps `data` and `error`
+      # in openapi-typescript-helpers' `Readable<T>`, whose array branch collapses tuples, so
+      # `StoredTaxScale.brackets` — generated from Rust's `Vec<(Option<i64>, i64)>` as
+      # `[number | null, number][]` — degrades to `(number | null)[][]` and fails
+      # `pnpm --filter @sure/web check` in src/pages/TaxRates.svelte. Re-verified against the
+      # real package on 2026-08-16 (PR #9), not taken on trust from the note in
+      # packages/client/package.json, which is where the full reasoning lives.
+      #
+      # Pinned to the one broken release rather than `0.17.x` or a blanket minor ignore, so a
+      # fixed 0.17.1 or 0.18 is still proposed the week it appears — the upstream fixes
+      # (openapi-ts/openapi-typescript#2673, #2842) are open but unmerged, and 0.17.0 is
+      # currently the only 0.17.x. Drop this entry, and the cap in packages/client and
+      # packages/api-tests, together once one lands.
+      - dependency-name: "openapi-fetch"
+        versions: ["0.17.0"]
 
   # The GitHub Actions used by the CI, release, and snapshot workflows.
   - package-ecosystem: github-actions
