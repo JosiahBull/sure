@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE income_payments\n            SET status='expected', matched_by=NULL, observed_net_minor=NULL, gross_minor=NULL,\n                income_tax_minor=NULL, acc_levy_minor=NULL, kiwisaver_minor=NULL,\n                student_loan_minor=NULL, employer_kiwisaver_minor=NULL, esct_minor=NULL,\n                updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n          WHERE transaction_id IS NULL AND status IN ('matched','confirmed')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "9947fe3f30a806f13b56d9271f2a28db61e3d37bcd6324b6bd430e3b628974f6"
+}

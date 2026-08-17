@@ -48,8 +48,9 @@ pub use import::{
     MAX_UPLOAD_BYTES, Reconciliation,
 };
 pub use income::{
-    IncomeBasis, IncomeStream, IncomeStreamStep, PayFrequency, PayStep, SaveIncomeStream,
-    SaveIncomeStreamStep, TakeHome, TakeHomeSource,
+    IncomeBasis, IncomePayment, IncomePaymentStatus, IncomeStream, IncomeStreamStep, MatchedBy,
+    PayFrequency, PayStep, PayTreatment, SaveIncomeStream, SaveIncomeStreamStep, TakeHome,
+    TakeHomeSource,
 };
 pub use iso_date::IsoDate;
 pub use life_events::{
@@ -73,10 +74,11 @@ pub use rules::{
 pub use settings::{McpMode, Settings, UpdateSettings};
 pub use stock_prices::StockPrice;
 pub use tax::{
-    KIWISAVER_DEFAULT_BPS, KIWISAVER_EMPLOYEE_RATES_BPS, NZ_TAX_SCALES, OwnedTaxScale,
-    PayeBreakdown, PayeInput, ResolvedScale, SaveTaxScale, StoredTaxScale, TaxScale, TaxScaleId,
-    average_take_home_bps, builtin_scales, govt_contribution_minor, latest_scale,
-    marginal_take_home_bps, paye, scale_for,
+    ExtraPayInput, KIWISAVER_DEFAULT_BPS, KIWISAVER_EMPLOYEE_RATES_BPS, NZ_TAX_SCALES,
+    OwnedTaxScale, PayeBreakdown, PayeInput, PeriodPayeInput, ResolvedScale, SaveTaxScale,
+    StoredTaxScale, TaxScale, TaxScaleId, average_take_home_bps, builtin_scales, extra_pay,
+    govt_contribution_minor, latest_scale, marginal_take_home_bps, paye, paye_period,
+    reconstruct_extra_pay, reconstruct_period, scale_for,
 };
 pub use transactions::{
     BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,

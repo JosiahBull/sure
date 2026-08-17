@@ -13,22 +13,24 @@ use sure_app::ports::{
     AccountCurrency, AccountRepo, ActiveAccount, Activity30dRow, AssetAccount, BrokerageRepo,
     CategoryRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo, DividendImport, EquityRepo,
     ExchangeRateRepo, ExchangeRateRow, ForecastRepo, FxRatesRepo, HoldingImport, HoldingRow,
-    HousePricerSubscription, ImportCounts, ImportHistoryRepo, ImportRow, LedgerTx, LedgerValuation,
-    MerchantRepo, PersonRepo, PlannedApplication, ProviderRepo, ReportCategory, ReportRepo,
-    RuleRepo, SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo,
-    StockPriceCacheRepo, TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
+    HousePricerSubscription, ImportCounts, ImportHistoryRepo, ImportRow, IncomeRepo, LedgerTx,
+    LedgerValuation, MatchedIncomePayment, MerchantRepo, PersonRepo, PlannedApplication,
+    ProviderRepo, ReportCategory, ReportRepo, RuleRepo, SecuredLiabilityAccount, SettingsRepo,
+    SharesTicker, SnapshotRepo, StockPriceCacheRepo, TransactionRepo, TransferRepo, TxCtx,
+    ValuationRepo, WalletRow,
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
     CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, ForecastAssumption,
-    ForecastEvent, ForecastTargetType, HoldingLot, HousePricerLink, ImportRecord, IncomeStream,
-    LinkProviderAccount, LinkProviderGroup, LinkRequest, Merchant, NewCurrency, NewValuation,
-    Ownership, Person, Provider, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind,
-    RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption,
-    SaveForecastEvent, SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson,
-    SaveProvider, SaveRule, SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale,
-    SyncOutcome, TaxScaleId, Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation,
-    ValuationQuery, VestingStatus,
+    ForecastEvent, ForecastTargetType, HoldingLot, HousePricerLink, ImportRecord, IncomePayment,
+    IncomePaymentStatus, IncomeStream, LinkProviderAccount, LinkProviderGroup, LinkRequest,
+    MatchedBy, Merchant, NewCurrency, NewValuation, Ownership, PayeBreakdown, Person, Provider,
+    ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount,
+    SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant,
+    SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
+    SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
+    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
+    VestingStatus,
 };
 
 use crate::Db;
@@ -1104,7 +1106,10 @@ impl ForecastRepo for SqliteStore {
     async fn delete_event(&self, id: i64) -> AppResult<()> {
         crate::forecast::delete_event(&self.db, id).await
     }
+}
 
+#[async_trait]
+impl IncomeRepo for SqliteStore {
     async fn list_income_streams(&self) -> AppResult<Vec<IncomeStream>> {
         crate::income::list(&self.db).await
     }
@@ -1171,6 +1176,103 @@ impl ForecastRepo for SqliteStore {
             },
         )
         .await
+    }
+
+    async fn list_income_payments(
+        &self,
+        from: Option<&str>,
+        to: Option<&str>,
+        person_id: Option<i64>,
+        status: Option<IncomePaymentStatus>,
+    ) -> AppResult<Vec<IncomePayment>> {
+        crate::income::list_payments(&self.db, from, to, person_id, status).await
+    }
+
+    async fn get_income_payment(&self, id: i64) -> AppResult<IncomePayment> {
+        crate::income::get_payment(&self.db, id).await
+    }
+
+    async fn upsert_expected_payment(
+        &self,
+        stream_id: i64,
+        due_on: &str,
+        expected_net_minor: i64,
+    ) -> AppResult<()> {
+        crate::income::upsert_expected(&self.db, stream_id, due_on, expected_net_minor).await
+    }
+
+    async fn expected_payment_due_ons(&self, stream_id: i64) -> AppResult<Vec<String>> {
+        crate::income::expected_due_ons(&self.db, stream_id).await
+    }
+
+    async fn delete_expected_payment(&self, stream_id: i64, due_on: &str) -> AppResult<()> {
+        crate::income::delete_expected(&self.db, stream_id, due_on).await
+    }
+
+    async fn record_payment_match(
+        &self,
+        stream_id: i64,
+        due_on: &str,
+        transaction_id: i64,
+        matched_by: MatchedBy,
+        status: IncomePaymentStatus,
+        observed_net_minor: i64,
+        breakdown: &PayeBreakdown,
+    ) -> AppResult<IncomePayment> {
+        crate::income::record_match(
+            &self.db,
+            stream_id,
+            due_on,
+            transaction_id,
+            matched_by,
+            status,
+            observed_net_minor,
+            breakdown,
+        )
+        .await
+    }
+
+    async fn unlink_income_payment(&self, id: i64) -> AppResult<IncomePayment> {
+        crate::income::unlink_payment(&self.db, id).await
+    }
+
+    async fn set_income_payment_status(
+        &self,
+        id: i64,
+        status: IncomePaymentStatus,
+    ) -> AppResult<IncomePayment> {
+        crate::income::set_payment_status(&self.db, id, status).await
+    }
+
+    async fn reset_orphaned_payments(&self) -> AppResult<u64> {
+        crate::income::reset_orphaned_payments(&self.db).await
+    }
+
+    async fn claimed_transaction_ids(&self) -> AppResult<Vec<i64>> {
+        crate::income::claimed_transaction_ids(&self.db).await
+    }
+
+    async fn latest_settled_due_on(&self, stream_id: i64) -> AppResult<Option<String>> {
+        crate::income::latest_settled_due_on(&self.db, stream_id).await
+    }
+
+    async fn matched_income_payments(&self) -> AppResult<Vec<MatchedIncomePayment>> {
+        Ok(crate::income::matched_payments(&self.db)
+            .await?
+            .into_iter()
+            .map(|r| MatchedIncomePayment {
+                income_stream_id: r.income_stream_id,
+                stream_label: r.stream_label,
+                person_id: r.person_id,
+                transaction_id: r.transaction_id,
+                observed_net_minor: r.observed_net_minor,
+                gross_minor: r.gross_minor,
+                income_tax_minor: r.income_tax_minor,
+                acc_levy_minor: r.acc_levy_minor,
+                kiwisaver_minor: r.kiwisaver_minor,
+                student_loan_minor: r.student_loan_minor,
+            })
+            .collect())
     }
 }
 
