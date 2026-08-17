@@ -437,12 +437,19 @@
     {/if}
   {/if}
 
-  <details class="more" open={f.match_account_id !== null}>
-    <summary>Match deposits automatically</summary>
-    <!-- Both halves or neither: an account to look in and a memo token to look for. With them
-         set, every payday is checked off against the deposit that satisfied it, and the cash
-         flow chart can draw the payslip behind each one. -->
-    <div class="grid-fields" style="margin-top:10px">
+  <!-- Always visible, never folded into a details row: matching is what turns a configured
+       stream into checked-off paydays and the payslip layer on the cash-flow chart, and a
+       collapsed section proved invisible in practice — a household set everything else up and
+       could not see why nothing matched. Both halves or neither: an account to look in and a
+       memo token to look for. -->
+  <div class="match-block">
+    <div class="row spread" style="margin-bottom:6px">
+      <strong class="small">Match deposits automatically</strong>
+      {#if f.match_account_id === null}
+        <span class="badge">off</span>
+      {/if}
+    </div>
+    <div class="grid-fields">
       <label class="field">
         <span class="lbl">Lands in account</span>
         <select class="select" bind:value={f.match_account_id}>
@@ -455,11 +462,12 @@
         <input class="input" placeholder="e.g. the employer's name" bind:value={f.match_pattern} />
       </label>
     </div>
-    <p class="small faint" style="margin:0 0 6px">
-      A bonus paid inside the salary run should use the same account and memo as the salary —
-      the two are matched against the one deposit.
+    <p class="small faint" style="margin:0">
+      With these set, each payday is checked off against the deposit that satisfied it and the
+      cash-flow chart draws the payslip behind it. A bonus paid inside the salary run should use
+      the same account and memo as the salary — the two are matched against the one deposit.
     </p>
-  </details>
+  </div>
 
   <details class="more" open={steps.length > 0}>
     <summary>Pay scale, start and end</summary>
@@ -580,6 +588,13 @@
     cursor: pointer;
     font-size: 12px;
     color: var(--text-muted);
+  }
+  .match-block {
+    margin-bottom: 10px;
+    padding: 10px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
   }
   .steps {
     display: flex;

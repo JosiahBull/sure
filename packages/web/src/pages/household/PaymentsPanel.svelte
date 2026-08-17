@@ -120,8 +120,10 @@
   }
 </script>
 
-{#if !anyMatchable && payments.length === 0}
-  <!-- Nothing to review and nothing configured to produce reviews: stay out of the way. -->
+{#if streams.length === 0 && payments.length === 0}
+  <!-- No income at all: nothing to review and nothing to explain — stay out of the way. The
+       panel deliberately DOES show for a household with streams but no match config, because
+       hiding it hid the very instruction ("set an account and memo") that person needed. -->
 {:else}
   <section class="card" style="margin-top:16px">
     <div class="card-title">
@@ -144,7 +146,13 @@
       </div>
     {:else if reviewable.length === 0}
       <div class="empty">
-        Nothing yet. Give an income a “match deposits” account and memo, then press Match now.
+        {#if anyMatchable}
+          Nothing yet — press Match now, or wait a few minutes for the background pass.
+        {:else}
+          No income is set up for matching. Edit a stream above and fill in
+          <strong>Match deposits automatically</strong> — the account its pay lands in and a word
+          its deposit memo always carries — then press Match now.
+        {/if}
       </div>
     {:else}
       <div class="pay-list">
