@@ -6323,6 +6323,11 @@ export interface components {
              *     anything wide is a payment a fixed annual figure would misrepresent.
              */
             variability_bps: number;
+            /**
+             * @description The stable memo token these payments share — what a stream's `match_pattern` should be.
+             *     Distinct from `label`, which is one whole memo and usually carries a per-run suffix.
+             */
+            match_pattern: string;
         };
         Dividend: {
             /** Format: int64 */
