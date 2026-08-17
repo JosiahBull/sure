@@ -268,6 +268,7 @@ fn parse_category_kind(kind: String) -> AppResult<CategoryKind> {
 /// The raw row shape for [`SpendTransaction`] — `account_kind` as stored, before parsing.
 #[derive(Debug)]
 struct SpendTransactionRow {
+    id: i64,
     posted_at: String,
     amount_minor: i64,
     currency_code: String,
@@ -292,6 +293,7 @@ struct SpendTransactionRow {
 /// A transaction with the fields the spend reports (pie + sankey) filter and roll up.
 #[derive(Debug)]
 pub struct SpendTransaction {
+    pub id: i64,
     pub posted_at: String,
     pub amount_minor: i64,
     pub currency_code: String,
@@ -327,6 +329,7 @@ impl TryFrom<SpendTransactionRow> for SpendTransaction {
         Ok(SpendTransaction {
             account_kind: parse_kind(r.account_kind)?,
             attribution: effective_ownership(over, account),
+            id: r.id,
             posted_at: r.posted_at,
             amount_minor: r.amount_minor,
             currency_code: r.currency_code,
@@ -676,7 +679,7 @@ pub async fn spend_transactions(
     let to = day_after(to);
     sqlx::query_as!(
         SpendTransactionRow,
-        r#"SELECT t.posted_at, t.amount_minor, t.currency_code, t.category_id,
+        r#"SELECT t.id AS "id!", t.posted_at, t.amount_minor, t.currency_code, t.category_id,
                   t.is_one_off AS "is_one_off!: bool", t.linked_transaction_id,
                   t.account_id, a.name AS account_name,
                   a.kind AS account_kind, t.merchant_id,

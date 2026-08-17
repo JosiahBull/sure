@@ -1,6 +1,6 @@
 <script lang="ts">
   import { sankey, sankeyLinkHorizontal } from "d3-sankey";
-  import { categoryColor } from "../color";
+  import { categoryColor, colorFor } from "../color";
   import { resolvedTheme } from "../theme.svelte";
 
   interface Node {
@@ -61,10 +61,16 @@
   // so a branch reads as a unit and its levels stay apart. Uncategorised stays neutral
   // grey. Flows are drawn as a source→target gradient of these colours.
   const SPINE = "#10a861";
+  /** Statutory deductions: a muted brick red, hardcoded like SPINE and legible on both themes. */
+  const DEDUCTION = "#b35953";
   const dark = $derived(resolvedTheme() === "dark");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function nodeColor(n: any): string {
     if (n.kind === "center" || n.kind === "savings") return SPINE;
+    if (n.kind === "deduction") return DEDUCTION;
+    // A gross node's id is `gross:<person id>`; the id-derived palette is the same fallback
+    // `personColor` uses, without coupling the chart to the household store.
+    if (n.kind === "gross") return colorFor(Number(n.id.slice("gross:".length)) || 0);
     return categoryColor({ rootId: n.root_id, rootColor: n.root_color, depth: n.level ?? 0, dark });
   }
 
@@ -91,11 +97,16 @@
   function columnsOf(live: Placed[]): Cols {
     let income = 0;
     let expense = 0;
+    let pre = 0;
     for (const n of live) {
       if (n.kind === "income") income = Math.max(income, n.level + 1);
       else if (n.kind === "expense") expense = Math.max(expense, n.level + 1);
       else if (n.kind === "savings") expense = Math.max(expense, 1);
+      // The pre-income layer claims one column left of every category level; the deduction
+      // sinks live inside the first income column, so only `gross` widens the graph.
+      else if (n.kind === "gross") pre = 1;
     }
+    income += pre;
     return { income, center: income, expenseBase: income + 1, total: income + 1 + expense };
   }
 
@@ -123,6 +134,13 @@
         return c.expenseBase + n.level;
       case "savings":
         return c.expenseBase;
+      // The reconstructed payslips: gross pay on the far left, its deduction sinks pinned
+      // into the first income column (their natural d3 depth is 1, which is only the same
+      // thing while exactly one category level is drawn).
+      case "gross":
+        return 0;
+      case "deduction":
+        return Math.min(1, c.center);
       // `kind` is a plain string on the wire, so the hub — and anything a newer backend
       // adds — sits on the spine rather than breaking the layout.
       default:
@@ -200,6 +218,10 @@
       const s = byId.get(l.source);
       const t = byId.get(l.target);
       if (!s || !t) continue;
+      // The pre-income layer never folds: a gross→category link would otherwise be read
+      // backwards as the category's hub-ward edge (clobbering its real value), and ACC
+      // vanishing into "Other (2)" is exactly what an itemised layer must not do.
+      if (s.kind === "gross" || t.kind === "deduction") continue;
       const [child, parent] = s.kind === "income" ? [s, t] : [t, s];
       if (!isCatKind(child.kind)) continue;
       inward.set(child.id, { parent: parent.id, value: l.value });
@@ -343,7 +365,10 @@
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function labelPos(n: any): { x: number; y: number; anchor: "start" | "middle" | "end" } {
     if (n.kind === "center") return { x: (n.x0 + n.x1) / 2, y: n.y0 - 18, anchor: "middle" };
-    if (n.kind === "income") return { x: n.x1 + LABEL_PAD, y: (n.y0 + n.y1) / 2, anchor: "start" };
+    // The pre-income nodes label rightwards like income: gross sits in the leftmost column
+    // with only MARGIN_X to its left, and the deduction sinks share the income side's gaps.
+    if (n.kind === "income" || n.kind === "gross" || n.kind === "deduction")
+      return { x: n.x1 + LABEL_PAD, y: (n.y0 + n.y1) / 2, anchor: "start" };
     return { x: n.x0 - LABEL_PAD, y: (n.y0 + n.y1) / 2, anchor: "end" };
   }
 
