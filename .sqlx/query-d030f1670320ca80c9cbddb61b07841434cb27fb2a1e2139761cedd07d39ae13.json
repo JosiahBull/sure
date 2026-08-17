@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT p.income_stream_id, s.label AS stream_label, s.person_id,\n                  p.transaction_id AS \"transaction_id!\", p.observed_net_minor AS \"observed_net_minor!\",\n                  p.gross_minor AS \"gross_minor!\", p.income_tax_minor AS \"income_tax_minor!\",\n                  p.acc_levy_minor AS \"acc_levy_minor!\", p.kiwisaver_minor AS \"kiwisaver_minor!\",\n                  p.student_loan_minor AS \"student_loan_minor!\"\n             FROM income_payments p\n             JOIN income_streams s ON s.id = p.income_stream_id\n             JOIN transactions t ON t.id = p.transaction_id\n            WHERE p.status IN ('matched','confirmed')\n              AND p.observed_net_minor IS NOT NULL\n              AND p.gross_minor IS NOT NULL\n            ORDER BY p.due_on, p.income_stream_id",
+  "query": "SELECT p.income_stream_id, s.label AS stream_label, s.person_id,\n                  pe.name AS person_name,\n                  p.transaction_id AS \"transaction_id!\", p.observed_net_minor AS \"observed_net_minor!\",\n                  p.gross_minor AS \"gross_minor!\", p.income_tax_minor AS \"income_tax_minor!\",\n                  p.acc_levy_minor AS \"acc_levy_minor!\", p.kiwisaver_minor AS \"kiwisaver_minor!\",\n                  p.student_loan_minor AS \"student_loan_minor!\"\n             FROM income_payments p\n             JOIN income_streams s ON s.id = p.income_stream_id\n             JOIN people pe ON pe.id = s.person_id\n             JOIN transactions t ON t.id = p.transaction_id\n            WHERE p.status IN ('matched','confirmed')\n              AND p.observed_net_minor IS NOT NULL\n              AND p.gross_minor IS NOT NULL\n            ORDER BY p.due_on, p.income_stream_id",
   "describe": {
     "columns": [
       {
@@ -37,8 +37,19 @@
         }
       },
       {
-        "name": "transaction_id!",
+        "name": "person_name",
         "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "people",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "transaction_id!",
+        "ordinal": 4,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "observed_net_minor!",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "gross_minor!",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "income_tax_minor!",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "acc_levy_minor!",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "kiwisaver_minor!",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "student_loan_minor!",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -121,6 +132,7 @@
       false,
       false,
       false,
+      false,
       true,
       true,
       true,
@@ -130,5 +142,5 @@
       true
     ]
   },
-  "hash": "4a5fa3cee85900dfd326f112b9756e05a0462027200c5fa394dadcef1f2e7915"
+  "hash": "d030f1670320ca80c9cbddb61b07841434cb27fb2a1e2139761cedd07d39ae13"
 }
