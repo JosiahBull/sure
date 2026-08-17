@@ -135,6 +135,9 @@
                     {#if s.pay_treatment === "extra_pay"}<span class="badge">bonus</span>{/if}
                     {#if s.match_account_id != null}
                       <span class="badge matched-badge">auto-matched</span>
+                    {:else if s.enabled}
+                      <!-- The absence of a badge proved too quiet a signal that matching is off. -->
+                      <span class="badge">not matched</span>
                     {/if}
                     {#if s.employer}<span class="faint small ell">{s.employer}</span>{/if}
                   </span>
