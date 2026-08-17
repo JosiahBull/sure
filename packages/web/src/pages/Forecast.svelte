@@ -199,7 +199,7 @@
 {#if tab === "projection"}
   <ProjectionTab {result} {checkpoints} {currency} />
 {:else if tab === "income"}
-  <IncomeTab {result} {currency} onchanged={load} />
+  <IncomeTab {result} {currency} />
 {:else if tab === "events"}
   <LifeEventsTab {result} {currency} onchanged={load} {focusEventId} />
 {:else if tab === "assumptions"}
