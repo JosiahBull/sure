@@ -1,37 +1,27 @@
 <script lang="ts">
-  // Who earns what, grouped by person.
+  // Who earns what, grouped by person — the projection-facing readout.
   //
-  // The reconciliation readout at the top of each card is the point of this screen, and it is why
-  // editing is an inline row rather than a modal: people come here because the modelled figure does
-  // not match reality, and a dialog covering the number they are correcting toward is hostile.
-  // Flipping "before tax" to "take-home" and watching the difference converge is the whole
-  // interaction. (`Forecast.svelte`'s own assumption editor and `Household.svelte` both already
-  // expand in place for the same reason.)
+  // The reconciliation panels (modelled vs recorded) are the point of this screen. The streams
+  // themselves are *configured under Household*, where the household lives, alongside the pay
+  // matching that checks each payday off against its deposit — this tab reads them and links
+  // there, so the forecast page never grows a second editor to drift from the first.
   import { onMount } from "svelte";
   import { api, formatMoney, type Schemas } from "../../lib/api";
   import { people, ensureLoaded, personColor, initials } from "../../lib/people.svelte";
-  import IncomeStreamEditor from "./IncomeStreamEditor.svelte";
 
   type IncomeStream = Schemas["IncomeStream"];
 
   let {
     result,
     currency,
-    onchanged,
   }: {
     result: Schemas["ForecastResult"] | null;
     currency: string;
-    onchanged: () => void;
   } = $props();
 
   let streams = $state<IncomeStream[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  /** A stream id, or `{ person }` while adding. Only one editor is open at a time. */
-  let editing = $state<number | null>(null);
-  let addingFor = $state<number | null>(null);
-  let confirmDelete = $state<number | null>(null);
-  let delError = $state<string | null>(null);
 
   async function load() {
     loading = true;
@@ -44,33 +34,6 @@
     await ensureLoaded();
     await load();
   });
-
-  /** Reload both this list and the projection above — the chart has to follow. */
-  async function saved() {
-    editing = null;
-    addingFor = null;
-    await load();
-    onchanged();
-  }
-
-  async function remove(id: number) {
-    const { error: e, response } = await api.DELETE("/api/income-streams/{id}", {
-      params: { path: { id } },
-    });
-    if (e) {
-      // The 409 names the forecast changes still pointing at this stream. Rendered verbatim:
-      // `ErrorDetail` is `{ code, message }` with no structured payload, so there is nothing to
-      // parse and pretending otherwise would break the moment the wording changed.
-      delError =
-        response.status === 409
-          ? ((e as { error?: { message?: string } }).error?.message ?? "Still in use.")
-          : "Failed to remove this income.";
-      return;
-    }
-    confirmDelete = null;
-    delError = null;
-    await saved();
-  }
 
   const byPerson = $derived.by(() => {
     const m = new Map<number, IncomeStream[]>();
@@ -167,8 +130,8 @@
   {#if streams.length === 0}
     <div class="empty" style="margin-bottom:16px">
       No income recorded yet. A stream is one salary or payment — what it pays, how often, and any
-      steps you already know about. The forecast uses these instead of guessing from your bank
-      statements.
+      steps you already know about; the forecast uses these instead of guessing from your bank
+      statements. <a href="#/settings/household">Record it under Household.</a>
     </div>
   {/if}
 
@@ -182,9 +145,7 @@
             <span class="avatar" style="background:{personColor(p)}">{initials(p.name)}</span>
             <h2 style="margin:0">{p.name}</h2>
           </div>
-          <button class="btn btn-sm" onclick={() => ((addingFor = p.id), (editing = null))}>
-            + Add income
-          </button>
+          <a class="btn btn-sm" href="#/settings/household">Configure</a>
         </div>
 
         {#each recon as r (r.category_id)}
@@ -225,12 +186,6 @@
                       >{formatMoney(s.annual_amount_minor, s.currency_code)}/yr</span
                     >
                     <span class="faint small">{freqLabel(s.pay_frequency)}</span>
-                    <button
-                      class="btn btn-sm"
-                      onclick={() => ((editing = editing === s.id ? null : s.id), (addingFor = null))}
-                    >
-                      {editing === s.id ? "Cancel" : "Edit"}
-                    </button>
                   </div>
                 </div>
                 {#if s.steps.length > 0}
@@ -242,40 +197,11 @@
                     )}
                   </div>
                 {/if}
-                {#if confirmDelete === s.id}
-                  <div class="confirm row" style="gap:8px">
-                    <span class="small">Remove this income?</span>
-                    <button class="btn btn-sm btn-danger" onclick={() => remove(s.id)}>Remove</button
-                    >
-                    <button
-                      class="btn btn-sm"
-                      onclick={() => ((confirmDelete = null), (delError = null))}>Keep</button
-                    >
-                  </div>
-                  {#if delError}<div class="error-banner small">{delError}</div>{/if}
-                {/if}
-                {#if editing === s.id}
-                  <IncomeStreamEditor
-                    stream={s}
-                    personId={p.id}
-                    onsaved={saved}
-                    oncancel={() => (editing = null)}
-                    ondelete={() => (confirmDelete = s.id)}
-                  />
-                {/if}
               </div>
             {/each}
           </div>
         {/if}
 
-        {#if addingFor === p.id}
-          <IncomeStreamEditor
-            stream={null}
-            personId={p.id}
-            onsaved={saved}
-            oncancel={() => (addingFor = null)}
-          />
-        {/if}
       </section>
     {/each}
   </div>
@@ -341,12 +267,6 @@
   }
   .steps {
     margin-top: 3px;
-  }
-  .confirm {
-    margin-top: 8px;
-    padding: 8px 10px;
-    border-radius: var(--r-sm);
-    background: color-mix(in srgb, var(--negative) 8%, var(--surface-2));
   }
   .ell {
     overflow: hidden;

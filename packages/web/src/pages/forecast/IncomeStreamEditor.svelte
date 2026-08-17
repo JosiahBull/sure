@@ -47,6 +47,9 @@
     linked_category_id: initial?.linked_category_id ?? null,
     currency_code: initial?.currency_code ?? "NZD",
     enabled: initial?.enabled ?? true,
+    pay_treatment: initial?.pay_treatment ?? ("regular" as Schemas["PayTreatment"]),
+    match_account_id: initial?.match_account_id ?? null,
+    match_pattern: initial?.match_pattern ?? "",
   });
   let steps = $state<{ effective_on: string; amount: string; label: string }[]>(
     (initial?.steps ?? []).map((s) => ({
@@ -129,6 +132,10 @@
     f.starts_on = d.next_payment_on;
     f.currency_code = d.currency_code;
     if (d.category_id != null) f.linked_category_id = d.category_id;
+    // The detector's label is the deposit memo's stable prefix — exactly what the matcher
+    // should look for, in exactly the account it was seen in.
+    f.match_account_id = d.account_id;
+    f.match_pattern = d.label;
     dismissed = true;
   }
 
@@ -209,6 +216,9 @@
       take_home_bps: f.take_home ? Math.round(parseFloat(f.take_home) * 100) : null,
       linked_category_id: f.linked_category_id,
       enabled: f.enabled,
+      pay_treatment: f.pay_treatment,
+      match_account_id: f.match_account_id,
+      match_pattern: f.match_pattern.trim() || null,
       steps: steps
         .filter((s) => s.effective_on && parseFloat(s.amount))
         .map((s) => ({
@@ -352,6 +362,26 @@
 
   {#if f.basis === "gross_nz_paye"}
     <div class="grid-fields">
+      <div class="field">
+        <!-- A bonus paid inside the regular pay run is an IRD "extra pay": taxed as a lump on
+             top of the salary, student loan with no threshold. It changes every reconstructed
+             payslip, so it is a visible control rather than a details row. -->
+        <span class="lbl">Paid as</span>
+        <div class="seg" role="group" aria-label="Regular pay or bonus">
+          <button
+            type="button"
+            class="seg-btn"
+            class:on={f.pay_treatment === "regular"}
+            onclick={() => (f.pay_treatment = "regular")}>Regular pay</button
+          >
+          <button
+            type="button"
+            class="seg-btn"
+            class:on={f.pay_treatment === "extra_pay"}
+            onclick={() => (f.pay_treatment = "extra_pay")}>Bonus / extra pay</button
+          >
+        </div>
+      </div>
       <label class="field">
         <span class="lbl">KiwiSaver, you %</span>
         <input class="input tabular" bind:value={f.kiwisaver} />
@@ -405,6 +435,30 @@
       </p>
     {/if}
   {/if}
+
+  <details class="more" open={f.match_account_id !== null}>
+    <summary>Match deposits automatically</summary>
+    <!-- Both halves or neither: an account to look in and a memo token to look for. With them
+         set, every payday is checked off against the deposit that satisfied it, and the cash
+         flow chart can draw the payslip behind each one. -->
+    <div class="grid-fields" style="margin-top:10px">
+      <label class="field">
+        <span class="lbl">Lands in account</span>
+        <select class="select" bind:value={f.match_account_id}>
+          <option value={null}>Not matched</option>
+          {#each accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+        </select>
+      </label>
+      <label class="field">
+        <span class="lbl">Deposit memo contains</span>
+        <input class="input" placeholder="e.g. the employer's name" bind:value={f.match_pattern} />
+      </label>
+    </div>
+    <p class="small faint" style="margin:0 0 6px">
+      A bonus paid inside the salary run should use the same account and memo as the salary —
+      the two are matched against the one deposit.
+    </p>
+  </details>
 
   <details class="more" open={steps.length > 0}>
     <summary>Pay scale, start and end</summary>
