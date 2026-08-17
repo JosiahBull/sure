@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE income_payments\n              SET status=?3, transaction_id=?4, matched_by=?5, observed_net_minor=?6,\n                  gross_minor=?7, income_tax_minor=?8, acc_levy_minor=?9, kiwisaver_minor=?10,\n                  student_loan_minor=?11, employer_kiwisaver_minor=?12, esct_minor=?13,\n                  updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n            WHERE income_stream_id=?1 AND due_on=?2\n        RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 13
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ced0b08a2841ad04f9df9fbb641bb3be7fc0a75a48ecd92b0669d73b427b93db"
+}

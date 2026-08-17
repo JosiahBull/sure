@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", person_id, label, employer, currency_code, annual_amount_minor,\n                  basis, pay_frequency, first_payment_on, starts_on, ends_on,\n                  annual_increase_bps, kiwisaver_bps, student_loan AS \"student_loan!: bool\",\n                  take_home_bps, linked_category_id, enabled AS \"enabled!: bool\", sort_order,\n                  notes, employer_kiwisaver_bps, kiwisaver_account_id, student_loan_account_id,\n                  created_at, updated_at\n             FROM income_streams ORDER BY id",
+  "query": "SELECT id AS \"id!\", person_id, label, employer, currency_code,\n                      annual_amount_minor, basis, pay_frequency, first_payment_on, starts_on,\n                      ends_on, annual_increase_bps, kiwisaver_bps,\n                      student_loan AS \"student_loan!: bool\", take_home_bps, linked_category_id,\n                      enabled AS \"enabled!: bool\", sort_order, notes, employer_kiwisaver_bps,\n                      kiwisaver_account_id, student_loan_account_id, match_account_id,\n                      match_pattern, pay_treatment, created_at, updated_at\n                 FROM income_streams ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -246,8 +246,41 @@
         }
       },
       {
-        "name": "created_at",
+        "name": "match_account_id",
         "ordinal": 22,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "match_account_id"
+          }
+        }
+      },
+      {
+        "name": "match_pattern",
+        "ordinal": 23,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "match_pattern"
+          }
+        }
+      },
+      {
+        "name": "pay_treatment",
+        "ordinal": 24,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "pay_treatment"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 25,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -258,7 +291,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 23,
+        "ordinal": 26,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -294,9 +327,12 @@
       false,
       true,
       true,
+      true,
+      true,
+      false,
       false,
       false
     ]
   },
-  "hash": "ca40759d5887dc3c6704f8dd53f35a43825fe379b959860d2aecd9088bee04d0"
+  "hash": "dda5ef2fafff3c3d95b3c0421a56924b67e485377367e70cba2abee9276d709e"
 }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO income_payments (income_stream_id, due_on, status, expected_net_minor)\n         VALUES (?1, ?2, 'expected', ?3)\n         ON CONFLICT(income_stream_id, due_on) DO UPDATE\n            SET expected_net_minor = excluded.expected_net_minor,\n                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')\n          WHERE income_payments.status = 'expected'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "098975490d231dfe6dc88539716a5deb80182894e95d6e84e578a92e70dbdcac"
+}

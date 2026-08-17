@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO income_payments\n                (id, income_stream_id, due_on, status, transaction_id, matched_by,\n                 expected_net_minor, observed_net_minor, gross_minor, income_tax_minor,\n                 acc_levy_minor, kiwisaver_minor, student_loan_minor, employer_kiwisaver_minor,\n                 esct_minor, created_at, updated_at)\n             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 17
+    },
+    "nullable": []
+  },
+  "hash": "c0f037689cbe12b786012f853705631a7927054902da397ccd58791d23191cbd"
+}

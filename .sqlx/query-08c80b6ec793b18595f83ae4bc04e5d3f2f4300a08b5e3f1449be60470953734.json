@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO tax_scales\n                    (id, scale_id, effective_from, brackets, acc_levy_bps, acc_income_cap_minor,\n                     student_loan_threshold_minor, student_loan_rate_bps, esct_brackets,\n                     kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,\n                     kiwisaver_govt_income_cap_minor, kiwisaver_employer_min_bps, source_note,\n                     created_at, updated_at)\n                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 16
+    },
+    "nullable": []
+  },
+  "hash": "08c80b6ec793b18595f83ae4bc04e5d3f2f4300a08b5e3f1449be60470953734"
+}
