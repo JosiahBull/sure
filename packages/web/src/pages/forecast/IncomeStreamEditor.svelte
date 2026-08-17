@@ -132,10 +132,11 @@
     f.starts_on = d.next_payment_on;
     f.currency_code = d.currency_code;
     if (d.category_id != null) f.linked_category_id = d.category_id;
-    // The detector's label is the deposit memo's stable prefix — exactly what the matcher
-    // should look for, in exactly the account it was seen in.
+    // The detector's grouping token is the memo's stable prefix — exactly what the matcher
+    // should look for, in exactly the account it was seen in. Never `d.label`: that is one
+    // whole memo, usually with a per-run suffix that would match a single deposit.
     f.match_account_id = d.account_id;
-    f.match_pattern = d.label;
+    f.match_pattern = d.match_pattern;
     dismissed = true;
   }
 
