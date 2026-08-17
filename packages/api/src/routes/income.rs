@@ -59,6 +59,9 @@ pub struct DetectedStream {
     /// How much the amounts vary, in basis points of the typical one. Near zero is a salary;
     /// anything wide is a payment a fixed annual figure would misrepresent.
     pub variability_bps: i64,
+    /// The stable memo token these payments share — what a stream's `match_pattern` should be.
+    /// Distinct from `label`, which is one whole memo and usually carries a per-run suffix.
+    pub match_pattern: String,
 }
 
 impl From<sure_app::detect::DetectedStream> for DetectedStream {
@@ -76,6 +79,7 @@ impl From<sure_app::detect::DetectedStream> for DetectedStream {
             payments_seen: d.payments_seen,
             days_of_month: d.days_of_month,
             variability_bps: d.variability_bps,
+            match_pattern: d.match_pattern,
         }
     }
 }
