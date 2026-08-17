@@ -1,0 +1,206 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", scale_id, effective_from, brackets, acc_levy_bps,\n                  acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,\n                  esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,\n                  kiwisaver_govt_income_cap_minor, kiwisaver_employer_min_bps, source_note,\n                  created_at, updated_at\n             FROM tax_scales ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "scale_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "scale_id"
+          }
+        }
+      },
+      {
+        "name": "effective_from",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "effective_from"
+          }
+        }
+      },
+      {
+        "name": "brackets",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "brackets"
+          }
+        }
+      },
+      {
+        "name": "acc_levy_bps",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "acc_levy_bps"
+          }
+        }
+      },
+      {
+        "name": "acc_income_cap_minor",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "acc_income_cap_minor"
+          }
+        }
+      },
+      {
+        "name": "student_loan_threshold_minor",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "student_loan_threshold_minor"
+          }
+        }
+      },
+      {
+        "name": "student_loan_rate_bps",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "student_loan_rate_bps"
+          }
+        }
+      },
+      {
+        "name": "esct_brackets",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "esct_brackets"
+          }
+        }
+      },
+      {
+        "name": "kiwisaver_govt_match_bps",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "kiwisaver_govt_match_bps"
+          }
+        }
+      },
+      {
+        "name": "kiwisaver_govt_max_minor",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "kiwisaver_govt_max_minor"
+          }
+        }
+      },
+      {
+        "name": "kiwisaver_govt_income_cap_minor",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "kiwisaver_govt_income_cap_minor"
+          }
+        }
+      },
+      {
+        "name": "kiwisaver_employer_min_bps",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "kiwisaver_employer_min_bps"
+          }
+        }
+      },
+      {
+        "name": "source_note",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "source_note"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 14,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tax_scales",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "29f27ad67ce3963e30cb7eb5974d1d4c9b1f6633a9ab84661e1e74c7e765f958"
+}

@@ -59,6 +59,18 @@ pub struct Snapshot {
     pub income_streams: Vec<IncomeStreamRow>,
     #[serde(default)]
     pub income_stream_steps: Vec<IncomeStreamStepRow>,
+    /// Expected/matched income payments (0037) — `#[serde(default)]` so an older snapshot
+    /// imports as a household whose schedule has simply not been generated yet; the matcher
+    /// rebuilds the expected rows on its next run, and only the human-settled statuses and
+    /// stored decompositions are actually irreplaceable.
+    #[serde(default)]
+    pub income_payments: Vec<IncomePaymentRow>,
+    /// Editable tax scales (0025/0029). `#[serde(default)]`, and — unlike every other table —
+    /// restored only when the snapshot carries some: the table is seeded rather than empty by
+    /// construction, so an older snapshot's silence means "before scales were exportable", not
+    /// "no scales", and wiping to empty on its say-so would erase edits for no reason.
+    #[serde(default)]
+    pub tax_scales: Vec<TaxScaleRow>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -374,8 +386,21 @@ pub struct IncomeStreamRow {
     pub kiwisaver_account_id: Option<i64>,
     #[serde(default)]
     pub student_loan_account_id: Option<i64>,
+    /// Added by 0037 — `#[serde(default)]` so an older snapshot imports with matching off and
+    /// every payment an ordinary payslip, exactly what it modelled then.
+    #[serde(default)]
+    pub match_account_id: Option<i64>,
+    #[serde(default)]
+    pub match_pattern: Option<String>,
+    #[serde(default = "default_pay_treatment")]
+    pub pay_treatment: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// What 0037 backfills existing rows to; `String::default()`'s `""` would fail the CHECK.
+fn default_pay_treatment() -> String {
+    "regular".into()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -386,6 +411,48 @@ pub struct IncomeStreamStepRow {
     pub annual_amount_minor: i64,
     pub label: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IncomePaymentRow {
+    pub id: i64,
+    pub income_stream_id: i64,
+    pub due_on: String,
+    pub status: String,
+    pub transaction_id: Option<i64>,
+    pub matched_by: Option<String>,
+    pub expected_net_minor: Option<i64>,
+    pub observed_net_minor: Option<i64>,
+    pub gross_minor: Option<i64>,
+    pub income_tax_minor: Option<i64>,
+    pub acc_levy_minor: Option<i64>,
+    pub kiwisaver_minor: Option<i64>,
+    pub student_loan_minor: Option<i64>,
+    pub employer_kiwisaver_minor: Option<i64>,
+    pub esct_minor: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaxScaleRow {
+    pub id: i64,
+    pub scale_id: String,
+    pub effective_from: String,
+    /// JSON text, exactly as stored — the snapshot does not reinterpret it.
+    pub brackets: String,
+    pub acc_levy_bps: i64,
+    pub acc_income_cap_minor: i64,
+    pub student_loan_threshold_minor: i64,
+    pub student_loan_rate_bps: i64,
+    pub esct_brackets: String,
+    pub kiwisaver_govt_match_bps: i64,
+    pub kiwisaver_govt_max_minor: i64,
+    pub kiwisaver_govt_income_cap_minor: Option<i64>,
+    pub kiwisaver_employer_min_bps: i64,
+    pub source_note: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -616,7 +683,7 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
                   annual_increase_bps, kiwisaver_bps, student_loan AS "student_loan!: bool",
                   take_home_bps, linked_category_id, enabled AS "enabled!: bool", sort_order,
                   notes, employer_kiwisaver_bps, kiwisaver_account_id, student_loan_account_id,
-                  created_at, updated_at
+                  match_account_id, match_pattern, pay_treatment, created_at, updated_at
              FROM income_streams ORDER BY id"#
     );
     table!(
@@ -625,6 +692,25 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
         r#"SELECT id AS "id!", income_stream_id, effective_on, annual_amount_minor, label,
                   created_at
              FROM income_stream_steps ORDER BY id"#
+    );
+    table!(
+        "income_payments",
+        IncomePaymentRow,
+        r#"SELECT id AS "id!", income_stream_id, due_on, status, transaction_id, matched_by,
+                  expected_net_minor, observed_net_minor, gross_minor, income_tax_minor,
+                  acc_levy_minor, kiwisaver_minor, student_loan_minor, employer_kiwisaver_minor,
+                  esct_minor, created_at, updated_at
+             FROM income_payments ORDER BY id"#
+    );
+    table!(
+        "tax_scales",
+        TaxScaleRow,
+        r#"SELECT id AS "id!", scale_id, effective_from, brackets, acc_levy_bps,
+                  acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,
+                  esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
+                  kiwisaver_govt_income_cap_minor, kiwisaver_employer_min_bps, source_note,
+                  created_at, updated_at
+             FROM tax_scales ORDER BY id"#
     );
     table!(
         "forecast_events",
@@ -812,7 +898,8 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
                       ends_on, annual_increase_bps, kiwisaver_bps,
                       student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
                       enabled AS "enabled!: bool", sort_order, notes, employer_kiwisaver_bps,
-                      kiwisaver_account_id, student_loan_account_id, created_at, updated_at
+                      kiwisaver_account_id, student_loan_account_id, match_account_id,
+                      match_pattern, pay_treatment, created_at, updated_at
                  FROM income_streams ORDER BY id"#
         )
         .fetch_all(db)
@@ -822,6 +909,27 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
             r#"SELECT id AS "id!", income_stream_id, effective_on, annual_amount_minor, label,
                       created_at
                  FROM income_stream_steps ORDER BY id"#
+        )
+        .fetch_all(db)
+        .await?,
+        income_payments: sqlx::query_as!(
+            IncomePaymentRow,
+            r#"SELECT id AS "id!", income_stream_id, due_on, status, transaction_id, matched_by,
+                      expected_net_minor, observed_net_minor, gross_minor, income_tax_minor,
+                      acc_levy_minor, kiwisaver_minor, student_loan_minor,
+                      employer_kiwisaver_minor, esct_minor, created_at, updated_at
+                 FROM income_payments ORDER BY id"#
+        )
+        .fetch_all(db)
+        .await?,
+        tax_scales: sqlx::query_as!(
+            TaxScaleRow,
+            r#"SELECT id AS "id!", scale_id, effective_from, brackets, acc_levy_bps,
+                      acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,
+                      esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
+                      kiwisaver_govt_income_cap_minor, kiwisaver_employer_min_bps, source_note,
+                      created_at, updated_at
+                 FROM tax_scales ORDER BY id"#
         )
         .fetch_all(db)
         .await?,
@@ -893,6 +1001,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         // re-inserted below with the events, not dropped.
         "DELETE FROM forecast_events",
         "DELETE FROM forecast_assumptions",
+        // Before both tables it references (income_streams, transactions).
+        "DELETE FROM income_payments",
         "DELETE FROM income_stream_steps",
         "DELETE FROM income_streams",
         "DELETE FROM dividend_withholdings",
@@ -1273,9 +1383,10 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
                  pay_frequency, first_payment_on, starts_on, ends_on, annual_increase_bps,
                  kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled,
                  sort_order, notes, created_at, updated_at, employer_kiwisaver_bps,
-                 kiwisaver_account_id, student_loan_account_id)
+                 kiwisaver_account_id, student_loan_account_id, match_account_id, match_pattern,
+                 pay_treatment)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
-             ?22,?23,?24)",
+             ?22,?23,?24,?25,?26,?27)",
             s.id,
             s.person_id,
             s.label,
@@ -1299,7 +1410,10 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             s.updated_at,
             s.employer_kiwisaver_bps,
             s.kiwisaver_account_id,
-            s.student_loan_account_id
+            s.student_loan_account_id,
+            s.match_account_id,
+            s.match_pattern,
+            s.pay_treatment
         )
         .execute(&mut *txn)
         .await?;
@@ -1318,6 +1432,72 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         )
         .execute(&mut *txn)
         .await?;
+    }
+    for p in &snap.income_payments {
+        sqlx::query!(
+            "INSERT INTO income_payments
+                (id, income_stream_id, due_on, status, transaction_id, matched_by,
+                 expected_net_minor, observed_net_minor, gross_minor, income_tax_minor,
+                 acc_levy_minor, kiwisaver_minor, student_loan_minor, employer_kiwisaver_minor,
+                 esct_minor, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+            p.id,
+            p.income_stream_id,
+            p.due_on,
+            p.status,
+            p.transaction_id,
+            p.matched_by,
+            p.expected_net_minor,
+            p.observed_net_minor,
+            p.gross_minor,
+            p.income_tax_minor,
+            p.acc_levy_minor,
+            p.kiwisaver_minor,
+            p.student_loan_minor,
+            p.employer_kiwisaver_minor,
+            p.esct_minor,
+            p.created_at,
+            p.updated_at
+        )
+        .execute(&mut *txn)
+        .await?;
+    }
+    // Restored only when the snapshot carries some (see the field's comment): the table is
+    // seeded rather than empty by construction, so an older snapshot's silence must leave the
+    // current scales standing rather than wipe them.
+    if !snap.tax_scales.is_empty() {
+        sqlx::query!("DELETE FROM tax_scales")
+            .execute(&mut *txn)
+            .await?;
+        for t in &snap.tax_scales {
+            sqlx::query!(
+                "INSERT INTO tax_scales
+                    (id, scale_id, effective_from, brackets, acc_levy_bps, acc_income_cap_minor,
+                     student_loan_threshold_minor, student_loan_rate_bps, esct_brackets,
+                     kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
+                     kiwisaver_govt_income_cap_minor, kiwisaver_employer_min_bps, source_note,
+                     created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                t.id,
+                t.scale_id,
+                t.effective_from,
+                t.brackets,
+                t.acc_levy_bps,
+                t.acc_income_cap_minor,
+                t.student_loan_threshold_minor,
+                t.student_loan_rate_bps,
+                t.esct_brackets,
+                t.kiwisaver_govt_match_bps,
+                t.kiwisaver_govt_max_minor,
+                t.kiwisaver_govt_income_cap_minor,
+                t.kiwisaver_employer_min_bps,
+                t.source_note,
+                t.created_at,
+                t.updated_at
+            )
+            .execute(&mut *txn)
+            .await?;
+        }
     }
     for f in &snap.forecast_assumptions {
         sqlx::query!(
@@ -1437,6 +1617,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             "forecast_assumptions": snap.forecast_assumptions.len(),
             "income_streams": snap.income_streams.len(),
             "income_stream_steps": snap.income_stream_steps.len(),
+            "income_payments": snap.income_payments.len(),
+            "tax_scales": snap.tax_scales.len(),
             "forecast_events": snap.forecast_events.len(),
             "forecast_event_effects": snap.forecast_event_effects.len(),
             "forecast_event_relations": snap.forecast_event_relations.len(),

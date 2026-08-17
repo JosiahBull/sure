@@ -68,14 +68,20 @@ impl PayFrequency {
     /// that extra payday is a true feature of being paid fortnightly rather than a rounding error
     /// to calibrate away. The same argument `monthly_repayment` makes for x52/12.
     pub fn periods_per_year(self) -> f64 {
+        self.periods_per_year_int() as f64
+    }
+
+    /// The same divisor as an integer — what [`crate::tax::PeriodPayeInput`] wants, since a
+    /// payslip's arithmetic is integer minor units end to end.
+    pub fn periods_per_year_int(self) -> i64 {
         match self {
-            PayFrequency::Weekly => 52.0,
-            PayFrequency::Fortnightly => 26.0,
-            PayFrequency::FourWeekly => 13.0,
-            PayFrequency::SemiMonthly => 24.0,
-            PayFrequency::Monthly => 12.0,
-            PayFrequency::Quarterly => 4.0,
-            PayFrequency::Annual => 1.0,
+            PayFrequency::Weekly => 52,
+            PayFrequency::Fortnightly => 26,
+            PayFrequency::FourWeekly => 13,
+            PayFrequency::SemiMonthly => 24,
+            PayFrequency::Monthly => 12,
+            PayFrequency::Quarterly => 4,
+            PayFrequency::Annual => 1,
         }
     }
 
@@ -162,6 +168,147 @@ impl FromStr for IncomeBasis {
             other => Err(format!("unknown income basis '{other}'")),
         }
     }
+}
+
+/// How one arrival of this income is taxed: as an ordinary payslip, or as an IRD "extra pay".
+///
+/// An extra pay is a lump sum landing inside a regular pay run — a quarterly bonus, a back
+/// payment. It shares the regular salary's deposit but not its arithmetic: tax is a slice across
+/// the brackets sitting on top of the annualised regular pay, and student loan takes 12% of the
+/// whole lump with no threshold (the regular pays consumed it). See [`crate::tax::extra_pay`].
+/// A per-stream fact rather than a per-payment flag, because whether income is a bonus is a
+/// property of the income.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PayTreatment {
+    #[default]
+    Regular,
+    ExtraPay,
+}
+
+impl PayTreatment {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PayTreatment::Regular => "regular",
+            PayTreatment::ExtraPay => "extra_pay",
+        }
+    }
+}
+
+impl FromStr for PayTreatment {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "regular" => Ok(PayTreatment::Regular),
+            "extra_pay" => Ok(PayTreatment::ExtraPay),
+            other => Err(format!("unknown pay treatment '{other}'")),
+        }
+    }
+}
+
+/// Where one expected payment of a stream stands against the ledger.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IncomePaymentStatus {
+    /// Enumerated from the schedule; no deposit claimed yet. Past its `due_on`, this is the
+    /// "missed pay" the review surface shows.
+    Expected,
+    /// The matcher claimed a deposit automatically.
+    Matched,
+    /// A person agreed with a match — the matcher will never touch the row again.
+    Confirmed,
+    /// A person said this expected payment is not real (unpaid leave, a contract gap). Kept
+    /// rather than deleted so the next matcher run does not resurrect it.
+    Dismissed,
+}
+
+impl IncomePaymentStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IncomePaymentStatus::Expected => "expected",
+            IncomePaymentStatus::Matched => "matched",
+            IncomePaymentStatus::Confirmed => "confirmed",
+            IncomePaymentStatus::Dismissed => "dismissed",
+        }
+    }
+}
+
+impl FromStr for IncomePaymentStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "expected" => Ok(IncomePaymentStatus::Expected),
+            "matched" => Ok(IncomePaymentStatus::Matched),
+            "confirmed" => Ok(IncomePaymentStatus::Confirmed),
+            "dismissed" => Ok(IncomePaymentStatus::Dismissed),
+            other => Err(format!("unknown income payment status '{other}'")),
+        }
+    }
+}
+
+/// Who claimed the deposit — the matcher, or a person overriding it.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchedBy {
+    Auto,
+    Manual,
+}
+
+impl MatchedBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MatchedBy::Auto => "auto",
+            MatchedBy::Manual => "manual",
+        }
+    }
+}
+
+impl FromStr for MatchedBy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "auto" => Ok(MatchedBy::Auto),
+            "manual" => Ok(MatchedBy::Manual),
+            other => Err(format!("unknown matched_by '{other}'")),
+        }
+    }
+}
+
+/// One expected payment of one stream, and — once matched — the deposit it claimed with its
+/// reconstructed decomposition.
+///
+/// The decomposition is materialised at match time from the *observed* net (the deposit is
+/// ground truth; see `sure_core::tax::reconstruct_period`), under the tax scale in force on the
+/// date it landed. `gross_minor − income_tax − acc − kiwisaver − student_loan ==
+/// observed_net_minor`, always — which is what lets a report draw the pre-income graph and still
+/// balance to the cent.
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct IncomePayment {
+    pub id: i64,
+    pub income_stream_id: i64,
+    /// The scheduled date. The claimed deposit may sit a few days earlier — payroll shifts off
+    /// weekends and holidays.
+    pub due_on: String,
+    pub status: IncomePaymentStatus,
+    pub transaction_id: Option<i64>,
+    pub matched_by: Option<MatchedBy>,
+    /// What the configured level predicted for this date, kept beside the observed figure
+    /// because their gap is the reconciliation signal.
+    pub expected_net_minor: Option<i64>,
+    /// This stream's slice of the claimed deposit.
+    pub observed_net_minor: Option<i64>,
+    pub gross_minor: Option<i64>,
+    pub income_tax_minor: Option<i64>,
+    pub acc_levy_minor: Option<i64>,
+    pub kiwisaver_minor: Option<i64>,
+    pub student_loan_minor: Option<i64>,
+    pub employer_kiwisaver_minor: Option<i64>,
+    pub esct_minor: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 /// Where a stream's gross→net map came from.
@@ -259,6 +406,13 @@ pub struct IncomeStream {
     pub kiwisaver_account_id: Option<i64>,
     /// The student loan these deductions pay down. Same consequence for that account.
     pub student_loan_account_id: Option<i64>,
+    /// Where this stream's deposits land, for the matcher. Matching is on iff this and
+    /// `match_pattern` are both set.
+    pub match_account_id: Option<i64>,
+    /// A case-insensitive substring the deposit's description carries — the payroll memo's
+    /// stable token, not the run number after it.
+    pub match_pattern: Option<String>,
+    pub pay_treatment: PayTreatment,
     pub enabled: bool,
     pub sort_order: i64,
     pub notes: Option<String>,
@@ -314,6 +468,12 @@ pub struct SaveIncomeStream {
     pub kiwisaver_account_id: Option<i64>,
     #[serde(default)]
     pub student_loan_account_id: Option<i64>,
+    #[serde(default)]
+    pub match_account_id: Option<i64>,
+    #[serde(default)]
+    pub match_pattern: Option<String>,
+    #[serde(default)]
+    pub pay_treatment: PayTreatment,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -358,8 +518,24 @@ mod tests {
         for b in [IncomeBasis::Net, IncomeBasis::GrossNzPaye] {
             assert_eq!(IncomeBasis::from_str(b.as_str()), Ok(b));
         }
+        for t in [PayTreatment::Regular, PayTreatment::ExtraPay] {
+            assert_eq!(PayTreatment::from_str(t.as_str()), Ok(t));
+        }
+        for s in [
+            IncomePaymentStatus::Expected,
+            IncomePaymentStatus::Matched,
+            IncomePaymentStatus::Confirmed,
+            IncomePaymentStatus::Dismissed,
+        ] {
+            assert_eq!(IncomePaymentStatus::from_str(s.as_str()), Ok(s));
+        }
+        for m in [MatchedBy::Auto, MatchedBy::Manual] {
+            assert_eq!(MatchedBy::from_str(m.as_str()), Ok(m));
+        }
         assert!(PayFrequency::from_str("biweekly").is_err());
         assert!(IncomeBasis::from_str("gross").is_err());
+        assert!(PayTreatment::from_str("bonus").is_err());
+        assert!(IncomePaymentStatus::from_str("linked").is_err());
     }
 
     /// The reason a stream stores an annual figure and a frequency rather than a per-payment
