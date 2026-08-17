@@ -3142,6 +3142,7 @@ mod tests {
     fn category_monthly_totals_fills_gaps_with_zero() {
         let spend = vec![
             crate::ports::SpendTransaction {
+                id: 0, // no report in these tests reads the row id
                 posted_at: "2026-01-15".into(),
                 amount_minor: -5_000,
                 currency_code: "NZD".into(),
@@ -3156,6 +3157,7 @@ mod tests {
                 attribution: sure_core::Ownership::Joint,
             },
             crate::ports::SpendTransaction {
+                id: 0, // no report in these tests reads the row id
                 posted_at: "2026-04-15".into(),
                 amount_minor: -5_000,
                 currency_code: "NZD".into(),
@@ -4063,6 +4065,14 @@ mod tests {
             async fn account_currencies(&self) -> AppResult<Vec<AccountCurrency>> {
                 Ok(self.account_currencies.clone())
             }
+
+            // No matched income payments in these fixtures — the pre-income layer has its own
+            // pure-compute tests over `sankey_from`.
+            async fn matched_income_payments(
+                &self,
+            ) -> AppResult<Vec<crate::ports::MatchedIncomePayment>> {
+                Ok(Vec::new())
+            }
             // The window parameters are ignored: returning every row is a legal answer to a
             // windowed read (`ReportRepo::transactions` only requires a superset of what the
             // aggregation needs), and the forecast asks for the unwindowed ledger anyway.
@@ -4348,11 +4358,6 @@ mod tests {
             async fn latest_settled_due_on(&self, _stream_id: i64) -> AppResult<Option<String>> {
                 unreachable!()
             }
-            async fn matched_income_payments(
-                &self,
-            ) -> AppResult<Vec<crate::ports::MatchedIncomePayment>> {
-                unreachable!()
-            }
         }
 
         fn account(id: i64, kind: AK, currency: &str) -> Account {
@@ -4477,6 +4482,7 @@ mod tests {
                     currency_code: "NZD".to_string(),
                 });
                 spend.push(SpendTransaction {
+                    id: 0, // no report in these tests reads the row id
                     posted_at: date.to_string(),
                     amount_minor: 400_000 + i * 1_000,
                     currency_code: "NZD".into(),
@@ -4610,6 +4616,7 @@ mod tests {
                     currency_code: "NZD".to_string(),
                 });
                 spend.push(SpendTransaction {
+                    id: 0, // no report in these tests reads the row id
                     posted_at: date.to_string(),
                     amount_minor: 500_000,
                     currency_code: "NZD".into(),
@@ -5160,6 +5167,7 @@ mod tests {
                     currency_code: "NZD".to_string(),
                 });
                 spend.push(SpendTransaction {
+                    id: 0, // no report in these tests reads the row id
                     posted_at: date.to_string(),
                     amount_minor: amount,
                     currency_code: "NZD".into(),

@@ -632,6 +632,26 @@ impl ReportRepo for SqliteStore {
             .collect())
     }
 
+    async fn matched_income_payments(&self) -> AppResult<Vec<MatchedIncomePayment>> {
+        Ok(crate::income::matched_payments(&self.db)
+            .await?
+            .into_iter()
+            .map(|r| MatchedIncomePayment {
+                income_stream_id: r.income_stream_id,
+                stream_label: r.stream_label,
+                person_id: r.person_id,
+                person_name: r.person_name,
+                transaction_id: r.transaction_id,
+                observed_net_minor: r.observed_net_minor,
+                gross_minor: r.gross_minor,
+                income_tax_minor: r.income_tax_minor,
+                acc_levy_minor: r.acc_levy_minor,
+                kiwisaver_minor: r.kiwisaver_minor,
+                student_loan_minor: r.student_loan_minor,
+            })
+            .collect())
+    }
+
     async fn spend_transactions(
         &self,
         from: NaiveDate,
@@ -642,6 +662,7 @@ impl ReportRepo for SqliteStore {
             .into_iter()
             .map(|t| sure_app::ports::SpendTransaction {
                 attribution: t.attribution,
+                id: t.id,
                 posted_at: t.posted_at,
                 amount_minor: t.amount_minor,
                 currency_code: t.currency_code,
@@ -1254,25 +1275,6 @@ impl IncomeRepo for SqliteStore {
 
     async fn latest_settled_due_on(&self, stream_id: i64) -> AppResult<Option<String>> {
         crate::income::latest_settled_due_on(&self.db, stream_id).await
-    }
-
-    async fn matched_income_payments(&self) -> AppResult<Vec<MatchedIncomePayment>> {
-        Ok(crate::income::matched_payments(&self.db)
-            .await?
-            .into_iter()
-            .map(|r| MatchedIncomePayment {
-                income_stream_id: r.income_stream_id,
-                stream_label: r.stream_label,
-                person_id: r.person_id,
-                transaction_id: r.transaction_id,
-                observed_net_minor: r.observed_net_minor,
-                gross_minor: r.gross_minor,
-                income_tax_minor: r.income_tax_minor,
-                acc_levy_minor: r.acc_levy_minor,
-                kiwisaver_minor: r.kiwisaver_minor,
-                student_loan_minor: r.student_loan_minor,
-            })
-            .collect())
     }
 }
 

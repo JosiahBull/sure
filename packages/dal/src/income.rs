@@ -776,6 +776,7 @@ pub struct MatchedPaymentRow {
     pub income_stream_id: i64,
     pub stream_label: String,
     pub person_id: i64,
+    pub person_name: String,
     pub transaction_id: i64,
     pub observed_net_minor: i64,
     pub gross_minor: i64,
@@ -795,12 +796,14 @@ pub async fn matched_payments(db: &Db) -> AppResult<Vec<MatchedPaymentRow>> {
     Ok(sqlx::query_as!(
         MatchedPaymentRow,
         r#"SELECT p.income_stream_id, s.label AS stream_label, s.person_id,
+                  pe.name AS person_name,
                   p.transaction_id AS "transaction_id!", p.observed_net_minor AS "observed_net_minor!",
                   p.gross_minor AS "gross_minor!", p.income_tax_minor AS "income_tax_minor!",
                   p.acc_levy_minor AS "acc_levy_minor!", p.kiwisaver_minor AS "kiwisaver_minor!",
                   p.student_loan_minor AS "student_loan_minor!"
              FROM income_payments p
              JOIN income_streams s ON s.id = p.income_stream_id
+             JOIN people pe ON pe.id = s.person_id
              JOIN transactions t ON t.id = p.transaction_id
             WHERE p.status IN ('matched','confirmed')
               AND p.observed_net_minor IS NOT NULL
