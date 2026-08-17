@@ -26,7 +26,9 @@ const INCOME_UPDATE: &str = "income.update";
 const INCOME_DELETE: &str = "income.delete";
 const INCOME_DETECT: &str = "income.detect";
 const PAYMENTS_LIST: &str = "income.payments.list";
+const PAYMENTS_REMATCH: &str = "income.payments.rematch";
 const PAYMENT_SET_STATUS: &str = "income.payments.set_status";
+const PAYMENT_LINK: &str = "income.payments.link";
 const PAYMENT_UNLINK: &str = "income.payments.unlink";
 const TAX_LIST: &str = "tax.list";
 const TAX_CREATE: &str = "tax.create";
@@ -392,6 +394,70 @@ pub async fn set_payment_status(
     ))
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LinkPayment {
+    pub transaction_id: i64,
+}
+
+/// Link a deposit to a payment by hand — recorded as `confirmed`, since the person just did
+/// the confirming, with the decomposition reconstructed from the amount actually claimed.
+///
+/// The claimed slice is whatever the deposit has left after every other payment already on it,
+/// so linking the salary row and then the bonus row of one deposit works in either order.
+#[utoipa::path(post, path = "/api/income-payments/{id}/link", tag = "income",
+    params(("id" = i64, Path,)), request_body = LinkPayment,
+    responses((status = 200, body = IncomePayment), (status = 404, body = crate::error::ErrorBody),
+              (status = 409, body = crate::error::ErrorBody),
+              (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PAYMENT_LINK,
+    level = "debug",
+    skip_all,
+    fields(payment_id = %id, transaction_id = %input.transaction_id),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn link_payment(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<LinkPayment>,
+) -> AppResult<Json<IncomePayment>> {
+    let transaction = st.transactions.get(input.transaction_id).await?;
+    Ok(Json(st.income_match.link_manually(id, &transaction).await?))
+}
+
+/// What a rematch pass did — the same summary the scheduled task logs.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RematchSummary {
+    /// Matches whose transaction had been deleted (an undone import), reset to expected.
+    pub repaired: u64,
+    /// Expected rows regenerated from the current schedules.
+    pub generated: usize,
+    /// Stray expected rows removed after a schedule edit.
+    pub pruned: usize,
+    /// Payments newly matched to a deposit.
+    pub matched: usize,
+}
+
+/// Run the matcher now — the same idempotent pass the background task runs every few minutes,
+/// for the person who just fixed a stream's pattern and wants to see the result.
+#[utoipa::path(post, path = "/api/income-payments/rematch", tag = "income",
+    responses((status = 200, body = RematchSummary)))]
+#[tracing::instrument(
+    name = PAYMENTS_REMATCH,
+    level = "debug",
+    skip_all,
+    err(level = tracing::Level::WARN),
+)]
+pub async fn rematch(State(st): State<AppState>) -> AppResult<Json<RematchSummary>> {
+    let s = st.income_match.run().await?;
+    Ok(Json(RematchSummary {
+        repaired: s.repaired,
+        generated: s.generated,
+        pruned: s.pruned,
+        matched: s.matched,
+    }))
+}
+
 /// Undo a match: the payment returns to `expected` with its decomposition cleared, and the
 /// transaction is released for the matcher (or a person) to claim elsewhere.
 #[utoipa::path(delete, path = "/api/income-payments/{id}/link", tag = "income",
@@ -434,6 +500,8 @@ pub fn router() -> Router<AppState> {
             get(get_one).put(update).delete(delete),
         )
         .route("/people/{person_id}/income-streams", post(create))
+        // Before `/{id}`, or axum matches "rematch" as an id.
+        .route("/income-payments/rematch", post(rematch))
         .route("/income-payments", get(list_payments))
         .route(
             "/income-payments/{id}",
@@ -441,6 +509,6 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/income-payments/{id}/link",
-            axum::routing::delete(unlink_payment),
+            post(link_payment).delete(unlink_payment),
         )
 }

@@ -2989,6 +2989,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/income-payments/rematch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run the matcher now — the same idempotent pass the background task runs every few minutes,
+         *     for the person who just fixed a stream's pattern and wants to see the result.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RematchSummary"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/income-payments/{id}": {
         parameters: {
             query?: never;
@@ -3062,7 +3100,61 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post?: never;
+        /**
+         * Link a deposit to a payment by hand — recorded as `confirmed`, since the person just did
+         *     the confirming, with the decomposition reconstructed from the amount actually claimed.
+         * @description The claimed slice is whatever the deposit has left after every other payment already on it,
+         *     so linking the salary row and then the bonus row of one deposit works in either order.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["LinkPayment"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomePayment"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
         /**
          * Undo a match: the payment returns to `expected` with its decomposition cleared, and the
          *     transaction is released for the matcher (or a person) to claim elsewhere.
@@ -7065,6 +7157,10 @@ export interface components {
             /** @description Name for this member's `providers` row. */
             name: string;
         };
+        LinkPayment: {
+            /** Format: int64 */
+            transaction_id: number;
+        };
         /**
          * @description Link an upstream account (surfaced by `GET /provider-kinds/{kind}/accounts`) to a local
          *     account, creating the `providers` connection in the same step. Exactly one of
@@ -7732,6 +7828,20 @@ export interface components {
          * @enum {string}
          */
         RelationKind: "after" | "only_if";
+        /** @description What a rematch pass did — the same summary the scheduled task logs. */
+        RematchSummary: {
+            /**
+             * Format: int64
+             * @description Matches whose transaction had been deleted (an undone import), reset to expected.
+             */
+            repaired: number;
+            /** @description Expected rows regenerated from the current schedules. */
+            generated: number;
+            /** @description Stray expected rows removed after a schedule edit. */
+            pruned: number;
+            /** @description Payments newly matched to a deposit. */
+            matched: number;
+        };
         /**
          * @description How often a loan's contractual repayment is actually made. Weekly and fortnightly are
          *     the NZ norm; the forecast annualises them (×52/12, ×26/12) rather than treating them as
