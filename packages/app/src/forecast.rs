@@ -39,7 +39,9 @@ use sure_core::{
 };
 
 use crate::fx::Fx;
-use crate::ports::{AccountRepo, Clock, CronRepo, ForecastRepo, FxRatesRepo, ReportRepo};
+use crate::ports::{
+    AccountRepo, Clock, CronRepo, ForecastRepo, FxRatesRepo, IncomeRepo, ReportRepo,
+};
 use crate::reports;
 
 /// Below this many days of valuation/transaction history, a derived default would be
@@ -380,6 +382,7 @@ pub struct StreamReconciliation {
 
 pub struct ForecastService {
     forecast: Arc<dyn ForecastRepo>,
+    income: Arc<dyn IncomeRepo>,
     reports: Arc<dyn ReportRepo>,
     fx: Arc<dyn FxRatesRepo>,
     accounts: Arc<dyn AccountRepo>,
@@ -390,6 +393,7 @@ pub struct ForecastService {
 impl ForecastService {
     pub fn new(
         forecast: Arc<dyn ForecastRepo>,
+        income: Arc<dyn IncomeRepo>,
         reports: Arc<dyn ReportRepo>,
         fx: Arc<dyn FxRatesRepo>,
         accounts: Arc<dyn AccountRepo>,
@@ -398,6 +402,7 @@ impl ForecastService {
     ) -> Self {
         Self {
             forecast,
+            income,
             reports,
             fx,
             accounts,
@@ -728,62 +733,10 @@ impl ForecastService {
         self.forecast.delete_event(id).await
     }
 
-    pub async fn list_income_streams(&self) -> AppResult<Vec<sure_core::IncomeStream>> {
-        self.forecast.list_income_streams().await
-    }
-
-    pub async fn get_income_stream(&self, id: i64) -> AppResult<sure_core::IncomeStream> {
-        self.forecast.get_income_stream(id).await
-    }
-
-    pub async fn create_income_stream(
-        &self,
-        person_id: i64,
-        input: sure_core::SaveIncomeStream,
-    ) -> AppResult<sure_core::IncomeStream> {
-        self.forecast.create_income_stream(person_id, input).await
-    }
-
-    pub async fn update_income_stream(
-        &self,
-        id: i64,
-        input: sure_core::SaveIncomeStream,
-    ) -> AppResult<sure_core::IncomeStream> {
-        self.forecast.update_income_stream(id, input).await
-    }
-
-    pub async fn delete_income_stream(&self, id: i64) -> AppResult<()> {
-        self.forecast.delete_income_stream(id).await
-    }
-
-    pub async fn list_tax_scales(&self) -> AppResult<Vec<sure_core::StoredTaxScale>> {
-        self.forecast.list_tax_scales().await
-    }
-
-    pub async fn create_tax_scale(
-        &self,
-        input: sure_core::SaveTaxScale,
-    ) -> AppResult<sure_core::StoredTaxScale> {
-        self.forecast
-            .create_tax_scale(sure_core::TaxScaleId::NzPaye, input)
-            .await
-    }
-
-    pub async fn update_tax_scale(
-        &self,
-        id: i64,
-        input: sure_core::SaveTaxScale,
-    ) -> AppResult<sure_core::StoredTaxScale> {
-        self.forecast.update_tax_scale(id, input).await
-    }
-
-    pub async fn delete_tax_scale(&self, id: i64) -> AppResult<()> {
-        self.forecast.delete_tax_scale(id).await
-    }
-
-    pub async fn restore_tax_scales(&self) -> AppResult<Vec<sure_core::StoredTaxScale>> {
-        self.forecast.restore_tax_scales().await
-    }
+    // Income-stream and tax-scale CRUD used to be wrapped here; the routes now hold the
+    // `IncomeRepo` directly (the thin-CRUD arrangement every other aggregate has), and this
+    // service keeps only what involves forecast logic — `detect_income` below, and the
+    // simulation's own reads through `self.income`.
 
     /// Salaries the ledger appears to contain, for someone about to record one by hand.
     ///
@@ -795,7 +748,7 @@ impl ForecastService {
     ) -> AppResult<Vec<crate::detect::DetectedStream>> {
         let today = self.clock.today();
         let from = (today - chrono::Duration::days(730)).to_string();
-        let txns = self.forecast.income_transactions(&from, account_id).await?;
+        let txns = self.income.income_transactions(&from, account_id).await?;
         Ok(crate::detect::detect(&txns, today))
     }
 
@@ -840,7 +793,7 @@ impl ForecastService {
         // Loaded before `by_target`, because which accounts receive payroll contributions decides
         // whether their fitted rate may be used at all — and that has to be settled before the
         // account projections are built from it.
-        let streams = self.forecast.list_income_streams().await?;
+        let streams = self.income.list_income_streams().await?;
         let mut warnings: Vec<String> = Vec::new();
         let mut contribution_targets: HashMap<i64, &'static str> = HashMap::new();
         for st in streams.iter().filter(|s| s.enabled) {
@@ -1022,7 +975,7 @@ impl ForecastService {
         // category it lands in before that category's baseline is fixed. Without that, a salary
         // recorded here *and* fitted from the bank statement is counted twice.
         // The stored scales, resolved once for the whole run rather than per stream per month.
-        let tax_scales = crate::income::TaxScales::new(&self.forecast.list_tax_scales().await?);
+        let tax_scales = crate::income::TaxScales::new(&self.income.list_tax_scales().await?);
         let mut stream_sims: Vec<StreamSim> = Vec::new();
         let mut unmodelled_streams: Vec<String> = Vec::new();
         // Modelled monthly net per linked category, base-currency major units.
@@ -3189,6 +3142,7 @@ mod tests {
     fn category_monthly_totals_fills_gaps_with_zero() {
         let spend = vec![
             crate::ports::SpendTransaction {
+                id: 0, // no report in these tests reads the row id
                 posted_at: "2026-01-15".into(),
                 amount_minor: -5_000,
                 currency_code: "NZD".into(),
@@ -3203,6 +3157,7 @@ mod tests {
                 attribution: sure_core::Ownership::Joint,
             },
             crate::ports::SpendTransaction {
+                id: 0, // no report in these tests reads the row id
                 posted_at: "2026-04-15".into(),
                 amount_minor: -5_000,
                 currency_code: "NZD".into(),
@@ -4110,6 +4065,14 @@ mod tests {
             async fn account_currencies(&self) -> AppResult<Vec<AccountCurrency>> {
                 Ok(self.account_currencies.clone())
             }
+
+            // No matched income payments in these fixtures — the pre-income layer has its own
+            // pure-compute tests over `sankey_from`.
+            async fn matched_income_payments(
+                &self,
+            ) -> AppResult<Vec<crate::ports::MatchedIncomePayment>> {
+                Ok(Vec::new())
+            }
             // The window parameters are ignored: returning every row is a legal answer to a
             // windowed read (`ReportRepo::transactions` only requires a superset of what the
             // aggregation needs), and the forecast asks for the unwindowed ledger anyway.
@@ -4269,7 +4232,9 @@ mod tests {
             async fn delete_event(&self, _id: i64) -> AppResult<()> {
                 unreachable!()
             }
-
+        }
+        #[async_trait]
+        impl crate::ports::IncomeRepo for FakeForecast {
             // These sim tests are about assumption resolution and the Monte Carlo loop, so the
             // fake household earns nothing modelled — income streams have their own DAL tests
             // and their own e2e coverage. An empty list is also what makes these tests keep
@@ -4331,6 +4296,68 @@ mod tests {
             ) -> AppResult<Vec<sure_core::Transaction>> {
                 Ok(Vec::new())
             }
+            // Payments are the matcher's territory; a simulation never reads them.
+            async fn list_income_payments(
+                &self,
+                _from: Option<&str>,
+                _to: Option<&str>,
+                _person_id: Option<i64>,
+                _status: Option<sure_core::IncomePaymentStatus>,
+            ) -> AppResult<Vec<sure_core::IncomePayment>> {
+                unreachable!()
+            }
+            async fn get_income_payment(&self, _id: i64) -> AppResult<sure_core::IncomePayment> {
+                unreachable!()
+            }
+            async fn upsert_expected_payment(
+                &self,
+                _stream_id: i64,
+                _due_on: &str,
+                _expected_net_minor: i64,
+            ) -> AppResult<()> {
+                unreachable!()
+            }
+            async fn expected_payment_due_ons(&self, _stream_id: i64) -> AppResult<Vec<String>> {
+                unreachable!()
+            }
+            async fn delete_expected_payment(
+                &self,
+                _stream_id: i64,
+                _due_on: &str,
+            ) -> AppResult<()> {
+                unreachable!()
+            }
+            async fn record_payment_match(
+                &self,
+                _stream_id: i64,
+                _due_on: &str,
+                _transaction_id: i64,
+                _matched_by: sure_core::MatchedBy,
+                _status: sure_core::IncomePaymentStatus,
+                _observed_net_minor: i64,
+                _breakdown: &sure_core::PayeBreakdown,
+            ) -> AppResult<sure_core::IncomePayment> {
+                unreachable!()
+            }
+            async fn unlink_income_payment(&self, _id: i64) -> AppResult<sure_core::IncomePayment> {
+                unreachable!()
+            }
+            async fn set_income_payment_status(
+                &self,
+                _id: i64,
+                _status: sure_core::IncomePaymentStatus,
+            ) -> AppResult<sure_core::IncomePayment> {
+                unreachable!()
+            }
+            async fn reset_orphaned_payments(&self) -> AppResult<u64> {
+                unreachable!()
+            }
+            async fn claimed_transaction_ids(&self) -> AppResult<Vec<i64>> {
+                unreachable!()
+            }
+            async fn latest_settled_due_on(&self, _stream_id: i64) -> AppResult<Option<String>> {
+                unreachable!()
+            }
         }
 
         fn account(id: i64, kind: AK, currency: &str) -> Account {
@@ -4390,11 +4417,13 @@ mod tests {
                     excluded_from_net_worth: a.excluded_from_net_worth,
                 })
                 .collect();
+            let fake_forecast = Arc::new(FakeForecast {
+                events,
+                ..Default::default()
+            });
             ForecastService::new(
-                Arc::new(FakeForecast {
-                    events,
-                    ..Default::default()
-                }),
+                fake_forecast.clone(),
+                fake_forecast,
                 Arc::new(FakeReports {
                     base_currency: "NZD".into(),
                     account_currencies,
@@ -4453,6 +4482,7 @@ mod tests {
                     currency_code: "NZD".to_string(),
                 });
                 spend.push(SpendTransaction {
+                    id: 0, // no report in these tests reads the row id
                     posted_at: date.to_string(),
                     amount_minor: 400_000 + i * 1_000,
                     currency_code: "NZD".into(),
@@ -4586,6 +4616,7 @@ mod tests {
                     currency_code: "NZD".to_string(),
                 });
                 spend.push(SpendTransaction {
+                    id: 0, // no report in these tests reads the row id
                     posted_at: date.to_string(),
                     amount_minor: 500_000,
                     currency_code: "NZD".into(),
@@ -5136,6 +5167,7 @@ mod tests {
                     currency_code: "NZD".to_string(),
                 });
                 spend.push(SpendTransaction {
+                    id: 0, // no report in these tests reads the row id
                     posted_at: date.to_string(),
                     amount_minor: amount,
                     currency_code: "NZD".into(),
@@ -5266,11 +5298,13 @@ mod tests {
             today: NaiveDate,
         ) -> ForecastService {
             let accounts = vec![account(1, AK::Brokerage, "NZD")];
+            let fake_forecast = Arc::new(FakeForecast {
+                events: Vec::new(),
+                overrides: vec![(1, Some(700), annual_volatility_bps)],
+            });
             ForecastService::new(
-                Arc::new(FakeForecast {
-                    events: Vec::new(),
-                    overrides: vec![(1, Some(700), annual_volatility_bps)],
-                }),
+                fake_forecast.clone(),
+                fake_forecast,
                 Arc::new(FakeReports {
                     base_currency: "NZD".into(),
                     account_currencies: accounts

@@ -10,8 +10,9 @@ use crate::state::AppState;
 // The domain types live in sure-core; re-export so the OpenAPI registration
 // (`crate::routes::income::IncomeStream`, ...) and the handler annotations resolve.
 pub use sure_core::{
-    IncomeBasis, IncomeStream, IncomeStreamStep, OwnedTaxScale, PayFrequency, SaveIncomeStream,
-    SaveIncomeStreamStep, SaveTaxScale, StoredTaxScale, TakeHomeSource, TaxScaleId,
+    IncomeBasis, IncomePayment, IncomePaymentStatus, IncomeStream, IncomeStreamStep, MatchedBy,
+    OwnedTaxScale, PayFrequency, PayTreatment, SaveIncomeStream, SaveIncomeStreamStep,
+    SaveTaxScale, StoredTaxScale, TakeHomeSource, TaxScaleId,
 };
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,11 @@ const INCOME_CREATE: &str = "income.create";
 const INCOME_UPDATE: &str = "income.update";
 const INCOME_DELETE: &str = "income.delete";
 const INCOME_DETECT: &str = "income.detect";
+const PAYMENTS_LIST: &str = "income.payments.list";
+const PAYMENTS_REMATCH: &str = "income.payments.rematch";
+const PAYMENT_SET_STATUS: &str = "income.payments.set_status";
+const PAYMENT_LINK: &str = "income.payments.link";
+const PAYMENT_UNLINK: &str = "income.payments.unlink";
 const TAX_LIST: &str = "tax.list";
 const TAX_CREATE: &str = "tax.create";
 const TAX_UPDATE: &str = "tax.update";
@@ -53,6 +59,9 @@ pub struct DetectedStream {
     /// How much the amounts vary, in basis points of the typical one. Near zero is a salary;
     /// anything wide is a payment a fixed annual figure would misrepresent.
     pub variability_bps: i64,
+    /// The stable memo token these payments share — what a stream's `match_pattern` should be.
+    /// Distinct from `label`, which is one whole memo and usually carries a per-run suffix.
+    pub match_pattern: String,
 }
 
 impl From<sure_app::detect::DetectedStream> for DetectedStream {
@@ -70,6 +79,7 @@ impl From<sure_app::detect::DetectedStream> for DetectedStream {
             payments_seen: d.payments_seen,
             days_of_month: d.days_of_month,
             variability_bps: d.variability_bps,
+            match_pattern: d.match_pattern,
         }
     }
 }
@@ -95,7 +105,7 @@ pub struct DetectQuery {
     err(level = tracing::Level::WARN),
 )]
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<Vec<IncomeStream>>> {
-    Ok(Json(st.forecast.list_income_streams().await?))
+    Ok(Json(st.income.list_income_streams().await?))
 }
 
 /// One income stream.
@@ -113,7 +123,7 @@ pub async fn get_one(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<IncomeStream>> {
-    Ok(Json(st.forecast.get_income_stream(id).await?))
+    Ok(Json(st.income.get_income_stream(id).await?))
 }
 
 /// Record income for someone in the household.
@@ -139,7 +149,7 @@ pub async fn create(
 ) -> AppResult<(StatusCode, Json<IncomeStream>)> {
     Ok((
         StatusCode::CREATED,
-        Json(st.forecast.create_income_stream(person_id, input).await?),
+        Json(st.income.create_income_stream(person_id, input).await?),
     ))
 }
 
@@ -163,7 +173,7 @@ pub async fn update(
     Path(id): Path<i64>,
     Json(input): Json<SaveIncomeStream>,
 ) -> AppResult<Json<IncomeStream>> {
-    Ok(Json(st.forecast.update_income_stream(id, input).await?))
+    Ok(Json(st.income.update_income_stream(id, input).await?))
 }
 
 /// Remove an income stream. Refused with 409 while a forecast change still points at it — repoint
@@ -180,7 +190,7 @@ pub async fn update(
     err(level = tracing::Level::WARN),
 )]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
-    st.forecast.delete_income_stream(id).await?;
+    st.income.delete_income_stream(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -222,7 +232,7 @@ pub async fn detect(
     responses((status = 200, body = [StoredTaxScale])))]
 #[tracing::instrument(name = TAX_LIST, level = "debug", skip_all, err(level = tracing::Level::WARN))]
 pub async fn list_tax_scales(State(st): State<AppState>) -> AppResult<Json<Vec<StoredTaxScale>>> {
-    Ok(Json(st.forecast.list_tax_scales().await?))
+    Ok(Json(st.income.list_tax_scales().await?))
 }
 
 /// Add a scale — how you record next year's rates before they take effect.
@@ -235,8 +245,14 @@ pub async fn create_tax_scale(
     Json(input): Json<SaveTaxScale>,
 ) -> AppResult<(StatusCode, Json<StoredTaxScale>)> {
     Ok((
+        // NZ PAYE is the one jurisdiction the API offers today; the enum exists so a second one
+        // is a new value here rather than a schema change.
         StatusCode::CREATED,
-        Json(st.forecast.create_tax_scale(input).await?),
+        Json(
+            st.income
+                .create_tax_scale(TaxScaleId::NzPaye, input)
+                .await?,
+        ),
     ))
 }
 
@@ -251,7 +267,7 @@ pub async fn update_tax_scale(
     Path(id): Path<i64>,
     Json(input): Json<SaveTaxScale>,
 ) -> AppResult<Json<StoredTaxScale>> {
-    Ok(Json(st.forecast.update_tax_scale(id, input).await?))
+    Ok(Json(st.income.update_tax_scale(id, input).await?))
 }
 
 /// Remove a scale. Refused when it is the last one — an empty table taxes every gross salary at
@@ -265,7 +281,7 @@ pub async fn delete_tax_scale(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
-    st.forecast.delete_tax_scale(id).await?;
+    st.income.delete_tax_scale(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -277,7 +293,199 @@ pub async fn delete_tax_scale(
 pub async fn restore_tax_scales(
     State(st): State<AppState>,
 ) -> AppResult<Json<Vec<StoredTaxScale>>> {
-    Ok(Json(st.forecast.restore_tax_scales().await?))
+    Ok(Json(st.income.restore_tax_scales().await?))
+}
+
+/// Filters for the payment list. `status` arrives as text and is parsed at this edge — an
+/// unrecognised value is a 400 naming it, never a silently ignored filter (the `Interval`
+/// pattern in `routes::reports`).
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PaymentsQuery {
+    /// Earliest `due_on` (ISO-8601 date), inclusive.
+    pub from: Option<String>,
+    /// Latest `due_on` (ISO-8601 date), inclusive.
+    pub to: Option<String>,
+    /// Limit to one person's streams.
+    pub person_id: Option<i64>,
+    /// `expected`, `matched`, `confirmed` or `dismissed`.
+    pub status: Option<String>,
+}
+
+/// Expected and matched payments, newest first.
+///
+/// Past-due `expected` rows are the "missed pay" signal; `matched` rows carry the reconstructed
+/// gross → deductions → net decomposition of the deposit they claimed.
+#[utoipa::path(get, path = "/api/income-payments", tag = "income",
+    params(PaymentsQuery),
+    responses((status = 200, body = [IncomePayment]), (status = 400, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PAYMENTS_LIST,
+    level = "debug",
+    skip_all,
+    err(level = tracing::Level::WARN),
+)]
+pub async fn list_payments(
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<PaymentsQuery>,
+) -> AppResult<Json<Vec<IncomePayment>>> {
+    let status: Option<IncomePaymentStatus> = match q.status.as_deref() {
+        Some(s) => Some(
+            s.parse()
+                .map_err(|e: String| sure_core::AppError::bad_request(e))?,
+        ),
+        None => None,
+    };
+    Ok(Json(
+        st.income
+            .list_income_payments(q.from.as_deref(), q.to.as_deref(), q.person_id, status)
+            .await?,
+    ))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetPaymentStatus {
+    pub status: IncomePaymentStatus,
+}
+
+/// Move a payment between the human-owned statuses.
+///
+/// Legal moves: `matched → confirmed` (agree with the matcher), `expected → dismissed` (this
+/// payday is not real — unpaid leave, a contract gap; kept so the matcher does not resurrect
+/// it), and `dismissed → expected` (re-open). `matched` is the matcher's own state and
+/// `expected`-from-`matched` is what DELETE …/link does, so neither is reachable from here —
+/// a refused move is a 409 naming the states.
+#[utoipa::path(patch, path = "/api/income-payments/{id}", tag = "income",
+    params(("id" = i64, Path,)), request_body = SetPaymentStatus,
+    responses((status = 200, body = IncomePayment), (status = 404, body = crate::error::ErrorBody),
+              (status = 409, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PAYMENT_SET_STATUS,
+    level = "debug",
+    skip_all,
+    fields(payment_id = %id),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn set_payment_status(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<SetPaymentStatus>,
+) -> AppResult<Json<IncomePayment>> {
+    let current = st.income.get_income_payment(id).await?;
+    let legal = matches!(
+        (current.status, input.status),
+        (IncomePaymentStatus::Matched, IncomePaymentStatus::Confirmed)
+            | (
+                IncomePaymentStatus::Expected,
+                IncomePaymentStatus::Dismissed
+            )
+            | (
+                IncomePaymentStatus::Dismissed,
+                IncomePaymentStatus::Expected
+            )
+    );
+    if !legal {
+        return Err(sure_core::AppError::conflict(format!(
+            "cannot move a payment from '{}' to '{}'",
+            current.status.as_str(),
+            input.status.as_str()
+        )));
+    }
+    Ok(Json(
+        st.income
+            .set_income_payment_status(id, input.status)
+            .await?,
+    ))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LinkPayment {
+    pub transaction_id: i64,
+}
+
+/// Link a deposit to a payment by hand — recorded as `confirmed`, since the person just did
+/// the confirming, with the decomposition reconstructed from the amount actually claimed.
+///
+/// The claimed slice is whatever the deposit has left after every other payment already on it,
+/// so linking the salary row and then the bonus row of one deposit works in either order.
+#[utoipa::path(post, path = "/api/income-payments/{id}/link", tag = "income",
+    params(("id" = i64, Path,)), request_body = LinkPayment,
+    responses((status = 200, body = IncomePayment), (status = 404, body = crate::error::ErrorBody),
+              (status = 409, body = crate::error::ErrorBody),
+              (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PAYMENT_LINK,
+    level = "debug",
+    skip_all,
+    fields(payment_id = %id, transaction_id = %input.transaction_id),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn link_payment(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<LinkPayment>,
+) -> AppResult<Json<IncomePayment>> {
+    let transaction = st.transactions.get(input.transaction_id).await?;
+    Ok(Json(st.income_match.link_manually(id, &transaction).await?))
+}
+
+/// What a rematch pass did — the same summary the scheduled task logs.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RematchSummary {
+    /// Matches whose transaction had been deleted (an undone import), reset to expected.
+    pub repaired: u64,
+    /// Expected rows regenerated from the current schedules.
+    pub generated: usize,
+    /// Stray expected rows removed after a schedule edit.
+    pub pruned: usize,
+    /// Payments newly matched to a deposit.
+    pub matched: usize,
+}
+
+/// Run the matcher now — the same idempotent pass the background task runs every few minutes,
+/// for the person who just fixed a stream's pattern and wants to see the result.
+#[utoipa::path(post, path = "/api/income-payments/rematch", tag = "income",
+    responses((status = 200, body = RematchSummary)))]
+#[tracing::instrument(
+    name = PAYMENTS_REMATCH,
+    level = "debug",
+    skip_all,
+    err(level = tracing::Level::WARN),
+)]
+pub async fn rematch(State(st): State<AppState>) -> AppResult<Json<RematchSummary>> {
+    let s = st.income_match.run().await?;
+    Ok(Json(RematchSummary {
+        repaired: s.repaired,
+        generated: s.generated,
+        pruned: s.pruned,
+        matched: s.matched,
+    }))
+}
+
+/// Undo a match: the payment returns to `expected` with its decomposition cleared, and the
+/// transaction is released for the matcher (or a person) to claim elsewhere.
+#[utoipa::path(delete, path = "/api/income-payments/{id}/link", tag = "income",
+    params(("id" = i64, Path,)),
+    responses((status = 200, body = IncomePayment), (status = 404, body = crate::error::ErrorBody),
+              (status = 409, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = PAYMENT_UNLINK,
+    level = "debug",
+    skip_all,
+    fields(payment_id = %id),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn unlink_payment(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<IncomePayment>> {
+    let current = st.income.get_income_payment(id).await?;
+    if current.transaction_id.is_none() {
+        return Err(sure_core::AppError::conflict(
+            "this payment has no linked transaction to remove",
+        ));
+    }
+    Ok(Json(st.income.unlink_income_payment(id).await?))
 }
 
 pub fn router() -> Router<AppState> {
@@ -296,4 +504,15 @@ pub fn router() -> Router<AppState> {
             get(get_one).put(update).delete(delete),
         )
         .route("/people/{person_id}/income-streams", post(create))
+        // Before `/{id}`, or axum matches "rematch" as an id.
+        .route("/income-payments/rematch", post(rematch))
+        .route("/income-payments", get(list_payments))
+        .route(
+            "/income-payments/{id}",
+            axum::routing::patch(set_payment_status),
+        )
+        .route(
+            "/income-payments/{id}/link",
+            post(link_payment).delete(unlink_payment),
+        )
 }

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT transaction_id AS \"transaction_id!\" FROM income_payments\n            WHERE transaction_id IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "transaction_id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "transaction_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "53330bbe00cb3de460f750517a6ea633d3c15b0cbce1b9bd0d45d26df92391d3"
+}

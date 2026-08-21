@@ -49,6 +49,11 @@ pub struct DetectedStream {
     /// reimbursement or a fluctuating contract is not, and is worth flagging rather than modelling
     /// as a fixed figure.
     pub variability_bps: i64,
+    /// The stable token these payments share — the grouping key itself (the description's first
+    /// two words), which is what a matcher should look for. `label` is the *whole* most common
+    /// description, and for payroll that usually carries a per-run suffix ("…PAY ENDED 12-APR"),
+    /// so a pattern taken from it would match one deposit and never another.
+    pub match_pattern: String,
 }
 
 /// Group income transactions into candidate salaries.
@@ -134,9 +139,11 @@ fn candidate(account_id: i64, group: &[&Transaction], today: NaiveDate) -> Optio
     }
 
     let label = most_common_description(group);
+    let match_pattern = description_key(&label);
     let category_id = group.iter().find_map(|t| t.category_id);
     Some(DetectedStream {
         label,
+        match_pattern,
         account_id,
         category_id,
         currency_code: group[0].currency_code.clone(),
@@ -508,6 +515,9 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert!(found[0].annual_net_minor > found[1].annual_net_minor);
         assert_eq!(found[0].label, "ACME PAYROLL");
+        // The matcher token is the stable grouping key, never the whole memo — a real payroll
+        // memo carries a per-run suffix that would match one deposit and no other.
+        assert_eq!(found[0].match_pattern, "acme payroll");
     }
 
     /// A movement on a loan account, in the signed convention the ledger stores: negative grows

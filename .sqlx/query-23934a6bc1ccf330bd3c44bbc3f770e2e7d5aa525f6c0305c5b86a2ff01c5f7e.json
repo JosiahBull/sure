@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT due_on FROM income_payments\n          WHERE income_stream_id=?1 AND status='expected' ORDER BY due_on",
+  "describe": {
+    "columns": [
+      {
+        "name": "due_on",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "due_on"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "23934a6bc1ccf330bd3c44bbc3f770e2e7d5aa525f6c0305c5b86a2ff01c5f7e"
+}

@@ -2,6 +2,8 @@
   import { onMount } from "svelte";
   import { api } from "../lib/api";
   import { people, refresh, personColor, initials, placeholders, type Person } from "../lib/people.svelte";
+  import IncomeSection from "./household/IncomeSection.svelte";
+  import PaymentsPanel from "./household/PaymentsPanel.svelte";
 
   let error = $state<string | null>(null);
   let loading = $state(true);
@@ -101,8 +103,8 @@
   <div>
     <h1 style="font-size:20px">Household</h1>
     <div class="muted small">
-      Who shares these finances. Accounts and (soon) transactions are attributed to one of them,
-      or to both.
+      Who shares these finances, what each of them earns, and how their pay is recognised when it
+      lands.
     </div>
   </div>
   <button class="btn btn-primary btn-sm" onclick={() => (showAdd ? (showAdd = false) : openAdd())}>
@@ -264,6 +266,11 @@
       </table>
     {/if}
   </section>
+
+  {#if people.list.length > 0}
+    <IncomeSection />
+    <PaymentsPanel />
+  {/if}
 {/if}
 
 <style>

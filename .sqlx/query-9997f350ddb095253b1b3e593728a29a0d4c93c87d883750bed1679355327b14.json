@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT MAX(due_on) AS \"due_on?\" FROM income_payments\n            WHERE income_stream_id=?1 AND status != 'expected'",
+  "describe": {
+    "columns": [
+      {
+        "name": "due_on?",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "9997f350ddb095253b1b3e593728a29a0d4c93c87d883750bed1679355327b14"
+}

@@ -2933,6 +2933,274 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/income-payments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Expected and matched payments, newest first.
+         * @description Past-due `expected` rows are the "missed pay" signal; `matched` rows carry the reconstructed
+         *     gross → deductions → net decomposition of the deposit they claimed.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Earliest `due_on` (ISO-8601 date), inclusive. */
+                    from?: string;
+                    /** @description Latest `due_on` (ISO-8601 date), inclusive. */
+                    to?: string;
+                    /** @description Limit to one person's streams. */
+                    person_id?: number;
+                    /** @description `expected`, `matched`, `confirmed` or `dismissed`. */
+                    status?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomePayment"][];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/income-payments/rematch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run the matcher now — the same idempotent pass the background task runs every few minutes,
+         *     for the person who just fixed a stream's pattern and wants to see the result.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RematchSummary"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/income-payments/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Move a payment between the human-owned statuses.
+         * @description Legal moves: `matched → confirmed` (agree with the matcher), `expected → dismissed` (this
+         *     payday is not real — unpaid leave, a contract gap; kept so the matcher does not resurrect
+         *     it), and `dismissed → expected` (re-open). `matched` is the matcher's own state and
+         *     `expected`-from-`matched` is what DELETE …/link does, so neither is reachable from here —
+         *     a refused move is a 409 naming the states.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SetPaymentStatus"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomePayment"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/api/income-payments/{id}/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Link a deposit to a payment by hand — recorded as `confirmed`, since the person just did
+         *     the confirming, with the decomposition reconstructed from the amount actually claimed.
+         * @description The claimed slice is whatever the deposit has left after every other payment already on it,
+         *     so linking the salary row and then the bonus row of one deposit works in either order.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["LinkPayment"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomePayment"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        /**
+         * Undo a match: the payment returns to `expected` with its decomposition cleared, and the
+         *     transaction is released for the matcher (or a person) to claim elsewhere.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomePayment"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/income-streams": {
         parameters: {
             query?: never;
@@ -6055,6 +6323,11 @@ export interface components {
              *     anything wide is a payment a fixed annual figure would misrepresent.
              */
             variability_bps: number;
+            /**
+             * @description The stable memo token these payments share — what a stream's `match_pattern` should be.
+             *     Distinct from `label`, which is one whole memo and usually carries a per-run suffix.
+             */
+            match_pattern: string;
         };
         Dividend: {
             /** Format: int64 */
@@ -6683,6 +6956,63 @@ export interface components {
          * @enum {string}
          */
         IncomeBasis: "net" | "gross_nz_paye";
+        /**
+         * @description One expected payment of one stream, and — once matched — the deposit it claimed with its
+         *     reconstructed decomposition.
+         *
+         *     The decomposition is materialised at match time from the *observed* net (the deposit is
+         *     ground truth; see `sure_core::tax::reconstruct_period`), under the tax scale in force on the
+         *     date it landed. `gross_minor − income_tax − acc − kiwisaver − student_loan ==
+         *     observed_net_minor`, always — which is what lets a report draw the pre-income graph and still
+         *     balance to the cent.
+         */
+        IncomePayment: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            income_stream_id: number;
+            /**
+             * @description The scheduled date. The claimed deposit may sit a few days earlier — payroll shifts off
+             *     weekends and holidays.
+             */
+            due_on: string;
+            status: components["schemas"]["IncomePaymentStatus"];
+            /** Format: int64 */
+            transaction_id?: number | null;
+            matched_by?: null | components["schemas"]["MatchedBy"];
+            /**
+             * Format: int64
+             * @description What the configured level predicted for this date, kept beside the observed figure
+             *     because their gap is the reconciliation signal.
+             */
+            expected_net_minor?: number | null;
+            /**
+             * Format: int64
+             * @description This stream's slice of the claimed deposit.
+             */
+            observed_net_minor?: number | null;
+            /** Format: int64 */
+            gross_minor?: number | null;
+            /** Format: int64 */
+            income_tax_minor?: number | null;
+            /** Format: int64 */
+            acc_levy_minor?: number | null;
+            /** Format: int64 */
+            kiwisaver_minor?: number | null;
+            /** Format: int64 */
+            student_loan_minor?: number | null;
+            /** Format: int64 */
+            employer_kiwisaver_minor?: number | null;
+            /** Format: int64 */
+            esct_minor?: number | null;
+            created_at: string;
+            updated_at: string;
+        };
+        /**
+         * @description Where one expected payment of a stream stands against the ledger.
+         * @enum {string}
+         */
+        IncomePaymentStatus: "expected" | "matched" | "confirmed" | "dismissed";
         IncomeStream: {
             /** Format: int64 */
             id: number;
@@ -6723,6 +7053,18 @@ export interface components {
              * @description The student loan these deductions pay down. Same consequence for that account.
              */
             student_loan_account_id?: number | null;
+            /**
+             * Format: int64
+             * @description Where this stream's deposits land, for the matcher. Matching is on iff this and
+             *     `match_pattern` are both set.
+             */
+            match_account_id?: number | null;
+            /**
+             * @description A case-insensitive substring the deposit's description carries — the payroll memo's
+             *     stable token, not the run number after it.
+             */
+            match_pattern?: string | null;
+            pay_treatment: components["schemas"]["PayTreatment"];
             enabled: boolean;
             /** Format: int64 */
             sort_order: number;
@@ -6819,6 +7161,10 @@ export interface components {
             external_id: string;
             /** @description Name for this member's `providers` row. */
             name: string;
+        };
+        LinkPayment: {
+            /** Format: int64 */
+            transaction_id: number;
         };
         /**
          * @description Link an upstream account (surfaced by `GET /provider-kinds/{kind}/accounts`) to a local
@@ -6953,6 +7299,11 @@ export interface components {
          * @enum {string}
          */
         LotKind: "buy" | "sell" | "corporate";
+        /**
+         * @description Who claimed the deposit — the matcher, or a person overriding it.
+         * @enum {string}
+         */
+        MatchedBy: "auto" | "manual";
         /**
          * @description How much of the MCP (agent) surface is served.
          *
@@ -7167,6 +7518,18 @@ export interface components {
          * @enum {string}
          */
         PayFrequency: "weekly" | "fortnightly" | "four_weekly" | "semi_monthly" | "monthly" | "quarterly" | "annual";
+        /**
+         * @description How one arrival of this income is taxed: as an ordinary payslip, or as an IRD "extra pay".
+         *
+         *     An extra pay is a lump sum landing inside a regular pay run — a quarterly bonus, a back
+         *     payment. It shares the regular salary's deposit but not its arithmetic: tax is a slice across
+         *     the brackets sitting on top of the annualised regular pay, and student loan takes 12% of the
+         *     whole lump with no threshold (the regular pays consumed it). See [`crate::tax::extra_pay`].
+         *     A per-stream fact rather than a per-payment flag, because whether income is a bonus is a
+         *     property of the income.
+         * @enum {string}
+         */
+        PayTreatment: "regular" | "extra_pay";
         /** @description One member of the household. */
         Person: {
             /** Format: int64 */
@@ -7470,6 +7833,20 @@ export interface components {
          * @enum {string}
          */
         RelationKind: "after" | "only_if";
+        /** @description What a rematch pass did — the same summary the scheduled task logs. */
+        RematchSummary: {
+            /**
+             * Format: int64
+             * @description Matches whose transaction had been deleted (an undone import), reset to expected.
+             */
+            repaired: number;
+            /** @description Expected rows regenerated from the current schedules. */
+            generated: number;
+            /** @description Stray expected rows removed after a schedule edit. */
+            pruned: number;
+            /** @description Payments newly matched to a deposit. */
+            matched: number;
+        };
         /**
          * @description How often a loan's contractual repayment is actually made. Weekly and fortnightly are
          *     the NZ norm; the forecast annualises them (×52/12, ×26/12) rather than treating them as
@@ -7843,6 +8220,10 @@ export interface components {
             kiwisaver_account_id?: number | null;
             /** Format: int64 */
             student_loan_account_id?: number | null;
+            /** Format: int64 */
+            match_account_id?: number | null;
+            match_pattern?: string | null;
+            pay_treatment?: components["schemas"]["PayTreatment"];
             enabled?: boolean;
             /** Format: int64 */
             sort_order?: number;
@@ -7943,6 +8324,9 @@ export interface components {
         SetOwnershipBulk: {
             account_ids: number[];
             ownership: components["schemas"]["Ownership"];
+        };
+        SetPaymentStatus: {
+            status: components["schemas"]["IncomePaymentStatus"];
         };
         SetSecuredBy: {
             /**

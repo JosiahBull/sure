@@ -616,6 +616,262 @@ pub fn paye(scale: &TaxScale<'_>, input: PayeInput) -> PayeBreakdown {
     }
 }
 
+/// `value / divisor`, rounded half away from zero — the division counterpart of [`bps_of`].
+///
+/// Same rationale: payroll's published per-period figures are rounded, and truncation would bias
+/// every per-period deduction downward, overstating take-home in the one direction a
+/// reconstruction should not err.
+fn div_round(value: i64, divisor: i64) -> i64 {
+    let divisor = divisor.max(1);
+    if value >= 0 {
+        (value + divisor / 2) / divisor
+    } else {
+        (value - divisor / 2) / divisor
+    }
+}
+
+/// One pay period of a regular salary: what that single payslip is subject to.
+///
+/// The per-period counterpart of [`PayeInput`]. IRD's formula method annualises the period's
+/// gross (× the pay frequency's divisor), prices the whole year at that level, and divides back —
+/// which is what makes a mid-year pay rise tax correctly from its first payslip instead of being
+/// smeared across the year, and why this takes a *period* gross rather than an annual one.
+#[derive(Debug, Clone, Copy)]
+pub struct PeriodPayeInput {
+    pub period_gross_minor: i64,
+    /// Payroll's divisor — 24 for semi-monthly, 26 for fortnightly. These are
+    /// [`crate::income::PayFrequency::periods_per_year`]'s figures, and the same argument
+    /// applies: they are what payroll divides by, not calendar arithmetic.
+    pub periods_per_year: i64,
+    /// Employee KiwiSaver contribution, in basis points of gross. 0 for someone not enrolled.
+    pub kiwisaver_bps: i64,
+    /// The employer's contribution — never part of take-home, see
+    /// [`PayeInput::employer_kiwisaver_bps`].
+    pub employer_kiwisaver_bps: i64,
+    /// Whether IR deducts student loan repayments from this income.
+    pub student_loan: bool,
+}
+
+/// Every deduction applied to one regular payslip — [`paye`], at payroll's own granularity.
+///
+/// Two per-period rules differ from a naive `paye(...) / periods`:
+///   * the ACC cap and the student-loan threshold apply per period (`annual ÷ periods`), which is
+///     how payroll actually administers them — a fortnight over the fortnightly threshold repays,
+///     even in a year that ends up under the annual one;
+///   * `govt_contribution_minor` is **zero**: the government's KiwiSaver contribution is an
+///     explicitly annual credit paid once by IR (see [`govt_contribution_minor`]), not a payslip
+///     line, and dividing it across 24 payslips would double-count it the moment anything summed
+///     a year of breakdowns against the annual figure. `kiwisaver_credited_minor` here is
+///     therefore the payslip's own flows only. ESCT's *rate* stays annualised — it is a flat rate
+///     chosen by the annual total, like [`paye`] says.
+pub fn paye_period(scale: &TaxScale<'_>, input: PeriodPayeInput) -> PayeBreakdown {
+    let gross = input.period_gross_minor;
+    if gross <= 0 {
+        return PayeBreakdown::default();
+    }
+    let periods = input.periods_per_year.max(1);
+    let annualised = gross.saturating_mul(periods);
+    let income_tax = div_round(income_tax_minor(scale, annualised), periods);
+    let acc = bps_of(
+        gross.min(div_round(scale.acc_income_cap_minor, periods)),
+        scale.acc_levy_bps,
+    );
+    let kiwisaver = bps_of(gross, input.kiwisaver_bps.max(0));
+    let employer_ks = bps_of(gross, input.employer_kiwisaver_bps.max(0));
+    let esct = bps_of(
+        employer_ks,
+        esct_rate_bps(
+            scale,
+            annualised.saturating_add(employer_ks.saturating_mul(periods)),
+        ),
+    );
+    let student_loan = if input.student_loan {
+        bps_of(
+            (gross - div_round(scale.student_loan_threshold_minor, periods)).max(0),
+            scale.student_loan_rate_bps,
+        )
+    } else {
+        0
+    };
+    PayeBreakdown {
+        gross_minor: gross,
+        income_tax_minor: income_tax,
+        acc_levy_minor: acc,
+        kiwisaver_minor: kiwisaver,
+        student_loan_minor: student_loan,
+        net_minor: gross - income_tax - acc - kiwisaver - student_loan,
+        employer_kiwisaver_minor: employer_ks,
+        esct_minor: esct,
+        govt_contribution_minor: 0,
+        kiwisaver_credited_minor: kiwisaver + employer_ks - esct,
+    }
+}
+
+/// An extra pay — IRD's term for a lump sum landing inside a regular payslip: a bonus, a back
+/// payment, a redundancy.
+#[derive(Debug, Clone, Copy)]
+pub struct ExtraPayInput {
+    /// The regular income the extra pay sits on top of, annualised — for a stable salary, the
+    /// annual gross. IRD grosses up the last four weeks' pay; a configured stream's annual level
+    /// is the same number for anyone whose pay is not changing and the closest available one for
+    /// anyone whose is (the same stand-in [`paye`] makes for ESCT).
+    pub annualised_regular_minor: i64,
+    /// The lump sum itself.
+    pub extra_minor: i64,
+    pub kiwisaver_bps: i64,
+    pub employer_kiwisaver_bps: i64,
+    pub student_loan: bool,
+}
+
+/// Every deduction applied to an extra pay. `gross_minor` is the lump sum alone; each figure is
+/// the *increment* the lump sum adds on top of the regular pays.
+///
+/// Income tax is the difference of the progressive function at `regular + extra` and at
+/// `regular` — i.e. the extra sliced across whichever brackets it actually spans. (IRD's basic
+/// method taxes the whole lump at the single rate of the bracket the total lands in; the sliced
+/// calculation is the alternative IR also accepts, modern payroll software's default, and the
+/// only one of the two that is monotone — which the net→gross inversion below depends on.)
+/// Student loan is 12% of the whole lump with **no** threshold — the threshold is consumed by
+/// the regular pays. ACC applies only to the slice still under the annual cap. The government
+/// KiwiSaver contribution is zero for the same reason as [`paye_period`].
+pub fn extra_pay(scale: &TaxScale<'_>, input: ExtraPayInput) -> PayeBreakdown {
+    let extra = input.extra_minor;
+    if extra <= 0 {
+        return PayeBreakdown::default();
+    }
+    let base = input.annualised_regular_minor.max(0);
+    let total = base.saturating_add(extra);
+    let income_tax = income_tax_minor(scale, total) - income_tax_minor(scale, base);
+    let acc = bps_of(
+        total.min(scale.acc_income_cap_minor) - base.min(scale.acc_income_cap_minor),
+        scale.acc_levy_bps,
+    );
+    let kiwisaver = bps_of(extra, input.kiwisaver_bps.max(0));
+    let employer_ks = bps_of(extra, input.employer_kiwisaver_bps.max(0));
+    let esct = bps_of(employer_ks, esct_rate_bps(scale, total));
+    let student_loan = if input.student_loan {
+        bps_of(extra, scale.student_loan_rate_bps)
+    } else {
+        0
+    };
+    PayeBreakdown {
+        gross_minor: extra,
+        income_tax_minor: income_tax,
+        acc_levy_minor: acc,
+        kiwisaver_minor: kiwisaver,
+        student_loan_minor: student_loan,
+        net_minor: extra - income_tax - acc - kiwisaver - student_loan,
+        employer_kiwisaver_minor: employer_ks,
+        esct_minor: esct,
+        govt_contribution_minor: 0,
+        kiwisaver_credited_minor: kiwisaver + employer_ks - esct,
+    }
+}
+
+/// The smallest gross whose net under `net_of` reaches `target`, found by binary search.
+///
+/// Sound because every net function here is non-decreasing in gross: the combined marginal
+/// deduction rate of any legal NZ scale is well under 100% (39% top tax + 1.75% ACC + 12% student
+/// loan + 10% KiwiSaver at the highest electable rate), so net rises with gross everywhere except
+/// integer-rounding plateaus. A user-edited scale whose rates sum past 100% breaks that premise;
+/// the search then converges on *a* gross and the caller's residual absorption still reconciles,
+/// so the failure is a strange-looking breakdown rather than a wrong total.
+fn gross_reaching(target: i64, net_of: impl Fn(i64) -> i64) -> i64 {
+    let mut hi = target.max(1);
+    // Net is at least ~35% of gross under any sane scale, so a handful of doublings suffice; the
+    // bound is a guard against a pathological stored scale, not a tuning parameter.
+    for _ in 0..64 {
+        if net_of(hi) >= target {
+            break;
+        }
+        hi = hi.saturating_mul(2);
+    }
+    let mut lo = target.max(0); // deductions are non-negative, so gross ≥ net always
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if net_of(mid) >= target {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    lo
+}
+
+/// The breakdown behind an observed take-home amount — [`paye_period`] run backwards.
+///
+/// For matching a real bank deposit: the deposit is ground truth, so the reconstruction must
+/// reconcile to it exactly. The search finds the smallest gross whose modelled net reaches
+/// `observed_net_minor`; integer rounding can leave that net a few cents high, and the residual
+/// is absorbed into `income_tax_minor` — the largest line, and the only one with no published
+/// per-period figure to contradict — so that
+/// `gross − tax − acc − kiwisaver − student_loan == observed_net_minor`, always.
+///
+/// `input.period_gross_minor` is ignored: the gross is the answer, not an argument.
+pub fn reconstruct_period(
+    scale: &TaxScale<'_>,
+    observed_net_minor: i64,
+    input: PeriodPayeInput,
+) -> PayeBreakdown {
+    if observed_net_minor <= 0 {
+        return PayeBreakdown::default();
+    }
+    let gross = gross_reaching(observed_net_minor, |g| {
+        paye_period(
+            scale,
+            PeriodPayeInput {
+                period_gross_minor: g,
+                ..input
+            },
+        )
+        .net_minor
+    });
+    let mut b = paye_period(
+        scale,
+        PeriodPayeInput {
+            period_gross_minor: gross,
+            ..input
+        },
+    );
+    b.income_tax_minor += b.net_minor - observed_net_minor;
+    b.net_minor = observed_net_minor;
+    b
+}
+
+/// The breakdown behind an observed extra-pay slice of a deposit — [`extra_pay`] run backwards,
+/// with the same residual-into-income-tax reconciliation as [`reconstruct_period`].
+///
+/// `input.extra_minor` is ignored: the lump sum is the answer, not an argument.
+pub fn reconstruct_extra_pay(
+    scale: &TaxScale<'_>,
+    observed_net_minor: i64,
+    input: ExtraPayInput,
+) -> PayeBreakdown {
+    if observed_net_minor <= 0 {
+        return PayeBreakdown::default();
+    }
+    let extra = gross_reaching(observed_net_minor, |e| {
+        extra_pay(
+            scale,
+            ExtraPayInput {
+                extra_minor: e,
+                ..input
+            },
+        )
+        .net_minor
+    });
+    let mut b = extra_pay(
+        scale,
+        ExtraPayInput {
+            extra_minor: extra,
+            ..input
+        },
+    );
+    b.income_tax_minor += b.net_minor - observed_net_minor;
+    b.net_minor = observed_net_minor;
+    b
+}
+
 /// The government's annual KiwiSaver contribution.
 ///
 /// Matched against the **member's** contributions only — an employer's do not count toward it, which
@@ -1138,5 +1394,226 @@ mod tests {
             assert_eq!(TaxScaleId::from_str(id.as_str()), Ok(id));
         }
         assert!(TaxScaleId::from_str("uk_paye").is_err());
+    }
+
+    /// A semi-monthly payslip on an invented $96k salary, every line hand-computed. The figures
+    /// that differ from `paye(annual) / 24` are the point: the student-loan threshold and the ACC
+    /// cap divide per period *before* they apply, because that is how payroll administers them.
+    #[test]
+    fn a_period_payslip_prices_the_year_and_divides_back() {
+        let s = scale();
+        let b = paye_period(
+            s,
+            PeriodPayeInput {
+                period_gross_minor: 4_000_00, // $96k over 24 pays
+                periods_per_year: 24,
+                kiwisaver_bps: 350,
+                employer_kiwisaver_bps: 0,
+                student_loan: true,
+            },
+        );
+        // Annual tax on $96k is $21,557.50 (see the progressive test above); ÷24 rounded.
+        assert_eq!(b.income_tax_minor, 898_23);
+        // Under the per-period ACC cap, so 1.75% of the whole payslip.
+        assert_eq!(b.acc_levy_minor, 70_00);
+        // 12% of the excess over $24,128/24 = $1,005.33.
+        assert_eq!(b.student_loan_minor, 359_36);
+        assert_eq!(b.kiwisaver_minor, 140_00);
+        assert_eq!(
+            b.net_minor,
+            4_000_00 - 898_23 - 70_00 - 359_36 - 140_00,
+            "the itemised lines must reconcile"
+        );
+        // The annual credit is not a payslip line — summing 24 of these against the annual
+        // breakdown must not count it twice.
+        assert_eq!(b.govt_contribution_minor, 0);
+    }
+
+    /// Twenty-four payslips are the year, to within accumulated rounding — the per-period method
+    /// must not quietly re-price the salary.
+    #[test]
+    fn a_year_of_payslips_reconciles_with_the_annual_breakdown() {
+        let s = scale();
+        let annual = paye(
+            s,
+            PayeInput {
+                annual_gross_minor: 96_000_00,
+                kiwisaver_bps: 350,
+                employer_kiwisaver_bps: 0,
+                student_loan: true,
+            },
+        );
+        let period = paye_period(
+            s,
+            PeriodPayeInput {
+                period_gross_minor: 4_000_00,
+                periods_per_year: 24,
+                kiwisaver_bps: 350,
+                employer_kiwisaver_bps: 0,
+                student_loan: true,
+            },
+        );
+        // Each period rounds by at most half a cent per line; 24 periods × 4 lines bounds the
+        // drift well under a dollar.
+        assert!((24 * period.income_tax_minor - annual.income_tax_minor).abs() <= 24);
+        assert!((24 * period.net_minor - annual.net_minor).abs() <= 96);
+    }
+
+    /// An extra pay inside one bracket is taxed at that bracket's rate; one that straddles a
+    /// threshold is sliced across it — the difference-of-progressive-functions definition.
+    #[test]
+    fn an_extra_pay_is_sliced_across_the_brackets_it_spans() {
+        let s = scale();
+        // $5,000 on top of $96k: entirely inside the 33% bracket.
+        let inside = extra_pay(
+            s,
+            ExtraPayInput {
+                annualised_regular_minor: 96_000_00,
+                extra_minor: 5_000_00,
+                kiwisaver_bps: 350,
+                employer_kiwisaver_bps: 0,
+                student_loan: true,
+            },
+        );
+        assert_eq!(inside.income_tax_minor, 1_650_00);
+        assert_eq!(inside.acc_levy_minor, 87_50);
+        // No threshold on an extra pay — the regular pays consumed it. 12% of the whole lump.
+        assert_eq!(inside.student_loan_minor, 600_00);
+        assert_eq!(inside.kiwisaver_minor, 175_00);
+        assert_eq!(
+            inside.net_minor,
+            5_000_00 - 1_650_00 - 87_50 - 600_00 - 175_00
+        );
+
+        // $4,000 on top of $178k: half at 33%, half at 39%.
+        let straddling = extra_pay(
+            s,
+            ExtraPayInput {
+                annualised_regular_minor: 178_000_00,
+                extra_minor: 4_000_00,
+                kiwisaver_bps: 0,
+                employer_kiwisaver_bps: 0,
+                student_loan: false,
+            },
+        );
+        assert_eq!(straddling.income_tax_minor, 660_00 + 780_00);
+    }
+
+    /// ACC on an extra pay stops at whatever headroom the regular pays left under the cap.
+    #[test]
+    fn an_extra_pay_pays_acc_only_into_the_caps_headroom() {
+        let s = scale();
+        let b = extra_pay(
+            s,
+            ExtraPayInput {
+                annualised_regular_minor: 155_000_00,
+                extra_minor: 5_000_00,
+                kiwisaver_bps: 0,
+                employer_kiwisaver_bps: 0,
+                student_loan: false,
+            },
+        );
+        // Only $1,641 of the $5,000 is still under the $156,641 cap.
+        assert_eq!(b.acc_levy_minor, 28_72);
+    }
+
+    /// The inversion contract: a reconstructed breakdown reconciles to the observed net exactly,
+    /// and lands on (or within rounding-plateau distance of) the gross that produced it. Probed
+    /// at the awkward points — the per-period student-loan threshold, the per-period ACC cap, a
+    /// bracket boundary — because a binary search is exactly the kind of code that works
+    /// everywhere except at edges.
+    #[test]
+    fn reconstruction_inverts_a_period_payslip_exactly() {
+        let s = scale();
+        let input = PeriodPayeInput {
+            period_gross_minor: 0, // ignored by reconstruct_period
+            periods_per_year: 24,
+            kiwisaver_bps: 350,
+            employer_kiwisaver_bps: 0,
+            student_loan: true,
+        };
+        for gross in [
+            80_000i64,       // under the per-period student-loan threshold
+            100_533,         // exactly at it
+            100_534,         // one cent over
+            400_000,         // an ordinary payslip
+            652_671,         // at the per-period ACC cap
+            652_672,         // one cent over it
+            750_000_00 / 24, // annualises into the top bracket
+        ] {
+            let forward = paye_period(
+                s,
+                PeriodPayeInput {
+                    period_gross_minor: gross,
+                    ..input
+                },
+            );
+            let back = reconstruct_period(s, forward.net_minor, input);
+            assert_eq!(back.net_minor, forward.net_minor);
+            assert_eq!(
+                back.gross_minor
+                    - back.income_tax_minor
+                    - back.acc_levy_minor
+                    - back.kiwisaver_minor
+                    - back.student_loan_minor,
+                back.net_minor,
+                "reconstructed lines must reconcile at gross {gross}"
+            );
+            // The search returns the *smallest* gross on the plateau of grosses sharing this
+            // net. Four lines each rounding by up to half a cent, over a combined marginal rate
+            // near 50%, makes that plateau up to ~5 cents wide (widest right at the ACC cap,
+            // where the levy's marginal contribution drops to zero).
+            assert!(
+                (back.gross_minor - gross).abs() <= 5,
+                "gross {gross} came back as {} — outside rounding-plateau distance",
+                back.gross_minor
+            );
+        }
+    }
+
+    #[test]
+    fn reconstruction_inverts_an_extra_pay_exactly() {
+        let s = scale();
+        let input = ExtraPayInput {
+            annualised_regular_minor: 96_000_00,
+            extra_minor: 0, // ignored by reconstruct_extra_pay
+            kiwisaver_bps: 350,
+            employer_kiwisaver_bps: 0,
+            student_loan: true,
+        };
+        for extra in [50_00i64, 2_500_00, 5_000_00, 90_000_00] {
+            let forward = extra_pay(
+                s,
+                ExtraPayInput {
+                    extra_minor: extra,
+                    ..input
+                },
+            );
+            let back = reconstruct_extra_pay(s, forward.net_minor, input);
+            assert_eq!(back.net_minor, forward.net_minor);
+            assert!(
+                (back.gross_minor - extra).abs() <= 3,
+                "extra {extra} came back as {}",
+                back.gross_minor
+            );
+        }
+    }
+
+    /// A non-positive observed net is a question with no payslip behind it.
+    #[test]
+    fn reconstruction_of_nothing_is_nothing() {
+        let s = scale();
+        let input = PeriodPayeInput {
+            period_gross_minor: 0,
+            periods_per_year: 24,
+            kiwisaver_bps: 350,
+            employer_kiwisaver_bps: 0,
+            student_loan: true,
+        };
+        assert_eq!(reconstruct_period(s, 0, input), PayeBreakdown::default());
+        assert_eq!(
+            reconstruct_period(s, -5_00, input),
+            PayeBreakdown::default()
+        );
     }
 }
