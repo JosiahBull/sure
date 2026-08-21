@@ -15,10 +15,9 @@ async-trait = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 # Only for `FutureExt::catch_unwind` in `run_if_due`, which is what keeps one task's panic
-# from taking every other registered task with it. `std` is the feature that carries it.
-# Not a workspace dependency because nothing else names it directly — it is already in the
-# lock as a transitive of sqlx/tokio-util, so this compiles nothing new.
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# from taking every other registered task with it. The `std`-only feature set, and why it
+# costs nothing new, are in the root manifest with the requirement.
+futures-util = { workspace = true }
 tokio = { workspace = true }
 # Only for `CancellationToken` in `Scheduler::run`. Taking the token rather than a
 # `sure-appbase` handle keeps the dependency pointing down: the composition root decides

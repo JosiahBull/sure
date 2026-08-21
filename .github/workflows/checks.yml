@@ -52,6 +52,28 @@ jobs:
       - uses: actions/checkout@v7
       - run: ./scripts/check-dependabot.sh
 
+  # Every requirement and every feature flag lives in the root `[workspace.dependencies]`; a
+  # member manifest says only that it wants the crate. Cargo unifies features across a build, so
+  # `features = [..]` written at a member is a workspace-wide choice made where nobody looks —
+  # and a *version* written at a member can resolve to a second copy of the crate whose types
+  # are not the first's, which `sure-providers` carried for real until reqwest moved to 0.13
+  # (a renamed `reqwest-akahu`, and two `ClientBuilder`s that could not be merged). The root
+  # table is also where this tree keeps the reasoning for each requirement.
+  #
+  # It is a gate rather than a convention because the drift is invisible in review: a member
+  # manifest with a version in it looks exactly like one without until something builds twice.
+  # `cargo autoinherit` is the fixer the failure message points at; this job is pure text
+  # parsing over the manifests, so it needs no toolchain and costs milliseconds.
+  workspace-deps:
+    name: Workspace dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: node scripts/check-workspace-deps.mjs
+
   # Every query in `sure-dal` is compile-time checked against the committed `.sqlx/` metadata
   # (`.cargo/config.toml` pins `SQLX_OFFLINE=true`, so no build anywhere consults a live
   # database). A *missing* entry already fails clippy and the test job, because the build cannot

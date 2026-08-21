@@ -70,6 +70,12 @@ tokio = { version = "1", features = ["full"] }
 # uses both to make "has everything this process spawned actually stopped?" an exact,
 # awaitable question instead of a poll over `RuntimeMetrics::num_alive_tasks`.
 tokio-util = { version = "0.7", features = ["rt"] }
+# One item, in `sure_scheduler`'s `run_if_due`: `FutureExt::catch_unwind`, which is what keeps
+# one scheduled task's panic from taking every other registered task down with it. `std` is the
+# feature that carries it, and dropping the defaults leaves out the executor and the
+# async-await machinery nothing here uses. Already in the lock as a transitive of
+# sqlx/tokio-util, so it compiles nothing new.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # `util` for `ServiceExt::map_request` — the accept loop uses it to adapt hyper's
 # `Request<Incoming>` to the `Request<axum::body::Body>` the router wants.
 tower = { version = "0.5", features = ["util"] }
@@ -143,6 +149,23 @@ rust_decimal_macros = "1"
 # on 0.12; `query` and `form` became opt-in features in 0.13 and nothing here asks reqwest to
 # build a query string or a form body.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# Akahu's wire format — the fourth client crate, and the only one published rather than living
+# in `packages/`, which is why it is named here and the other three are down in the internal
+# block. `sure-providers` is the one member that may depend on it.
+#
+# 0.3 is what makes an Akahu enum value this tree has never seen (`Unknown`) cost one field
+# instead of the whole page it arrived in — which, because a sync cursor only advances on
+# success, used to wedge that account's import permanently rather than for one poll. It also
+# keeps the response body out of a deserialisation error's `Display`, and lets the caller cap a
+# response body (`AkahuProvider::client` hands it `http::MAX_BODY_BYTES`).
+#
+# It takes a `reqwest::Client` from the caller, and asks reqwest for exactly the `json` +
+# `rustls` with no defaults the line above does — so this is one client type shared with the
+# other adapters, built by `sure_providers::http::client`. Until the workspace moved to 0.13 it
+# was not: `sure-providers` carried a second, renamed copy of reqwest (`reqwest-akahu`) purely
+# to satisfy this dependency, and `http` had two byte-identical builders because the two
+# `ClientBuilder`s were different types.
+akahu-client = "0.3"
 utoipa = { version = "5", features = ["axum_extras", "chrono", "decimal", "preserve_order"] }
 thiserror = "2"
 anyhow = "1"
@@ -188,6 +211,22 @@ log = "0.4"
 uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 csv = "1"
+# Opens the archive uploads — `sure_providers::zipfile`, and `asb`/`myir`/`sharesies` through
+# it. `deflate` is the one codec an upload here actually uses: a real `.xlsx` is deflated, and
+# dropping the defaults leaves out aes-crypto, bzip2, lzma, ppmd, xz and zstd, none of which a
+# bank or IRD export arrives as. The version is 8 rather than 2 because `calamine` below
+# already asks for `zip = "8.6"` with exactly this feature set, so matching it is what keeps
+# one zip in the lockfile instead of two majors of it.
+#
+# The feature kept its name across those six majors but not its meaning: on 2.x `deflate`
+# selected flate2's miniz_oxide backend, on 8.x it selects `zlib-rs`. Both are pure Rust, so
+# the release build still cross-compiles without a C toolchain — the property that matters
+# here, exactly as for `rustls` on reqwest above.
+zip = { version = "8", default-features = false, features = ["deflate"] }
+# Reads the myIR `.xlsx` exports (`sure_providers::myir`). `dates` makes calamine resolve a
+# cell's number format for us, so a date column arrives as `Data::DateTime` rather than a bare
+# Excel serial we would have to map back through the workbook's style table by hand.
+calamine = { version = "0.36.1", default-features = false, features = ["dates"] }
 # Test-only, and never linked into `sure-api`: the programmable HTTP proxy every provider
 # adapter is exercised against, so a test can answer for what a bank/price feed said without
 # reaching one. Pinned by `rev` because the crate is not on crates.io — there is no version
@@ -202,6 +241,10 @@ partly-proxy-lib = { git = "https://github.com/thepartly/partly-proxy", rev = "0
 http = "1"
 bytes = "1"
 tempfile = "3"
+# Test support, and nothing else in this tree names it: `sure-appbase`'s signal tests deliver a
+# real SIGTERM/SIGINT to the test process rather than faking one, because the ordering bugs
+# that crate exists to prevent only show up on the real path.
+libc = "0.2"
 zen-expression = "0.55"
 # The forecast's Monte Carlo simulation: a seedable RNG (reproducible in tests) plus the
 # normal distribution its stochastic accounts/categories draw monthly returns from.

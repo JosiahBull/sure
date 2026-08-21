@@ -4,10 +4,11 @@
 # .github/workflows/checks.yml so most failures are caught before they reach CI.
 #
 # ONE JOB PER REQUIRED CONTEXT, and the mapping is written out so a gap is visible rather than
-# inferred. `main`'s branch protection requires ten contexts; this hook covers nine of them:
+# inferred. `main`'s branch protection requires eleven contexts; this hook covers ten of them:
 #
 #   checks / Personal-data scan     → scripts/pii-scan.mjs
 #   checks / Dependabot config      → scripts/check-dependabot.sh
+#   checks / Workspace dependencies → scripts/check-workspace-deps.mjs
 #   checks / Versions               → scripts/check-versions.sh
 #   checks / sqlx offline metadata  → scripts/sqlx-prepare.mjs --check
 #   checks / Rustfmt                → cargo fmt --all --check
@@ -65,6 +66,10 @@ run node scripts/pii-scan.mjs
 # version strings that have to agree. Up here with the scan for the same reason — cheapest
 # first, so a trivially-fixable mistake is not reported after ten minutes of compiling.
 run ./scripts/check-dependabot.sh
+# Same bracket: text parsing over the manifests, milliseconds, and it guards a drift that is
+# invisible in review — a version or a feature flag left in a member manifest reads exactly like
+# an inherited one until the tree quietly builds two copies of a crate.
+run node scripts/check-workspace-deps.mjs
 run ./scripts/check-versions.sh
 run node scripts/sqlx-prepare.mjs --check
 run cargo fmt --all --check
@@ -80,4 +85,4 @@ run pnpm test:api
 run pnpm --filter @sure/web check
 run pnpm --filter @sure/api-tests check
 
-echo "✓ pre-commit checks passed (9 of main's 10 required contexts; visual suite is CI-only)"
+echo "✓ pre-commit checks passed (10 of main's 11 required contexts; visual suite is CI-only)"
