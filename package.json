@@ -29,7 +29,7 @@
     "snapshots:update": "node scripts/linux-snapshots.mjs update",
     "seed": "node scripts/seed.mjs",
     "fixtures:record": "cargo test -p sure-providers --test recorded_upstreams -- --ignored --nocapture",
-    "lint:rust": "cargo clippy --all-targets -- -D warnings",
+    "lint:rust": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "fmt:rust": "cargo fmt --all",
     "prepare": "git config core.hooksPath .githooks || true"
   },

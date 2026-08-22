@@ -146,6 +146,19 @@ sure-api = { path = "packages/api" }
 sure-mcp = { path = "packages/mcp" }
 sure-testproxy = { path = "packages/testproxy" }
 
+# Debug info is line tables only, not full DWARF. The `sqlx::query!` and utoipa derive
+# expansions make these crates enormous once every local variable is described: measured
+# 2026-08-21, `libsure_dal.rlib` was 122 MB, `libsure_api.rlib` 122 MB, and the `sure_api`
+# test binary 141 MB — and `target/debug/deps` keeps every configuration it has ever built,
+# so 52 retained copies of that one test binary were 7 GB on their own.
+#
+# Line tables are what a backtrace actually reads, so a panic in a test or a 500 in the dev
+# server still names the file and line. What is given up is inspecting local variables in a
+# debugger; if you need that, build the one crate you are stepping through with
+# `RUSTFLAGS="-C debuginfo=2"`.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

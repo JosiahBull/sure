@@ -15,3 +15,30 @@
 # defers to an already-set variable unless the entry is marked `force = true`.
 [env]
 SQLX_OFFLINE = "true"
+
+# Debug builds of this workspace do not keep their incremental state, because on this tree it
+# costs far more disk than it saves wall-clock. Measured 2026-08-21: `target/` had reached
+# 142 GB, 60 GB of it `target/debug/incremental` alone.
+#
+# The reason it grows without bound is that rustc garbage-collects sessions *within* one
+# incremental directory but never removes a directory whose key changed — and the key is the
+# unit's `-C metadata`, which differs for every distinct build configuration. This repo mints
+# a lot of those: each invocation scope resolves its own feature union (`-p sure-server --bin
+# sure-api` from `scripts/dev-api.mjs`, `--workspace --all-features` from the pre-commit hook,
+# `-p sure-api --bin gen-openapi`, `-p sure-providers --test recorded_upstreams`), and clippy
+# is a different rustc wrapper again. 1,691 session directories had accumulated in eight days,
+# at 450-490 MB each for `sure_api` and `sure_dal`.
+#
+# This is `[build]`, not `[env] CARGO_INCREMENTAL`, and the distinction is load-bearing: the
+# `[env]` table sets variables for the processes cargo *spawns* (which is exactly why
+# SQLX_OFFLINE above belongs there — the sqlx macros read it inside rustc), whereas
+# `CARGO_INCREMENTAL` is consumed by cargo itself and is not resolved from that table.
+#
+# What this costs: a no-op edit rebuild in `pnpm dev` recompiles the whole crate rather than
+# the changed CGUs. The gates that dominate real build time — the hook's clippy and test runs
+# — are full builds either way and lose nothing. A dev who wants the edit loop back can
+# override it per-invocation, because a real environment variable beats a config file:
+#
+#     CARGO_INCREMENTAL=1 pnpm dev
+[build]
+incremental = false
