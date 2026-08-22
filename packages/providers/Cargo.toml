@@ -12,9 +12,6 @@ path = "src/lib.rs"
 
 [dependencies]
 sure-core = { workspace = true }
-# Depends on the application core to see the port traits it implements
-# (`sure_app::ports::{TransactionProvider, StockPriceProvider, ExchangeRateProvider,
-# ProviderRegistry}`). The inversion: adapters depend on the core, never the reverse.
 sure-app = { workspace = true }
 async-trait = { workspace = true }
 csv = { workspace = true }
@@ -25,47 +22,18 @@ anyhow = { workspace = true }
 rust_decimal = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
-# Per-request duration/outcome and response-size histograms. `sure-telemetry` depends on
-# nothing else in the workspace, so this does not give an adapter a view of the app.
 sure-telemetry = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-# Akahu's wire format. Published rather than living in `packages/` like the other three, so its
-# requirement — and what 0.3 in particular buys, which is an unrecognised enum value costing one
-# field instead of the whole page it arrived in — is in the root manifest.
 akahu-client = { workspace = true }
-# The other three wire formats, each in a crate that knows nothing else — so an undocumented
-# endpoint renaming a field is a one-line fix there rather than an edit to an adapter that also
-# decides what a valuation, a rate or a stored price is. Same shape as `akahu-client` above,
-# including taking this crate's bounded `reqwest::Client` and its `MAX_BODY_BYTES`; the only
-# difference is that these live in this repository because they have no users outside it yet.
-#
-# This crate is the only workspace member that may name one of them, and none of them may name
-# a workspace member — including each other. That edge is the whole point: it is what stops a
-# wire crate growing a domain concept, and it is why each carries its own copy of the twenty
-# lines that parse a `Retry-After`.
 frankfurter-client = { workspace = true }
 house-pricer-client = { workspace = true }
 yahoo-finance-client = { workspace = true }
-# Opens the three archive uploads (`zipfile.rs`, and `asb`/`myir`/`sharesies` through it), and
-# reads the myIR `.xlsx` exports (`myir.rs`). Both are pinned to one codec and one option
-# respectively — `deflate` and `dates` — for reasons that belong with the requirement, in the
-# root manifest; the pair also has to stay on one zip major, which is easier to see there.
 zip = { workspace = true }
 calamine = { workspace = true }
 
-# Every adapter in this crate reaches a third-party host, which is why until now the only
-# thing its tests could assert was parsing — the fetch itself was only exercisable against
-# the live API, so `stock-prices.spec.ts` and `akahu.spec.ts` both open with a comment
-# explaining which success path they cannot cover. `partly-proxy-lib` closes that: a test
-# binds a proxy on loopback, points the adapter at it, and answers for what the upstream
-# said. See `tests/proxy_contract.rs` for the proxy behaviours the fixtures rely on.
 [dev-dependencies]
 partly-proxy-lib = { workspace = true }
-# The proxy middleware the fixtures share with the Playwright suites, so `proxy_contract.rs`
-# pins the implementation those suites actually run rather than a copy of it. A *dev*-dependency
-# only: `sure-testproxy` depends on nothing in this workspace, and it must stay that way for
-# this edge to exist at all.
 sure-testproxy = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }

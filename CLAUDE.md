@@ -262,7 +262,7 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   than inferred. `main` requires eleven contexts; the hook covers ten, in cheapest-first order:
   `node scripts/pii-scan.mjs` (rule 3; first, because it is the cheapest gate and the only
   one guarding something a later gate cannot undo), `./scripts/check-dependabot.sh`,
-  `node scripts/check-workspace-deps.mjs` and
+  `cargo autoinherit` and
   `./scripts/check-versions.sh` (a second each, and each guards a hand-edited file nobody can
   check by eye), then `node scripts/sqlx-prepare.mjs --check`
   (before the compilers, so stale query metadata reports itself instead of surfacing as a
@@ -299,32 +299,23 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   `# Author: …` line would fail every commit on the `email` pattern. `--no-verify` skips
   this and pre-commit together.
 - **One dependency table: the root's.** Every requirement and every feature flag lives in
-  `[workspace.dependencies]` in the root `Cargo.toml`; a member manifest writes
-  `foo = { workspace = true }` and nothing else. Two reasons, and the second is the one that
-  bites. Cargo unifies features across a build, so `features = [..]` written in one member is a
-  *workspace-wide* choice made where nobody reading the root table can see it — and a version
-  written in one member can resolve to a second copy of the crate whose types are not the first
-  copy's. `sure-providers` carried precisely that: while the workspace was on reqwest 0.12 it
-  kept a renamed second copy (`reqwest-akahu`) for `akahu-client`, and `http.rs` had two
-  byte-identical `client` builders because the two `ClientBuilder`s were different types. The
-  root table is also where this tree keeps the *reasoning* — why `zip` is on 8 rather than 2,
-  why `reqwest` names `rustls` with no defaults, why the OpenTelemetry family moves as a set —
-  and a requirement in a member manifest is one with no comment beside the others.
-
-  Two per-member keys survive, because the root cannot express them: `optional = true` (what
-  makes a dependency a feature of *that* crate — `sure-core`'s gated `sqlx`/`axum`), and
-  `features` naming a feature **of a workspace crate**, which is the per-consumer gate itself
-  (`sure-core = { workspace = true, features = ["sqlx"] }` in the DAL). A feature of somebody
-  else's crate is never one of them.
-
-  Enforced by `node scripts/check-workspace-deps.mjs` (the `Workspace dependencies` job in
-  `checks.yml`, and pre-commit; `--help` carries the reasoning), because the drift is invisible
-  in review — a member manifest with a version in it looks exactly like one without until
-  something builds twice. `cargo autoinherit` is the fixer it points at: it hoists a member's
-  requirement into the root table and rewrites the member to inherit it, comments intact. It
-  does *not* hoist a feature set, which is judgement rather than mechanics, so move those by
-  hand with a note saying what they buy. A genuine exception takes
-  `# workspace-deps-allow: <why>` on the line above — same friction as rule 2's wildcard arm.
+  `[workspace.dependencies]`; a member manifest writes `foo = { workspace = true }` and nothing
+  else. Cargo unifies features across a build, so `features = [..]` in one member is a
+  workspace-wide choice made where nobody looks — and a version in one member can resolve to a
+  second copy of the crate whose types are not the first's, which `sure-providers` carried for
+  real until reqwest moved to 0.13 (a renamed `reqwest-akahu`, and two `ClientBuilder`s that
+  could not be merged). Two per-member keys survive because the root cannot express them:
+  `optional = true`, and `features` naming a feature of a *workspace* crate — the per-consumer
+  gate itself (`sure-core = { workspace = true, features = ["sqlx"] }` in the DAL).
+  [`cargo autoinherit`](https://github.com/mainmatter/cargo-autoinherit) is both the check and
+  the fix: it hoists anything a member declares itself, so `cargo autoinherit && git diff` is
+  the whole gate (the `Workspace dependencies` job in `checks.yml`, and pre-commit). It does not
+  move a feature set — that part is by hand.
+- **Manifests carry no per-dependency commentary.** No comment saying why a crate is depended on
+  or what it is used for: it goes stale as soon as the call site moves, and the compiler already
+  knows. A constraint that is *not* recoverable from the code — a version pinned to match
+  another tool, a family that must move in lockstep — belongs in prose here or in `docs/`, not
+  beside the entry.
 - **A 0.x dependency's *minor* bump is breaking, and `.github/dependabot.yml` must say so.**
   While a major is 0 the minor field is the compatibility boundary — `axum = "0.8"` does not
   resolve 0.9, `^0.16.0` does not resolve 0.17.0 — but Dependabot classifies that as a minor

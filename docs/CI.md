@@ -32,12 +32,10 @@ whenever a version tag is pushed. Everything lives under [`.github/`](../.github
   major is 0 the minor field is the compatibility boundary, but Dependabot calls such a bump
   minor and auto-merge takes it at its word — so a name missing from that list is a breaking
   change that can land unattended
-- **Workspace dependencies** — `node scripts/check-workspace-deps.mjs`: every requirement and
-  every feature flag lives in the root `[workspace.dependencies]`, and a member manifest says
-  only `foo = { workspace = true }`. Cargo unifies features across a build, so a `features = [..]`
-  written in one member is a workspace-wide choice made where nobody looks, and a version written
-  in one member can resolve to a second copy of the crate whose types are not the first's. The
-  fixer the failure message points at is `cargo autoinherit`; the feature half is moved by hand
+- **Workspace dependencies** — `cargo autoinherit` then `git diff --exit-code`: every
+  requirement and every feature flag lives in the root `[workspace.dependencies]`, and a member
+  manifest says only `foo = { workspace = true }`. The tool is the check and the fix in one, so
+  a diff in this job's log is the patch to apply
 - **Rustfmt** — `cargo fmt --all --check`
 - **Clippy** — `cargo clippy --workspace --all-targets --all-features -D warnings`
 - **Cargo tests** — `cargo test --workspace --all-features` (unit, integration and doctests;

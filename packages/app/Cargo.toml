@@ -14,16 +14,11 @@ path = "src/lib.rs"
 [dependencies]
 sure-core = { workspace = true }
 sure-scheduler = { workspace = true }
-# `CancellationToken` only — `ScheduledTask::run` is handed the shutdown token so a sweep can
-# stop between items. Already in the lock via sqlx/tokio-util, so nothing new is built.
 tokio-util = { workspace = true }
 chrono = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
-# Use-case level timers and counters: a provider sync's outcome, report load-vs-compute, the
-# forecast simulation, rule runs, imports, the brokerage backfill. `sure-telemetry` depends on
-# nothing else in the workspace, so this stays a leaf dependency.
 sure-telemetry = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }

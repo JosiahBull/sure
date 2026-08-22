@@ -19,13 +19,7 @@ path = "src/bin/gen_openapi.rs"
 sure-core = { workspace = true, features = ["axum"] }
 sure-app = { workspace = true }
 sure-providers = { workspace = true }
-# For the `Shutdown` handle on `AppState`: a handler that starts work outliving its
-# response (the post-import valuation backfill) must spawn it on the tracker, or the
-# shutdown report cannot see it and cheerfully claims `clean=true` while it is cut off
-# mid-write. `sure-appbase` depends on nothing else in the workspace, so this is a leaf.
 sure-appbase = { workspace = true }
-# The reloadable-layer seam (`BoxedLayer`) that `init_tracing` installs the OTLP layers
-# through, and — from the request middleware — the HTTP instruments.
 sure-telemetry = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

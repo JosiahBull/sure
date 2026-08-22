@@ -52,57 +52,18 @@ jobs:
       - uses: actions/checkout@v7
       - run: ./scripts/check-dependabot.sh
 
-  # Every requirement and every feature flag lives in the root `[workspace.dependencies]`; a
-  # member manifest says only that it wants the crate. Cargo unifies features across a build, so
-  # `features = [..]` written at a member is a workspace-wide choice made where nobody looks —
-  # and a *version* written at a member can resolve to a second copy of the crate whose types
-  # are not the first's, which `sure-providers` carried for real until reqwest moved to 0.13
-  # (a renamed `reqwest-akahu`, and two `ClientBuilder`s that could not be merged). The root
-  # table is also where this tree keeps the reasoning for each requirement.
-  #
-  # It is a gate rather than a convention because the drift is invisible in review: a member
-  # manifest with a version in it looks exactly like one without until something builds twice.
-  # `cargo autoinherit` is the fixer the failure message points at; this job is pure text
-  # parsing over the manifests, so it needs no toolchain and costs milliseconds.
+  # One dependency table, the root's. A diff here is the fix: the tool has already written it.
   workspace-deps:
     name: Workspace dependencies
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-      - run: node scripts/check-workspace-deps.mjs
-
-  # Every query in `sure-dal` is compile-time checked against the committed `.sqlx/` metadata
-  # (`.cargo/config.toml` pins `SQLX_OFFLINE=true`, so no build anywhere consults a live
-  # database). A *missing* entry already fails clippy and the test job, because the build cannot
-  # resolve the macro at all. What only this job catches is metadata that no longer agrees with
-  # `packages/dal/migrations`: someone regenerating `.sqlx/` against a drifted local database, or
-  # editing a query without re-running `pnpm sqlx:prepare`, or a new migration that changes a
-  # column a cached query still describes the old way.
-  #
-  # The script builds a throwaway database under `target/` and applies the migrations to it, so
-  # the schema checked against is exactly the one the app and both e2e suites run — never a
-  # developer's `data/sure.db` (CLAUDE.md's convention; the script never even names it).
-  sqlx:
-    name: sqlx offline metadata
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-      # Resolves a prebuilt `sqlx` binary where one is published and only falls back to building
-      # it, rather than `cargo install sqlx-cli` always paying that build. Keep the version in
-      # step with the `sqlx` crate in Cargo.toml: the CLI writes the `.sqlx/` format the macros
-      # read, and a mismatch shows up as "metadata is out of date" for no visible reason.
       - uses: taiki-e/install-action@v2
         with:
-          tool: sqlx-cli@0.9.0
-      - run: node scripts/sqlx-prepare.mjs --check
+          tool: cargo-autoinherit@0.1.6
+      - run: cargo autoinherit
+      - run: git diff --exit-code
 
   fmt:
     name: Rustfmt

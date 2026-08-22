@@ -8,7 +8,7 @@
 #
 #   checks / Personal-data scan     → scripts/pii-scan.mjs
 #   checks / Dependabot config      → scripts/check-dependabot.sh
-#   checks / Workspace dependencies → scripts/check-workspace-deps.mjs
+#   checks / Workspace dependencies → cargo autoinherit
 #   checks / Versions               → scripts/check-versions.sh
 #   checks / sqlx offline metadata  → scripts/sqlx-prepare.mjs --check
 #   checks / Rustfmt                → cargo fmt --all --check
@@ -66,10 +66,14 @@ run node scripts/pii-scan.mjs
 # version strings that have to agree. Up here with the scan for the same reason — cheapest
 # first, so a trivially-fixable mistake is not reported after ten minutes of compiling.
 run ./scripts/check-dependabot.sh
-# Same bracket: text parsing over the manifests, milliseconds, and it guards a drift that is
-# invisible in review — a version or a feature flag left in a member manifest reads exactly like
-# an inherited one until the tree quietly builds two copies of a crate.
-run node scripts/check-workspace-deps.mjs
+# Rewrites in place, so a failure here has already applied the fix — review it and stage it.
+command -v cargo-autoinherit >/dev/null \
+  || { echo "✗ cargo-autoinherit is not installed: cargo install cargo-autoinherit"; exit 1; }
+manifests() { cat Cargo.toml packages/*/Cargo.toml; }
+before=$(manifests)
+run cargo autoinherit
+[ "$before" = "$(manifests)" ] \
+  || { echo "✗ cargo autoinherit hoisted a dependency — review \`git diff\` and stage it"; exit 1; }
 run ./scripts/check-versions.sh
 run node scripts/sqlx-prepare.mjs --check
 run cargo fmt --all --check

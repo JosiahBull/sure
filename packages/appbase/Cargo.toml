@@ -13,13 +13,9 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 tokio = { workspace = true }
-# `rt` brings `TaskTracker` (and, transitively, `sync` for `CancellationToken`) — the two
-# primitives the whole crate is built on. Nothing else here needs the rest of `full`.
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-# The signal tests deliver a real SIGTERM/SIGINT to the test process rather than faking
-# one, because the ordering bugs this crate exists to avoid only show up on the real path.
 libc = { workspace = true }
 tracing-subscriber = { workspace = true }

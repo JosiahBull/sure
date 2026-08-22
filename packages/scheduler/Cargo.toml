@@ -14,17 +14,8 @@ path = "src/lib.rs"
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
-# Only for `FutureExt::catch_unwind` in `run_if_due`, which is what keeps one task's panic
-# from taking every other registered task with it. The `std`-only feature set, and why it
-# costs nothing new, are in the root manifest with the requirement.
 futures-util = { workspace = true }
 tokio = { workspace = true }
-# Only for `CancellationToken` in `Scheduler::run`. Taking the token rather than a
-# `sure-appbase` handle keeps the dependency pointing down: the composition root decides
-# this loop is a tracked task, the scheduler only needs to know when to stop.
 tokio-util = { workspace = true }
-# The per-job duration histogram and outcome counter in `run_if_due` — the one place every
-# scheduled run's result is decided. `sure-telemetry` depends on nothing, so this does not
-# give the scheduler a view of the rest of the workspace.
 sure-telemetry = { workspace = true }
 tracing = { workspace = true }
