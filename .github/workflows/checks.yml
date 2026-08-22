@@ -65,6 +65,36 @@ jobs:
       - run: cargo autoinherit
       - run: git diff --exit-code
 
+  # Every query in `sure-dal` is compile-time checked against the committed `.sqlx/` metadata
+  # (`.cargo/config.toml` pins `SQLX_OFFLINE=true`, so no build anywhere consults a live
+  # database). A *missing* entry already fails clippy and the test job, because the build cannot
+  # resolve the macro at all. What only this job catches is metadata that no longer agrees with
+  # `packages/dal/migrations`: someone regenerating `.sqlx/` against a drifted local database, or
+  # editing a query without re-running `pnpm sqlx:prepare`, or a new migration that changes a
+  # column a cached query still describes the old way.
+  #
+  # The script builds a throwaway database under `target/` and applies the migrations to it, so
+  # the schema checked against is exactly the one the app and both e2e suites run — never a
+  # developer's `data/sure.db` (CLAUDE.md's convention; the script never even names it).
+  sqlx:
+    name: sqlx offline metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # Resolves a prebuilt `sqlx` binary where one is published and only falls back to building
+      # it, rather than `cargo install sqlx-cli` always paying that build. Keep the version in
+      # step with the `sqlx` crate in Cargo.toml: the CLI writes the `.sqlx/` format the macros
+      # read, and a mismatch shows up as "metadata is out of date" for no visible reason.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: sqlx-cli@0.9.0
+      - run: node scripts/sqlx-prepare.mjs --check
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
