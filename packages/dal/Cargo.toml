@@ -11,15 +11,8 @@ workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-# The DAL is the only layer that talks to the database, so it enables sure-core's
-# sqlx integration (the `From<sqlx::Error>` conversion + enum `Type` mapping, and
-# `FromRow` on sure-core's request/response structs).
 sure-core = { workspace = true, features = ["sqlx"] }
-# Implements the generic scheduler's storage port (`TaskStateStore`) against SQLite —
-# the DAL is the only crate that talks to the database.
 sure-scheduler = { workspace = true }
-# Implements sure-app's repo ports (`SqliteStore`) against SQLite — the SQL itself stays
-# in this crate's existing per-entity modules; `store.rs` only maps row shapes.
 sure-app = { workspace = true }
 sqlx = { workspace = true }
 anyhow = { workspace = true }
@@ -27,14 +20,7 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-# The busy-retry counter, and the `sure_dal` spans that `DurationLayer` turns into
-# `db.client.operation.duration`. `sure-telemetry` re-exports the one opentelemetry type a
-# call site needs (`KeyValue`), so no layer above it names the SDK or picks its version.
 sure-telemetry = { workspace = true }
 tracing = { workspace = true }
 log = { workspace = true }
-# `tokio::time::sleep` for `with_busy_retry`'s backoff — a retry has to yield the worker
-# thread rather than block it, which a `std::thread::sleep` here would.
-# Also carries `#[tokio::test]` for this crate's tests, which is why there is no separate
-# dev-dependency on it.
 tokio = { workspace = true }

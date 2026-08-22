@@ -27,6 +27,15 @@ whenever a version tag is pushed. Everything lives under [`.github/`](../.github
   re-running `pnpm sqlx:prepare`, or a new migration that changes a column a cached query still
   describes the old way. The script applies the migrations to a throwaway database under
   `target/`, never `data/sure.db`.
+- **Dependabot config** — `scripts/check-dependabot.sh`: every 0.x direct dependency, crate and
+  npm package alike, must be withheld from *minor* bumps in `.github/dependabot.yml`. While a
+  major is 0 the minor field is the compatibility boundary, but Dependabot calls such a bump
+  minor and auto-merge takes it at its word — so a name missing from that list is a breaking
+  change that can land unattended
+- **Workspace dependencies** — `cargo autoinherit` then `git diff --exit-code`: every
+  requirement and every feature flag lives in the root `[workspace.dependencies]`, and a member
+  manifest says only `foo = { workspace = true }`. The tool is the check and the fix in one, so
+  a diff in this job's log is the patch to apply
 - **Rustfmt** — `cargo fmt --all --check`
 - **Clippy** — `cargo clippy --workspace --all-targets --all-features -D warnings`
 - **Cargo tests** — `cargo test --workspace --all-features` (unit, integration and doctests;
@@ -90,8 +99,9 @@ third from a clone:
    allow GitHub Actions to create/write packages (the release job pushes to GHCR with
    the built-in `GITHUB_TOKEN`) and, for Dependabot auto-merge, "Allow auto-merge" under
    Settings → General.
-2. **Branch protection** on `main` — require the CI checks (Personal-data scan, sqlx offline
-   metadata, Rustfmt, Clippy, Cargo tests, Typecheck, API e2e tests, Web visual tests, Versions) as status
+2. **Branch protection** on `main` — require the CI checks (Personal-data scan, Dependabot
+   config, Workspace dependencies, sqlx offline metadata, Rustfmt, Clippy, Cargo tests,
+   Typecheck, API e2e tests, Web visual tests, Versions) as status
    checks. Dependabot auto-merge relies on these being required, so a job missing from this
    list is a job a green-looking dependency bump can merge past.
 3. **Bootstrap the Linux screenshot baselines** — a baseline is per-platform, so a Mac's

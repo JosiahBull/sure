@@ -52,6 +52,19 @@ jobs:
       - uses: actions/checkout@v7
       - run: ./scripts/check-dependabot.sh
 
+  # One dependency table, the root's. A diff here is the fix: the tool has already written it.
+  workspace-deps:
+    name: Workspace dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-autoinherit@0.1.6
+      - run: cargo autoinherit
+      - run: git diff --exit-code
+
   # Every query in `sure-dal` is compile-time checked against the committed `.sqlx/` metadata
   # (`.cargo/config.toml` pins `SQLX_OFFLINE=true`, so no build anywhere consults a live
   # database). A *missing* entry already fails clippy and the test job, because the build cannot

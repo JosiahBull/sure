@@ -58,25 +58,12 @@ wildcard_enum_match_arm = "deny"
 # instead of `_` is just as short.
 match_wildcard_for_single_variants = "deny"
 
-# Shared dependency versions so the api crate and the e2e test crate stay in lockstep.
 [workspace.dependencies]
-# `http2` is NOT an axum default feature; without it hyper's auto-detecting connection
-# builder never sees the HTTP/2 preface and the server is HTTP/1.1-only. Enabling it gives
-# prior-knowledge h2c, which is what a reverse proxy configured to talk HTTP/2 to its
-# origin needs. Browsers still only get h2/h3 from whatever terminates TLS in front.
 axum = { version = "0.8", features = ["macros", "http2"] }
 tokio = { version = "1", features = ["full"] }
-# `rt` is what carries `TaskTracker`; `CancellationToken` comes with it. `sure-appbase`
-# uses both to make "has everything this process spawned actually stopped?" an exact,
-# awaitable question instead of a poll over `RuntimeMetrics::num_alive_tasks`.
 tokio-util = { version = "0.7", features = ["rt"] }
-# `util` for `ServiceExt::map_request` — the accept loop uses it to adapt hyper's
-# `Request<Incoming>` to the `Request<axum::body::Body>` the router wants.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tower = { version = "0.5", features = ["util"] }
-# `hyper`/`hyper-util` are named directly by `sure-server`'s accept loop, which replaces
-# `axum::serve` so the connection-level abuse guards (header-read timeout, buffer caps, h2
-# stream caps, connection ceiling, graceful drain) are actually reachable — `axum::serve`
-# builds its hyper `Builder` internally and exposes none of them. See packages/server/src/http.rs.
 hyper = { version = "1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = [
     "server-auto",
@@ -86,30 +73,16 @@ hyper-util = { version = "0.1", features = [
     "http1",
     "http2",
 ] }
-# Only `sure-api` names this (the middleware stack in its `build_app`); `sure-server` gets it
-# through that. The tree still compiles tower-http twice, and reqwest is why: 0.13 pins
-# `^0.6.8` for its own `follow-redirect` layer, and 0.6.8 is the latest of that major. No type
-# crosses between the two, so the duplicate costs build time only; it goes away when reqwest
-# itself moves to tower-http 0.7.
 tower-http = { version = "0.7", features = [
     "trace",
     "cors",
     "fs",
-    # Response compression. br/gzip/zstd only: deflate is strictly worse than gzip and no
-    # client asks for it alone. Request *de*compression is deliberately absent — it still has
-    # no decompressed-size cap in 0.7, which would turn the config-import route into a
-    # zip-bomb target.
     "compression-br",
     "compression-gzip",
     "compression-zstd",
     "set-header",
     "catch-panic",
 ] }
-# Keep in lockstep with the `sqlx-cli` pinned in .github/workflows/checks.yml: the CLI writes
-# the `.sqlx/` offline metadata the macros read, and a version mismatch surfaces as a bare
-# "metadata is out of date". `sqlite` is an umbrella in 0.9 (`sqlite-bundled` plus
-# `sqlite-deserialize`/`-load-extension`/`-unlock-notify`, which 0.8 folded in unconditionally),
-# so naming it keeps the built SQLite exactly as it was.
 sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "sqlite",
@@ -121,109 +94,37 @@ sqlx = { version = "0.9", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
-# NOTE: SQLite has no native NUMERIC type, so decimals (fx rates, share prices) are
-# persisted as TEXT and parsed into `Decimal` in Rust — sqlx's decimal feature targets
-# Postgres/MySQL and is intentionally not wired into the SQLite pool.
 rust_decimal = { version = "1", features = ["serde"] }
 rust_decimal_macros = "1"
-# One reqwest for the whole tree. It used to be two: `akahu-client` needs 0.13, so while this
-# was 0.12 `sure-providers` carried a renamed second copy of it — and that crate asks for
-# exactly the pair below (`json`, `rustls`, no defaults), so moving the workspace to 0.13 is
-# what collapsed the duplicate.
-#
-# rustls, not native-tls, so cross-compiling the release binary doesn't need OpenSSL headers.
-# 0.13 renamed the feature (`rustls-tls` → `rustls`) and made it the default backend, but with
-# `default-features = false` naming it is still what selects it. It also changed where the
-# roots come from: 0.12's `rustls-tls` compiled webpki-roots into the binary, 0.13's `rustls`
-# reads the *system* store through `rustls-platform-verifier`. So the runtime image's
-# `ca-certificates` (packages/api/Dockerfile) is now load-bearing for every provider rather
-# than for Akahu alone, as is `sure_server::sandbox`'s CA_CERT_DIRS grant. The crypto provider
-# is aws-lc-rs — 0.13's default, and already what the Akahu copy built.
-# `default-features = false` drops `charset`, `http2` and `system-proxy` here exactly as it did
-# on 0.12; `query` and `form` became opt-in features in 0.13 and nothing here asks reqwest to
-# build a query string or a form body.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+akahu-client = "0.3"
 utoipa = { version = "5", features = ["axum_extras", "chrono", "decimal", "preserve_order"] }
 thiserror = "2"
 anyhow = "1"
-# Local-run convenience only: the server loads a `.env` so `pnpm dev` / `cargo run` pick up
-# provider tokens without the caller exporting them. Real env vars always win — see
-# `sure_server::config::load_dotenv`.
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# OpenTelemetry. The whole family moves in lockstep on one minor — `tracing-opentelemetry`
-# 0.33 is the release built against `opentelemetry` 0.32 — so bump them together or not at
-# all. `sure-telemetry` is the only crate that names the SDK and the exporter; every other
-# crate takes the thin `opentelemetry` API crate and reaches the meter through it.
 opentelemetry = "0.32"
 opentelemetry_sdk = "0.32"
-# Deliberately on default features: they are exactly `http-proto` + `reqwest-blocking-client`
-# + `internal-logs` + all three signals, which is the transport this repo wants. Two things
-# follow that are easy to undo by accident.
-#
-# `reqwest-blocking-client`, not `reqwest-client`: in 0.32 the periodic metric reader and the
-# batch span/log processors run on plain OS threads with no tokio runtime to drive an async
-# client. Swapping to the async one needs the SDK's
-# `experimental_metrics_periodicreader_with_async_runtime` and buys nothing here.
-#
-# And *no* `reqwest-rustls*` feature. The workspace already selects reqwest's TLS backend
-# (`rustls`, system roots via rustls-platform-verifier — see the reqwest note above); asking
-# for a second roots strategy here would quietly change where certificates come from for
-# every other adapter too, through feature unification.
-#
-# `http-proto` pulls `prost` (and `opentelemetry-proto`'s `gen-tonic-messages`, which is the
-# prost *message* codegen and not a tonic client). It does not pull `tonic`: nothing in this
-# tree has a gRPC stack and this keeps it that way.
 opentelemetry-otlp = { version = "0.32", features = ["gzip-http"] }
 opentelemetry-semantic-conventions = "0.32"
 opentelemetry-appender-tracing = "0.32"
 tracing-opentelemetry = "0.33"
-# Linux-only, and only depended on by `sure-server`: the self-sandbox it applies in `main`
-# before the tokio runtime starts. See packages/server/src/sandbox.rs.
 landlock = "0.4"
-# Only used to name sqlx's `log_statements` level filter; sqlx's logging itself is
-# bridged into `tracing` by the subscriber.
 log = "0.4"
 uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 csv = "1"
-# Test-only, and never linked into `sure-api`: the programmable HTTP proxy every provider
-# adapter is exercised against, so a test can answer for what a bank/price feed said without
-# reaching one. Pinned by `rev` because the crate is not on crates.io — there is no version
-# to resolve and no tag to move, so the commit is the only stable name for it. Bump the rev
-# deliberately and re-run `cargo test -p sure-providers` (see `tests/proxy_contract.rs`, which
-# pins the behaviours the fixtures depend on).
+zip = { version = "8", default-features = false, features = ["deflate"] }
+calamine = { version = "0.36.1", default-features = false, features = ["dates"] }
 partly-proxy-lib = { git = "https://github.com/thepartly/partly-proxy", rev = "0d9c7450ea9a9af59acaffd4519c07a1ef8bf08a" }
-# Named directly by the proxy middleware and test fixtures: `http::{Method, StatusCode, Uri}`
-# and `bytes::Bytes` are the currency of `partly_proxy_lib::{ProxyRequest, ProxyResponse}`, so
-# anything that writes a matcher or rewrites a body needs them. `hyper` already depends on
-# both; declaring them here is what lets a crate say so without guessing a compatible version.
 http = "1"
 bytes = "1"
 tempfile = "3"
+libc = "0.2"
 zen-expression = "0.55"
-# The forecast's Monte Carlo simulation: a seedable RNG (reproducible in tests) plus the
-# normal distribution its stochastic accounts/categories draw monthly returns from.
-#
-# The two majors move together — `rand_distr` tracks `rand`'s, and 0.6 is the release built
-# against 0.10. Reproducibility survived the jump, which for this crate is the property that
-# matters (`forecast.rs` pins exact simulated figures off fixed seeds): `StdRng` is still
-# ChaCha12 and 0.10's swap of `rand_chacha` for `chacha20` is documented as output-preserving,
-# `SeedableRng::seed_from_u64` still expands the seed with the same PCG32 and the same
-# constants, and neither `StandardUniform for f64` nor `rand_distr`'s `Normal` appears in
-# either crate's value-breaking lists. Note that rand does *not* promise this — `StdRng` is
-# explicitly non-portable across versions — so the exact-value tests are the evidence, not
-# the changelog. A future bump that reshuffles those figures is legitimate; one that changes
-# a *statistical* assertion is not.
 rand = "0.10"
 rand_distr = "0.6"
-# The official Rust MCP SDK, and the only dependency `sure-mcp` has outside the workspace.
-# `transport-streamable-http-server` is the one transport built: it yields a plain
-# `tower::Service`, which is what lets `sure-server` nest the MCP endpoint into the router
-# `sure-api` already assembles instead of opening a second listener. `schemars` is what
-# derives each tool's input schema — take it from `rmcp::schemars` at the call site rather
-# than declaring it here, so the two can never drift to incompatible majors.
 rmcp = { version = "3", features = [
     "server",
     "macros",
@@ -231,18 +132,10 @@ rmcp = { version = "3", features = [
     "transport-streamable-http-server",
 ] }
 
-# Internal crates
 sure-appbase = { path = "packages/appbase" }
-# None of these three is `sure-`prefixed, on purpose: each is a client for somebody else's API
-# rather than a part of Sure, and the name should keep saying so if one is ever published. They
-# are listed apart from the crates below because they sit outside the dependency chain entirely
-# — `sure-providers` is the only member that may name one, and none of them may name a member.
 frankfurter-client = { path = "packages/frankfurter-client" }
 house-pricer-client = { path = "packages/house-pricer-client" }
 yahoo-finance-client = { path = "packages/yahoo-finance-client" }
-# Depends on nothing else in the workspace, for the same shape of reason `sure-testproxy`
-# below does: it is depended on *by* every other layer, so a dependency of its own would be
-# a layer that could never record a metric.
 sure-telemetry = { path = "packages/telemetry" }
 sure-core = { path = "packages/core" }
 sure-scheduler = { path = "packages/scheduler" }
@@ -251,9 +144,6 @@ sure-providers = { path = "packages/providers" }
 sure-app = { path = "packages/app" }
 sure-api = { path = "packages/api" }
 sure-mcp = { path = "packages/mcp" }
-# Test support only. Depends on nothing else in the workspace *on purpose*: the dependency
-# runs one way (`sure-providers` dev-depends on it), so the shared proxy middleware can be
-# used by a provider test without a dependency cycle.
 sure-testproxy = { path = "packages/testproxy" }
 
 [profile.release]

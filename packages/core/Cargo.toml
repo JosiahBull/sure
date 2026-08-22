@@ -12,21 +12,12 @@ path = "src/lib.rs"
 
 [dependencies]
 serde = { workspace = true }
-# Date parsing for `IsoDate` (packages/core/src/iso_date.rs). Calendar arithmetic only —
-# no clock, no I/O — so `sure-core` stays the zero-I/O layer it claims to be.
 chrono = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 utoipa = { workspace = true }
-# Persistence concerns are gated so layers that don't talk to the database don't pull
-# in sqlx: only the DAL enables this feature. It supplies the `AppError:
-# From<sqlx::Error>` conversion; the domain types themselves never derive sqlx traits
-# (see packages/dal/src/*.rs's `*Row` structs + `From`/`TryFrom` impls) so `sure-core`
-# builds identically whether or not this feature is on.
 sqlx = { workspace = true, optional = true }
-# HTTP concerns (the error's IntoResponse) are gated so non-web crates that depend on
-# sure-core (e.g. the DAL) don't pull in the web stack.
 axum = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 

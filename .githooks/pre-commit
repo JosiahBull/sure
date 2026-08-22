@@ -4,10 +4,11 @@
 # .github/workflows/checks.yml so most failures are caught before they reach CI.
 #
 # ONE JOB PER REQUIRED CONTEXT, and the mapping is written out so a gap is visible rather than
-# inferred. `main`'s branch protection requires ten contexts; this hook covers nine of them:
+# inferred. `main`'s branch protection requires eleven contexts; this hook covers ten of them:
 #
 #   checks / Personal-data scan     → scripts/pii-scan.mjs
 #   checks / Dependabot config      → scripts/check-dependabot.sh
+#   checks / Workspace dependencies → cargo autoinherit
 #   checks / Versions               → scripts/check-versions.sh
 #   checks / sqlx offline metadata  → scripts/sqlx-prepare.mjs --check
 #   checks / Rustfmt                → cargo fmt --all --check
@@ -65,6 +66,14 @@ run node scripts/pii-scan.mjs
 # version strings that have to agree. Up here with the scan for the same reason — cheapest
 # first, so a trivially-fixable mistake is not reported after ten minutes of compiling.
 run ./scripts/check-dependabot.sh
+# Rewrites in place, so a failure here has already applied the fix — review it and stage it.
+command -v cargo-autoinherit >/dev/null \
+  || { echo "✗ cargo-autoinherit is not installed: cargo install cargo-autoinherit"; exit 1; }
+manifests() { cat Cargo.toml packages/*/Cargo.toml; }
+before=$(manifests)
+run cargo autoinherit
+[ "$before" = "$(manifests)" ] \
+  || { echo "✗ cargo autoinherit hoisted a dependency — review \`git diff\` and stage it"; exit 1; }
 run ./scripts/check-versions.sh
 run node scripts/sqlx-prepare.mjs --check
 run cargo fmt --all --check
@@ -80,4 +89,4 @@ run pnpm test:api
 run pnpm --filter @sure/web check
 run pnpm --filter @sure/api-tests check
 
-echo "✓ pre-commit checks passed (9 of main's 10 required contexts; visual suite is CI-only)"
+echo "✓ pre-commit checks passed (10 of main's 11 required contexts; visual suite is CI-only)"

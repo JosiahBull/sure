@@ -12,9 +12,6 @@ path = "src/lib.rs"
 
 [dependencies]
 sure-core = { workspace = true }
-# Depends on the application core to see the port traits it implements
-# (`sure_app::ports::{TransactionProvider, StockPriceProvider, ExchangeRateProvider,
-# ProviderRegistry}`). The inversion: adapters depend on the core, never the reverse.
 sure-app = { workspace = true }
 async-trait = { workspace = true }
 csv = { workspace = true }
@@ -25,68 +22,20 @@ anyhow = { workspace = true }
 rust_decimal = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
-# Per-request duration/outcome and response-size histograms. `sure-telemetry` depends on
-# nothing else in the workspace, so this does not give an adapter a view of the app.
 sure-telemetry = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-# 0.3 is what makes an Akahu enum value this crate has never seen (`Unknown`) cost one field
-# instead of the whole page it arrived in — which, because a sync cursor only advances on
-# success, used to wedge that account's import permanently rather than for one poll. It also
-# keeps the response body out of a deserialisation error's `Display`, and lets the caller cap
-# a response body (`AkahuProvider::client` hands it `http::MAX_BODY_BYTES`).
-#
-# It takes a `reqwest::Client` from the caller, and asks reqwest for the same `json` + `rustls`
-# with no defaults that the workspace does — so this is one client type shared with the other
-# adapters, built by `http::client`. Until the workspace moved to 0.13 it was not: this crate
-# carried a second, renamed copy of reqwest (`reqwest-akahu`) purely to satisfy this
-# dependency, and `http` had two byte-identical builders because the two `ClientBuilder`s were
-# different types.
-akahu-client = "0.3"
-# The other three wire formats, each in a crate that knows nothing else — so an undocumented
-# endpoint renaming a field is a one-line fix there rather than an edit to an adapter that also
-# decides what a valuation, a rate or a stored price is. Same shape as `akahu-client` above,
-# including taking this crate's bounded `reqwest::Client` and its `MAX_BODY_BYTES`; the only
-# difference is that these live in this repository because they have no users outside it yet.
-#
-# This crate is the only workspace member that may name one of them, and none of them may name
-# a workspace member — including each other. That edge is the whole point: it is what stops a
-# wire crate growing a domain concept, and it is why each carries its own copy of the twenty
-# lines that parse a `Retry-After`.
+akahu-client = { workspace = true }
 frankfurter-client = { workspace = true }
 house-pricer-client = { workspace = true }
 yahoo-finance-client = { workspace = true }
-# Opens the three archive uploads (`zipfile.rs`, and `asb`/`myir`/`sharesies` through it).
-# `deflate` is the one codec an upload here actually uses — a real `.xlsx` is deflated, and
-# dropping the defaults leaves out aes-crypto, bzip2, lzma, ppmd, xz and zstd, none of which
-# a bank or IRD export arrives as. The version is 8 rather than 2 because `calamine` below
-# already asks for `zip = "8.6"` with exactly this feature set, so matching it is what keeps
-# one zip in the lockfile instead of two majors of it.
-#
-# The feature kept its name across those six majors but not its meaning: on 2.x `deflate`
-# selected flate2's miniz_oxide backend, on 8.x it selects `zlib-rs`. Both are pure Rust, so
-# the release build still cross-compiles without a C toolchain — the property that matters
-# here (see the `rustls` note on reqwest in the root manifest).
-zip = { version = "8", default-features = false, features = ["deflate"] }
-# Reads the myIR .xlsx exports (`myir.rs`). `dates` makes calamine resolve a cell's number
-# format for us, so a date column arrives as `Data::DateTime` rather than a bare Excel
-# serial we'd have to map back through the workbook's style table by hand.
-calamine = { version = "0.36.1", default-features = false, features = ["dates"] }
+zip = { workspace = true }
+calamine = { workspace = true }
 
-# Every adapter in this crate reaches a third-party host, which is why until now the only
-# thing its tests could assert was parsing — the fetch itself was only exercisable against
-# the live API, so `stock-prices.spec.ts` and `akahu.spec.ts` both open with a comment
-# explaining which success path they cannot cover. `partly-proxy-lib` closes that: a test
-# binds a proxy on loopback, points the adapter at it, and answers for what the upstream
-# said. See `tests/proxy_contract.rs` for the proxy behaviours the fixtures rely on.
 [dev-dependencies]
 partly-proxy-lib = { workspace = true }
-# The proxy middleware the fixtures share with the Playwright suites, so `proxy_contract.rs`
-# pins the implementation those suites actually run rather than a copy of it. A *dev*-dependency
-# only: `sure-testproxy` depends on nothing in this workspace, and it must stay that way for
-# this edge to exist at all.
 sure-testproxy = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true }
