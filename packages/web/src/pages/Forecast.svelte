@@ -8,8 +8,9 @@
   //
   // All loading lives here and the tabs get props, so the chart and the editors cannot disagree
   // about what they are showing.
-  import { onMount } from "svelte";
+  import { untrack } from "svelte";
   import { api, formatMoney, formatDate, type Schemas } from "../lib/api";
+  import { streamForecast } from "../lib/forecastStream";
   import ForecastChart from "../lib/charts/ForecastChart.svelte";
   import FxNotice from "../lib/FxNotice.svelte";
   import ProjectionTab from "./forecast/ProjectionTab.svelte";
@@ -46,43 +47,89 @@
 
   let history = $state<{ x: string; y: number }[]>([]);
   let result = $state<Schemas["ForecastResult"] | null>(null);
-  let loading = $state(true);
   let error = $state<string | null>(null);
+  // Paths simulated so far and the total this run will reach, straight off the stream. `total`
+  // is the *clamped* count, so a 30-year horizon reports the 2 000 it will really run rather
+  // than whatever was asked for.
+  let completed = $state(0);
+  let total = $state(0);
+  // A run is in flight and has not yet delivered its first snapshot, so what is on screen
+  // belongs to the previous query. The chart stays up, dimmed, rather than blanking: the first
+  // snapshot is ten paths in — under a percent of the run — so this is a couple of frames, and
+  // a flash of empty axes would be worse than a moment of visibly-superseded ones.
+  let stale = $state(false);
+  let streaming = $state(true);
+  // Bumped by "Re-run" so the effect below re-fires on an unchanged horizon.
+  let runNonce = $state(0);
   type Readout = { as_of: string; median: number; p10?: number; p90?: number };
   let hoverPoint = $state<Readout | null>(null);
 
-  async function load() {
-    loading = true;
+  async function load(signal: AbortSignal) {
     error = null;
+    // `untrack`, and it is load-bearing: this runs inside the `$effect` below, so a *tracked*
+    // read of `result` here would make the effect depend on state the stream is about to
+    // write — it re-fired on every snapshot, aborting and restarting its own run forever.
+    stale = untrack(() => result != null);
+    streaming = true;
+    completed = 0;
+    total = 0;
     try {
       // History shares the projection's axis, so the window scales with the horizon — a fixed
       // year against thirty projected ones is a 3% sliver. See `historyMonthsFor`.
       const from = new Date();
       from.setMonth(from.getMonth() - historyMonthsFor(horizon));
-      const [nw, fc] = await Promise.all([
-        api.GET("/api/reports/net-worth", {
-          params: {
-            query: { from: from.toISOString().slice(0, 10), interval: "month" },
-          },
-        }),
-        api.GET("/api/forecast", { params: { query: { horizon_months: horizon } } }),
-      ]);
+      // History first, and *awaited* rather than raced with the stream. The chart draws one
+      // combined series whose seam is the last historical point re-used as projected month 0 —
+      // so `months` without `history` is not a state it can render, and letting a snapshot land
+      // first produced `NaN` in the path data. It costs about 15 ms against a first snapshot
+      // that takes 30-70, which is the right price for not having to teach the chart a state
+      // that never otherwise occurs.
+      const nw = await api.GET("/api/reports/net-worth", {
+        params: { query: { from: from.toISOString().slice(0, 10), interval: "month" } },
+      });
+      if (signal.aborted) return;
       history = (nw.data?.points ?? []).map((p) => ({ x: p.as_of, y: p.net_worth_minor }));
-      result = fc.data ?? null;
-      if (nw.error || fc.error) error = "Failed to load forecast.";
+      if (nw.error) error = "Failed to load net-worth history.";
+
+      // The projection arrives in pieces: a rough one after ten paths, then 100, 1 000, and
+      // every 1 000 after that, with counter-only ticks in between to move the bar. Each
+      // snapshot is a *complete* projection over fewer paths — the same months, wider bands —
+      // so everything downstream (the tiles, the markers, the chart) takes it unchanged.
+      await streamForecast({ horizon_months: horizon }, signal, (p, kind) => {
+        completed = p.completed;
+        total = p.total;
+        if (kind === "snapshot" && p.result) {
+          result = p.result;
+          stale = false;
+        }
+      });
     } catch (e) {
+      // A superseded run is not a failure — the effect below aborted it on purpose.
+      if (signal.aborted) return;
       error = e instanceof Error ? e.message : String(e);
     } finally {
-      loading = false;
+      if (!signal.aborted) {
+        streaming = false;
+        stale = false;
+      }
     }
   }
-  onMount(load);
+
+  // One run per (horizon, Re-run), aborted when either changes or the page goes away. Not
+  // `onMount` *and* an effect: an effect already runs on mount, and having both is what made
+  // every visit to this page start two full simulations — the second of which the compute pool
+  // could shed as a 503, reported to the user as "Failed to load forecast".
   $effect(() => {
     horizon; // re-run whenever the horizon changes — but not when the tab does
-    load();
+    runNonce;
+    const controller = new AbortController();
+    load(controller.signal);
+    return () => controller.abort();
   });
 
   const currency = $derived(result?.currency ?? "NZD");
+  // Clamped, because a tick can land marginally ahead of the snapshot that follows it.
+  const pct = $derived(total > 0 ? Math.min(100, (completed / total) * 100) : 0);
   /** The hovered point, or — with the pointer off the chart — the last actual. */
   const readout = $derived.by<Readout | null>(() => {
     if (hoverPoint) return hoverPoint;
@@ -207,7 +254,12 @@
     >
       {#each HORIZONS as h (h.months)}<option value={h.months}>{h.label}</option>{/each}
     </select>
-    <button class="btn btn-sm" onclick={load} title="Re-run the simulation">↻ Re-run</button>
+    <button
+      class="btn btn-sm"
+      onclick={() => (runNonce += 1)}
+      disabled={streaming}
+      title="Re-run the simulation">↻ Re-run</button
+    >
   </div>
 </div>
 
@@ -224,9 +276,30 @@
 <section class="card" style="margin-bottom:16px">
   <div class="card-title">
     <h2>Net worth: history &amp; projection</h2>
-    <span class="muted small">
-      shaded band = P10–P90 across {result ? `${result.simulations.toLocaleString()} paths` : "…"}
-    </span>
+    {#if streaming}
+      <!-- The caption becomes the progress readout while a run is in flight: it is the same
+           fact ("across how many paths") either way, so a separate widget beside it would be
+           two places to read one number. -->
+      <span class="muted small run">
+        <span class="bar" aria-hidden="true"><span class="fill" style="width:{pct}%"></span></span>
+        {#if total === 0}
+          <!-- The load phase, before a single path has run: resolving assumptions is a dozen
+               queries and is most of the wait on a short horizon, so it gets said rather than
+               shown as "0 / 0". -->
+          <span>reading your ledger…</span>
+        {:else}
+          <span class="tabular"
+            >{completed.toLocaleString()} / {total.toLocaleString()} paths</span
+          >
+        {/if}
+      </span>
+    {:else}
+      <span class="muted small">
+        shaded band = P10–P90 across {result
+          ? `${result.simulations.toLocaleString()} paths`
+          : "…"}
+      </span>
+    {/if}
   </div>
   <!-- Always rendered, never `{#if hoverPoint}`. Mounting this on hover pushed the chart down by
        its own height, which moved the line out from under the pointer and immediately unhovered
@@ -248,15 +321,17 @@
       {/if}
     </div>
   </div>
-  <ForecastChart
-    {history}
-    months={result?.months ?? []}
-    {currency}
-    {checkpoints}
-    events={[...chartEvents, ...chartMilestones, ...chartPaySteps]}
-    onselectevent={selectEvent}
-    onhover={(p) => (hoverPoint = p)}
-  />
+  <div class="plot" class:stale>
+    <ForecastChart
+      {history}
+      months={result?.months ?? []}
+      {currency}
+      {checkpoints}
+      events={[...chartEvents, ...chartMilestones, ...chartPaySteps]}
+      onselectevent={selectEvent}
+      onhover={(p) => (hoverPoint = p)}
+    />
+  </div>
   <!-- An account whose currency has no rate is left out of the simulation entirely rather
        than projected from a parity starting balance, which would be wrong in every month of
        every path. Both the history line and the bands are then partial. -->
@@ -280,12 +355,16 @@
 {:else if tab === "income"}
   <IncomeTab {result} {currency} />
 {:else if tab === "events"}
-  <LifeEventsTab {result} {currency} onchanged={load} {focusEventId} />
+  <LifeEventsTab {result} {currency} onchanged={() => (runNonce += 1)} {focusEventId} />
 {:else if tab === "assumptions"}
-  <AssumptionsTab {result} {currency} onchanged={load} onerror={(m) => (error = m)} />
+  <AssumptionsTab {result} {currency} onchanged={() => (runNonce += 1)} onerror={(m) => (error = m)} />
 {/if}
 
-{#if loading && !result}
+{#if streaming && !result}
+  <!-- Only before the *first* snapshot of the *first* run: after that the bar in the card
+       header is the affordance, and a spinner under the page as well would say it twice. The
+       old `loading && !result` said it once and then never again, which is why changing the
+       horizon used to have no visible effect at all until the numbers moved. -->
   <div class="row" style="justify-content:center;padding:40px"><span class="spinner"></span></div>
 {/if}
 
@@ -342,5 +421,35 @@
   .tab-btn:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+  }
+  /* Superseded, not gone. See `stale`. */
+  .plot {
+    transition: opacity 120ms ease-out;
+  }
+  .plot.stale {
+    opacity: 0.4;
+  }
+  .run {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  /* The same 6px pill as EquityPanel's grant bar. Two copies is not yet a pattern — the repo's
+     precedent is that page-local styles stay page-local until a third caller turns up. */
+  .run .bar {
+    width: 90px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .run .fill {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    /* Ticks arrive about every 1% of the run, so the fill is already smooth; this only keeps
+       the four snapshot-sized jumps from reading as stutter. */
+    transition: width 90ms linear;
   }
 </style>

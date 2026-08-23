@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { Tween } from "svelte/motion";
+  import { cubicOut } from "svelte/easing";
   import { formatDate, formatMoney } from "../api";
   import type { Schemas } from "../api";
   import { CHART_W, CHART_PAD_X, sxFor, seriesIndex, yearTicks } from "./forecastScale";
@@ -106,8 +108,28 @@
   const allY = $derived(
     [...medianY, ...p10Y.filter((v): v is number => v != null), ...p90Y.filter((v): v is number => v != null)]
   );
-  const minY = $derived(allY.length ? Math.min(0, ...allY) : 0);
-  const maxY = $derived(allY.length ? Math.max(1, ...allY) : 1);
+  const rawMinY = $derived(allY.length ? Math.min(0, ...allY) : 0);
+  const rawMaxY = $derived(allY.length ? Math.max(1, ...allY) : 1);
+
+  // The vertical domain is *tweened*, because the projection now arrives in stages: a snapshot
+  // over ten paths has a far narrower P10-P90 band than one over two thousand, so the plot is
+  // rescaled three or four times on the way to the final answer. Snapped, that reads as the
+  // chart flinching; eased, it reads as the band opening out, which is what is actually
+  // happening. `Tween` is the repo's idiom for this (Dashboard.svelte animates its stat tiles
+  // the same way), including the trick below for the first value.
+  const tMinY = new Tween(0, { duration: 260, easing: cubicOut });
+  const tMaxY = new Tween(1, { duration: 260, easing: cubicOut });
+  // The first pair snaps: sliding up from a placeholder 0..1 domain on load would draw a frame
+  // of nonsense before the real one, which no amount of easing makes better.
+  let domainPrimed = false;
+  $effect(() => {
+    const opts = domainPrimed ? undefined : { duration: 0 };
+    tMinY.set(rawMinY, opts);
+    tMaxY.set(rawMaxY, opts);
+    if (allY.length) domainPrimed = true;
+  });
+  const minY = $derived(tMinY.current);
+  const maxY = $derived(tMaxY.current);
 
   function sx(i: number): number {
     return sxFor(i, totalPoints);
