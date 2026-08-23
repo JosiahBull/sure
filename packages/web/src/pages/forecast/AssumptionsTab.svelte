@@ -9,7 +9,15 @@
   // the page can re-run the simulation — the `oncreated` arrangement the modals already use.
   // The alternative, lifting `editingKey`/`editForm` into the page, would put state there that
   // only this tab can interpret.
+  import { onMount } from "svelte";
   import { api, formatMoney, type Schemas } from "../../lib/api";
+  import {
+    people,
+    ensureLoaded as ensurePeopleLoaded,
+    ownershipLabel,
+    ownershipColor,
+    placeholders,
+  } from "../../lib/people.svelte";
 
   type ResolvedAssumption = Schemas["ResolvedAssumption"];
 
@@ -24,6 +32,12 @@
     onchanged: () => void;
     onerror: (message: string) => void;
   } = $props();
+
+  // Two accounts can share a name — a household with a student loan each has two rows both
+  // called "Student loan" — so the owner is what tells them apart, and the roster is what turns
+  // an id into a name. Loaded here rather than assumed: this tab is linkable directly.
+  onMount(ensurePeopleLoaded);
+  const placeholderIds = $derived(new Set(placeholders().map((p) => p.id)));
 
   function pct(bps: number): string {
     return `${bps >= 0 ? "+" : ""}${(bps / 100).toFixed(1)}%`;
@@ -165,6 +179,20 @@
               <span class="row" style="gap:8px;min-width:0">
                 <span class="badge target-badge">{a.target_type}</span>
                 <span class="ell" style="font-weight:560">{a.label}</span>
+                {#if a.ownership && people.list.length > 0}
+                  {@const color = ownershipColor(a.ownership)}
+                  {@const isPlaceholder =
+                    a.ownership.kind === "person" && placeholderIds.has(a.ownership.person_id)}
+                  <span
+                    class="badge owner"
+                    class:placeholder={isPlaceholder}
+                    style={color && !isPlaceholder
+                      ? `border-color:${color};color:${color}`
+                      : undefined}
+                  >
+                    {ownershipLabel(a.ownership)}
+                  </span>
+                {/if}
               </span>
               {#if a.schedule}
                 {@const s = a.schedule}
@@ -284,6 +312,17 @@
   }
   .target-badge {
     text-transform: capitalize;
+  }
+  /* The same owner badge the accounts list uses, so a name reads the same wherever it sits. */
+  .owner {
+    border: 1px solid var(--border);
+    background: transparent;
+    flex: none;
+  }
+  /* The one badge that's a to-do rather than a fact — it reads as a gap, not a label. */
+  .owner.placeholder {
+    border-style: dashed;
+    color: var(--text-muted);
   }
   .needs-return {
     color: var(--warn);
