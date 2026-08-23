@@ -818,8 +818,32 @@ pub(crate) async fn load_spend(
     // what it was when this loaded the whole table — including a row whose stored date won't
     // parse, which is dropped here as it always was.
     let rows = reports.spend_transactions(from, to).await?;
-    Ok(rows
-        .into_iter()
+    Ok(filter_spend(
+        rows,
+        cats,
+        from,
+        to,
+        include_one_off,
+        attributed_to,
+    ))
+}
+
+/// The spend predicate of [`load_spend`], over rows a caller already has.
+///
+/// Split out because one caller needs *both* halves of the same fetch: `sure_app::forecast`'s
+/// category resolution fits its baselines from the surviving spend rows, but has to read the
+/// rows this filter *drops* — a loan account's own repayment legs — to learn which category the
+/// household books that loan's interest into. Re-querying for the discarded half would run the
+/// same 25-month scan twice, so the fetch stays in `load_spend` and the decision moves here.
+pub(crate) fn filter_spend(
+    rows: Vec<SpendTransaction>,
+    cats: &Categories,
+    from: NaiveDate,
+    to: NaiveDate,
+    include_one_off: bool,
+    attributed_to: Option<Ownership>,
+) -> Vec<SpendTransaction> {
+    rows.into_iter()
         .filter(|t| {
             // Whose spending this is was resolved by the loader (override, else account).
             if attributed_to.is_some_and(|owner| t.attribution != owner) {
@@ -845,7 +869,7 @@ pub(crate) async fn load_spend(
                 None => false,
             }
         })
-        .collect())
+        .collect()
 }
 
 // ---- money-flow roll-up (sankey) ------------------------------------------

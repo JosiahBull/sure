@@ -50,12 +50,16 @@
         return "from scheduled adjustment";
       case "derived":
         return "from history";
+      case "indexed":
+        return "measured level, rising with inflation";
       case "deterministic":
         return "amortisation schedule";
       case "insufficient_history":
         return "not enough history";
       case "modelled_from_income":
         return "modelled from income streams";
+      case "modelled_from_schedule":
+        return "loan interest comes from its schedule";
       case "contribution_driven":
         return "receives contributions — measured rate set aside";
       case "vesting_schedule":
