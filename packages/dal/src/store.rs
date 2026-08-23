@@ -21,16 +21,16 @@ use sure_app::ports::{
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
-    CronRunResult, Currency, DividendDetail, EquityExercise, EquityGrant, ForecastAssumption,
-    ForecastEvent, ForecastTargetType, HoldingLot, HousePricerLink, ImportRecord, IncomePayment,
-    IncomePaymentStatus, IncomeStream, LinkProviderAccount, LinkProviderGroup, LinkRequest,
-    MatchedBy, Merchant, NewCurrency, NewValuation, Ownership, PayeBreakdown, Person, Provider,
-    ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount,
-    SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent, SaveGrant,
-    SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
-    SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
-    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
-    VestingStatus,
+    CronRunResult, Currency, DividendDetail, EquityEvent, EquityExercise, EquityGrant, EquityMark,
+    ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot, HousePricerLink,
+    ImportRecord, IncomePayment, IncomePaymentStatus, IncomeStream, LinkProviderAccount,
+    LinkProviderGroup, LinkRequest, MatchedBy, Merchant, NewCurrency, NewValuation, Ownership,
+    PayeBreakdown, Person, Provider, ProviderSync, RebuildResult, Rule, RuleApplicationDetail,
+    RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise,
+    SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot, SaveIncomeStream,
+    SaveMark, SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTaxScale, SaveTransaction,
+    Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId, Transaction, TransferRequest,
+    TxQuery, UpdateSettings, Valuation, ValuationQuery, VestingStatus,
 };
 
 use crate::Db;
@@ -1056,6 +1056,36 @@ impl EquityRepo for SqliteStore {
 
     async fn revalue(&self, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity> {
         crate::equity::revalue(&self.db, id, as_of).await
+    }
+
+    async fn list_marks(&self, account_id: i64) -> AppResult<Vec<EquityMark>> {
+        crate::equity::list_marks(&self.db, account_id).await
+    }
+
+    async fn create_mark(&self, account_id: i64, input: SaveMark) -> AppResult<EquityMark> {
+        crate::equity::create_mark(&self.db, account_id, input).await
+    }
+
+    async fn delete_mark(&self, id: i64) -> AppResult<()> {
+        crate::equity::delete_mark(&self.db, id).await
+    }
+
+    async fn list_events(
+        &self,
+        account_id: i64,
+        as_of: Option<&str>,
+    ) -> AppResult<Vec<EquityEvent>> {
+        crate::equity::list_events(&self.db, account_id, as_of).await
+    }
+
+    async fn rebuild_history(&self, id: i64, today: Option<&str>) -> AppResult<RebuildResult> {
+        crate::equity::rebuild_history(&self.db, id, today).await
+    }
+
+    async fn projected_values(&self, id: i64, from: &str, months: i64) -> AppResult<Vec<i64>> {
+        let from = chrono::NaiveDate::parse_from_str(from, "%Y-%m-%d")
+            .map_err(|e| AppError::validation(format!("projection start date: {e}")))?;
+        crate::equity::projected_values(&self.db, id, from, months).await
     }
 }
 

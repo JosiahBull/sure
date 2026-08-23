@@ -61,9 +61,14 @@ test("accounts show share vesting and property paid-off %", async ({ page }) => 
   await expect(page.getByText("Family Home", { exact: true })).toBeVisible();
   await expect(page.getByText("Home Loan", { exact: true })).toBeVisible();
 
-  // Private-shares equity (vesting).
-  await page.locator(".acct", { hasText: "Startco Options" }).getByRole("button", { name: "Equity" }).click();
-  await expect(page.getByText(/vested/)).toBeVisible();
+  // Private-shares equity (vesting). The expander reads "Holdings", not "Equity": a private
+  // holding is now the same units x price model as a brokerage — grants are the quantity
+  // ledger, the mark is the price ledger — so it opens the same panel under the same label.
+  // "Equity" is left to the asset accounts below, where it still means value minus secured debt.
+  await page.locator(".acct", { hasText: "Startco Options" }).getByRole("button", { name: "Holdings" }).click();
+  // Anchored on the "n of m vested" caption rather than a bare /vested/: the panel also draws an
+  // "unvested" swatch in its legend, which a substring match ties with.
+  await expect(page.getByText(/of [\d,]+ vested/)).toBeVisible();
 
   // Property equity: value − secured loans => paid-off %. Expanding this collapses the
   // shares panel, so the screenshot captures the property view.

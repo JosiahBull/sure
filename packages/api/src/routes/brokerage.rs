@@ -49,13 +49,39 @@ fn parse_as_of(q: &AsOfQuery) -> NaiveDate {
         .unwrap_or_else(|| Utc::now().date_naive())
 }
 
+/// Which kinds keep their quantities as `holdings` lots.
+///
+/// Every tradeable holding, not just the multi-ticker platforms: a single listed holding is the
+/// same model with one ticker in it, and the lots ledger is the only thing that knows *when* the
+/// units arrived. Without it a `shares_nz` account had a ticker whose price was dutifully polled
+/// into `stock_prices` and then read by nothing, because no quantity existed to multiply it by —
+/// so it fell back to hand-entered valuations while a price feed ran for it.
+///
+/// `shares_private` is deliberately absent: its quantities come from a vesting schedule and its
+/// price from the mark ledger, which is the same units × price split with both halves sourced
+/// differently. See `sure_dal::equity`.
 #[tracing::instrument(level = "debug", skip_all)]
-async fn ensure_brokerage(st: &AppState, id: i64) -> AppResult<()> {
+async fn ensure_holdings_account(st: &AppState, id: i64) -> AppResult<()> {
     let account = st.accounts.get(id).await?;
-    if account.kind != AccountKind::Brokerage {
-        return Err(AppError::validation("account is not a brokerage account"));
+    match account.kind {
+        AccountKind::Brokerage | AccountKind::SharesNz | AccountKind::SharesUs => Ok(()),
+        AccountKind::Cash
+        | AccountKind::Bank
+        | AccountKind::Savings
+        | AccountKind::CreditCard
+        | AccountKind::RevolvingCredit
+        | AccountKind::Mortgage
+        | AccountKind::StudentLoan
+        | AccountKind::Loan
+        | AccountKind::Vehicle
+        | AccountKind::RealEstate
+        | AccountKind::SharesPrivate
+        | AccountKind::Crypto
+        | AccountKind::Asset
+        | AccountKind::Liability => Err(AppError::validation(
+            "account does not hold priced share lots",
+        )),
     }
-    Ok(())
 }
 
 /// The account's computed value snapshot (positions priced + wallet cash) as of a date.
@@ -76,7 +102,7 @@ pub async fn snapshot(
     Path(id): Path<i64>,
     Query(q): Query<AsOfQuery>,
 ) -> AppResult<Json<BrokerageSnapshot>> {
-    ensure_brokerage(&st, id).await?;
+    ensure_holdings_account(&st, id).await?;
     Ok(Json(
         st.brokerage
             .snapshot(Some(st.stock_price_provider.as_ref()), id, parse_as_of(&q))
@@ -119,7 +145,7 @@ pub async fn create_holding(
     Path(id): Path<i64>,
     Json(input): Json<SaveHoldingLot>,
 ) -> AppResult<(StatusCode, Json<HoldingLot>)> {
-    ensure_brokerage(&st, id).await?;
+    ensure_holdings_account(&st, id).await?;
     Ok((
         StatusCode::CREATED,
         Json(st.brokerage.create_holding(id, input).await?),
@@ -186,7 +212,7 @@ pub async fn revalue(
     Path(id): Path<i64>,
     Query(q): Query<AsOfQuery>,
 ) -> AppResult<Json<BrokerageSnapshot>> {
-    ensure_brokerage(&st, id).await?;
+    ensure_holdings_account(&st, id).await?;
     Ok(Json(
         st.brokerage
             .revalue(Some(st.stock_price_provider.as_ref()), id, parse_as_of(&q))
@@ -228,7 +254,7 @@ pub async fn backfill(
     State(st): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<BackfillResult>> {
-    ensure_brokerage(&st, id).await?;
+    ensure_holdings_account(&st, id).await?;
     let days = st
         .brokerage
         .backfill_history(st.stock_price_provider.as_ref(), id)

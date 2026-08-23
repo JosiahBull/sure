@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT e.exercise_date AS \"exercise_date!\" FROM equity_exercises e\n             JOIN equity_grants g ON g.id = e.grant_id\n            WHERE g.account_id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "exercise_date!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "equity_exercises",
+            "name": "exercise_date"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "84be974d5f365ee808a3194b07df96558fba52e937f756e5468337b0f59af8d9"
+}

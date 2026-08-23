@@ -251,6 +251,14 @@ impl SureMcp {
                         g.intrinsic_value_minor,
                         Self::scale_of(decimals, &g.currency_code),
                     ),
+                    money_to_string(
+                        g.owned_value_minor,
+                        Self::scale_of(decimals, &g.currency_code),
+                    ),
+                    money_to_string(
+                        g.total_value_minor,
+                        Self::scale_of(decimals, &g.currency_code),
+                    ),
                 ]
             })
             .collect();
@@ -267,12 +275,20 @@ impl SureMcp {
                 "exercisable",
                 "strike",
                 "intrinsic_value",
+                "owned_value",
+                "total_value",
             ],
             &rows,
         ));
+        // Both halves, then the sum: an exercise moves units from `intrinsic_value` (an option's
+        // spread) to `owned_value` (a share at full price), so either figure alone reads as the
+        // position having shrunk or appeared. `total_value` is what the account is worth.
         out.push_str(&format!(
-            "\n\nTotal intrinsic value {} {}.",
+            "\n\nExercisable options {} {} + shares held {} = total {} {}.",
             money_to_string(equity.total_intrinsic_minor, scale),
+            equity.currency_code,
+            money_to_string(equity.total_owned_minor, scale),
+            money_to_string(equity.total_value_minor, scale),
             equity.currency_code
         ));
         Ok(out)

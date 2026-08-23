@@ -147,6 +147,7 @@ fn build_state(
         store.clone(),
         store.clone(),
         store.clone(),
+        store.clone(),
         clock,
     ));
     // Takes `reports` rather than the balances repo: an import reconciles an export's stated
