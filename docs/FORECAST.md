@@ -16,6 +16,7 @@ the ledger — unlike `crons`, which persists real rows.
 | A category's monthly baseline | mean of the trailing 12 complete months of its **current regime** — see "A level is not a trend" |
 | A category's growth | the one household rate, `settings.inflation_bps` (default 250 bps), unless overridden — never fitted |
 | A category's growth override | absolute, or `settings.inflation_bps` + the stored spread when `growth_is_real` |
+| A category with commitments | `Σ stated commitments` (deterministic, escalating) + a stochastic residual |
 | A category with linked income streams | the **residual**: fitted baseline minus what the streams model |
 | A category carrying a loan's interest | the **residual**: fitted baseline minus the interest that loan's schedule charges |
 | An income stream's growth after its last dated step | `annual_increase_bps`, plus `settings.inflation_bps` when the stream is `inflation_indexed` |
@@ -84,6 +85,43 @@ it: written as a spread, three opinions about childcare, rates and insurance sta
 dial moves; written as absolutes, all three silently become wrong. Defaults to absolute, so every
 override stored before this keeps meaning what it meant. Categories only — an account's growth is a
 market return, not a spread over household CPI.
+
+**Commitments: the deterministic half of spending.** `expense_commitments` holds a recurring
+obligation with a *stated* amount — rates, insurance, power, internet, a subscription — on a
+cadence, escalating at the household rate plus its own delta, optionally ending. A category is then
+`Σ commitments + a stochastic residual`, and only the residual gets a volatility. A power bill has
+no volatility and no fitted trend; it has a price, an escalation clause and sometimes an end date,
+and a fixed term *ending* is the one behaviour no fitted trend can represent at all.
+
+The netting is where this can go wrong, so the rule is a type rather than a comment
+(`CommitmentNetting`): a commitment is **either** removed from the fitted series by `merchant_id`
+**or** subtracted from the fitted level, never both and never neither. Both, and the money leaves
+twice — the same defect as the mortgage interest above, which reached production because the
+reasoning that ruled it out lived in a comment that was wrong. The two mechanisms are not equal in
+value: exclusion narrows the residual's *volatility* as well as its level, and subtraction only
+corrects the level, so exclusion is used wherever a merchant makes exact identification possible.
+Matching by amount instead would silently swallow a grocery shop that happened to cost $250. Only a
+commitment already running nets against history — a contract starting in seven months was never
+inside the window the baseline was measured over, the same rule `active_from <= 1` applies to an
+income stream.
+
+Two guards, both added after measuring the first real decomposition:
+
+- **`observed_minor` beside `committed_minor`.** They are not expected to agree, and the
+  disagreement is the check. Measured: a power bill entered as "$250 fortnightly" is $541.67/mo
+  against an observed $410, because not every fortnight landed a recorded payment. Over 110%
+  produces a warning naming the category; it is reported rather than corrected, because the ledger
+  may be incomplete or the cadence may be wrong and only the household knows which.
+- **A residual under 5% of the observed level gets no volatility.** The measured figure is
+  *relative*, so once the mean is a couple of dollars the ratio is a divide-by-small artifact that
+  pins to the 300%/yr ceiling — and on a $2 residual that ceiling is a lognormal whose two-sigma
+  tail is several hundred dollars, inventing spending out of the rounding on a bill the model
+  already handles exactly.
+
+A commitment nobody pays any more is worse than none, because it carries the false authority of a
+stated amount: `stale_commitments` warns when an excluded merchant has been silent for three months.
+Only checkable where a merchant is named, and the silence about the rest is honest rather than
+reassuring.
 
 An indexed rate does not decay. The `TREND_FULL_STRENGTH_MONTHS`/`TREND_HALF_LIFE_MONTHS` apparatus
 exists to walk a rate fitted over a finite window back toward an anchor once the projection runs

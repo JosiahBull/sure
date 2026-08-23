@@ -1,0 +1,182 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", category_id, label, amount_minor, currency_code,\n                  cadence, first_due_on, ends_on, escalation_delta_bps, merchant_id,\n                  enabled AS \"enabled!: bool\", notes, created_at, updated_at\n             FROM expense_commitments ORDER BY category_id, label, id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "category_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "category_id"
+          }
+        }
+      },
+      {
+        "name": "label",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "amount_minor"
+          }
+        }
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "currency_code"
+          }
+        }
+      },
+      {
+        "name": "cadence",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "cadence"
+          }
+        }
+      },
+      {
+        "name": "first_due_on",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "first_due_on"
+          }
+        }
+      },
+      {
+        "name": "ends_on",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "ends_on"
+          }
+        }
+      },
+      {
+        "name": "escalation_delta_bps",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "escalation_delta_bps"
+          }
+        }
+      },
+      {
+        "name": "merchant_id",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "merchant_id"
+          }
+        }
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "name": "notes",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "notes"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "dbf2bdd70d7304ebb8d90049c6fa8eaa1a2e1b66b4ab5dc624b40349e5c1e620"
+}

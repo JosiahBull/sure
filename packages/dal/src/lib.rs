@@ -74,6 +74,7 @@ use std::time::Duration;
 pub mod accounts;
 pub mod brokerage;
 pub mod categories;
+pub mod commitments;
 pub mod crons;
 pub mod currencies;
 pub mod equity;

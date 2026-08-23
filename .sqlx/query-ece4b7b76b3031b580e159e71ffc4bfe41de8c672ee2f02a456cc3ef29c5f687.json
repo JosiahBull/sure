@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO expense_commitments\n              (category_id, label, amount_minor, currency_code, cadence, first_due_on, ends_on,\n               escalation_delta_bps, merchant_id, enabled, notes)\n           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)\n           RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "expense_commitments",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ece4b7b76b3031b580e159e71ffc4bfe41de8c672ee2f02a456cc3ef29c5f687"
+}

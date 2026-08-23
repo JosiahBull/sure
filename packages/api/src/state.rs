@@ -5,9 +5,10 @@ use sure_app::forecast::ForecastService;
 use sure_app::import::ImportService;
 use sure_app::income_match::IncomeMatchService;
 use sure_app::ports::{
-    AccountRepo, CategoryRepo, CronRepo, CurrencyRepo, EquityRepo, IncomeRepo, MerchantRepo,
-    PersonRepo, PropertyEstimateProvider, ProviderRegistry, ProviderRepo, SettingsRepo,
-    SnapshotRepo, StockPriceCacheRepo, StockPriceProvider, TransactionRepo, ValuationRepo,
+    AccountRepo, CategoryRepo, CommitmentRepo, CronRepo, CurrencyRepo, EquityRepo, IncomeRepo,
+    MerchantRepo, PersonRepo, PropertyEstimateProvider, ProviderRegistry, ProviderRepo,
+    SettingsRepo, SnapshotRepo, StockPriceCacheRepo, StockPriceProvider, TransactionRepo,
+    ValuationRepo,
 };
 use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
@@ -44,6 +45,9 @@ pub struct AppState {
     /// Income streams, tax scales and matched payments — thin CRUD plus the matcher's storage,
     /// so it is the repo directly.
     pub income: Arc<dyn IncomeRepo>,
+    /// Expense commitments — the spending-side mirror of `income`, and the repo directly for the
+    /// same reason: five delegating methods and no use-case logic between them.
+    pub commitments: Arc<dyn CommitmentRepo>,
     /// The matching/reconstruction logic behind the manual-link and rematch endpoints — the
     /// same pass the scheduled `income_match` task runs on its timer.
     pub income_match: Arc<IncomeMatchService>,

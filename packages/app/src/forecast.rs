@@ -86,6 +86,8 @@ const MAX_LEADING_ZERO_MONTHS: usize = 3;
 /// Six because below it there is nothing to compare: a break accepted with two months on one side
 /// is a description of two months.
 const MIN_BREAK_SEGMENT_MONTHS: usize = 6;
+/// How long a commitment can go unpaid before the projection says so. See `stale_commitments`.
+const STALE_COMMITMENT_MONTHS: i64 = 3;
 /// How large the Chow F statistic must be before a candidate mean-shift is accepted as a
 /// structural break.
 ///
@@ -257,6 +259,14 @@ pub enum AssumptionSource {
     /// trend. The baseline shown is the *residual* — the part of the category the streams do not
     /// explain — so a non-zero one means some income here is still un-modelled.
     ModelledFromIncome,
+    /// Part of this category is modelled from stated commitments — a power bill, a rates
+    /// instalment, an insurance premium — and only the remainder is projected stochastically.
+    ///
+    /// `baseline_minor` is that remainder. A zero one means the category is nothing but its
+    /// commitments and is projected entirely from their stated amounts and escalation clauses,
+    /// which is the point: a contract has a price, not a distribution, and a fixed term ending is
+    /// a behaviour no fitted trend can represent at all.
+    CommitmentDriven,
     /// The level was measured from this category's current regime; the growth is the household
     /// inflation rate rather than anything fitted from the history.
     ///
@@ -322,6 +332,26 @@ pub struct ResolvedAssumption {
     /// also what made the original defect invisible: a row reporting `+25.0%/yr` next to no
     /// history at all gives a reader nothing to disbelieve.
     pub history_minor: Option<Vec<i64>>,
+    /// Only set for categories: the fitted level *before* anything was netted out of it —
+    /// commitments, a loan's scheduled interest — so a reader can compare what is modelled against
+    /// what was actually observed.
+    ///
+    /// Carried separately because the difference is the whole check. `committed_minor +
+    /// baseline_minor` is not the observed figure: they sum to what the *model* says, and the
+    /// interesting case is exactly when that disagrees with history. Measured on real data, a
+    /// power bill entered as "$250 fortnightly" comes to $541.67/mo against an observed $410,
+    /// because not every fortnight landed a recorded payment — a 32% overstatement that is
+    /// invisible unless both numbers are on the row.
+    pub observed_minor: Option<i64>,
+    /// Only set for a category with commitments: what they come to a month today, base-currency
+    /// minor units. `baseline_minor` is the *residual* alongside it, so the two sum to roughly what
+    /// the category has been costing and the ratio is how much of this projection is a stated fact
+    /// rather than a guess.
+    ///
+    /// The ratio is deliberately not pre-computed and clamped here: over-coverage is the signal
+    /// that a commitment is wrong or double-entered, and clamping it would hide exactly the mistake
+    /// it exists to catch. `docs/FORECAST.md` records the same reasoning for the income side.
+    pub committed_minor: Option<i64>,
     /// Only set for categories with a growth override: the override is a rate *above* the
     /// household inflation rate, and `annual_growth_bps` is the two already added together. Both
     /// are reported because the sum is what the projection used and the spread is what the user
@@ -438,6 +468,13 @@ pub struct SimulationInputs {
     category_sims: Vec<CategorySim>,
     stream_sims: Vec<StreamSim>,
     event_sims: Vec<EventSim>,
+    /// Every commitment's cost in each month `0..=horizon`, summed, base-currency major units.
+    ///
+    /// One table rather than a list of commitments, because they are deterministic: the whole of
+    /// their contribution is `commitments[m]`, identical on every path, so there is nothing for a
+    /// path to compute. `drift_series` is precomputed for the same reason.
+    commitments: Vec<f64>,
+
     warnings: Vec<String>,
     reconciliations: Vec<StreamReconciliation>,
     unmodelled_streams: Vec<String>,
@@ -606,11 +643,12 @@ pub struct ForecastService {
     accounts: Arc<dyn AccountRepo>,
     crons: Arc<dyn CronRepo>,
     equity: Arc<dyn EquityRepo>,
+    commitments: Arc<dyn crate::ports::CommitmentRepo>,
     clock: Arc<dyn Clock>,
 }
 
 impl ForecastService {
-    // Eight collaborators, one per repository this projection reads. Grouping them into a
+    // Nine collaborators, one per repository this projection reads. Grouping them into a
     // struct would only move the same list one line up, and the alternative — the service
     // reaching for a god-object handle — is what the ports split exists to prevent.
     #[allow(clippy::too_many_arguments)]
@@ -622,6 +660,7 @@ impl ForecastService {
         accounts: Arc<dyn AccountRepo>,
         crons: Arc<dyn CronRepo>,
         equity: Arc<dyn EquityRepo>,
+        commitments: Arc<dyn crate::ports::CommitmentRepo>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
@@ -632,6 +671,7 @@ impl ForecastService {
             accounts,
             crons,
             equity,
+            commitments,
             clock,
         }
     }
@@ -694,7 +734,9 @@ impl ForecastService {
     pub async fn resolved_assumptions(&self) -> AppResult<Vec<ResolvedAssumption>> {
         let (_, fx) = self.currency_and_fx(None).await?;
         let loads = self.load_once(self.clock.today()).await?;
-        self.resolved_assumptions_with(&fx, &loads).await
+        // The standalone endpoint wants the rows; the staleness warnings ride with the projection,
+        // which is where a warning has somewhere to be rendered.
+        Ok(self.resolved_assumptions_with(&fx, &loads).await?.0)
     }
 
     /// As [`Self::resolved_assumptions`], against a caller-supplied `Fx`.
@@ -708,7 +750,7 @@ impl ForecastService {
         &self,
         fx: &Fx,
         loads: &ForecastLoads,
-    ) -> AppResult<Vec<ResolvedAssumption>> {
+    ) -> AppResult<(Vec<ResolvedAssumption>, Vec<String>)> {
         let overrides = self.forecast.list_assumptions().await?;
         let mut by_target: HashMap<(ForecastTargetType, i64), ForecastAssumption> = HashMap::new();
         for o in overrides {
@@ -719,11 +761,11 @@ impl ForecastService {
         let mut out = self
             .resolve_account_assumptions(today, &by_target, fx, loads)
             .await?;
-        out.extend(
-            self.resolve_category_assumptions(today, &by_target, fx, loads)
-                .await?,
-        );
-        Ok(out)
+        let (cats, warnings) = self
+            .resolve_category_assumptions(today, &by_target, fx, loads)
+            .await?;
+        out.extend(cats);
+        Ok((out, warnings))
     }
 
     async fn resolve_account_assumptions(
@@ -791,6 +833,8 @@ impl ForecastService {
                     fitted_months: None,
                     break_months_ago: None,
                     history_minor: None,
+                    observed_minor: None,
+                    committed_minor: None,
                     growth_is_real: None,
                     is_income: None,
                     schedule: Some(LoanScheduleSummary {
@@ -840,6 +884,8 @@ impl ForecastService {
                         fitted_months: None,
                         break_months_ago: None,
                         history_minor: None,
+                        observed_minor: None,
+                        committed_minor: None,
                         growth_is_real: None,
                         is_income: None,
                         schedule: None,
@@ -906,6 +952,8 @@ impl ForecastService {
                 fitted_months: None,
                 break_months_ago: None,
                 history_minor: None,
+                observed_minor: None,
+                committed_minor: None,
                 growth_is_real: None,
                 is_income: None,
                 schedule: None,
@@ -974,7 +1022,7 @@ impl ForecastService {
         overrides: &HashMap<(ForecastTargetType, i64), ForecastAssumption>,
         fx: &Fx,
         loads: &ForecastLoads,
-    ) -> AppResult<Vec<ResolvedAssumption>> {
+    ) -> AppResult<(Vec<ResolvedAssumption>, Vec<String>)> {
         let cats = &loads.cats;
         let from = today - chrono::Duration::days(31 * (CATEGORY_TREND_MONTHS + 1));
         // One fetch, two consumers. The surviving rows are the spend the baselines are fitted
@@ -997,6 +1045,19 @@ impl ForecastService {
         // One rate for the household, read once. Both sides of the ledger index at it — see
         // `AssumptionSource::Indexed`, and `income::level_schedule` for the income half.
         let inflation_bps = self.forecast.inflation_bps().await?;
+        // The deterministic half of spending. Resolved here rather than in `simulate` because the
+        // fit has to know about it *before* it runs: a commitment's transactions leave the series
+        // entirely, which is a different and better correction than subtracting its level
+        // afterwards. See `CommitmentNetting`.
+        let commitments = commitment_sims(
+            &self.commitments.list_commitments().await?,
+            cats,
+            today,
+            // The window the fit cares about; `simulate` builds its own over the real horizon.
+            CATEGORY_TREND_MONTHS,
+            fx,
+            inflation_bps,
+        );
 
         let mut out = Vec::new();
         for (id, kind) in cats.top_level_kinds() {
@@ -1006,7 +1067,18 @@ impl ForecastService {
                 CategoryKind::Income | CategoryKind::Expense => {}
             }
 
-            let totals = category_monthly_totals(&spend, cats, id, today, fx);
+            let excluded = excluded_merchants(&commitments, id);
+            let totals = category_monthly_totals(&spend, cats, id, today, fx, &excluded);
+            // What the category was averaging *before* a commitment's transactions were taken out
+            // of it. A second fit rather than arithmetic on the first, because the first no longer
+            // contains the excluded months at all — and only where something was excluded, so a
+            // household with no commitments pays nothing for this.
+            let observed = if excluded.is_empty() {
+                None
+            } else {
+                category_fit(&category_monthly_totals(&spend, cats, id, today, fx, &[]))
+                    .map(|f| fx.base_minor(f.baseline))
+            };
             let fit = category_fit(&totals);
             // The baseline survives even when no direction could be measured. Previously it came
             // only from a successful regression, so a category with a few months of history
@@ -1039,16 +1111,55 @@ impl ForecastService {
             // `CategoryFit::baseline` is already base-currency *major* units (see
             // `category_monthly_totals`), as is the netted figure, so this is a subtraction in one
             // unit with no conversion between them.
-            let baseline_minor = match (fit, scheduled_interest.get(&id)) {
-                (Some(f), Some(&modelled)) => {
-                    if source == AssumptionSource::Indexed {
+            //
+            // Two things can displace part of a fitted level, and they compose additively because
+            // they describe disjoint money: a loan's scheduled interest, and any commitment that
+            // could not be excluded from the series by merchant. A commitment that *was* excluded
+            // is absent from this sum by construction — `netted_monthly` skips it — because its
+            // transactions never reached the fit. That complementarity is the double-count guard
+            // and it lives in `CommitmentNetting`, not here.
+            let modelled = scheduled_interest.get(&id).copied().unwrap_or(0.0)
+                + netted_monthly(&commitments, id);
+            // A residual small enough to be rounding around a stated amount gets no volatility.
+            //
+            // Not cosmetic. The measured figure is *relative* — a standard deviation over the mean
+            // — so once the mean is a couple of dollars the ratio is a divide-by-small artifact and
+            // pins to the 300%/yr ceiling. That ceiling is a numerical guard chosen for a real
+            // category, and on a $2 residual it means a lognormal whose two-sigma tail is several
+            // hundred dollars: the projection would invent spending out of the rounding on a bill
+            // it already models exactly. Measured on real data at exactly this point — Utilities
+            // decomposed to a $2 residual carrying 30000bps.
+            //
+            // Five percent of the observed level, because below that the residual is not a spending
+            // pattern anybody has; it is what is left when a stated amount does not divide evenly
+            // into a billing calendar.
+            let vol = match (observed, fit) {
+                (Some(obs), Some(f)) if obs > 0 && fx.base_minor(f.baseline) * 20 < obs => 0,
+                (Some(_) | None, Some(_) | None) => vol,
+            };
+
+            // Every commitment running today in this category, however it was netted — the UI's
+            // question is "how much of this category is a stated amount", which does not depend on
+            // whether the netting happened by exclusion or by subtraction.
+            let committed: f64 = commitments
+                .iter()
+                .filter(|c| c.top_category_id == id && nets_against_history(c))
+                .map(|c| c.monthly_base)
+                .sum();
+            let has_commitments = committed > 0.0;
+            let baseline_minor = fit.map(|f| {
+                if source == AssumptionSource::Indexed {
+                    // The user's own modelling is the more informative label where both apply: a
+                    // netted schedule is a correction of a double count, a commitment is a choice
+                    // someone made about how to describe their spending.
+                    if has_commitments {
+                        source = AssumptionSource::CommitmentDriven;
+                    } else if modelled > 0.0 {
                         source = AssumptionSource::ModelledFromSchedule;
                     }
-                    Some(fx.base_minor((f.baseline - modelled).max(0.0)))
                 }
-                (Some(f), None) => Some(fx.base_minor(f.baseline)),
-                (None, Some(_) | None) => None,
-            };
+                fx.base_minor((f.baseline - modelled).max(0.0))
+            });
 
             out.push(ResolvedAssumption {
                 target_type: ForecastTargetType::Category,
@@ -1067,6 +1178,10 @@ impl ForecastService {
                 break_months_ago: fit.and_then(|f| f.break_months_ago),
                 history_minor: (!totals.is_empty())
                     .then(|| totals.iter().map(|v| fx.base_minor(*v)).collect()),
+                // Falls back to the fitted level where nothing was excluded, because there the two
+                // are the same figure and a `None` would make the row look like it had no history.
+                observed_minor: observed.or_else(|| fit.map(|f| fx.base_minor(f.baseline))),
+                committed_minor: (committed > 0.0).then(|| fx.base_minor(committed)),
                 growth_is_real: ov.map(|o| o.growth_is_real),
                 is_income: Some(matches!(kind, CategoryKind::Income)),
                 schedule: None,
@@ -1076,7 +1191,9 @@ impl ForecastService {
                 source,
             });
         }
-        Ok(out)
+        let mut warnings = stale_commitments(&commitments, &spend, today);
+        warnings.extend(over_covered_categories(&out));
+        Ok((out, warnings))
     }
 
     /// Trailing-12-month dividend cash ÷ average account value over that window,
@@ -1217,12 +1334,30 @@ impl ForecastService {
         // three account lists and twenty-three category-tree loads per request.
         let loads = self.load_once(today).await?;
 
-        let mut assumptions = self.resolved_assumptions_with(&fx, &loads).await?;
+        // Seeded with whatever the assumption resolution already noticed — a commitment that looks
+        // cancelled — rather than started empty, so the two sources of warning end up in one list.
+        let (mut assumptions, mut warnings) = self.resolved_assumptions_with(&fx, &loads).await?;
 
         // One household rate, both sides of the ledger. Read here as well as in
         // `resolve_category_assumptions` because the two run independently, and a single number is
         // cheaper to fetch twice than to thread through the loads.
         let inflation_bps = self.forecast.inflation_bps().await?;
+
+        // The deterministic half of spending, over the real horizon this time — the resolution
+        // above builds its own set for the *netting*, which is a question about history and needs
+        // no horizon at all. Collapsed to one float per month here, because every path charges the
+        // identical amount.
+        let commitments = commitment_series(
+            &commitment_sims(
+                &self.commitments.list_commitments().await?,
+                &loads.cats,
+                today,
+                horizon,
+                &fx,
+                inflation_bps,
+            ),
+            horizon,
+        );
 
         // Loaded before `by_target`, because which accounts receive payroll contributions decides
         // whether their fitted rate may be used at all — and that has to be settled before the
@@ -1248,7 +1383,6 @@ impl ForecastService {
                 student_loan_rate_bps.insert(a.id, m.interest_rate_bps);
             }
         }
-        let mut warnings: Vec<String> = Vec::new();
         let mut contribution_targets: HashMap<i64, &'static str> = HashMap::new();
         for st in streams.iter().filter(|s| s.enabled) {
             if let Some(id) = st.kiwisaver_account_id {
@@ -1828,6 +1962,7 @@ impl ForecastService {
             category_sims,
             stream_sims,
             event_sims,
+            commitments,
             warnings,
             reconciliations,
             unmodelled_streams,
@@ -1947,6 +2082,7 @@ impl ForecastService {
             category_sims,
             stream_sims,
             event_sims,
+            commitments,
             warnings,
             reconciliations,
             unmodelled_streams,
@@ -2003,6 +2139,7 @@ impl ForecastService {
             stream_sims: &stream_sims,
             event_sims: &event_sims,
             event_outcomes: &event_outcomes,
+            commitments: &commitments,
             // One `powi` for the run rather than three per event per path.
             minor_per_major: 10f64.powi(fx.dp(&base)),
         };
@@ -2173,6 +2310,8 @@ struct PathCtx<'a> {
     stream_sims: &'a [StreamSim],
     event_sims: &'a [EventSim],
     event_outcomes: &'a [Vec<PathEvent>],
+    /// Indexed by month, base-currency major units. See [`SimulationInputs::commitments`].
+    commitments: &'a [f64],
     /// `10^decimals` for the report currency — the divisor turning an event's minor-unit amount
     /// into the major units the projection works in.
     minor_per_major: f64,
@@ -2425,6 +2564,7 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
         stream_sims,
         event_sims,
         event_outcomes,
+        commitments,
         minor_per_major,
     } = *ctx;
     // Destructured so the arithmetic below reads exactly as it did when this state was local:
@@ -2831,6 +2971,13 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
                 }
             }
         }
+
+        // Commitments, outside the category loop and after it. A stated amount is not something to
+        // put a distribution on: folding a power bill into a category's run-rate would multiply the
+        // category's lognormal lumpiness onto a price that is not lumpy, and then compound it —
+        // exactly the reasoning the one-off arm above already carries. Deterministic and identical
+        // on every path, so this is one index rather than a draw.
+        net_flow -= commitments[m as usize];
 
         // Servicing the debt is real money leaving. Net worth therefore falls by
         // exactly the interest each month: the principal moves from cash to the
@@ -3541,6 +3688,264 @@ fn summarise_events(
         .collect()
 }
 
+// ---- expense commitments ------------------------------------------------------------
+//
+// The deterministic half of a category's spending: a stated amount, on a cadence, escalating at
+// its own rate, sometimes ending. See `0044_expense_commitments.sql` for why this is worth
+// separating from the stochastic half at all — measured on a real database, one category was 95%
+// a single $250 fortnightly power bill carrying a fitted 156%/yr volatility that described the
+// billing calendar and nothing else.
+
+/// How one commitment is kept out of the stochastic residual.
+///
+/// **This enum is the double-count guard, and it is a type rather than a comment on purpose.** A
+/// commitment must be removed from the fitted series *or* subtracted from the fitted level, never
+/// both and never neither:
+///
+/// * both, and the money leaves twice — the same defect as the mortgage-interest double count in
+///   `schedule_interest_by_category`, which reached production because the reasoning that ruled it
+///   out lived in a comment that was wrong;
+/// * neither, and the projection charges the commitment on top of a baseline that already contains
+///   it, which is the same arithmetic error wearing different clothes.
+///
+/// The two are not equivalent in value, which is why both exist. `Excluded` is strictly better:
+/// dropping the transactions before fitting narrows the residual's **volatility** as well as its
+/// level, and the volatility is the whole reason this design earns its cost. `Netted` corrects
+/// only the level and leaves the band exactly as wide as it was. So `Excluded` is used wherever a
+/// `merchant_id` makes exact identification possible, and `Netted` is the honest fallback rather
+/// than a guess at which transactions to drop — matching by amount would silently take a grocery
+/// shop that happened to cost $250.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitmentNetting {
+    /// The commitment names a merchant, so its own transactions are dropped from the series before
+    /// it is fitted. The residual is then measured directly and its volatility is real.
+    Excluded { merchant_id: i64 },
+    /// No merchant to key on. The modelled monthly amount is subtracted from the fitted level and
+    /// the volatility is left alone, which is wrong-but-bounded rather than wrong-and-hidden.
+    Netted,
+}
+
+/// One commitment, resolved against today's date and the household inflation rate: everything
+/// `simulate` and the assumption resolution need, with no further lookups.
+#[derive(Debug, Clone)]
+struct CommitmentSim {
+    /// The *top-level* category, since that is the level assumptions are made at. A commitment
+    /// pointing at a subcategory is resolved to its ancestor here, once.
+    top_category_id: i64,
+    label: String,
+    /// Base-currency major units a month, at today's price.
+    monthly_base: f64,
+    /// Month index this starts contributing, clamped at 1. A commitment whose `first_due_on` is in
+    /// the past is already running, so it contributes from the projection's first month.
+    from_month: i64,
+    /// Last month it contributes, or `None` for open-ended.
+    to_month: Option<i64>,
+    /// Monthly log-return the amount escalates at: the household rate plus this commitment's own
+    /// delta. Not decayed — see `long_run_anchor`; an escalation clause is asserted, not fitted.
+    monthly_escalation: f64,
+    netting: CommitmentNetting,
+}
+
+impl CommitmentSim {
+    /// What this commitment costs in month `m`, base-currency major units, or 0 outside its window.
+    ///
+    /// Escalated from `from_month` rather than from month zero, because the stored amount is the
+    /// price *when the commitment starts*: a contract beginning in two years was entered at the
+    /// figure it will begin at, and compounding it forward from today would raise a price nobody
+    /// quoted. For a commitment already running the two are the same thing, since `from_month` is 1.
+    fn at(&self, m: i64) -> f64 {
+        if m < self.from_month || self.to_month.is_some_and(|t| m > t) {
+            return 0.0;
+        }
+        self.monthly_base * (self.monthly_escalation * (m - self.from_month) as f64).exp()
+    }
+}
+
+/// Resolve every enabled commitment into a [`CommitmentSim`].
+///
+/// Drops, rather than fails on, a commitment whose currency has no rate to the projection's base:
+/// the same treatment a category baseline in an unconvertible currency already gets, and for the
+/// same reason — folding it in at parity would compound a made-up rate over the whole horizon.
+fn commitment_sims(
+    commitments: &[sure_core::ExpenseCommitment],
+    cats: &reports::Categories,
+    today: NaiveDate,
+    horizon: i64,
+    fx: &Fx,
+    inflation_bps: i64,
+) -> Vec<CommitmentSim> {
+    let mut out = Vec::new();
+    for c in commitments.iter().filter(|c| c.enabled) {
+        let Some(base_scale) = fx.try_base_scale(&c.currency_code) else {
+            continue;
+        };
+        let Some(first_due) = reports::parse_date(&c.first_due_on) else {
+            continue;
+        };
+        // Clamped at 1 for the same reason a past-dated event is: month 0 is today, already inside
+        // the history every baseline was fitted from, so contributing there would double-apply.
+        let from_month = months_between(today, first_due).max(1);
+        if from_month > horizon {
+            continue;
+        }
+        let to_month = c
+            .ends_on
+            .as_deref()
+            .and_then(reports::parse_date)
+            .map(|d| months_between(today, d));
+        // Already over. Left out rather than included at zero, so it cannot be mistaken for a
+        // commitment that costs nothing.
+        if to_month.is_some_and(|t| t < from_month) {
+            continue;
+        }
+        out.push(CommitmentSim {
+            top_category_id: cats.top_ancestor(c.category_id),
+            label: c.label.clone(),
+            // `try_base_scale` is native-*minor* to base-*major*, so it already carries the
+            // minor-unit divide — hardcoding a further /100 here double-divides, and does it
+            // silently, because $100 and $1 are both plausible-looking power bills. Same
+            // convention `StreamSim::base_scale` uses.
+            monthly_base: c.monthly_minor() * base_scale,
+            from_month,
+            to_month,
+            monthly_escalation: annual_rate_to_monthly_log_return(
+                inflation_bps + c.escalation_delta_bps,
+            ),
+            netting: match c.merchant_id {
+                Some(merchant_id) => CommitmentNetting::Excluded { merchant_id },
+                None => CommitmentNetting::Netted,
+            },
+        });
+    }
+    out
+}
+
+/// Commitments that look like they have stopped being paid, as warnings naming each one.
+///
+/// A stale commitment is worse than no commitment at all: a cancelled subscription entered once
+/// projects for thirty years, and unlike an over-fitted trend it does it with the false authority of
+/// a stated amount. This is the third of the failure modes this design was known to have, and the
+/// only one a machine can notice on its own.
+///
+/// Only checkable for a commitment that names a merchant — an `Excluded` one — because that is the
+/// only kind whose transactions can be identified. A `Netted` commitment is invisible here by
+/// construction, and silence about it is honest rather than reassuring.
+///
+/// Three months, not one: a quarterly rates instalment is legitimately absent for two, and the
+/// point is to catch a subscription nobody cancelled in the app rather than to nag about billing
+/// cycles. A commitment that has not yet started is skipped — there is nothing to have seen.
+fn stale_commitments(
+    sims: &[CommitmentSim],
+    spend: &[crate::ports::SpendTransaction],
+    today: NaiveDate,
+) -> Vec<String> {
+    let cutoff = add_months(today, -STALE_COMMITMENT_MONTHS);
+    let mut out = Vec::new();
+    for sim in sims.iter().filter(|s| nets_against_history(s)) {
+        let CommitmentNetting::Excluded { merchant_id } = sim.netting else {
+            continue;
+        };
+        let seen = spend.iter().any(|t| {
+            t.merchant_id == Some(merchant_id)
+                && reports::parse_date(&t.posted_at).is_some_and(|d| d >= cutoff)
+        });
+        if !seen {
+            out.push(format!(
+                "{} is still being projected at {:.0} a month, but nothing has been paid to it \
+                 since {}. Check whether it has been cancelled.",
+                sim.label,
+                sim.monthly_base,
+                cutoff.format("%b %Y"),
+            ));
+        }
+    }
+    out
+}
+
+/// Categories whose commitments claim more than the category has ever recorded.
+///
+/// The single most likely mistake in this whole feature, and the one it is easiest to ship without
+/// noticing. Measured on real data the first time it ran: a power bill entered as "$250
+/// fortnightly" resolves to $541.67 a month against an observed $410, because not every fortnight
+/// landed a recorded payment — so either the cadence is wrong or some payments are missing, and
+/// either way the projection is now spending a third more on power than the household does.
+///
+/// Reported rather than corrected. Both readings are plausible — the ledger may be incomplete, or
+/// the commitment may be mis-entered — and only the household knows which. Silently scaling the
+/// commitment down to fit history would defeat the purpose of stating an amount at all.
+///
+/// The threshold is 110%: a stated amount and a lumpy year of history will never agree exactly, and
+/// a warning that fires on a 3% difference is a warning nobody reads.
+fn over_covered_categories(rows: &[ResolvedAssumption]) -> Vec<String> {
+    let mut out = Vec::new();
+    for r in rows {
+        let (Some(committed), Some(observed)) = (r.committed_minor, r.observed_minor) else {
+            continue;
+        };
+        if observed <= 0 || committed * 100 <= observed * 110 {
+            continue;
+        }
+        out.push(format!(
+            "The commitments on {} come to {:.0} a month, but it has only been averaging {:.0}. \
+             Check the amount and how often it is paid — or whether some payments are missing \
+             from the ledger.",
+            r.label,
+            committed as f64 / 100.0,
+            observed as f64 / 100.0,
+        ));
+    }
+    out
+}
+
+/// Whether this commitment is one the *fitted history* could contain.
+///
+/// Only a commitment already running. A contract starting in seven months contributed nothing to
+/// the twenty-four the baseline was measured over, so netting it out would subtract money from a
+/// level it was never part of — the identical argument `resolve_category_assumptions` already makes
+/// for an income stream (`active_from <= 1`), and the identical bug if it is skipped.
+fn nets_against_history(sim: &CommitmentSim) -> bool {
+    sim.from_month <= 1
+}
+
+/// The merchants whose transactions must be dropped from a top-level category's fitted series,
+/// because a commitment already accounts for them exactly.
+fn excluded_merchants(sims: &[CommitmentSim], top_category_id: i64) -> Vec<i64> {
+    sims.iter()
+        .filter(|s| s.top_category_id == top_category_id)
+        .filter(|s| nets_against_history(s))
+        .filter_map(|s| match s.netting {
+            CommitmentNetting::Excluded { merchant_id } => Some(merchant_id),
+            CommitmentNetting::Netted => None,
+        })
+        .collect()
+}
+
+/// The monthly total to subtract from a top-level category's fitted level, base-currency major
+/// units — the `Netted` commitments only, at today's price.
+///
+/// `Excluded` ones are deliberately absent: their transactions were already removed from the
+/// series, so the fitted level does not contain them and subtracting again would take the money
+/// twice. That complementarity is the whole content of [`CommitmentNetting`].
+fn netted_monthly(sims: &[CommitmentSim], top_category_id: i64) -> f64 {
+    sims.iter()
+        .filter(|s| s.top_category_id == top_category_id)
+        .filter(|s| nets_against_history(s))
+        .filter(|s| s.netting == CommitmentNetting::Netted)
+        .map(|s| s.monthly_base)
+        .sum()
+}
+
+/// Every commitment's cost in each month `0..=horizon`, summed, base-currency major units.
+///
+/// Precomputed once per request rather than evaluated per (path × month): commitments are
+/// deterministic, so a table of `horizon + 1` floats is the whole of their contribution and the
+/// per-path cost is an index. The same arrangement `drift_series` uses, for the same reason.
+fn commitment_series(sims: &[CommitmentSim], horizon: i64) -> Vec<f64> {
+    (0..=horizon)
+        .map(|m| sims.iter().map(|s| s.at(m)).sum())
+        .collect()
+}
+
 /// A recurring cost an event switched on, on one path.
 struct ActiveDelta {
     category: usize,
@@ -3667,6 +4072,10 @@ fn long_run_anchor(a: &ResolvedAssumption) -> Option<i64> {
         // The rate here is already the long-run anchor (or an override that was left alone), because
         // the fitted one was discarded — so there is nothing left to decay toward.
         AssumptionSource::ContributionDriven => None,
+        // A commitment's escalation is an assertion — a clause in a contract, or the user's view of
+        // one — so it is not decayed, for the same reason an override is not. What remains fitted
+        // here is the residual's level, and a level has nothing to decay.
+        AssumptionSource::CommitmentDriven => None,
         // Nothing was extrapolated, so there is nothing to walk back. The whole
         // `TREND_FULL_STRENGTH_MONTHS`/`TREND_HALF_LIFE_MONTHS` apparatus exists to decay a rate
         // fitted over a finite window once the projection runs past that window; an inflation
@@ -4616,6 +5025,7 @@ fn category_monthly_totals(
     top_id: i64,
     today: NaiveDate,
     fx: &Fx,
+    exclude_merchants: &[i64],
 ) -> Vec<f64> {
     let this_month = (today.year(), today.month());
     let mut totals: std::collections::BTreeMap<(i32, u32), f64> = std::collections::BTreeMap::new();
@@ -4625,6 +5035,15 @@ fn category_monthly_totals(
             continue;
         };
         if cats.top_ancestor(cid) != top_id {
+            continue;
+        }
+        // A commitment accounts for these exactly, so they leave the series entirely rather than
+        // being subtracted from its mean afterwards. Dropping them here is what narrows the
+        // residual's *volatility*, which subtracting a level never could — see
+        // `CommitmentNetting`.
+        if t.merchant_id
+            .is_some_and(|mid| exclude_merchants.contains(&mid))
+        {
             continue;
         }
         let Some(d) = reports::parse_date(&t.posted_at) else {
@@ -4827,7 +5246,7 @@ mod tests {
         let mut cats = reports::Categories::default_for_test();
         cats.insert_for_test(1, None, "Grooming", CategoryKind::Expense);
         let fx = Fx::parity("NZD");
-        let vals = category_monthly_totals(&spend, &cats, 1, d("2026-06-01"), &fx);
+        let vals = category_monthly_totals(&spend, &cats, 1, d("2026-06-01"), &fx, &[]);
         // Jan, Feb, Mar, Apr, May: 5 months spanned, only Jan and Apr non-zero.
         assert_eq!(vals.len(), 5);
         assert_eq!(vals.iter().filter(|v| **v == 0.0).count(), 3);
@@ -5076,6 +5495,314 @@ mod tests {
             resolve_category_growth(None, false, None, None, 250),
             (0, 0, AssumptionSource::InsufficientHistory)
         );
+    }
+
+    // ---- expense commitments ---------------------------------------------------------
+
+    fn commitment(
+        label: &str,
+        category_id: i64,
+        amount_minor: i64,
+        cadence: sure_core::PayFrequency,
+        merchant_id: Option<i64>,
+    ) -> sure_core::ExpenseCommitment {
+        sure_core::ExpenseCommitment {
+            id: 1,
+            category_id,
+            label: label.into(),
+            amount_minor,
+            currency_code: "NZD".into(),
+            cadence,
+            first_due_on: "2025-01-01".into(),
+            ends_on: None,
+            escalation_delta_bps: 0,
+            merchant_id,
+            enabled: true,
+            notes: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    fn one_category() -> reports::Categories {
+        let mut cats = reports::Categories::default_for_test();
+        cats.insert_for_test(10, None, "Utilities", CategoryKind::Expense);
+        cats
+    }
+
+    /// A fortnightly bill is not a monthly one, and the difference is 2.17x. The whole reason
+    /// `cadence` exists rather than a bare monthly amount: a bank statement showing $250 invites
+    /// exactly this mistake, and on the real data that drove this feature the bill really is
+    /// fortnightly.
+    #[test]
+    fn a_commitments_monthly_equivalent_annualises_its_cadence() {
+        let c = commitment(
+            "Power",
+            10,
+            250_00,
+            sure_core::PayFrequency::Fortnightly,
+            None,
+        );
+        // 250 x 26 / 12
+        assert!((c.monthly_minor() - 541_66.666).abs() < 1.0);
+
+        let m = commitment("Rent", 10, 250_00, sure_core::PayFrequency::Monthly, None);
+        assert!((m.monthly_minor() - 250_00.0).abs() < 0.01);
+
+        let q = commitment(
+            "Rates",
+            10,
+            1_740_00,
+            sure_core::PayFrequency::Quarterly,
+            None,
+        );
+        assert!((q.monthly_minor() - 580_00.0).abs() < 0.01);
+    }
+
+    /// **The double-count guard.** A commitment is removed from the fitted series *or* subtracted
+    /// from the fitted level, never both. This is the test that would have caught the
+    /// mortgage-interest defect had it existed for that netting, so it exists for this one.
+    #[test]
+    fn a_commitment_is_either_excluded_or_netted_and_never_both() {
+        let cats = one_category();
+        let fx = Fx::parity("NZD");
+        let sims = commitment_sims(
+            &[
+                commitment(
+                    "Power",
+                    10,
+                    250_00,
+                    sure_core::PayFrequency::Monthly,
+                    Some(7),
+                ),
+                commitment("Rates", 10, 145_00, sure_core::PayFrequency::Monthly, None),
+            ],
+            &cats,
+            d("2026-06-01"),
+            360,
+            &fx,
+            250,
+        );
+        assert_eq!(sims.len(), 2);
+
+        // The one with a merchant leaves the series and is *not* subtracted from the level.
+        assert_eq!(excluded_merchants(&sims, 10), vec![7]);
+        // The one without is subtracted and is *not* in the exclusion list. $145, not $395.
+        assert!((netted_monthly(&sims, 10) - 145.0).abs() < 0.01);
+
+        // Restated as the invariant itself: every commitment appears in exactly one of the two
+        // mechanisms. A future refactor that starts applying both fails here.
+        for sim in &sims {
+            let excluded = matches!(sim.netting, CommitmentNetting::Excluded { .. });
+            let netted = sim.netting == CommitmentNetting::Netted;
+            assert!(excluded ^ netted, "{} is in both or neither", sim.label);
+        }
+    }
+
+    /// A commitment's own transactions leave the fitted series entirely, which is what narrows the
+    /// residual's *volatility* — the thing subtracting a level can never do, and the whole reason
+    /// this design is worth its cost.
+    #[test]
+    fn excluding_a_commitments_merchant_narrows_the_residual() {
+        let cats = one_category();
+        let fx = Fx::parity("NZD");
+        // Twelve months: a steady $250 bill from merchant 7, plus a genuinely lumpy $0/$60 of
+        // discretionary spending from someone else.
+        let mut spend = Vec::new();
+        for back in 1..=12 {
+            let month = add_months(d("2026-06-15"), -back);
+            spend.push(crate::ports::SpendTransaction {
+                id: back,
+                posted_at: month.to_string(),
+                amount_minor: -250_00,
+                currency_code: "NZD".into(),
+                category_id: Some(10),
+                is_one_off: false,
+                linked_transaction_id: None,
+                account_id: 1,
+                account_name: "Everyday".into(),
+                account_kind: AccountKind::Bank,
+                merchant_id: Some(7),
+                merchant: Some("Power Co".into()),
+                attribution: Ownership::Joint,
+            });
+            if back % 2 == 0 {
+                spend.push(crate::ports::SpendTransaction {
+                    id: 100 + back,
+                    posted_at: month.to_string(),
+                    amount_minor: -60_00,
+                    currency_code: "NZD".into(),
+                    category_id: Some(10),
+                    is_one_off: false,
+                    linked_transaction_id: None,
+                    account_id: 1,
+                    account_name: "Everyday".into(),
+                    account_kind: AccountKind::Bank,
+                    merchant_id: Some(9),
+                    merchant: Some("Other".into()),
+                    attribution: Ownership::Joint,
+                });
+            }
+        }
+
+        let whole = category_fit(&category_monthly_totals(
+            &spend,
+            &cats,
+            10,
+            d("2026-06-01"),
+            &fx,
+            &[],
+        ))
+        .unwrap();
+        let residual = category_fit(&category_monthly_totals(
+            &spend,
+            &cats,
+            10,
+            d("2026-06-01"),
+            &fx,
+            &[7],
+        ))
+        .unwrap();
+
+        // The level drops by the bill…
+        assert!((whole.baseline - 280.0).abs() < 1.0, "{}", whole.baseline);
+        assert!(
+            (residual.baseline - 30.0).abs() < 1.0,
+            "{}",
+            residual.baseline
+        );
+        // …and the *relative* scatter is what the projection actually draws on, so measuring it
+        // against a level that is mostly a fixed bill understates how lumpy the discretionary part
+        // really is. Excluding the bill reveals it.
+        assert!(
+            residual.vol_bps > whole.vol_bps,
+            "excluding the commitment should expose the residual's real volatility: \
+             {} vs {}",
+            residual.vol_bps,
+            whole.vol_bps
+        );
+    }
+
+    /// Escalation compounds from the month the commitment *starts*, not from today, because the
+    /// stored amount is the price when it begins. And it is the household rate plus the
+    /// commitment's own delta, so "inflation + 3%" survives a revision of the household rate.
+    #[test]
+    fn a_commitment_escalates_from_its_start_at_the_household_rate_plus_its_delta() {
+        let cats = one_category();
+        let fx = Fx::parity("NZD");
+        let mut rates = commitment("Rates", 10, 100_00, sure_core::PayFrequency::Monthly, None);
+        rates.escalation_delta_bps = 300;
+        let sims = commitment_sims(&[rates], &cats, d("2026-06-01"), 360, &fx, 250);
+        let s = &sims[0];
+
+        // Already running, so month 1 is the stated price.
+        assert_eq!(s.from_month, 1);
+        assert!((s.at(1) - 100.0).abs() < 0.01);
+        // Twelve months on: 5.5%/yr, not 2.5% and not 3%.
+        assert!((s.at(13) - 105.5).abs() < 0.05, "{}", s.at(13));
+    }
+
+    /// A fixed term ending is the one behaviour no fitted trend can represent at all, and it is
+    /// most of the argument for this whole design.
+    #[test]
+    fn a_commitment_stops_at_its_end_date_and_starts_at_its_first_due_date() {
+        let cats = one_category();
+        let fx = Fx::parity("NZD");
+        let mut plan = commitment(
+            "Internet",
+            10,
+            95_00,
+            sure_core::PayFrequency::Monthly,
+            None,
+        );
+        plan.first_due_on = "2026-09-01".into();
+        plan.ends_on = Some("2027-03-01".into());
+        let sims = commitment_sims(&[plan], &cats, d("2026-06-01"), 360, &fx, 250);
+        let s = &sims[0];
+
+        assert_eq!(s.from_month, 3);
+        assert_eq!(s.at(2), 0.0, "not yet started");
+        assert!((s.at(3) - 95.0).abs() < 0.01);
+        assert!(s.at(9) > 0.0, "still inside the term");
+        assert_eq!(s.at(10), 0.0, "the contract has expired");
+
+        // …and it does not net against history, because it was never in it.
+        assert!(!nets_against_history(s));
+        assert_eq!(netted_monthly(&sims, 10), 0.0);
+        assert!(excluded_merchants(&sims, 10).is_empty());
+    }
+
+    /// The design's central technical risk, and the one it caught on its first run against real
+    /// data: a commitment claiming more than the category has ever recorded. Reported rather than
+    /// corrected — the ledger may be incomplete or the cadence may be wrong, and only the household
+    /// knows which — because silently scaling the commitment to fit history would defeat the whole
+    /// purpose of stating an amount.
+    #[test]
+    fn a_commitment_claiming_more_than_history_is_reported() {
+        let row = |label: &str, committed: i64, observed: i64| ResolvedAssumption {
+            target_type: ForecastTargetType::Category,
+            target_id: 10,
+            label: label.into(),
+            annual_growth_bps: 250,
+            annual_volatility_bps: 0,
+            measured_growth_bps: None,
+            long_run_growth_bps: 0,
+            annual_fee_bps: None,
+            annual_fixed_fee_minor: None,
+            dividend_yield_bps: None,
+            baseline_minor: Some(0),
+            fitted_months: Some(12),
+            break_months_ago: None,
+            history_minor: None,
+            observed_minor: Some(observed),
+            committed_minor: Some(committed),
+            growth_is_real: None,
+            is_income: Some(false),
+            schedule: None,
+            vesting: None,
+            currency_code: None,
+            ownership: None,
+            source: AssumptionSource::CommitmentDriven,
+        };
+
+        // The real case: $250 entered as fortnightly is $541.67/mo against an observed $410.
+        let warnings = over_covered_categories(&[row("Utilities", 541_67, 410_00)]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Utilities"), "{}", warnings[0]);
+
+        // Within the tolerance: a stated amount and a lumpy year never agree exactly, and a warning
+        // that fires on 3% is a warning nobody reads.
+        assert!(over_covered_categories(&[row("Food", 103_00, 100_00)]).is_empty());
+        // Under-coverage is the ordinary case — most of a category is usually discretionary.
+        assert!(over_covered_categories(&[row("Lifestyle", 26_00, 1_500_00)]).is_empty());
+    }
+
+    /// The per-month table the paths index into. Deterministic, so every path charges the same
+    /// figure and there is nothing to draw.
+    #[test]
+    fn the_commitment_series_sums_every_active_commitment_per_month() {
+        let cats = one_category();
+        let fx = Fx::parity("NZD");
+        let mut ending = commitment("Gym", 10, 50_00, sure_core::PayFrequency::Monthly, None);
+        ending.ends_on = Some("2026-08-01".into());
+        let sims = commitment_sims(
+            &[
+                commitment("Power", 10, 200_00, sure_core::PayFrequency::Monthly, None),
+                ending,
+            ],
+            &cats,
+            d("2026-06-01"),
+            12,
+            &fx,
+            0,
+        );
+        let series = commitment_series(&sims, 12);
+        assert_eq!(series.len(), 13);
+        // Month 0 is today: nothing is charged there, because month 0 is already inside the
+        // history every baseline was fitted from.
+        assert_eq!(series[0], 0.0);
+        assert!((series[1] - 250.0).abs() < 0.01, "both active");
+        assert!((series[3] - 200.0).abs() < 0.01, "the gym has lapsed");
     }
 
     /// A *real* override is a spread over the household rate, so it survives a revision of that
@@ -6103,7 +6830,37 @@ mod tests {
             /// that does not care about indexation gets nominally flat categories and its
             /// existing figures stand — the ones that do care set it explicitly.
             inflation_bps: i64,
+            /// Commitments the fake reports. Empty for every test that predates them, so their
+            /// figures are untouched by the feature existing.
+            commitments: Vec<sure_core::ExpenseCommitment>,
         }
+        #[async_trait]
+        #[async_trait]
+        impl crate::ports::CommitmentRepo for FakeForecast {
+            async fn list_commitments(&self) -> AppResult<Vec<sure_core::ExpenseCommitment>> {
+                Ok(self.commitments.clone())
+            }
+            async fn get_commitment(&self, _: i64) -> AppResult<sure_core::ExpenseCommitment> {
+                unimplemented!("the projection only ever lists")
+            }
+            async fn create_commitment(
+                &self,
+                _: sure_core::SaveExpenseCommitment,
+            ) -> AppResult<sure_core::ExpenseCommitment> {
+                unimplemented!("the projection only ever lists")
+            }
+            async fn update_commitment(
+                &self,
+                _: i64,
+                _: sure_core::SaveExpenseCommitment,
+            ) -> AppResult<sure_core::ExpenseCommitment> {
+                unimplemented!("the projection only ever lists")
+            }
+            async fn delete_commitment(&self, _: i64) -> AppResult<()> {
+                unimplemented!("the projection only ever lists")
+            }
+        }
+
         #[async_trait]
         impl ForecastRepo for FakeForecast {
             async fn inflation_bps(&self) -> AppResult<i64> {
@@ -6363,7 +7120,7 @@ mod tests {
             });
             ForecastService::new(
                 fake_forecast.clone(),
-                fake_forecast,
+                fake_forecast.clone(),
                 Arc::new(FakeReports {
                     base_currency: "NZD".into(),
                     account_currencies,
@@ -6376,6 +7133,7 @@ mod tests {
                 Arc::new(FakeAccounts(accounts)),
                 Arc::new(FakeCrons),
                 Arc::new(FakeEquity),
+                fake_forecast.clone().clone(),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
         }
@@ -6405,7 +7163,7 @@ mod tests {
                     amount_minor: 400_000 + i * 1_000,
                     currency_code: "NZD".to_string(),
                 });
-                spend.push(SpendTransaction {
+                spend.push(crate::ports::SpendTransaction {
                     id: 0,
                     posted_at: date.to_string(),
                     amount_minor: 400_000 + i * 1_000,
@@ -6484,7 +7242,7 @@ mod tests {
                     amount_minor: 400_000 + i * 1_000,
                     currency_code: "NZD".to_string(),
                 });
-                spend.push(SpendTransaction {
+                spend.push(crate::ports::SpendTransaction {
                     id: 0, // no report in these tests reads the row id
                     posted_at: date.to_string(),
                     amount_minor: 400_000 + i * 1_000,
@@ -6810,7 +7568,7 @@ mod tests {
                     amount_minor: 500_000,
                     currency_code: "NZD".to_string(),
                 });
-                spend.push(SpendTransaction {
+                spend.push(crate::ports::SpendTransaction {
                     id: 0, // no report in these tests reads the row id
                     posted_at: date.to_string(),
                     amount_minor: 500_000,
@@ -7172,7 +7930,7 @@ mod tests {
             // to say which category this loan's servicing is filed under.
             let mut spend = Vec::new();
             for back in 1..=12i64 {
-                spend.push(SpendTransaction {
+                spend.push(crate::ports::SpendTransaction {
                     id: back,
                     posted_at: add_months(today, -back).to_string(),
                     amount_minor: -2_043_00,
@@ -7187,7 +7945,7 @@ mod tests {
                     merchant: None,
                     attribution: Ownership::Joint,
                 });
-                spend.push(SpendTransaction {
+                spend.push(crate::ports::SpendTransaction {
                     id: 100 + back,
                     posted_at: add_months(today, -back).to_string(),
                     amount_minor: 900_00,
@@ -7380,7 +8138,7 @@ mod tests {
             });
             ForecastService::new(
                 fake_forecast.clone(),
-                fake_forecast,
+                fake_forecast.clone(),
                 Arc::new(FakeReports {
                     base_currency: "NZD".into(),
                     account_currencies: accounts
@@ -7399,6 +8157,7 @@ mod tests {
                 Arc::new(FakeAccounts(accounts)),
                 Arc::new(FakeCrons),
                 Arc::new(FakeEquity),
+                fake_forecast.clone().clone(),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
         }
@@ -7584,7 +8343,7 @@ mod tests {
             });
             let svc = ForecastService::new(
                 fake.clone(),
-                fake,
+                fake.clone(),
                 Arc::new(FakeReports {
                     base_currency: "NZD".into(),
                     account_currencies: vec![AccountCurrency {
@@ -7600,6 +8359,7 @@ mod tests {
                 Arc::new(FakeAccounts(vec![account])),
                 Arc::new(FakeCrons),
                 Arc::new(FakeEquity),
+                fake.clone(),
                 Arc::new(crate::test_clock::FixedClock(today)),
             );
             let result = rt
@@ -7659,7 +8419,7 @@ mod tests {
             });
             ForecastService::new(
                 fake.clone(),
-                fake,
+                fake.clone(),
                 Arc::new(FakeReports {
                     base_currency: "NZD".into(),
                     account_currencies: vec![AccountCurrency {
@@ -7683,6 +8443,7 @@ mod tests {
                 Arc::new(FakeAccounts(vec![account(1, AK::Brokerage, "NZD")])),
                 Arc::new(FakeCrons),
                 Arc::new(FakeEquity),
+                fake.clone(),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
         }
@@ -8014,7 +8775,7 @@ mod tests {
                     amount_minor: amount,
                     currency_code: "NZD".to_string(),
                 });
-                spend.push(SpendTransaction {
+                spend.push(crate::ports::SpendTransaction {
                     id: 0, // no report in these tests reads the row id
                     posted_at: date.to_string(),
                     amount_minor: amount,
@@ -8154,7 +8915,7 @@ mod tests {
             });
             ForecastService::new(
                 fake_forecast.clone(),
-                fake_forecast,
+                fake_forecast.clone(),
                 Arc::new(FakeReports {
                     base_currency: "NZD".into(),
                     account_currencies: accounts
@@ -8173,6 +8934,7 @@ mod tests {
                 Arc::new(FakeAccounts(accounts)),
                 Arc::new(FakeCrons),
                 Arc::new(FakeEquity),
+                fake_forecast.clone().clone(),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
         }

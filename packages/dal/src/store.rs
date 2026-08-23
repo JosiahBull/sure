@@ -11,26 +11,27 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use sure_app::ports::{
     AccountCurrency, AccountRepo, ActiveAccount, Activity30dRow, AssetAccount, BrokerageRepo,
-    CategoryRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo, DividendImport, EquityRepo,
-    ExchangeRateRepo, ExchangeRateRow, ForecastRepo, FxRatesRepo, HoldingImport, HoldingRow,
-    HousePricerSubscription, ImportCounts, ImportHistoryRepo, ImportRow, IncomeRepo, LedgerTx,
-    LedgerValuation, MatchedIncomePayment, MerchantRepo, PersonRepo, PlannedApplication,
-    ProviderRepo, ReportCategory, ReportRepo, RuleRepo, SecuredLiabilityAccount, SettingsRepo,
-    SharesTicker, SnapshotRepo, StockPriceCacheRepo, TransactionRepo, TransferRepo, TxCtx,
-    ValuationRepo, WalletRow,
+    CategoryRepo, CommitmentRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo,
+    DividendImport, EquityRepo, ExchangeRateRepo, ExchangeRateRow, ForecastRepo, FxRatesRepo,
+    HoldingImport, HoldingRow, HousePricerSubscription, ImportCounts, ImportHistoryRepo, ImportRow,
+    IncomeRepo, LedgerTx, LedgerValuation, MatchedIncomePayment, MerchantRepo, PersonRepo,
+    PlannedApplication, ProviderRepo, ReportCategory, ReportRepo, RuleRepo,
+    SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo, StockPriceCacheRepo,
+    TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
     CronRunResult, Currency, DividendDetail, EquityEvent, EquityExercise, EquityGrant, EquityMark,
-    ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot, HousePricerLink,
-    ImportRecord, IncomePayment, IncomePaymentStatus, IncomeStream, LinkProviderAccount,
-    LinkProviderGroup, LinkRequest, MatchedBy, Merchant, NewCurrency, NewValuation, Ownership,
-    PayeBreakdown, Person, Provider, ProviderSync, RebuildResult, Rule, RuleApplicationDetail,
-    RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise,
-    SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot, SaveIncomeStream,
-    SaveMark, SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTaxScale, SaveTransaction,
-    Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId, Transaction, TransferRequest,
-    TxQuery, UpdateSettings, Valuation, ValuationQuery, VestingStatus,
+    ExpenseCommitment, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot,
+    HousePricerLink, ImportRecord, IncomePayment, IncomePaymentStatus, IncomeStream,
+    LinkProviderAccount, LinkProviderGroup, LinkRequest, MatchedBy, Merchant, NewCurrency,
+    NewValuation, Ownership, PayeBreakdown, Person, Provider, ProviderSync, RebuildResult, Rule,
+    RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
+    SaveExercise, SaveExpenseCommitment, SaveForecastAssumption, SaveForecastEvent, SaveGrant,
+    SaveHoldingLot, SaveIncomeStream, SaveMark, SaveMerchant, SavePerson, SaveProvider, SaveRule,
+    SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
+    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
+    VestingStatus,
 };
 
 use crate::Db;
@@ -1110,6 +1111,36 @@ impl CronRepo for SqliteStore {
 
     async fn undo_run(&self, run_id: i64) -> AppResult<()> {
         crate::crons::undo_run(&self.db, run_id).await
+    }
+}
+
+#[async_trait]
+impl CommitmentRepo for SqliteStore {
+    async fn list_commitments(&self) -> AppResult<Vec<ExpenseCommitment>> {
+        crate::commitments::list(&self.db).await
+    }
+
+    async fn get_commitment(&self, id: i64) -> AppResult<ExpenseCommitment> {
+        crate::commitments::get(&self.db, id).await
+    }
+
+    async fn create_commitment(
+        &self,
+        input: SaveExpenseCommitment,
+    ) -> AppResult<ExpenseCommitment> {
+        crate::commitments::create(&self.db, input).await
+    }
+
+    async fn update_commitment(
+        &self,
+        id: i64,
+        input: SaveExpenseCommitment,
+    ) -> AppResult<ExpenseCommitment> {
+        crate::commitments::update(&self.db, id, input).await
+    }
+
+    async fn delete_commitment(&self, id: i64) -> AppResult<()> {
+        crate::commitments::delete(&self.db, id).await
     }
 }
 
