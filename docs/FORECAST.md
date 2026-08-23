@@ -16,6 +16,7 @@ the ledger — unlike `crons`, which persists real rows.
 | A category's monthly baseline | mean of the trailing 12 complete months of its **current regime** — see "A level is not a trend" |
 | A category's growth | the one household rate, `settings.inflation_bps` (default 250 bps), unless overridden — never fitted |
 | A category with linked income streams | the **residual**: fitted baseline minus what the streams model |
+| A category carrying a loan's interest | the **residual**: fitted baseline minus the interest that loan's schedule charges |
 | A salary's take-home | an override, else "already net", else the **stored** tax scale in force on the date (`sure_core::tax`'s constants seed it and are the fallback) |
 | A KiwiSaver balance's growth | its own rate is discarded when linked; less any fund fee on the assumption |
 | The government's KiwiSaver contribution | matched against the member's own contributions only, capped, and income-tested |
@@ -67,6 +68,25 @@ baseline of the category it lands in. `income_streams.linked_category_id` is wha
 it twice — the category's baseline becomes the residual, and `reconciliations` reports modelled
 against recorded so a mistake is visible. Netting rather than excluding, because excluding would
 silently drop the income the streams do not explain (interest, a gift, an unmodelled second job).
+
+**Double counting loan interest.** The same defect on the other side of the ledger, and it cost a
+year's interest twice over. A repayment leaves as two legs: principal, which moves cash into the
+liability and nets out of net worth, and interest, which simply goes. `simulate` charges both to
+cash through `Repayment::cash_out`. The interest leg is *also* a genuine expense row, and it is
+normally recorded on the account the money came **from** — a revolving-credit facility, a chequing
+account — not on the loan, so `is_excluded_from_spend` (which only excludes the loan's own rows)
+does not reach it and it sits inside the fitted baseline of whatever category the household books
+interest into. Both mechanisms then spend it.
+
+The schedule wins and the fit defers, because the schedule is the better model of the same money on
+every axis: it declines as the balance amortises where a baseline is flat, it stops when the loan is
+repaid where a baseline runs to the horizon invoicing a mortgage that no longer exists, and it comes
+from the contract rather than from however many months of ledger happen to exist.
+`schedule_interest_by_category` nets it out, reading *which* category from the loan account's own
+repayment rows — the household's own filing of that loan's servicing, not a guess. A loan whose own
+rows are uncategorised is left alone and still double-counts: there is nothing in the data saying
+where its interest went, and the category keeps reporting `derived` rather than
+`modelled_from_schedule`, which is how you spot one.
 
 **Coverage over 100% is the gross/net mistake.** A modelled figure a fifth to a half above what the
 category recorded is the signature of a salary entered before tax and modelled as take-home. The

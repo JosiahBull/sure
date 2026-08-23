@@ -225,6 +225,24 @@ pub enum AssumptionSource {
     /// rather than an answer. The measured *volatility* is kept: month-to-month scatter is real
     /// either way.
     ContributionDriven,
+    /// An expense category whose fitted baseline has had a **loan's scheduled interest netted
+    /// out of it**, because an amortisation schedule already charges that interest to cash.
+    ///
+    /// The same defect [`AssumptionSource::ContributionDriven`] describes, on the other side of
+    /// the ledger. A repayment leaves the household as two legs: principal, which moves cash to
+    /// the liability and nets out of net worth, and interest, which simply goes. The interest leg
+    /// is a genuine expense and is *correctly* in the spend report — but it is very often recorded
+    /// on the account the payment came *from* (a revolving-credit facility, a chequing account)
+    /// rather than on the loan, and `is_excluded_from_spend` only excludes the loan's own rows. So
+    /// the fitted baseline of whatever category it lands in already contains the interest that
+    /// `Repayment::cash_out` is about to debit again.
+    ///
+    /// The schedule wins, and the fit defers, because the schedule is the better model of the same
+    /// money on every axis that matters: it declines as the balance amortises (a fitted baseline is
+    /// flat, or worse, trending), it stops when the loan is repaid (a baseline runs to the horizon,
+    /// invoicing a mortgage that no longer exists), and it comes from the contract rather than from
+    /// however many months of ledger happen to exist. See [`schedule_interest_by_category`].
+    ModelledFromSchedule,
     /// A `shares_private` account with grants — projected along its contractual vesting ramp
     /// rather than a fitted rate.
     ///
@@ -930,10 +948,23 @@ impl ForecastService {
     ) -> AppResult<Vec<ResolvedAssumption>> {
         let cats = &loads.cats;
         let from = today - chrono::Duration::days(31 * (CATEGORY_TREND_MONTHS + 1));
+        // One fetch, two consumers. The surviving rows are the spend the baselines are fitted
+        // from; the rows this drops include every loan account's own repayment legs, which is
+        // where `schedule_interest_by_category` reads which category a loan's interest is
+        // booked into. See `reports::filter_spend`.
+        let rows = self.reports.spend_transactions(from, today).await?;
+        let scheduled_interest = schedule_interest_by_category(
+            &loads.accounts,
+            &rows,
+            cats,
+            today,
+            fx,
+            &loads.ledger.0,
+            &loads.ledger.1,
+        );
         // The whole household: a forecast projects the household's finances, and splitting
         // it per person would need per-person income/expense assumptions that don't exist.
-        let spend =
-            reports::load_spend(self.reports.as_ref(), cats, from, today, false, None).await?;
+        let spend = reports::filter_spend(rows, cats, from, today, false, None);
         // One rate for the household, read once. Both sides of the ledger index at it — see
         // `AssumptionSource::Indexed`, and `income::level_schedule` for the income half.
         let inflation_bps = self.forecast.inflation_bps().await?;
@@ -956,15 +987,38 @@ impl ForecastService {
             // The volatility survives too: the month-to-month scatter around a flat line is
             // measured and real, and gating it on a *trend* having been fitted would claim a
             // category's spend is known to the cent.
-            let baseline_minor = fit.map(|f| fx.base_minor(f.baseline));
-
             let ov = overrides.get(&(ForecastTargetType::Category, id));
-            let (growth, vol, source) = resolve_category_growth(
+            let (growth, vol, mut source) = resolve_category_growth(
                 ov.and_then(|o| o.annual_growth_bps),
                 ov.and_then(|o| o.annual_volatility_bps),
                 fit.map(|f| f.vol_bps),
                 inflation_bps,
             );
+
+            // Net out interest an amortisation schedule already charges to cash, leaving the
+            // residual — the spending on this category the schedule does *not* explain. Clamped
+            // at zero and not below: a category that is nothing but one loan's interest resolves
+            // to a baseline of 0 and is projected entirely by its schedule, which is the point.
+            //
+            // Deliberately after `resolve_growth` and deliberately not touching `growth`. An
+            // explicit override is the user asserting a rate and is left exactly as asserted; the
+            // *level* is still double-counted money either way, so the subtraction is
+            // unconditional while the source only records the netting where it displaced a
+            // measured figure — `Indexed`, which is what a category with no override now resolves
+            // to. See `schedule_interest_by_category` for why the schedule wins.
+            // `CategoryFit::baseline` is already base-currency *major* units (see
+            // `category_monthly_totals`), as is the netted figure, so this is a subtraction in one
+            // unit with no conversion between them.
+            let baseline_minor = match (fit, scheduled_interest.get(&id)) {
+                (Some(f), Some(&modelled)) => {
+                    if source == AssumptionSource::Indexed {
+                        source = AssumptionSource::ModelledFromSchedule;
+                    }
+                    Some(fx.base_minor((f.baseline - modelled).max(0.0)))
+                }
+                (Some(f), None) => Some(fx.base_minor(f.baseline)),
+                (None, Some(_) | None) => None,
+            };
 
             out.push(ResolvedAssumption {
                 target_type: ForecastTargetType::Category,
@@ -1392,13 +1446,22 @@ impl ForecastService {
                 monthly_drift,
                 vesting_value,
                 // Exactly the kinds whose own ledger rows are kept out of the income/
-                // expense report: that exclusion is what guarantees the repayment isn't
-                // already inside a category baseline. `StudentLoan` is excluded from
-                // spend too but must not debit — see the field's doc comment. Since it
-                // acquired its own schedule-less profile that exclusion is belt-and-braces
-                // (this flag is only read on the deterministic branch, which a student loan
-                // can no longer reach), and it is kept because it costs nothing and states
-                // the intent where the reader is looking.
+                // expense report. `StudentLoan` is excluded from spend too but must not
+                // debit — see the field's doc comment. Since it acquired its own
+                // schedule-less profile that exclusion is belt-and-braces (this flag is
+                // only read on the deterministic branch, which a student loan can no
+                // longer reach), and it is kept because it costs nothing and states the
+                // intent where the reader is looking.
+                //
+                // This exclusion used to be described here as what *guarantees* the
+                // repayment isn't already inside a category baseline. It does not, and the
+                // gap cost a year's interest twice over on the real database. It reasons
+                // about the rows on the loan account, but a repayment is recorded against
+                // two accounts and the interest leg is normally booked on the one the money
+                // came *from* — a facility, a chequing account — which is not excluded and
+                // has nothing on the loan side to be linked to. What closes it is
+                // `schedule_interest_by_category`, which nets that interest out of the
+                // category it lands in; read its doc comment before touching this flag.
                 repayment_debits_cash: reports::is_excluded_from_spend(a.kind)
                     && a.kind != AccountKind::StudentLoan,
                 // Strictly negative: a liability recorded at exactly zero is already paid off,
@@ -3516,6 +3579,10 @@ fn long_run_anchor(a: &ResolvedAssumption) -> Option<i64> {
         // streams themselves carry their own dated schedule. Decaying the residual would be decaying
         // a leftover, which says nothing about the long run either way, so it is left flat.
         AssumptionSource::ModelledFromIncome => None,
+        // Likewise a residual, and for the same reason: what is left after a loan's scheduled
+        // interest is netted out is the spending the schedule does not explain. The interest itself
+        // decays on its own terms — the balance amortises — inside the schedule, not here.
+        AssumptionSource::ModelledFromSchedule => None,
         // The rate here is already the long-run anchor (or an override that was left alone), because
         // the fitted one was discarded — so there is nothing left to decay toward.
         AssumptionSource::ContributionDriven => None,
@@ -3729,6 +3796,112 @@ fn loan_terms(metadata: &AccountMetadata, today: NaiveDate) -> Option<LoanTerms>
         refix,
         monthly_repayment: monthly_repayment(repayment, frequency),
     })
+}
+
+/// How much scheduled loan interest each expense category is already being charged, in
+/// base-currency major units per month — the amount that must be netted out of that category's
+/// fitted baseline so it is not spent twice.
+///
+/// # Why this exists
+///
+/// A loan repayment leaves the household as two legs. The principal moves cash into the
+/// liability and nets out of net worth; the interest simply goes. `simulate` charges **both** to
+/// cash through [`Repayment::cash_out`], gated on [`AccountSim::repayment_debits_cash`] — and the
+/// comment at that field's construction argues the gate is safe because
+/// `reports::is_excluded_from_spend` keeps the loan's own ledger rows out of the spend report, so
+/// no category baseline can already contain the repayment.
+///
+/// That argument is *incomplete*, and this is the gap. It reasons about the rows on the loan
+/// account. But a repayment is recorded against two accounts, and the interest leg is routinely
+/// booked on the account the money came **from** — a revolving-credit facility, a chequing
+/// account — which `is_excluded_from_spend` does not exclude and which is very often not linked to
+/// anything (there is nothing on the loan side to link an interest leg *to*, since the loan's own
+/// row is the principal). Such a leg is an ordinary expense row, lands in whatever category the
+/// household books interest into, and is therefore inside that category's fitted baseline while
+/// `cash_out` debits the very same interest from cash again.
+///
+/// # Which category
+///
+/// Read off the loan's own ledger, not configured and not guessed: the category the household
+/// assigned to that loan account's **own** repayment rows. Those rows are the principal legs, they
+/// are excluded from spend (so they contribute nothing themselves), and whatever category they
+/// carry is by construction the one the household files this loan's servicing under. The modal
+/// category wins, ties broken by the lowest id so a re-run cannot reorder the answer.
+///
+/// A loan whose own rows are all uncategorised yields nothing and is left alone — the double count
+/// stays, which is the honest outcome: there is no evidence in the data saying where its interest
+/// went, and subtracting from a category picked by resemblance would be a guess dressed up as a
+/// fix. Such a loan is visible as a category still reporting [`AssumptionSource::Derived`].
+///
+/// # Which amount
+///
+/// Month one's interest from [`AmortSchedule::expected`] — the same constructor the projection
+/// uses, so the netted figure and the charged figure cannot drift apart. Deliberately the
+/// *expected* schedule rather than a per-path one: a baseline is resolved once for the whole run,
+/// before any path exists, and `expected` is already the shared "what the UI is shown" view.
+///
+/// The netted amount is constant while the schedule's interest declines, which is the same shape
+/// the income side already has (a stream's level evolves; the residual netted out of its category
+/// does not) and errs the safe way — the residual cannot grow to re-absorb interest the schedule
+/// has stopped charging.
+fn schedule_interest_by_category(
+    accounts: &[sure_core::Account],
+    rows: &[crate::ports::SpendTransaction],
+    cats: &reports::Categories,
+    today: NaiveDate,
+    fx: &Fx,
+    tx_by_acct: &HashMap<i64, Vec<(NaiveDate, i64, String)>>,
+    val_by_acct: &HashMap<i64, Vec<(NaiveDate, i64, String)>>,
+) -> HashMap<i64, f64> {
+    let mut out: HashMap<i64, f64> = HashMap::new();
+    for a in accounts {
+        // Only a loan the projection actually amortises, and only one whose schedule debits cash
+        // — exactly the two conditions under which `simulate` charges interest a second time.
+        let Some(terms) = loan_terms(&a.metadata, today) else {
+            continue;
+        };
+        if !(reports::is_excluded_from_spend(a.kind) && a.kind != AccountKind::StudentLoan) {
+            continue;
+        }
+        let Some(category_id) = interest_category_of(a.id, rows, cats) else {
+            continue;
+        };
+        let Some((current_minor, _)) =
+            reports::account_value_at(a.id, &a.currency_code, today, fx, tx_by_acct, val_by_acct)
+        else {
+            continue;
+        };
+        let Some(base_scale) = fx.try_base_scale(&a.currency_code) else {
+            continue;
+        };
+        let mut schedule = AmortSchedule::expected(&terms, current_minor as f64, today);
+        let interest = schedule.advance(1).interest * base_scale;
+        if interest > 0.0 {
+            *out.entry(category_id).or_default() += interest;
+        }
+    }
+    out
+}
+
+/// The top-level category this account's own rows are booked into: the modal one, ties broken by
+/// the lowest id. `None` when the account has no categorised rows at all.
+fn interest_category_of(
+    account_id: i64,
+    rows: &[crate::ports::SpendTransaction],
+    cats: &reports::Categories,
+) -> Option<i64> {
+    let mut counts: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+    for t in rows.iter().filter(|t| t.account_id == account_id) {
+        if let Some(cid) = t.category_id {
+            *counts.entry(cats.top_ancestor(cid)).or_default() += 1;
+        }
+    }
+    // `max_by_key` over a BTreeMap keeps the *last* maximum, so the count is negated to make the
+    // lowest id win a tie rather than the highest.
+    counts
+        .into_iter()
+        .max_by_key(|&(id, n)| (n, std::cmp::Reverse(id)))
+        .map(|(id, _)| id)
 }
 
 /// A contractual repayment normalised to a monthly amount. Annualised (×52/12, ×26/12)
@@ -6857,6 +7030,129 @@ mod tests {
             assert!(
                 (20_000_00..30_000_00).contains(&drop),
                 "expected roughly a year of interest, got {drop}"
+            );
+        }
+
+        /// The other half of the test above: the interest must leave cash **exactly once**.
+        ///
+        /// The arrangement this pins is the ordinary one, not a corner case. A repayment is two
+        /// legs, and the interest leg is very often recorded on the account the money came *from*
+        /// — here a revolving-credit facility — rather than on the mortgage. `is_excluded_from_spend`
+        /// only excludes the loan's own rows, so that leg is an ordinary expense row, lands in
+        /// whatever category the household books interest into, and used to sit inside that
+        /// category's fitted baseline while `Repayment::cash_out` debited the very same interest
+        /// again. On the real database that was ~$1,990/mo counted twice for the whole horizon.
+        ///
+        /// Built so the two mechanisms would disagree loudly if they were both live: the whole of
+        /// the `Interest charged` category here *is* the mortgage's interest, so a correct run
+        /// nets the baseline to zero and charges interest once, from the schedule.
+        #[test]
+        fn simulate_charges_scheduled_interest_once() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let yesterday = today - chrono::Duration::days(1);
+
+            // ~5.12% on ~$479k is ~$2,043/mo of interest. Twelve complete months of it as
+            // expense rows on the revolving-credit facility, which is what the bank's export
+            // actually produces, plus the mortgage's own principal legs — linked, and on a
+            // mortgage-kind account, so they are excluded from spend twice over and are here only
+            // to say which category this loan's servicing is filed under.
+            let mut spend = Vec::new();
+            for back in 1..=12i64 {
+                spend.push(SpendTransaction {
+                    id: back,
+                    posted_at: add_months(today, -back).to_string(),
+                    amount_minor: -2_043_00,
+                    currency_code: "NZD".into(),
+                    category_id: Some(1),
+                    is_one_off: false,
+                    linked_transaction_id: None,
+                    account_id: 3,
+                    account_name: "The Facility".into(),
+                    account_kind: AK::RevolvingCredit,
+                    merchant_id: None,
+                    merchant: None,
+                    attribution: Ownership::Joint,
+                });
+                spend.push(SpendTransaction {
+                    id: 100 + back,
+                    posted_at: add_months(today, -back).to_string(),
+                    amount_minor: 900_00,
+                    currency_code: "NZD".into(),
+                    category_id: Some(1),
+                    is_one_off: false,
+                    linked_transaction_id: Some(back),
+                    account_id: 1,
+                    account_name: "Mortgage".into(),
+                    account_kind: AK::Mortgage,
+                    merchant_id: None,
+                    merchant: None,
+                    attribution: Ownership::Joint,
+                });
+            }
+
+            let svc = make_service(
+                vec![
+                    mortgage(1, asb_terms(None, None)),
+                    account(2, AK::Bank, "NZD"),
+                ],
+                vec![
+                    valued(1, yesterday, -478_940_17),
+                    valued(2, yesterday, 200_000_00),
+                ],
+                Vec::new(),
+                vec![ReportCategory {
+                    id: 1,
+                    parent_id: None,
+                    name: "Interest charged".into(),
+                    color: None,
+                    kind: CategoryKind::Expense,
+                }],
+                spend,
+                Vec::new(),
+                today,
+            );
+
+            let inputs = rt
+                .block_on(svc.simulate_inputs(&SimulationParams {
+                    horizon_months: 12,
+                    simulations: 100,
+                    currency: None,
+                    seed: Some(3),
+                }))
+                .unwrap();
+
+            // The category is recognised as the loan's, and netted to nothing: every dollar in it
+            // was the schedule's interest.
+            let interest = inputs
+                .assumptions
+                .iter()
+                .find(|a| {
+                    a.target_type == ForecastTargetType::Category && a.label == "Interest charged"
+                })
+                .expect("the interest category should resolve an assumption");
+            assert_eq!(
+                interest.source,
+                AssumptionSource::ModelledFromSchedule,
+                "the schedule should have claimed this category"
+            );
+            assert_eq!(
+                interest.baseline_minor,
+                Some(0),
+                "the whole baseline was the schedule's interest, so nothing should be left"
+            );
+
+            // And the net-worth drop is one year of interest, not two. The bound is the same one
+            // `simulate_debits_cash_for_the_repayment` asserts, which is the point: adding the
+            // ledger rows for the interest must not change the answer. Before the fix this ran to
+            // $44,745.71 — one year of interest charged very nearly twice.
+            let result = ForecastService::simulate_from(inputs).unwrap();
+            let drop =
+                result.months[0].net_worth.median_minor - result.months[11].net_worth.median_minor;
+            assert!(
+                (20_000_00..30_000_00).contains(&drop),
+                "expected one year of interest, got {drop} — a figure near $45k means it is \
+                 being charged twice"
             );
         }
 

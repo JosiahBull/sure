@@ -6327,7 +6327,7 @@ export interface components {
          */
         AreaUnit: "sqft" | "sqm";
         /** @enum {string} */
-        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history" | "contribution_driven" | "modelled_from_income" | "vesting_schedule";
+        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history" | "contribution_driven" | "modelled_from_income" | "indexed" | "modelled_from_schedule" | "vesting_schedule";
         BackfillResult: {
             /**
              * Format: int64
@@ -8435,6 +8435,28 @@ export interface components {
              *     grows forward from.
              */
             baseline_minor?: number | null;
+            /**
+             * Format: int64
+             * @description Only set for categories: what this category's own history says its trend is, annualised in
+             *     basis points — **evidence, not an input.** The projection runs at the household inflation
+             *     rate; this is here so a reader can see what they would be disagreeing with, and so the
+             *     override form can be pre-filled from it. Absent when the window cannot support a
+             *     direction, which is a different claim from zero.
+             */
+            measured_growth_bps?: number | null;
+            /**
+             * Format: int64
+             * @description Only set for categories: how many months `baseline_minor` was measured over, after
+             *     leading empty months and any structural break were dropped. The figure a reader needs
+             *     in order to know what the baseline is worth.
+             */
+            fitted_months?: number | null;
+            /**
+             * Format: int64
+             * @description Only set for categories: months back to a detected change in level, or absent when the
+             *     window is one regime. What the row's explanation and the sparkline's rule are drawn from.
+             */
+            break_months_ago?: number | null;
             schedule?: null | components["schemas"]["LoanScheduleSummary"];
             vesting?: null | components["schemas"]["VestingSummary"];
             /** @description The account's own currency, for formatting `schedule`. Absent for a category. */
@@ -8905,6 +8927,13 @@ export interface components {
              *     this clamped to the `SURE_MCP` ceiling — see [`SettingsView::mcp_ceiling`].
              */
             mcp_mode: components["schemas"]["McpMode"];
+            /**
+             * Format: int64
+             * @description One household inflation rate, basis points a year, applied to every forecast category the
+             *     user has not overridden. See `0041_inflation_setting.sql` for why a fitted per-category
+             *     rate was the wrong shape, and `sure_app::forecast`'s `AssumptionSource::Indexed`.
+             */
+            inflation_bps: number;
             updated_at: string;
         };
         /**
@@ -9207,6 +9236,12 @@ export interface components {
         UpdateSettings: {
             base_currency_code: string;
             mcp_mode?: null | components["schemas"]["McpMode"];
+            /**
+             * Format: int64
+             * @description Absent leaves the stored rate alone, for the same reason `mcp_mode` is optional: the
+             *     settings page predates this field and still sends a body without it.
+             */
+            inflation_bps?: number | null;
         };
         /**
          * @description A point-in-time value for an account (property price, share holding value, loan

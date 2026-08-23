@@ -74,6 +74,14 @@ pub enum AssumptionSource {
     /// its trend at all; fitting one anyway put six of seven categories on the ±25%/yr clamp,
     /// every one of them a level shift after a house purchase read as a compounding rate.
     Indexed,
+    /// This category's baseline has had a loan's **scheduled interest** netted out of it, because
+    /// the amortisation schedule already charges that interest to cash. `baseline_minor` is the
+    /// residual — the spending here the schedule does not explain — so a zero one means this
+    /// category is nothing but loan interest and is projected entirely by the loan's own terms.
+    ///
+    /// Without this the same interest left cash twice: once inside the fitted baseline of whatever
+    /// category the interest leg was booked to, and again inside the schedule's repayment.
+    ModelledFromSchedule,
     /// A private holding with equity grants: projected along its contractual vesting schedule
     /// rather than a rate fitted from its own history. `vesting` says what is still to come.
     ///
@@ -93,6 +101,7 @@ impl From<sure_app::forecast::AssumptionSource> for AssumptionSource {
             S::Deterministic => AssumptionSource::Deterministic,
             S::InsufficientHistory => AssumptionSource::InsufficientHistory,
             S::ModelledFromIncome => AssumptionSource::ModelledFromIncome,
+            S::ModelledFromSchedule => AssumptionSource::ModelledFromSchedule,
             S::ContributionDriven => AssumptionSource::ContributionDriven,
             S::VestingSchedule => AssumptionSource::VestingSchedule,
             S::Indexed => AssumptionSource::Indexed,
