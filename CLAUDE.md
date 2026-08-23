@@ -183,7 +183,9 @@ string and again as minor units, with and without digit grouping (`400.00`, `400
   `gen:client` then `cargo build --release` then the web build; `pnpm test` runs
   `test:rust` (`cargo test --workspace --all-features`) then `test:api`
   (`@sure/api-tests`, Playwright-driven backend e2e) then `test:web`;
-  `pnpm lint:rust` is `cargo clippy --all-targets -- -D warnings`; `pnpm fmt:rust` is
+  `pnpm lint:rust` is `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+  — deliberately the *same* invocation `.githooks/pre-commit` runs, because a differing
+  feature union is a second full set of build artifacts cargo never reclaims; `pnpm fmt:rust` is
   `cargo fmt --all`; `pnpm sqlx:prepare` regenerates the compile-time query metadata in
   `.sqlx/` and `pnpm sqlx:check` verifies it is current (see the query-checking convention
   below). `test:rust` carries `--all-features` but deliberately *not*
