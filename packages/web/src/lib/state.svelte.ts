@@ -1,8 +1,9 @@
 // Global, reactive report filters shared across pages (time range + one-off toggle).
 
-export type RangeKey = "last_month" | "last_90" | "ytd" | "last_12m" | "all";
+export type RangeKey = "last_30" | "last_month" | "last_90" | "ytd" | "last_12m" | "all";
 
 export const RANGES: { key: RangeKey; label: string }[] = [
+  { key: "last_30", label: "Last 30 days" },
   { key: "last_month", label: "Last month" },
   { key: "last_90", label: "Last 90 days" },
   { key: "ytd", label: "Year to date" },
@@ -33,8 +34,16 @@ export function attributionParam(): string | undefined {
   return key.startsWith("person:") ? key.slice("person:".length) : key;
 }
 
+/**
+ * A date as the calendar day it is *here*, not in UTC. `toISOString()` would answer for
+ * UTC, which in NZ (UTC+12/13) is the previous day for the whole local morning — so a
+ * range asked for at 9am started a day early, and "Last month" would name the wrong month
+ * outright, its boundaries being midnight-adjacent by construction.
+ */
 function iso(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const m = `${d.getMonth() + 1}`.padStart(2, "0");
+  const day = `${d.getDate()}`.padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
 }
 
 /** Resolve the active range to `{ from, to }` ISO dates (empty for "all time"). */
@@ -43,8 +52,19 @@ export function rangeDates(range: RangeKey = filters.range): { from?: string; to
   const to = iso(now);
   const d = new Date(now);
   switch (range) {
-    case "last_month":
-      d.setMonth(d.getMonth() - 1);
+    // The previous *calendar* month: a closed window that ends before today, which is what
+    // "last month" means when you say it out loud ("what did August cost?"). The rolling
+    // month-back window it used to mean is "Last 30 days", below.
+    case "last_month": {
+      const start = new Date(now);
+      start.setDate(1);
+      start.setMonth(start.getMonth() - 1);
+      const end = new Date(now);
+      end.setDate(0);
+      return { from: iso(start), to: iso(end) };
+    }
+    case "last_30":
+      d.setDate(d.getDate() - 30);
       return { from: iso(d), to };
     case "last_90":
       d.setDate(d.getDate() - 90);
