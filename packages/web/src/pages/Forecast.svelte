@@ -41,16 +41,15 @@
   });
   const horizon = $derived.by(() => {
     const h = Number(queryParams().get("h"));
-    return HORIZONS.some((x) => x.months === h) ? h : 12;
+    return HORIZONS.some((x) => x.months === h) ? h : HORIZONS[0].months;
   });
 
   let history = $state<{ x: string; y: number }[]>([]);
   let result = $state<Schemas["ForecastResult"] | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let hoverPoint = $state<{ as_of: string; median: number; p10?: number; p90?: number } | null>(
-    null
-  );
+  type Readout = { as_of: string; median: number; p10?: number; p90?: number };
+  let hoverPoint = $state<Readout | null>(null);
 
   async function load() {
     loading = true;
@@ -84,6 +83,12 @@
   });
 
   const currency = $derived(result?.currency ?? "NZD");
+  /** The hovered point, or — with the pointer off the chart — the last actual. */
+  const readout = $derived.by<Readout | null>(() => {
+    if (hoverPoint) return hoverPoint;
+    const last = history.at(-1);
+    return last ? { as_of: last.x, median: last.y } : null;
+  });
   // Derived from the horizon and passed to the chart as well, so the tiles and the marks on the
   // chart cannot disagree about which months they describe.
   const checkpoints = $derived(checkpointsFor(horizon));
@@ -223,20 +228,26 @@
       shaded band = P10–P90 across {result ? `${result.simulations.toLocaleString()} paths` : "…"}
     </span>
   </div>
-  {#if hoverPoint}
-    <div class="stat" style="margin-bottom:10px">
-      <div class="value tabular">{formatMoney(hoverPoint.median, currency)}</div>
-      <div class="label">
-        {formatDate(hoverPoint.as_of)}
-        {#if hoverPoint.p10 != null && hoverPoint.p90 != null}
-          · range {formatMoney(hoverPoint.p10, currency)} – {formatMoney(
-            hoverPoint.p90,
-            currency
-          )}
+  <!-- Always rendered, never `{#if hoverPoint}`. Mounting this on hover pushed the chart down by
+       its own height, which moved the line out from under the pointer and immediately unhovered
+       it — the chart flickered up and down as long as the cursor sat near the top of the plot.
+       At rest it reads the latest actual, so the space is occupied by something useful rather
+       than reserved by an empty box. -->
+  <div class="stat readout" style="margin-bottom:10px">
+    <div class="value tabular">{readout ? formatMoney(readout.median, currency) : "—"}</div>
+    <div class="label">
+      {#if readout}
+        {formatDate(readout.as_of)}
+        {#if readout.p10 != null && readout.p90 != null}
+          · range {formatMoney(readout.p10, currency)} – {formatMoney(readout.p90, currency)}
+        {:else if !hoverPoint}
+          · latest actual
         {/if}
-      </div>
+      {:else}
+        &nbsp;
+      {/if}
     </div>
-  {/if}
+  </div>
   <ForecastChart
     {history}
     months={result?.months ?? []}
@@ -279,6 +290,13 @@
 {/if}
 
 <style>
+  /* One line, always: the range only appears on a projected point, and letting it wrap would
+     reintroduce the very height change this readout was made permanent to avoid. */
+  .readout .label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   /* Lifted from Transactions.svelte rather than promoted to app.css: two copies is not yet a
      pattern, and the repo's precedent (.chip-row, .swatches, .confirm) is that page-local styles
      stay page-local until a third caller turns up. */
