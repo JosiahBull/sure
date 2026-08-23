@@ -21,7 +21,7 @@
 //! snapshot of current state; see `docs/architecture-refactor.md` for why this can't just
 //! extend `crons`, which persists real rows when it runs.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate};
@@ -432,8 +432,10 @@ pub struct Milestone {
 /// a net-worth band and obvious here.
 #[derive(Debug, Clone)]
 pub struct StreamReconciliation {
-    /// `None` when the streams covering this category are the household's rather than one
-    /// person's — rent from a flatmate has no individual to attribute the coverage to.
+    /// `None` when the coverage is not one person's to claim: because the streams are the
+    /// household's (rent from a flatmate has no individual to attribute it to), or because two
+    /// people are paid into the same category and `observed_net_minor` — one recorded total for
+    /// the whole category — cannot be split between them.
     pub person_id: Option<i64>,
     pub category_id: i64,
     pub category_label: String,
@@ -1094,8 +1096,11 @@ impl ForecastService {
         let mut stream_sims: Vec<StreamSim> = Vec::new();
         let mut unmodelled_streams: Vec<String> = Vec::new();
         let mut pay_steps: Vec<PayStep> = Vec::new();
-        // Modelled monthly net per linked category, base-currency major units.
-        let mut modelled_by_category: HashMap<i64, (Option<i64>, f64)> = HashMap::new();
+        // Modelled monthly net per linked category, base-currency major units, beside the distinct
+        // owners whose streams built it. The owner *set* rather than one owner: one "Salary"
+        // category for a two-earner household is the ordinary arrangement, not a corner case, and
+        // keeping only the first stream's person put one person's salary on the other's card.
+        let mut modelled_by_category: HashMap<i64, (BTreeSet<Option<i64>>, f64)> = HashMap::new();
 
         // A person's brackets are progressive over their *total* gross, so the level every gross
         // stream is taxed against is the sum of them — pricing each alone would tax each as if the
@@ -1209,10 +1214,25 @@ impl ForecastService {
             // that is the like-for-like comparison.
             let annual_net = take_home.net_annual(start_level, start_level);
             let monthly_net_base = annual_net / 12.0 * base_scale;
-            if let Some(cat) = st.linked_category_id {
-                let entry = modelled_by_category
-                    .entry(cat)
-                    .or_insert((st.ownership.person_id(), 0.0));
+            // Only a stream paid from the projection's first month. Netting is a whole-horizon
+            // substitution — the category's baseline is *replaced* by the residual for every
+            // month — so only a stream that covers every one of those months can stand in for
+            // it. A stream starting seven months out contributes nothing to the six before it,
+            // and counting it nets a baseline it never contributed to and reports a coverage gap
+            // the size of a job nobody has begun.
+            //
+            // The test is `active_from`, not `starts_on` against today, because `starts_on` is
+            // when the *projection* starts paying a stream rather than when the job began:
+            // recording an existing salary with its next payday as the start date is the
+            // ordinary way to enter one, and that stream is exactly what the category has been
+            // recording all year. `active_window` clamps to 1, so month 1 is "immediately".
+            // A stream that has already *ended* never reaches here at all — `active_window`
+            // returned `None` above and skipped it.
+            if active_from <= 1
+                && let Some(cat) = st.linked_category_id
+            {
+                let entry = modelled_by_category.entry(cat).or_default();
+                entry.0.insert(st.ownership.person_id());
                 entry.1 += monthly_net_base;
             }
 
@@ -1247,7 +1267,18 @@ impl ForecastService {
             // — not zero — is what the fitted trend still projects: excluding the category outright
             // would silently drop the income the streams do not explain (interest, a gift, a second
             // job nobody modelled).
-            if let Some(&(person_id, modelled)) = modelled_by_category.get(&a.target_id) {
+            if let Some((owners, modelled)) = modelled_by_category.get(&a.target_id) {
+                let modelled = *modelled;
+                // Whose pay this is — `Some` only when every stream landing here belongs to the
+                // same person. `observed` is the whole category's recorded total and there is
+                // nothing here that could honestly split it between two earners, so a shared
+                // category is reported as the household's rather than filed under whichever
+                // stream happened to be iterated first.
+                let person_id = if owners.len() == 1 {
+                    owners.iter().next().copied().flatten()
+                } else {
+                    None
+                };
                 let observed = a
                     .baseline_minor
                     .and_then(|m| fx.try_to_base_major(m, &base))
@@ -5529,6 +5560,174 @@ mod tests {
                 .map(|p| (p.stream_label.as_str(), p.label.as_deref(), p.month))
                 .collect();
             assert_eq!(labels, vec![("Teaching salary", Some("Step 5"), 7)]);
+        }
+
+        /// One salary category, one stream paid into it, and twelve months of deposits — the
+        /// shape every reconciliation panel is read off.
+        ///
+        /// Net-basis streams throughout: take-home is then the recorded figure by definition,
+        /// so the assertions below are about *whose* pay is counted and *when*, which is what
+        /// these tests are for, rather than re-deriving PAYE (`crate::income`'s own tests).
+        fn reconciliation_service(
+            streams: Vec<sure_core::IncomeStream>,
+            today: NaiveDate,
+        ) -> ForecastService {
+            // A deposit a month for the year before `today` — $5 000/mo, flat, so the fitted
+            // baseline is exactly $5 000. The current month is deliberately absent:
+            // `category_monthly_totals` skips it (it is incomplete), and a row there would
+            // only be dropped again.
+            let spend: Vec<SpendTransaction> = (1..=12)
+                .map(|back| SpendTransaction {
+                    id: back,
+                    posted_at: add_months(today, -back).to_string(),
+                    amount_minor: 5_000_00,
+                    currency_code: "NZD".into(),
+                    category_id: Some(1),
+                    is_one_off: false,
+                    linked_transaction_id: None,
+                    account_id: 1,
+                    account_name: "Bank".into(),
+                    account_kind: AK::Bank,
+                    merchant_id: None,
+                    merchant: None,
+                    attribution: Ownership::Joint,
+                })
+                .collect();
+
+            let fake = Arc::new(FakeForecast {
+                events: Vec::new(),
+                overrides: Vec::new(),
+                streams,
+            });
+            ForecastService::new(
+                fake.clone(),
+                fake,
+                Arc::new(FakeReports {
+                    base_currency: "NZD".into(),
+                    account_currencies: vec![AccountCurrency {
+                        id: 1,
+                        currency_code: "NZD".into(),
+                        ownership: Ownership::Joint,
+                        excluded_from_net_worth: false,
+                    }],
+                    valuations: vec![valued(1, today - chrono::Duration::days(1), 10_000_00)],
+                    categories: vec![ReportCategory {
+                        id: 1,
+                        parent_id: None,
+                        name: "Salary".into(),
+                        color: None,
+                        kind: CategoryKind::Income,
+                    }],
+                    spend_transactions: spend,
+                    ..Default::default()
+                }),
+                Arc::new(FakeFx),
+                Arc::new(FakeAccounts(vec![account(1, AK::Brokerage, "NZD")])),
+                Arc::new(FakeCrons),
+                Arc::new(crate::test_clock::FixedClock(today)),
+            )
+        }
+
+        /// A net stream linked to category 1, owned by `person_id`, starting on `starts_on`.
+        fn linked_stream(
+            id: i64,
+            person_id: i64,
+            annual_minor: i64,
+            starts_on: NaiveDate,
+        ) -> sure_core::IncomeStream {
+            sure_core::IncomeStream {
+                id,
+                ownership: Ownership::Person { person_id },
+                annual_amount_minor: annual_minor,
+                basis: sure_core::IncomeBasis::Net,
+                student_loan: false,
+                student_loan_account_id: None,
+                kiwisaver_bps: 0,
+                employer_kiwisaver_bps: 0,
+                first_payment_on: starts_on.to_string(),
+                starts_on: starts_on.to_string(),
+                linked_category_id: Some(1),
+                ..repaying_stream(1, starts_on)
+            }
+        }
+
+        fn reconcile(streams: Vec<sure_core::IncomeStream>, today: NaiveDate) -> ForecastResult {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(
+                    reconciliation_service(streams, today).simulate(&SimulationParams {
+                        horizon_months: 24,
+                        simulations: 20,
+                        currency: None,
+                        seed: Some(7),
+                    }),
+                )
+                .unwrap()
+        }
+
+        /// Every stream paid from the projection's first month is reconciled; a stream that
+        /// starts later is projected but not reconciled.
+        ///
+        /// Both sides of one boundary, and the boundary is `active_from` rather than `starts_on`
+        /// against today. `starts_on` is when the *projection* starts paying a stream, not when
+        /// the job began — recording an existing salary with its next payday as the start date
+        /// is the ordinary way to enter one, and that stream is exactly what the category has
+        /// been recording all year, so it must be netted out or the income is counted twice
+        /// (`specs/income.spec.ts`, which is what caught the first attempt at this).
+        ///
+        /// A stream seven months out is the other case: counting it put a second earner's whole
+        /// salary into one person's coverage figure — 166% covered, with the panel advising that
+        /// a figure was too high or linked to the wrong category, when every figure was right.
+        #[test]
+        fn only_a_stream_paid_from_the_first_month_is_reconciled() {
+            let today = d("2026-08-01");
+            // Already running, and one whose first payday is next month: both are income the
+            // category is already recording, so both are netted.
+            let running = linked_stream(1, 1, 48_000_00, add_months(today, -6));
+            let starting = linked_stream(2, 1, 12_000_00, add_months(today, 1));
+            // A job that begins next March, which the trailing twelve months know nothing of.
+            let later = linked_stream(3, 2, 84_000_00, add_months(today, 7));
+            let result = reconcile(vec![running, starting, later], today);
+
+            let recon = match result.reconciliations.as_slice() {
+                [only] => only,
+                other => panic!("expected exactly one reconciliation, got {other:?}"),
+            };
+            assert_eq!(
+                recon.person_id,
+                Some(1),
+                "the only earner being paid in month one"
+            );
+            // $4 000 + $1 000, and nothing of the $7 000/mo that starts in month seven.
+            assert_eq!(recon.modelled_net_minor, 5_000_00);
+            assert_eq!(recon.observed_net_minor, 5_000_00);
+            assert_eq!(recon.coverage_bps, 10_000);
+            // …and the later stream is still projected: it just isn't netted out of a baseline
+            // it has never contributed to.
+            assert_eq!(recon.residual_minor, 0);
+        }
+
+        /// Two people paid into one category is reported as the household's, not as either
+        /// person's.
+        ///
+        /// `observed_net_minor` is one recorded total for the whole category and nothing here
+        /// could honestly split it between two earners. Filing the row under whichever stream
+        /// was iterated first is what put a teaching salary on somebody else's card.
+        #[test]
+        fn a_category_two_people_are_paid_into_reconciles_as_the_household() {
+            let today = d("2026-08-01");
+            let mine = linked_stream(1, 1, 60_000_00, add_months(today, -6));
+            let theirs = linked_stream(2, 2, 84_000_00, add_months(today, -6));
+            let result = reconcile(vec![mine, theirs], today);
+
+            let recon = match result.reconciliations.as_slice() {
+                [only] => only,
+                other => panic!("expected exactly one reconciliation, got {other:?}"),
+            };
+            assert_eq!(recon.person_id, None, "neither earner's alone to claim");
+            assert_eq!(recon.modelled_net_minor, 12_000_00);
+            assert_eq!(recon.observed_net_minor, 5_000_00);
+            assert_eq!(recon.coverage_bps, 24_000);
         }
 
         /// A debt being repaid reports the month it clears, derived rather than configured.
