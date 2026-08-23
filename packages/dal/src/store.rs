@@ -1119,6 +1119,10 @@ impl ForecastRepo for SqliteStore {
         crate::forecast::list_assumptions(&self.db).await
     }
 
+    async fn inflation_bps(&self) -> AppResult<i64> {
+        crate::settings::inflation_bps(&self.db).await
+    }
+
     async fn upsert_assumption(
         &self,
         input: SaveForecastAssumption,

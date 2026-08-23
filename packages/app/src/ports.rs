@@ -1230,6 +1230,14 @@ pub trait CronRepo: Send + Sync {
 #[async_trait]
 pub trait ForecastRepo: Send + Sync {
     async fn list_assumptions(&self) -> AppResult<Vec<ForecastAssumption>>;
+    /// The household inflation rate, basis points a year — the growth every category that has no
+    /// override of its own is projected at.
+    ///
+    /// On this trait rather than `SettingsRepo`, for the same reason `list_tax_scales` sits on
+    /// `IncomeRepo`: it is stored in `settings` but it is only ever read *here*, by the assumption
+    /// resolution, and routing it through a second port the forecast would otherwise not hold
+    /// would add a collaborator to `ForecastService` to carry one integer.
+    async fn inflation_bps(&self) -> AppResult<i64>;
     async fn upsert_assumption(
         &self,
         input: SaveForecastAssumption,

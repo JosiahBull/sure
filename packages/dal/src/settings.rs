@@ -7,6 +7,7 @@ use crate::Db;
 struct SettingsRow {
     base_currency_code: String,
     mcp_mode: String,
+    inflation_bps: i64,
     updated_at: String,
 }
 
@@ -25,6 +26,7 @@ impl TryFrom<SettingsRow> for Settings {
                 .mcp_mode
                 .parse::<McpMode>()
                 .map_err(AppError::validation)?,
+            inflation_bps: r.inflation_bps,
             updated_at: r.updated_at,
         })
     }
@@ -34,7 +36,7 @@ impl TryFrom<SettingsRow> for Settings {
 pub async fn get(db: &Db) -> AppResult<Settings> {
     sqlx::query_as!(
         SettingsRow,
-        "SELECT base_currency_code, mcp_mode, updated_at FROM settings WHERE id = 1"
+        "SELECT base_currency_code, mcp_mode, inflation_bps, updated_at FROM settings WHERE id = 1"
     )
     .fetch_one(db)
     .await?
@@ -51,16 +53,27 @@ pub async fn update(db: &Db, input: UpdateSettings) -> AppResult<Settings> {
     // alone, so a caller changing only the base currency (the web page did exactly this
     // before agent access existed) cannot silently reset it to `off`.
     let mcp_mode = input.mcp_mode.map(|m| m.as_str());
+    // Bounds-checked here as well as by the column's CHECK, so a bad value is a 400 naming the
+    // field rather than a constraint violation surfacing as a 500.
+    if let Some(bps) = input.inflation_bps
+        && !(-2_000..=2_000).contains(&bps)
+    {
+        return Err(AppError::validation(
+            "inflation_bps must be between -2000 and 2000 (-20% to +20% a year)",
+        ));
+    }
     sqlx::query_as!(
         SettingsRow,
         "UPDATE settings
          SET base_currency_code = ?1,
              mcp_mode = COALESCE(?2, mcp_mode),
+             inflation_bps = COALESCE(?3, inflation_bps),
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id = 1
-         RETURNING base_currency_code, mcp_mode, updated_at",
+         RETURNING base_currency_code, mcp_mode, inflation_bps, updated_at",
         code,
-        mcp_mode
+        mcp_mode,
+        input.inflation_bps
     )
     .fetch_one(db)
     .await?
@@ -78,6 +91,19 @@ pub async fn mcp_mode(db: &Db) -> AppResult<McpMode> {
         .await?
         .parse::<McpMode>()
         .map_err(AppError::validation)
+}
+
+/// The household inflation rate on its own, for the forecast's category resolution.
+///
+/// A scalar read rather than [`get`]: the forecast wants this one number and none of the rest of
+/// the row, and it is read on every projection.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn inflation_bps(db: &Db) -> AppResult<i64> {
+    Ok(
+        sqlx::query_scalar!("SELECT inflation_bps FROM settings WHERE id = 1")
+            .fetch_one(db)
+            .await?,
+    )
 }
 
 /// The configured base reporting currency code (used by the report queries).
