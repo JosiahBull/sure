@@ -11,7 +11,7 @@
     history,
     months,
     currency = "NZD",
-    height = 240,
+    height = 340,
     onhover,
     checkpoints = [3, 6, 9, 12],
     events = [],
@@ -65,7 +65,9 @@
   // separate so the vertical padding can later grow with the number of event-label lanes —
   // which are packed by x — without the lane packing depending on its own output.
   const padX = CHART_PAD_X;
-  const LANE_H = 15;
+  const LANE_H = 17;
+  /** Height of a rendered label pill, for the leader lines below. */
+  const LABEL_H = 15;
 
   const seam = $derived(history.at(-1));
   const histLen = $derived(history.length);
@@ -197,6 +199,22 @@
   // previous label ended at least 4 units earlier. Two events a month apart therefore stack, while
   // the common case — a handful of events years apart — all lands in lane 0 and costs no vertical
   // space at all.
+  /**
+   * Measured label widths, keyed by event id, in CSS pixels — `bind:clientWidth` on each pill.
+   *
+   * The packing used to estimate this from the character count, and a proportional font makes
+   * that wrong by tens of units either way: "Michelle's partner moves in" and "Home Mortgage paid
+   * off" are the same length in characters and nowhere near it on screen. Every label was
+   * therefore packed against a width it did not have and centred on a point it did not occupy,
+   * which is what left the leader lines pointing into space beside their own pills.
+   *
+   * No reactive cycle: a pill's width depends on its text, never on where it is placed.
+   */
+  let labelPx = $state<Record<number, number>>({});
+  /** Rendered width of the chart, to convert those pixels into the viewBox units `sx` speaks. */
+  let wrapW = $state(0);
+  const vbPerPx = $derived(wrapW > 0 ? W / wrapW : 1);
+
   const CHAR_W = 5.1;
   const laid = $derived.by(() => {
     const laneEnd: number[] = [];
@@ -204,7 +222,13 @@
       .slice()
       .sort((a, b) => a.mx - b.mx)
       .map((e) => {
-        const w = 30 + e.name.length * CHAR_W;
+        // The measurement once there is one; the character estimate only covers the first frame,
+        // before the pills have been laid out and observed.
+        const measured = labelPx[e.id];
+        const w =
+          measured != null && measured > 0
+            ? measured * vbPerPx
+            : 18 + e.name.length * CHAR_W + (e.probabilityBps < 9950 ? 22 : 0);
         const left = Math.max(padX.l, Math.min(e.mx - w / 2, W - padX.r - w));
         let lane = laneEnd.findIndex((end) => end <= left - 4);
         if (lane === -1) {
@@ -226,6 +250,22 @@
   // Separate from `laid` on purpose: this reads `sy`, which reads `padY`, which reads `laneCount`.
   // Folding it into the packing closes that loop.
   const markers = $derived(laid.map((e) => ({ ...e, my: sy(medianY[e.mid] ?? 0) })));
+
+  /**
+   * From the bottom of a label to the top of the rule it names: down, then across, then down.
+   *
+   * An elbow rather than one diagonal because most labels sit near their rule, and a short
+   * diagonal at a shallow angle is harder to follow than a right-angled one. The horizontal
+   * segment runs along the label's own lane baseline, so two leaders from adjacent lanes never
+   * overlap along their length — they can only cross, which reads correctly.
+   */
+  function leaderPath(e: { labelX: number; labelW: number; lane: number; mx: number }): string {
+    const x0 = e.labelX + e.labelW / 2;
+    const y0 = 4 + e.lane * LANE_H + LABEL_H;
+    const yMid = 4 + (laneCount - 0.5) * LANE_H + LABEL_H / 2;
+    if (Math.abs(x0 - e.mx) < 0.5) return `M${x0},${y0} L${x0},${padY.t}`;
+    return `M${x0},${y0} L${x0},${yMid} L${e.mx},${yMid} L${e.mx},${padY.t}`;
+  }
 
   let evHover = $state<number | null>(null);
   let selectedEvent = $state<number | null>(null);
@@ -296,11 +336,12 @@
 {#if totalPoints === 0}
   <div class="empty">No data to forecast yet.</div>
 {:else}
-  <div class="chart-wrap">
+  <div class="chart-wrap" bind:clientWidth={wrapW}>
     <svg
       bind:this={svgEl}
       viewBox="0 0 {W} {height}"
       width="100%"
+      height={height}
       preserveAspectRatio="none"
       role="img"
       aria-label="Net worth history and forecast — hover to inspect"
@@ -341,6 +382,24 @@
               stroke-dasharray={e.dash} vector-effect="non-scaling-stroke"
             />
           </g>
+        {/each}
+      </g>
+
+      <!-- Each label joined to the rule it names. Lane packing displaces a label sideways to stop
+           it overlapping its neighbours, and a cluster of events near "today" can push one a long
+           way from the date it describes — at which point the reader has four labels stacked in a
+           corner and no way to tell which rule each belongs to. The leader is what makes the
+           displacement legible instead of confusing. -->
+      <g class="ev-leaders" aria-hidden="true">
+        {#each laid as e (e.id)}
+          <path
+            d={leaderPath(e)}
+            fill="none"
+            stroke={e.color}
+            stroke-opacity={evHover === e.id || selectedEvent === e.id ? 0.9 : 0.35}
+            stroke-width={evHover === e.id || selectedEvent === e.id ? 1.2 : 0.8}
+            vector-effect="non-scaling-stroke"
+          />
         {/each}
       </g>
 
@@ -407,6 +466,7 @@
           type="button"
           class="ev-label"
           class:sel={selectedEvent === e.id}
+          bind:clientWidth={labelPx[e.id]}
           style="--ev:{e.color};left:{(e.labelX / W) * 100}%;top:{4 + e.lane * LANE_H}px;--o:{0.5 +
             0.5 * e.p}"
           onpointerenter={() => (evHover = e.id)}
@@ -422,10 +482,12 @@
           <span class="ev-dot" class:hollow={!e.filled}></span>
           <span class="ev-name">{e.name}</span>
           <!-- The fourth probability channel, and the only unambiguous one: every visual encoding
-               is a hint, the number is the answer. -->
-          <span class="ev-pct tabular">
-            {e.kind === "milestone" && e.p >= 1 ? "" : `${Math.round(e.p * 100)}%`}
-          </span>
+               is a hint, the number is the answer. Shown only when it is *not* certainty, though —
+               a row of "100%" on every label is four characters of noise per marker, and it
+               drowns out the one marker where the number actually says something. -->
+          {#if e.p < 0.995}
+            <span class="ev-pct tabular">{Math.round(e.p * 100)}%</span>
+          {/if}
         </button>
       {/each}
     </div>
@@ -486,6 +548,14 @@
     color: var(--text-muted);
   }
   .chart {
+    /* Height is pinned to the viewBox height so one vertical unit is one CSS pixel.
+       `preserveAspectRatio="none"` only decides how the viewBox maps *into* the viewport — with
+       no height attribute the element still takes its intrinsic size from the viewBox ratio, so
+       the whole vertical axis was being scaled by width/640 (1.7x at a typical window). The event
+       labels are HTML positioned in real pixels, the plot area is in viewBox units, and the two
+       drifted apart by tens of pixels — the labels ended up floating in the gap above the chart,
+       further away the wider the window got. Pinning it makes the two agree at every width. */
+    display: block;
     cursor: crosshair;
     touch-action: none;
     -webkit-user-select: none;
