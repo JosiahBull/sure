@@ -119,11 +119,87 @@ its expected date. Drawing `expected_on` would misrepresent the one thing the ch
 - **Scenarios.** There is one plan, not a set to compare. `enabled` on a stream and
   `probability_bps: 0` on an event are the closest thing.
 
+## Streaming, and where the time actually goes
+
+`GET /api/forecast/stream` is the same projection as `GET /api/forecast`, delivered as it firms
+up: a `snapshot` event after 10 paths, then 100, then 1 000, then every 1 000 and once more at the
+end, with counter-only `tick` events roughly every 1% of the run so a progress bar has something
+to move with. Each snapshot is a *complete* projection over fewer paths — the same months, wider
+bands — and reports `simulations: <paths so far>`, so a partial answer says how partial it is. The
+final snapshot is byte-for-byte what the JSON route returns for the same query, which
+`specs/forecast.spec.ts` asserts.
+
+It exists because of the shape of the cost, measured against real data (25 accounts, 22 top-level
+categories, 8 094 transactions, 2 543 valuations) on an M4:
+
+| horizon | load phase | Monte Carlo | total | first snapshot |
+| --- | --- | --- | --- | --- |
+| 12 | 28 ms | 3 ms | 31 ms | ~28 ms |
+| 360 | 80 ms | 75 ms | 154 ms | 66 ms |
+
+Two things follow. The **load phase dominates a short horizon** — resolving assumptions is a dozen
+SQLite queries and it does not get cheaper with fewer paths — so the floor on a first paint is the
+loads, not the arithmetic. And the arithmetic is what a long horizon spends its time on, which is
+what streaming hides: at 30 years the first honest picture of a *new* query arrives in 66 ms
+instead of 341 ms, because ten paths is half a percent of the work.
+
+Before this, the page held the **previous** run's numbers on screen for that whole time, with no
+indication anything was happening — and fired two simulations per visit, because it had both an
+`onMount` and an effect.
+
+## Threading, and the one thing it restated
+
+The path loop runs across threads. `sure_app::forecast::Parallelism` is injected, not sensed:
+`sure-api`'s `compute` module owns the policy, because it holds the semaphore and is the only thing
+that knows what else is running. It reserves one slot to be admitted (unchanged) and then as many
+spare ones as it can take without dropping the pool below half — a forecast that grabbed every core
+would shed the `/api/reports/*` calls the same dashboard load fires beside it, which is a worse
+failure than a slower forecast.
+
+What had to change to allow it: the loop used to advance **one** `StdRng` across every path in
+sequence, so path *k* depended on how many draws paths `0..k` happened to take — and
+`rand_distr`'s normal sampler is rejection-based, so that count is not even fixed. Each path now
+seeds its own RNG from `(seed, path)`, exactly as events already did. **That restated every figure
+once.** The distribution is unchanged, a seed still reproduces its run byte for byte, and it now
+does so whatever the thread count and whatever `simulations` was asked for — path 7 is path 7 in a
+10-path run and in a 5 000-path one, which it was not before. That last property is what makes a
+streamed prefix *converge* on the full answer instead of being redrawn at each snapshot.
+
+How much it moved, measured on the real household over five seeds at 2 000 paths (before against
+after, same data, same day):
+
+| figure | shift |
+| --- | --- |
+| +1 month median net worth | 0.00% |
+| +13 month median | −0.00% |
+| +13 month P10 | −0.13% |
+| +13 month P90 | +0.04% |
+| +13 month mean | +0.02% |
+
+For scale: the seed-to-seed spread *within the old code* was up to 0.46% on the same figures. The
+restatement is smaller than the noise the projection already had, which is the result to expect —
+a different set of draws from the same distribution.
+
+Merge order is not part of the answer, which is what made this safe: `band_from_samples` sorts
+before it takes its mean as well as its percentiles, `negative_cash` is a count, and a milestone's
+months are sorted too — so every output is a function of the sample *multiset*.
+
+`every_way_of_running_a_simulation_agrees` pins all of it: one thread or nine, aggregating once or
+at every checkpoint, the `ForecastResult` is identical.
+
 ## Operational notes
 
 - `MAX_HORIZON_MONTHS` is 360, and paths trade against months under `MAX_PATH_MONTHS`, so a 30-year
   run costs about what a 5-year one does. `ForecastResult` echoes the `horizon_months` and
   `simulations` actually run — a caller asking for more can tell.
-- `GET /api/forecast` is in `LONG_ROUTES`: at 360 months it is seconds of CPU on the blocking pool.
+- `GET /api/forecast` is in `LONG_ROUTES`, and so is `/api/forecast/stream` — for the stream that is
+  about the *head*, which waits on the loads; a streamed body is outside every deadline. See
+  [HTTP.md](HTTP.md).
+- `sure.forecast.simulate.duration` measures one run including its intermediate aggregations, so a
+  streamed run reads slightly higher than a one-shot one of the same size. That is the honest
+  reading of "how long did this take".
+- The forecast no longer loads the whole `transactions`/`valuations` tables. It reads
+  `ACCOUNT_TREND_MONTHS + 1` months plus the per-account seed, like every other report —
+  `monthly_value_series` clamps its own lookback to that window anyway.
 - Tax figures in `sure_core::tax` are dated and append-only. Editing an entry restates a tax year
   that has already happened; add a new scale instead, and record where the figures came from.

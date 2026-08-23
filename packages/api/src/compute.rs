@@ -64,6 +64,72 @@ pub fn try_slot() -> Option<SemaphorePermit<'static>> {
     COMPUTE_SLOTS.try_acquire().ok()
 }
 
+/// One or more slots, and permission to use exactly that many threads.
+///
+/// Held for the whole run, like [`try_slot`]'s permit. The two permits are separate because
+/// [`Semaphore::try_acquire_many`] is all-or-nothing and the second half is optional: the
+/// mandatory first slot is what decides whether the request runs at all, and the rest is how
+/// wide it may go.
+#[must_use = "dropping the permits releases the slots and defeats the bound"]
+pub struct Slots {
+    _first: SemaphorePermit<'static>,
+    _rest: Option<SemaphorePermit<'static>>,
+    width: usize,
+}
+
+impl Slots {
+    /// How many threads the holder may run at once. At least 1.
+    pub fn width(&self) -> usize {
+        self.width
+    }
+}
+
+/// One mandatory slot, plus as many spare ones as can be taken without emptying the pool.
+///
+/// The counterpart to `sure_app::forecast::Parallelism`: the forecast can now run its paths
+/// across threads, and something has to decide how many without over-subscribing the machine.
+/// That decision belongs here, because this semaphore is the only thing that knows what else is
+/// running — the same question [`slots`] already answers for concurrent *requests*, asked per
+/// request instead of per core.
+///
+/// Every thread a run spawns is backed by a permit it actually holds, which is the invariant
+/// that matters: **this pool bounds cores, not requests.** So a wide run does admit fewer
+/// concurrent ones — five 1-thread runs where there used to be nine — and that is the honest
+/// answer rather than a regression. Nine threads is nine threads whether one request is using
+/// them or nine are; a sixth request arriving to a committed machine gets the same fast 503 with
+/// `Retry-After` it would have got by being the tenth.
+///
+/// # Why it does not simply take everything
+///
+/// The first version was greedy, and greedy is wrong here. A forecast that grabs all nine slots
+/// on this box sheds the three or four `/api/reports/*` calls the *same dashboard load* fires
+/// beside it — each of which is tens of milliseconds and would have been served — in exchange
+/// for finishing the forecast a bit sooner. Refusing cheap work to hurry expensive work is the
+/// wrong trade, and it is not a trade anything asked for.
+///
+/// So half the pool is left alone. On an idle nine-slot box the first run takes five and leaves
+/// four, which is four more requests admitted while it runs. The read of
+/// [`Semaphore::available_permits`] is a racy snapshot on purpose — it only sizes the *ask*, and
+/// losing the race costs a narrower run, never an over-subscribed one.
+pub fn try_slots() -> Option<Slots> {
+    let first = COMPUTE_SLOTS.try_acquire().ok()?;
+    let keep_free = slots() / 2;
+    let want = COMPUTE_SLOTS
+        .available_permits()
+        .saturating_sub(keep_free)
+        .min(u32::MAX as usize) as u32;
+    // `try_acquire_many` is all-or-nothing; a lost race just leaves this run single-threaded.
+    let rest = (want > 0)
+        .then(|| COMPUTE_SLOTS.try_acquire_many(want).ok())
+        .flatten();
+    let width = 1 + rest.as_ref().map_or(0, |_| want as usize);
+    Some(Slots {
+        _first: first,
+        _rest: rest,
+        width,
+    })
+}
+
 /// The standard "busy, come back" refusal, with a log line naming which endpoint was shed.
 ///
 /// `endpoint` is a static route name, not user input — it is only ever a literal at the call
@@ -97,6 +163,13 @@ mod tests {
 
     use axum::http::StatusCode;
 
+    /// [`COMPUTE_SLOTS`] is one semaphore for the process, which is the whole point of it — so
+    /// two tests that both want an *idle* pool cannot run at the same time, and cargo runs the
+    /// tests in one binary on many threads. Every test below takes this first. Without it the
+    /// two are order-dependent and fail each other: the pool test asserted "started from an idle
+    /// pool" and found one slot, because the greedy test was holding the other eight.
+    static POOL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// At least one slot on any machine, and never so many that the runtime is left without a
     /// core — the two ends the sizing has to get right.
     #[test]
@@ -114,6 +187,7 @@ mod tests {
     /// guard it happened to trip.
     #[tokio::test]
     async fn a_full_pool_sheds_and_a_free_one_admits() {
+        let _serialised = POOL.lock().unwrap();
         // Drain every slot by holding all of them, whatever the machine's size is.
         let held: Vec<_> = std::iter::from_fn(try_slot).collect();
         assert_eq!(held.len(), slots(), "started from an idle pool");
@@ -128,6 +202,50 @@ mod tests {
         assert!(
             try_slot().is_some(),
             "a slot must become available again once the run finishes"
+        );
+    }
+
+    /// A wide run must leave the pool able to serve the cheap work beside it.
+    ///
+    /// Three properties. The first is what the greedy first attempt got wrong: after a run has
+    /// taken its width, at least half the pool is still free, so the `/api/reports/*` calls the
+    /// same dashboard load fires are served rather than shed. The second is the invariant the
+    /// whole module exists for — however the slots end up divided, the threads promised never
+    /// exceed the permits held. The third is that it still refuses rather than queues.
+    #[tokio::test]
+    async fn a_wide_run_still_leaves_the_pool_able_to_admit_work() {
+        let _serialised = POOL.lock().unwrap();
+        let total = slots();
+
+        let first = try_slots().expect("an idle pool admits the first run");
+        assert!(first.width() >= 1);
+        if total >= 4 {
+            assert!(
+                first.width() > 1,
+                "a {total}-slot pool should give the first run real width, got {}",
+                first.width()
+            );
+            assert!(
+                first.width() <= total - total / 2,
+                "took {} of {total}, leaving less than half free",
+                first.width()
+            );
+            // The point of the headroom: something else can still get in.
+            let beside = try_slots().expect("a cheap call beside a wide run must be admitted");
+            assert_eq!(beside.width(), 1, "the headroom is not for widening");
+            drop(beside);
+        }
+
+        // Threads promised never exceed permits held, whatever the split. Drain the pool to be
+        // sure the sum is over every holder there can be.
+        let mut held = vec![first];
+        while let Some(more) = try_slots() {
+            held.push(more);
+        }
+        let promised: usize = held.iter().map(Slots::width).sum();
+        assert_eq!(
+            promised, total,
+            "the pool hands out its permits exactly once, as threads"
         );
     }
 

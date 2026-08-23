@@ -452,3 +452,186 @@ test("an account assumption names its owner; a category assumption names nobody"
   expect(findAssumption(data!, "account", joint.id)?.ownership).toEqual({ kind: "joint" });
   expect(findAssumption(data!, "category", groceries.id)?.ownership).toBeNull();
 });
+
+// ---- GET /api/forecast/stream ------------------------------------------------------------
+//
+// Driven with raw `fetch` rather than the typed client: `openapi-fetch` resolves a whole body,
+// so it has nowhere to put an answer that arrives in pieces. The payload *type* is still the
+// generated one, which is what keeps this honest about the wire shape.
+
+interface SseEvent {
+  event: string;
+  data: string;
+}
+
+/** Read an SSE response to completion, returning every frame in order. */
+async function readEvents(res: Response): Promise<SseEvent[]> {
+  expect(res.status).toBe(200);
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  const out: SseEvent[] = [];
+  let buffered = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffered += decoder.decode(value, { stream: true });
+    let at: number;
+    while ((at = buffered.indexOf("\n\n")) !== -1) {
+      const frame = buffered.slice(0, at);
+      buffered = buffered.slice(at + 2);
+      let event = "message";
+      const data: string[] = [];
+      for (const line of frame.split("\n")) {
+        // A leading colon is a comment, which is what axum's keep-alive sends.
+        if (line === "" || line.startsWith(":")) continue;
+        const colon = line.indexOf(":");
+        const field = colon === -1 ? line : line.slice(0, colon);
+        let v = colon === -1 ? "" : line.slice(colon + 1);
+        if (v.startsWith(" ")) v = v.slice(1);
+        if (field === "event") event = v;
+        else if (field === "data") data.push(v);
+      }
+      if (data.length) out.push({ event, data: data.join("\n") });
+    }
+  }
+  return out;
+}
+
+test("the forecast stream delivers the projection in stages and ends with the whole thing", async ({
+  api,
+  server,
+}) => {
+  // Something with a shape to project, so the bands are not all zero.
+  const acct = await createAccount(api, "Shares", "shares_nz", "NZD");
+  for (let i = 24; i >= 0; i--) {
+    const d = new Date();
+    d.setMonth(d.getMonth() - i);
+    await api.POST("/api/accounts/{id}/valuations", {
+      params: { path: { id: acct.id } },
+      body: { as_of: d.toISOString().slice(0, 10), value_minor: 100_000_00 + (24 - i) * 1_000_00 },
+    });
+  }
+
+  const query = "horizon_months=6&simulations=300&seed=1";
+  const res = await fetch(`${server.baseURL}/api/forecast/stream?${query}`, {
+    headers: { Accept: "text/event-stream" },
+  });
+  expect(res.headers.get("content-type")).toContain("text/event-stream");
+  // A stream is not a representation of a resource: there is nothing for a cache to hold, and
+  // this API has no authentication, so a shared cache must never keep it. `Sse::into_response`
+  // sets `no-cache` on its own, which is weaker — this asserts the policy table won.
+  expect(res.headers.get("cache-control")).toBe("no-store");
+
+  const events = await readEvents(res);
+  expect(events.at(-1)?.event).toBe("done");
+  expect(events.some((e) => e.event === "error")).toBe(false);
+
+  const snapshots = events
+    .filter((e) => e.event === "snapshot")
+    .map((e) => JSON.parse(e.data) as Schemas["ForecastProgress"]);
+  const ticks = events
+    .filter((e) => e.event === "tick")
+    .map((e) => JSON.parse(e.data) as Schemas["ForecastProgress"]);
+
+  // 300 paths, so: 10, 100, then the end. The point is that the first useful picture arrives
+  // long before the last path does.
+  expect(snapshots.map((s) => s.completed)).toEqual([10, 100, 300]);
+  for (const s of snapshots) {
+    expect(s.total).toBe(300);
+    // A snapshot reports the paths it was taken over, not the run's eventual total, so a
+    // caller reading a partial answer can tell how partial it is.
+    expect(s.result!.simulations).toBe(s.completed);
+    expect(s.result!.months.length).toBe(6);
+  }
+  // Ticks carry counters and no projection — that is the whole reason they are cheap.
+  expect(ticks.length).toBeGreaterThan(0);
+  for (const t of ticks) expect(t.result ?? null).toBeNull();
+});
+
+test("the stream's final snapshot is exactly what the JSON route returns", async ({
+  api,
+  server,
+}) => {
+  // The acceptance criterion for having two transports. If a future change reorders the RNG,
+  // or a snapshot's aggregation drifts from the one-shot one, this is what fails.
+  const acct = await createAccount(api, "Shares", "shares_nz", "NZD");
+  for (let i = 24; i >= 0; i--) {
+    const d = new Date();
+    d.setMonth(d.getMonth() - i);
+    await api.POST("/api/accounts/{id}/valuations", {
+      params: { path: { id: acct.id } },
+      body: { as_of: d.toISOString().slice(0, 10), value_minor: 250_000_00 + (24 - i) * 2_000_00 },
+    });
+  }
+  await createCategory(api, "Groceries", "expense");
+
+  const q = { horizon_months: 12, simulations: 500, seed: 7 } as const;
+  const { data: json } = await api.GET("/api/forecast", { params: { query: q } });
+  const res = await fetch(
+    `${server.baseURL}/api/forecast/stream?horizon_months=12&simulations=500&seed=7`,
+    { headers: { Accept: "text/event-stream" } }
+  );
+  const events = await readEvents(res);
+  const final = [...events]
+    .reverse()
+    .find((e) => e.event === "snapshot")!;
+  const streamed = (JSON.parse(final.data) as Schemas["ForecastProgress"]).result!;
+
+  // Guards the comparison against passing on two empty projections.
+  expect(json!.months.length).toBe(12);
+  expect(json!.simulations).toBe(500);
+  expect(streamed).toEqual(json);
+});
+
+test("a bad query is refused before anything streams", async ({ server }) => {
+  // The head is produced after `simulate_inputs` and before the first path, so a refusal is an
+  // ordinary JSON error response — not an `error` event a client would have to parse the stream
+  // to find.
+  const res = await fetch(`${server.baseURL}/api/forecast/stream?currency=ZZZ`, {
+    headers: { Accept: "text/event-stream" },
+  });
+  expect(res.status).toBe(400);
+  expect(res.headers.get("content-type")).toContain("application/json");
+  const body = (await res.json()) as { error: { code: string; message: string } };
+  expect(body.error.code).toBeTruthy();
+});
+
+test("a seeded forecast reproduces across requests", async ({ api }) => {
+  // It did not, until the category order was made deterministic: `Categories` kept its tree in
+  // a `HashMap`, and that order *is* the order `category_sims` draws its randomness in, so two
+  // identically-seeded requests differed in every band. Three categories, because one cannot
+  // be permuted.
+  await createCategory(api, "Groceries", "expense");
+  await createCategory(api, "Transport", "expense");
+  await createCategory(api, "Salary", "income");
+  const acct = await createAccount(api, "Bank", "bank", "NZD");
+  for (let i = 24; i >= 0; i--) {
+    const d = new Date();
+    d.setMonth(d.getMonth() - i);
+    await createTransaction(api, {
+      account_id: acct.id,
+      posted_at: d.toISOString().slice(0, 10),
+      amount_minor: 4_000_00,
+      description: "Pay",
+    });
+  }
+
+  const q = { horizon_months: 12, simulations: 400, seed: 99 } as const;
+  const runs = [];
+  for (let i = 0; i < 3; i++) {
+    const { data } = await api.GET("/api/forecast", { params: { query: q } });
+    runs.push(JSON.stringify(data));
+  }
+  expect(runs[1]).toBe(runs[0]);
+  expect(runs[2]).toBe(runs[0]);
+
+  // …and the assumptions come back in a stable order, which is also what lets the ETag on
+  // `/api/forecast/assumptions` ever match.
+  const orders = [];
+  for (let i = 0; i < 3; i++) {
+    const { data } = await api.GET("/api/forecast/assumptions", {});
+    orders.push(data!.map((a) => `${a.target_type}:${a.target_id}`).join(","));
+  }
+  expect(orders[1]).toBe(orders[0]);
+  expect(orders[2]).toBe(orders[0]);
+});

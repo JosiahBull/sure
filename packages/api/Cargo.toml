@@ -22,6 +22,7 @@ sure-providers = { workspace = true }
 sure-appbase = { workspace = true }
 sure-telemetry = { workspace = true }
 axum = { workspace = true }
+futures-util = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
