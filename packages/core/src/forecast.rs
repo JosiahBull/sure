@@ -44,6 +44,10 @@ pub struct ForecastAssumption {
     pub target_type: ForecastTargetType,
     pub target_id: i64,
     pub annual_growth_bps: Option<i64>,
+    /// `annual_growth_bps` is a rate *above* `settings.inflation_bps`, not an absolute one.
+    /// Categories only. See `0043_real_growth_override.sql` for why a per-category opinion is
+    /// usually relative.
+    pub growth_is_real: bool,
     pub annual_volatility_bps: Option<i64>,
     pub dividend_yield_bps: Option<i64>,
     /// The annual rate a *derived* growth trend decays toward beyond the window it was
@@ -74,6 +78,12 @@ pub struct SaveForecastAssumption {
     pub target_id: i64,
     #[serde(default)]
     pub annual_growth_bps: Option<i64>,
+    /// Read `annual_growth_bps` as a rate *above* `settings.inflation_bps` rather than as an
+    /// absolute one. Categories only — an account's growth is a market return, not a spread over
+    /// household CPI. Absent reads as false, so an override stored before this existed keeps
+    /// meaning what it meant.
+    #[serde(default)]
+    pub growth_is_real: bool,
     #[serde(default)]
     pub annual_volatility_bps: Option<i64>,
     #[serde(default)]

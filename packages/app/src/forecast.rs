@@ -322,6 +322,12 @@ pub struct ResolvedAssumption {
     /// also what made the original defect invisible: a row reporting `+25.0%/yr` next to no
     /// history at all gives a reader nothing to disbelieve.
     pub history_minor: Option<Vec<i64>>,
+    /// Only set for categories with a growth override: the override is a rate *above* the
+    /// household inflation rate, and `annual_growth_bps` is the two already added together. Both
+    /// are reported because the sum is what the projection used and the spread is what the user
+    /// actually asserted — showing only the sum turns "3% above everything else" back into an
+    /// absolute figure that stops meaning that the moment the household rate moves.
+    pub growth_is_real: Option<bool>,
     /// Only set for categories: whether this is an income category rather than an expense one.
     /// The page needs it to total the two sides separately, and a label cannot be relied on to
     /// say ("Interest charged" and "Interest earned" differ by one word).
@@ -785,6 +791,7 @@ impl ForecastService {
                     fitted_months: None,
                     break_months_ago: None,
                     history_minor: None,
+                    growth_is_real: None,
                     is_income: None,
                     schedule: Some(LoanScheduleSummary {
                         monthly_payment_minor: schedule.payment.round() as i64,
@@ -833,6 +840,7 @@ impl ForecastService {
                         fitted_months: None,
                         break_months_ago: None,
                         history_minor: None,
+                        growth_is_real: None,
                         is_income: None,
                         schedule: None,
                         vesting: Some(v),
@@ -898,6 +906,7 @@ impl ForecastService {
                 fitted_months: None,
                 break_months_ago: None,
                 history_minor: None,
+                growth_is_real: None,
                 is_income: None,
                 schedule: None,
                 vesting: None,
@@ -1010,6 +1019,7 @@ impl ForecastService {
             let ov = overrides.get(&(ForecastTargetType::Category, id));
             let (growth, vol, mut source) = resolve_category_growth(
                 ov.and_then(|o| o.annual_growth_bps),
+                ov.is_some_and(|o| o.growth_is_real),
                 ov.and_then(|o| o.annual_volatility_bps),
                 fit.map(|f| f.vol_bps),
                 inflation_bps,
@@ -1057,6 +1067,7 @@ impl ForecastService {
                 break_months_ago: fit.and_then(|f| f.break_months_ago),
                 history_minor: (!totals.is_empty())
                     .then(|| totals.iter().map(|v| fx.base_minor(*v)).collect()),
+                growth_is_real: ov.map(|o| o.growth_is_real),
                 is_income: Some(matches!(kind, CategoryKind::Income)),
                 schedule: None,
                 vesting: None,
@@ -4680,15 +4691,21 @@ fn trim_leading_structural_zeros(vals: &mut Vec<f64>) {
 /// of the growth is not a claim about the spread.
 fn resolve_category_growth(
     override_growth: Option<i64>,
+    override_is_real: bool,
     override_vol: Option<i64>,
     measured_vol: Option<i64>,
     inflation_bps: i64,
 ) -> (i64, i64, AssumptionSource) {
     let vol = override_vol.or(measured_vol).unwrap_or(0);
     match override_growth {
-        // The user asserting a rate. Not clamped and not indexed — that is the whole point of an
-        // override, and it is the same line `MAX_DERIVED_CATEGORY_GROWTH_BPS` already declines to
-        // cross.
+        // The user asserting a rate. Not clamped — that is the whole point of an override, and it
+        // is the same line `MAX_DERIVED_CATEGORY_GROWTH_BPS` already declines to cross.
+        //
+        // `override_is_real` makes the assertion relative: "childcare runs 3% above everything
+        // else" survives a revision of the household rate, where "childcare runs at 5.5%" quietly
+        // stops being what the user meant the moment that rate moves. Both are expressible because
+        // both are things people mean.
+        Some(g) if override_is_real => (inflation_bps + g, vol, AssumptionSource::Override),
         Some(g) => (g, vol, AssumptionSource::Override),
         // An override of the volatility alone still reads as an override, so the row says so and
         // offers to clear it; the growth it carries is the indexed default.
@@ -5041,23 +5058,48 @@ mod tests {
     #[test]
     fn a_category_is_indexed_at_the_household_rate_unless_overridden() {
         assert_eq!(
-            resolve_category_growth(None, None, Some(4_000), 250),
+            resolve_category_growth(None, false, None, Some(4_000), 250),
             (250, 4_000, AssumptionSource::Indexed)
         );
         // An assertion is not indexed, and not clamped.
         assert_eq!(
-            resolve_category_growth(Some(9_000), None, Some(4_000), 250),
+            resolve_category_growth(Some(9_000), false, None, Some(4_000), 250),
             (9_000, 4_000, AssumptionSource::Override)
         );
         // Overriding only the spread leaves the growth indexed but the row still an override.
         assert_eq!(
-            resolve_category_growth(None, Some(100), Some(4_000), 250),
+            resolve_category_growth(None, false, Some(100), Some(4_000), 250),
             (250, 100, AssumptionSource::Override)
         );
         // Nothing measured: nothing to index.
         assert_eq!(
-            resolve_category_growth(None, None, None, 250),
+            resolve_category_growth(None, false, None, None, 250),
             (0, 0, AssumptionSource::InsufficientHistory)
+        );
+    }
+
+    /// A *real* override is a spread over the household rate, so it survives a revision of that
+    /// rate — which is the point. An absolute one does not, and both are things people mean.
+    #[test]
+    fn a_real_category_override_is_a_spread_over_the_household_rate() {
+        assert_eq!(
+            resolve_category_growth(Some(100), true, None, Some(4_000), 250).0,
+            350
+        );
+        // Move the household rate and the spread holds…
+        assert_eq!(
+            resolve_category_growth(Some(100), true, None, Some(4_000), 400).0,
+            500
+        );
+        // …where an absolute override is deliberately unmoved by it.
+        assert_eq!(
+            resolve_category_growth(Some(350), false, None, Some(4_000), 400).0,
+            350
+        );
+        // A negative spread is legitimate: a category the household is deliberately shrinking.
+        assert_eq!(
+            resolve_category_growth(Some(-250), true, None, Some(4_000), 250).0,
+            0
         );
     }
 
@@ -6078,6 +6120,7 @@ mod tests {
                             target_type: ForecastTargetType::Account,
                             target_id,
                             annual_growth_bps,
+                            growth_is_real: false,
                             annual_volatility_bps,
                             long_run_growth_bps: None,
                             annual_fee_bps: None,

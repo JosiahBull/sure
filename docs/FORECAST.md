@@ -15,6 +15,7 @@ the ledger — unlike `crons`, which persists real rows.
 | A mortgage/loan's balance | its own amortisation schedule, exactly — no rate to resolve |
 | A category's monthly baseline | mean of the trailing 12 complete months of its **current regime** — see "A level is not a trend" |
 | A category's growth | the one household rate, `settings.inflation_bps` (default 250 bps), unless overridden — never fitted |
+| A category's growth override | absolute, or `settings.inflation_bps` + the stored spread when `growth_is_real` |
 | A category with linked income streams | the **residual**: fitted baseline minus what the streams model |
 | A category carrying a loan's interest | the **residual**: fitted baseline minus the interest that loan's schedule charges |
 | An income stream's growth after its last dated step | `annual_increase_bps`, plus `settings.inflation_bps` when the stream is `inflation_indexed` |
@@ -73,6 +74,16 @@ the figure it is frozen at. Defaulting to on would silently restate every existi
 migration, which is the objection this document already records against projecting a
 contribution-driven account at an invented rate. The warning is silent when the household rate is
 zero — the two sides then agree, and a frozen level in a world with no inflation is just a level.
+
+**A category override can be a spread rather than an absolute rate.** With
+`forecast_assumptions.growth_is_real` set, `annual_growth_bps` reads as a rate *above*
+`settings.inflation_bps` — "childcare runs 3% above everything else" — and the row shows both the
+sum that ran and the spread that was asserted. The reason is that the household rate is a number
+people revise, and an absolute per-category override is a copy of it that does not get revised with
+it: written as a spread, three opinions about childcare, rates and insurance stay correct when the
+dial moves; written as absolutes, all three silently become wrong. Defaults to absolute, so every
+override stored before this keeps meaning what it meant. Categories only — an account's growth is a
+market return, not a spread over household CPI.
 
 An indexed rate does not decay. The `TREND_FULL_STRENGTH_MONTHS`/`TREND_HALF_LIFE_MONTHS` apparatus
 exists to walk a rate fitted over a finite window back toward an anchor once the projection runs

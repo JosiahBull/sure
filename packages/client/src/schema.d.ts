@@ -6999,6 +6999,12 @@ export interface components {
             target_id: number;
             /** Format: int64 */
             annual_growth_bps?: number | null;
+            /**
+             * @description `annual_growth_bps` is a rate *above* `settings.inflation_bps`, not an absolute one.
+             *     Categories only. See `0043_real_growth_override.sql` for why a per-category opinion is
+             *     usually relative.
+             */
+            growth_is_real: boolean;
             /** Format: int64 */
             annual_volatility_bps?: number | null;
             /** Format: int64 */
@@ -8477,6 +8483,13 @@ export interface components {
              */
             history_minor?: number[] | null;
             /**
+             * @description Only set for categories with a growth override: `annual_growth_bps` is the household
+             *     inflation rate *plus* the spread the user asserted, rather than an absolute rate. Both are
+             *     shown on the row — "+3.5%/yr (inflation + 1.0%)" — because the sum is what ran and the
+             *     spread is what was meant.
+             */
+            growth_is_real?: boolean | null;
+            /**
              * @description Only set for categories: true for an income category. The page totals the two sides
              *     separately and a label cannot be trusted to say which is which.
              */
@@ -8703,6 +8716,13 @@ export interface components {
             target_id: number;
             /** Format: int64 */
             annual_growth_bps?: number | null;
+            /**
+             * @description Read `annual_growth_bps` as a rate *above* `settings.inflation_bps` rather than as an
+             *     absolute one. Categories only — an account's growth is a market return, not a spread over
+             *     household CPI. Absent reads as false, so an override stored before this existed keeps
+             *     meaning what it meant.
+             */
+            growth_is_real?: boolean;
             /** Format: int64 */
             annual_volatility_bps?: number | null;
             /** Format: int64 */

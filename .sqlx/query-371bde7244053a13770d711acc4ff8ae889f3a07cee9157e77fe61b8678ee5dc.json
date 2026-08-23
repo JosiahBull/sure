@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO forecast_assumptions\n              (target_type, target_id, annual_growth_bps, annual_volatility_bps,\n               dividend_yield_bps, long_run_growth_bps, notes, annual_fee_bps,\n               annual_fixed_fee_minor)\n           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)\n           ON CONFLICT(target_type, target_id) DO UPDATE SET\n              annual_growth_bps=excluded.annual_growth_bps,\n              annual_volatility_bps=excluded.annual_volatility_bps,\n              dividend_yield_bps=excluded.dividend_yield_bps,\n              long_run_growth_bps=excluded.long_run_growth_bps,\n              annual_fee_bps=excluded.annual_fee_bps,\n              annual_fixed_fee_minor=excluded.annual_fixed_fee_minor,\n              notes=excluded.notes,\n              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           RETURNING id AS \"id!\", target_type, target_id, annual_growth_bps, annual_volatility_bps,\n                     dividend_yield_bps, long_run_growth_bps,\n                     annual_fee_bps AS \"annual_fee_bps?\",\n                     annual_fixed_fee_minor AS \"annual_fixed_fee_minor?\",\n                     notes, created_at, updated_at",
+  "query": "INSERT INTO forecast_assumptions\n              (target_type, target_id, annual_growth_bps, annual_volatility_bps,\n               dividend_yield_bps, long_run_growth_bps, notes, annual_fee_bps,\n               annual_fixed_fee_minor, growth_is_real)\n           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)\n           ON CONFLICT(target_type, target_id) DO UPDATE SET\n              annual_growth_bps=excluded.annual_growth_bps,\n              growth_is_real=excluded.growth_is_real,\n              annual_volatility_bps=excluded.annual_volatility_bps,\n              dividend_yield_bps=excluded.dividend_yield_bps,\n              long_run_growth_bps=excluded.long_run_growth_bps,\n              annual_fee_bps=excluded.annual_fee_bps,\n              annual_fixed_fee_minor=excluded.annual_fixed_fee_minor,\n              notes=excluded.notes,\n              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           RETURNING id AS \"id!\", target_type, target_id, annual_growth_bps,\n                     growth_is_real AS \"growth_is_real!: bool\",\n                     annual_volatility_bps,\n                     dividend_yield_bps, long_run_growth_bps,\n                     annual_fee_bps AS \"annual_fee_bps?\",\n                     annual_fixed_fee_minor AS \"annual_fixed_fee_minor?\",\n                     notes, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -48,8 +48,19 @@
         }
       },
       {
-        "name": "annual_volatility_bps",
+        "name": "growth_is_real!: bool",
         "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "forecast_assumptions",
+            "name": "growth_is_real"
+          }
+        }
+      },
+      {
+        "name": "annual_volatility_bps",
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "dividend_yield_bps",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "long_run_growth_bps",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "annual_fee_bps?",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "annual_fixed_fee_minor?",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "notes",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,7 +126,7 @@
       },
       {
         "name": "created_at",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -126,7 +137,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,13 +148,14 @@
       }
     ],
     "parameters": {
-      "Right": 9
+      "Right": 10
     },
     "nullable": [
       false,
       false,
       false,
       true,
+      false,
       true,
       true,
       true,
@@ -154,5 +166,5 @@
       false
     ]
   },
-  "hash": "7c1d3750b186ddb8add48a5cc43c3d8a967b60e8d716222902f77a58cae0c57c"
+  "hash": "371bde7244053a13770d711acc4ff8ae889f3a07cee9157e77fe61b8678ee5dc"
 }
