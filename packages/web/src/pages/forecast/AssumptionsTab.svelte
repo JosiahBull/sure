@@ -10,7 +10,7 @@
   // The alternative, lifting `editingKey`/`editForm` into the page, would put state there that
   // only this tab can interpret.
   import { onMount } from "svelte";
-  import { api, formatMoney, type Schemas } from "../../lib/api";
+  import { api, formatMoney, formatDate, type Schemas } from "../../lib/api";
   import {
     people,
     ensureLoaded as ensurePeopleLoaded,
@@ -58,6 +58,8 @@
         return "modelled from income streams";
       case "contribution_driven":
         return "receives contributions — measured rate set aside";
+      case "vesting_schedule":
+        return "vesting schedule";
     }
   }
 
@@ -66,7 +68,28 @@
    * because the refix rate — and how unsure of it we are — is what the band around a mortgage is
    * actually made of.
    */
+  /**
+   * What the vesting projection is actually doing, spelled out for the same reason
+   * `scheduleLabel` spells out a refix: "vesting schedule" alone does not say how much is still
+   * to come, and that figure — units the deed guarantees, at a price nobody can trade — is the
+   * whole reason this account is not projected from its own history.
+   */
+  function vestingLabel(a: ResolvedAssumption): string {
+    const v = a.vesting;
+    if (!v) return sourceLabel(a.source);
+    const worth = formatMoney(v.unvested_value_minor, a.currency_code ?? currency);
+    const when = v.fully_vested_on ? `, fully vested ${formatDate(v.fully_vested_on)}` : "";
+    const mark =
+      v.unit_value_minor != null
+        ? ` · at ${formatMoney(v.unit_value_minor, a.currency_code ?? currency)} a unit${
+            v.unit_value_as_of ? ` set ${formatDate(v.unit_value_as_of)}` : ""
+          }`
+        : "";
+    return `${v.unvested_units.toLocaleString()} units still to vest, worth ${worth}${when}${mark}`;
+  }
+
   function scheduleLabel(a: ResolvedAssumption): string {
+    if (a.source === "vesting_schedule") return vestingLabel(a);
     const s = a.schedule;
     if (!s) return sourceLabel(a.source);
     if (s.refix_in_months == null || s.refix_rate_bps == null) {
@@ -225,6 +248,8 @@
                 {scheduleLabel(a)}{#if decayNote(a)}<span class="faint"> · {decayNote(a)}</span
                   >{/if}{#if needsReturn(a)}<span class="needs-return">
                     · set an expected return, or this stays flat</span
+                  >{/if}{#if a.source === "vesting_schedule"}<span class="faint">
+                    · growth below applies to the share price, not the units</span
                   >{/if}
               </span>
               {#if a.source !== "deterministic"}

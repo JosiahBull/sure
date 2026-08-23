@@ -596,6 +596,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/{id}/equity-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The dated vesting/exercise ledger for an account, newest first — the quantity side of its
+         *     value. Vesting rows are computed from each grant's schedule rather than stored.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    as_of?: string;
+                };
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EquityEvent"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}/equity-grants": {
         parameters: {
             query?: never;
@@ -646,6 +688,79 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["EquityGrant"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/equity-marks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every mark on an account, newest first — the price ledger behind its valuations. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EquityMark"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Record what one unit is worth from a date on. A mark already on that date is replaced, so
+         *     correcting a figure needs no delete first.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveMark"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EquityMark"];
                     };
                 };
                 404: {
@@ -744,6 +859,58 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/equity/rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rebuild the account's whole valuation history from its grant schedule and mark ledger.
+         * @description One valuation per date the position's value could change — every vesting tranche, every
+         *     exercise, every mark. Idempotent: re-running after correcting a mark restates the series
+         *     rather than doubling it. `as_of` caps how far forward to go, defaulting to today.
+         */
+        post: {
+            parameters: {
+                query?: {
+                    as_of?: string;
+                };
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RebuildResult"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -2279,6 +2446,48 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/equity-marks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -5954,8 +6163,37 @@ export interface components {
             as_of: string;
             currency_code: string;
             grants: components["schemas"]["VestingStatus"][];
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Summed [`VestingStatus::intrinsic_value_minor`]: the vested-but-unexercised options.
+             */
             total_intrinsic_minor: number;
+            /**
+             * Format: int64
+             * @description Summed [`VestingStatus::owned_value_minor`]: the shares already exercised and held.
+             */
+            total_owned_minor: number;
+            /**
+             * Format: int64
+             * @description The account's value: `total_intrinsic_minor + total_owned_minor`. This — not
+             *     `total_intrinsic_minor` — is what a revaluation persists, because an exercise moves
+             *     units from one of those two figures to the other and must not read as the position
+             *     shrinking by everything that was exercised.
+             */
+            total_value_minor: number;
+            /**
+             * Format: int64
+             * @description The mark used for every figure above: the latest [`EquityMark`] dated on or before
+             *     `as_of`. `None` means the ledger has no mark by that date, in which case the position
+             *     values at zero — the quantities are still exact, and nothing here is a guess at a price
+             *     nobody has supplied.
+             */
+            unit_value_minor?: number | null;
+            /**
+             * @description The date that mark was set, so a stale price is visible as one rather than being read as
+             *     current.
+             */
+            unit_value_as_of?: string | null;
         };
         /**
          * @description The kinds of financial account Sure understands. `kind` selects type-specific
@@ -6005,7 +6243,7 @@ export interface components {
          */
         AreaUnit: "sqft" | "sqm";
         /** @enum {string} */
-        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history" | "contribution_driven" | "modelled_from_income";
+        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history" | "contribution_driven" | "modelled_from_income" | "vesting_schedule";
         BackfillResult: {
             /**
              * Format: int64
@@ -6430,6 +6668,51 @@ export interface components {
             /** @enum {string} */
             kind: "category";
         };
+        /**
+         * @description One dated change in what an account holds: a vesting tranche or an exercise.
+         *
+         *     The quantity side of the ledger, and the counterpart to a brokerage account's `holdings`
+         *     lots. Vesting rows are *computed* from each grant's schedule rather than stored — a tranche
+         *     is not an event anybody records, it is what the deed already says will happen on the 1st of
+         *     each month — so this type is built on read and has no table behind it.
+         */
+        EquityEvent: {
+            date: string;
+            /** Format: int64 */
+            grant_id: number;
+            /**
+             * @description Which grant, as the user labelled it — so several grants from one employer are
+             *     distinguishable without opening each.
+             */
+            grant_label?: string | null;
+            kind: components["schemas"]["EquityEventKind"];
+            /**
+             * Format: int64
+             * @description Units vesting, or units exercised. Always positive.
+             */
+            quantity: number;
+            /**
+             * Format: int64
+             * @description Units of this grant vested in total, after this event.
+             */
+            vested_running: number;
+            /**
+             * Format: int64
+             * @description Units of this grant exercised in total, after this event.
+             */
+            exercised_running: number;
+            /**
+             * Format: int64
+             * @description The mark in force on `date`, if the ledger has one by then.
+             */
+            unit_value_minor?: number | null;
+            note?: string | null;
+        };
+        /**
+         * @description What kind of change an [`EquityEvent`] records.
+         * @enum {string}
+         */
+        EquityEventKind: "vest" | "cliff" | "exercise";
         EquityExercise: {
             /** Format: int64 */
             id: number;
@@ -6464,6 +6747,26 @@ export interface components {
             note?: string | null;
             created_at: string;
             updated_at: string;
+        };
+        /**
+         * @description What one unit of an unlisted holding was worth, from `as_of` until the next mark.
+         *
+         *     The private-company counterpart to a `stock_prices` row: there is no feed to poll, so the
+         *     figure is entered by hand after each funding round or internal revaluation. Together with the
+         *     grant schedule — which fixes *how many* units are held on any date — this is what makes an
+         *     account's whole valuation history computable rather than hand-entered.
+         */
+        EquityMark: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            account_id: number;
+            as_of: string;
+            /** Format: int64 */
+            unit_value_minor: number;
+            currency_code: string;
+            note?: string | null;
+            created_at: string;
         };
         EquityPosition: {
             /** Format: int64 */
@@ -7897,6 +8200,26 @@ export interface components {
          */
         RateType: "fixed" | "floating" | "split";
         /**
+         * @description What a history rebuild wrote.
+         *
+         *     A count and a range rather than the rows themselves: the caller that wants the series already
+         *     has `GET /accounts/{id}/valuations` for it, and returning `Valuation` values from here would
+         *     mean inventing an `id` and a `created_at` for rows that were upserted rather than inserted.
+         */
+        RebuildResult: {
+            /**
+             * Format: int64
+             * @description How many dates were written — one per date the position's value could change.
+             */
+            written: number;
+            /**
+             * @description Oldest and newest date in the rebuilt series, absent if there was nothing to write
+             *     (no grants, or none dated on or before today).
+             */
+            from?: string | null;
+            to?: string | null;
+        };
+        /**
          * @description Whether the ledger adds up, for the one source whose export states a balance to check
          *     against (ASB). Grouped rather than inlined into [`ImportItem`] so a myIR or Sharesies
          *     result doesn't carry six nulls describing a check that was never available to it.
@@ -8006,6 +8329,7 @@ export interface components {
              */
             baseline_minor?: number | null;
             schedule?: null | components["schemas"]["LoanScheduleSummary"];
+            vesting?: null | components["schemas"]["VestingSummary"];
             /** @description The account's own currency, for formatting `schedule`. Absent for a category. */
             currency_code?: string | null;
             ownership?: null | components["schemas"]["Ownership"];
@@ -8280,7 +8604,17 @@ export interface components {
             vest_months?: number;
             /** Format: int64 */
             cliff_months?: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Convenience: what one unit is worth, recorded as a [`EquityMark`] at `grant_date` on the
+             *     way in rather than kept on the grant.
+             *
+             *     The mark ledger is the only thing valuation reads — a price is a level that changes at
+             *     funding rounds, and a scalar per grant could not say when it started applying or let two
+             *     grants disagree. This field stays because supplying a grant and its price together is the
+             *     common case, and because `config/export` snapshots carry it; the column it writes to is
+             *     no longer read.
+             */
             unit_value_minor?: number | null;
             note?: string | null;
         };
@@ -8349,6 +8683,13 @@ export interface components {
             /** Format: int64 */
             annual_amount_minor: number;
             label?: string | null;
+        };
+        SaveMark: {
+            as_of: string;
+            /** Format: int64 */
+            unit_value_minor: number;
+            currency_code?: string | null;
+            note?: string | null;
         };
         SaveMerchant: {
             name: string;
@@ -8829,6 +9170,18 @@ export interface components {
              * @description Vested but not yet exercised (i.e. currently exercisable).
              */
             vested_unexercised: number;
+            /**
+             * Format: int64
+             * @description Shares actually held, having been exercised. Equal to [`Self::exercised`], because
+             *     there is no disposal ledger: `equity_exercises` records options turning into shares
+             *     and nothing records a share leaving again. That is the right model for the unlisted
+             *     grants this table exists for — a private company's shares generally cannot be sold
+             *     until an exit — but a holding that *can* be disposed of needs its own rows before
+             *     this field can diverge from `exercised`, and every reader here would have to be
+             *     revisited. Kept as its own field rather than having callers reach for `exercised`
+             *     so that day arrives as one change, not a search for every site that assumed it.
+             */
+            owned: number;
             /** Format: int64 */
             strike_minor: number;
             /** Format: int64 */
@@ -8837,8 +9190,54 @@ export interface components {
             /**
              * Format: int64
              * @description Intrinsic value of vested-unexercised units: qty × max(0, unit_value − strike).
+             *
+             *     Deliberately *not* the grant's whole worth — see [`Self::owned_value_minor`], which
+             *     carries the other half.
              */
             intrinsic_value_minor: number;
+            /**
+             * Format: int64
+             * @description Market value of the shares already owned: [`Self::owned`] × unit_value, at full
+             *     price rather than intrinsic.
+             *
+             *     Full price because the strike on these units is not a cost still to be met — it was
+             *     paid in cash on the exercise date and has already left a bank account this app
+             *     tracks. Netting it off here would count the same spend twice.
+             */
+            owned_value_minor: number;
+            /**
+             * Format: int64
+             * @description What this grant is worth in total: [`Self::intrinsic_value_minor`] +
+             *     [`Self::owned_value_minor`]. Unvested units are excluded — they are contingent on
+             *     staying employed and are cancelled outright on leaving.
+             */
+            total_value_minor: number;
+        };
+        /**
+         * @description What a private holding's grants still have to vest, and what that is worth at the current
+         *     mark — the ramp the projection follows.
+         */
+        VestingSummary: {
+            /**
+             * Format: int64
+             * @description Units not yet vested today, across every grant on the account.
+             */
+            unvested_units: number;
+            /**
+             * Format: int64
+             * @description What those units add once vested, at the current mark, in the account's minor units.
+             *     This is the money a flat or trend-fitted projection got wrong.
+             */
+            unvested_value_minor: number;
+            /** @description When the last grant on the account finishes vesting (ISO-8601 date). */
+            fully_vested_on?: string | null;
+            /**
+             * Format: int64
+             * @description The mark every figure here is priced at, and when it was set — so a stale price reads as
+             *     stale rather than current.
+             */
+            unit_value_minor?: number | null;
+            unit_value_as_of?: string | null;
         };
         /** @description A wallet cash balance in one currency, as of a date. */
         WalletBalance: {

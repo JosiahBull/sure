@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO equity_exercises (grant_id, exercise_date, quantity) VALUES (?1,'2024-01-01',1000)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "5bcd8069bc6e7b4bea0ca1764d6fb9e2458b42e44e35c22322dcc968cf5453dc"
+}

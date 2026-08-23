@@ -639,3 +639,54 @@ test("a failing price feed answers 502 coded upstream, and persists nothing", as
   );
   expect(counted.passed, counted.message).toBe(true);
 });
+
+test("a single listed holding is priced from lots, like a platform is", async ({ api, testproxy }) => {
+  // A `shares_nz` account's ticker was already being polled into `stock_prices` and then read by
+  // nothing: `SharesMeta` carries a ticker but no share count, so there was no quantity to
+  // multiply the price by and the account fell back to hand-entered valuations while a feed ran
+  // for it. Opening the lots ledger to these kinds is what closes that.
+  const acc = await createAccount(api, "Meridian", "shares_nz", "NZD");
+  const lot = await api.POST("/api/accounts/{id}/brokerage/holdings", {
+    params: { path: { id: acc.id } },
+    body: {
+      ticker: "MEL",
+      exchange: "NZX",
+      currency_code: "NZD",
+      trade_date: "2026-07-01",
+      quantity: 500,
+      unit_price: 4.2,
+      kind: "buy",
+    },
+  });
+  expect(lot.response.status).toBe(201);
+
+  await testproxy.stub({
+    upstream: "yahoo_finance",
+    method: "GET",
+    path_pattern: "^/v8/finance/chart/MEL\\.NZ$",
+    status: 200,
+    response_headers: { "content-type": "application/json" },
+    body: chart("NZD", WELLINGTON, [["2026-07-10", 5.5]]),
+    times: 1,
+  });
+
+  const { data, response } = await api.GET("/api/accounts/{id}/brokerage", {
+    params: { path: { id: acc.id }, query: { as_of: "2026-07-10" } },
+  });
+  expect(response.status).toBe(200);
+  expect(data!.positions).toHaveLength(1);
+  expect(data!.positions[0].quantity).toBe(500);
+  // 500 x $5.50 = $2,750 — the feed's price times the ledger's units, which is the whole point.
+  expect(data!.positions[0].market_value_minor).toBe(2_750_00);
+  expect(data!.total_value_minor).toBe(2_750_00);
+});
+
+test("a kind that holds no priced units is refused, not reported as an empty portfolio", async ({
+  api,
+}) => {
+  const property = await createAccount(api, "House", "real_estate", "NZD");
+  const refused = await api.GET("/api/accounts/{id}/brokerage", {
+    params: { path: { id: property.id } },
+  });
+  expect(refused.response.status).toBe(422);
+});

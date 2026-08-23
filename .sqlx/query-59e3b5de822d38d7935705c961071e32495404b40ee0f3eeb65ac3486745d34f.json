@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT value_minor FROM valuations WHERE source='equity' AND as_of='2021-01-01'",
+  "describe": {
+    "columns": [
+      {
+        "name": "value_minor",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "valuations",
+            "name": "value_minor"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "59e3b5de822d38d7935705c961071e32495404b40ee0f3eeb65ac3486745d34f"
+}

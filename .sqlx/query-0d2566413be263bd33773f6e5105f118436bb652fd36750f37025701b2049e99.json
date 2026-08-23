@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)\n         VALUES (?1,?2,?3,?4,?5,'equity revaluation')\n         ON CONFLICT(account_id, as_of) WHERE source='equity' DO UPDATE SET\n             value_minor=excluded.value_minor, currency_code=excluded.currency_code",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "0d2566413be263bd33773f6e5105f118436bb652fd36750f37025701b2049e99"
+}

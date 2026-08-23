@@ -7,6 +7,8 @@
   import { ICONS } from "../lib/icons";
   import { RANGES, activeRange, attributionParam, filters, type RangeKey } from "../lib/state.svelte";
   import ValuationPanel from "../lib/ValuationPanel.svelte";
+  import BrokeragePanel from "../lib/BrokeragePanel.svelte";
+  import EquityPanel from "../lib/EquityPanel.svelte";
   import { queryParams, router } from "../lib/router.svelte";
   import Icon from "../lib/Icon.svelte";
   import {
@@ -63,6 +65,10 @@
   // which is the opposite of the point. The bound below is what keeps a brokerage account's
   // daily series from drowning its own history.
   let onlyMyValues = $state(false);
+  // Whether `onlyMyValues` was turned on for the reader rather than by them, so switching to an
+  // account that has no panel puts it back rather than silently hiding a synced-only account's
+  // entire history — the failure the comment above records.
+  let valuesNarrowedForPanel = $state(false);
   let showValuation = $state(false);
   let accounts = $state<Account[]>([]);
   let categories = $state<Category[]>([]);
@@ -152,6 +158,41 @@
 
   const accountName = $derived(new Map(accounts.map((a) => [a.id, a.name])));
   const accountClass = $derived(new Map(accounts.map((a) => [a.id, a.class])));
+  const accountKind = $derived(new Map(accounts.map((a) => [a.id, a.kind])));
+
+  /**
+   * Which units x price panel belongs on this page, when it is showing one account.
+   *
+   * An investment account's history is not a list of transactions — it has none. What it has is
+   * how many units are held, when that changed, and what one is worth, which is what the panel
+   * shows. This page is where you land when you open an account, so this is where that belongs:
+   * leaving it only on the settings list meant an account's own page showed an empty ledger and
+   * a wall of revaluations instead of the thing being tracked.
+   */
+  // A panel account's valuations are one row per vesting tranche or priced day — dozens to
+  // hundreds of near-identical entries that bury everything else on the page, and all of them
+  // already listed under the panel's own Valuations tab. Narrow to hand-set values for those,
+  // and undo it on the way out so an account whose value is *only* ever synced still shows its
+  // history (the failure recorded beside `onlyMyValues`). Only ever overrides the flag it set
+  // itself, so a reader who ticks the box keeps their choice.
+  $effect(() => {
+    const wantsNarrow = unitsPanel !== null;
+    if (wantsNarrow && !onlyMyValues) {
+      onlyMyValues = true;
+      valuesNarrowedForPanel = true;
+    } else if (!wantsNarrow && valuesNarrowedForPanel) {
+      onlyMyValues = false;
+      valuesNarrowedForPanel = false;
+    }
+  });
+
+  const unitsPanel = $derived.by((): "equity" | "holdings" | null => {
+    if (accountId === "") return null;
+    const kind = accountKind.get(Number(accountId));
+    if (kind === "shares_private") return "equity";
+    if (kind === "brokerage" || kind === "shares_nz" || kind === "shares_us") return "holdings";
+    return null;
+  });
   // Exhaustive by type: a new `ValuationSource` variant is a compile error here.
   const VALUATION_SOURCE_LABEL: Record<Schemas["ValuationSource"], string> = {
     manual: "manual",
@@ -783,8 +824,10 @@
       <Icon name="download" size={16} />
       Import
     </a>
-    {#if accountId !== ""}
-      <!-- Where you already are when you decide to correct a balance. -->
+    {#if accountId !== "" && unitsPanel === null}
+      <!-- Where you already are when you decide to correct a balance. Omitted for an account
+           with a panel: valuations live in its Valuations tab, and two entry points for one
+           number is how they drift. -->
       <button class="btn btn-sm" onclick={() => (showValuation = !showValuation)}>
         {showValuation ? "Close" : "Set value"}
       </button>
@@ -797,7 +840,37 @@
 
 {#if error}<div class="error-banner" style="margin-bottom:12px">{error}</div>{/if}
 
-{#if showValuation && accountId !== ""}
+{#if unitsPanel !== null && accountId !== ""}
+  <!-- The account's actual subject matter, above its ledger: units, how they changed, and what
+       one is worth. Keyed on the account so switching accounts rebuilds it rather than leaving
+       the previous account's tab and fetched rows in place. -->
+  <section style="margin-bottom:14px">
+    {#key accountId}
+      {#if unitsPanel === "equity"}
+        <EquityPanel
+          accountId={Number(accountId)}
+          onchange={() => {
+            loadValuations();
+            loadTx();
+          }}
+        />
+      {:else}
+        <BrokeragePanel
+          accountId={Number(accountId)}
+          importable={accountKind.get(Number(accountId)) === "brokerage"}
+          onchange={() => {
+            loadValuations();
+            loadTx();
+          }}
+        />
+      {/if}
+    {/key}
+  </section>
+{/if}
+
+<!-- `unitsPanel === null` again, not just on the button: the flag survives an account
+     change, so a panel account switched to while the form was open would render both. -->
+{#if showValuation && accountId !== "" && unitsPanel === null}
   <section class="card" style="margin-bottom:14px">
     <ValuationPanel
       accountId={Number(accountId)}

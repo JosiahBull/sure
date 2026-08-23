@@ -289,13 +289,16 @@
                   <button class="btn btn-sm" onclick={() => (expanded = expanded === a.account_id ? null : a.account_id)}>
                     {expanded === a.account_id
                       ? "Hide"
-                      : a.kind === "brokerage"
+                      : a.kind === "brokerage" ||
+                          a.kind === "shares_nz" ||
+                          a.kind === "shares_us" ||
+                          a.kind === "shares_private"
                         ? "Holdings"
                         : a.kind === "crypto"
                           ? "Value"
                           : a.kind === "student_loan" || takesBankCsv(a.kind)
                             ? "Import"
-                            : a.kind === "shares_private" || a.class === "asset"
+                            : a.class === "asset"
                               ? "Equity"
                               : "Value"}
                   </button>
@@ -319,6 +322,13 @@
             {#if expanded === a.account_id}
               {#if a.kind === "brokerage"}
                 <BrokeragePanel accountId={a.account_id} onchange={load} />
+              {:else if a.kind === "shares_nz" || a.kind === "shares_us"}
+                <!-- A single listed holding is the same units × price model as a platform, with
+                     one ticker in it: the lots ledger carries the quantity and the price feed
+                     (which already polls this account's ticker) carries the price. It gets no
+                     importer, because there is no platform export to import — trades are typed
+                     in under Activity. -->
+                <BrokeragePanel accountId={a.account_id} importable={false} onchange={load} />
               {:else if a.kind === "shares_private"}
                 <EquityPanel accountId={a.account_id} onchange={load} />
               {:else if a.kind === "student_loan"}
@@ -328,7 +338,11 @@
               {:else if a.class === "asset"}
                 <PropertyPanel accountId={a.account_id} onchange={load} />
               {/if}
-              {#if a.class !== "asset" && a.kind !== "brokerage" && a.kind !== "shares_private"}
+              {#if a.class !== "asset" &&
+                a.kind !== "brokerage" &&
+                a.kind !== "shares_private" &&
+                a.kind !== "shares_nz" &&
+                a.kind !== "shares_us"}
                 <ValuationPanel
                   accountId={a.account_id}
                   accountClass={a.class}

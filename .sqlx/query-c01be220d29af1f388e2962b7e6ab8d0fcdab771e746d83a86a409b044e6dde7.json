@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO equity_marks (account_id, as_of, unit_value_minor, currency_code)\n                 VALUES (?1,'2019-01-01',?2,'NZD')\n                 ON CONFLICT(account_id, as_of) DO UPDATE SET\n                     unit_value_minor=excluded.unit_value_minor",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "c01be220d29af1f388e2962b7e6ab8d0fcdab771e746d83a86a409b044e6dde7"
+}

@@ -40,7 +40,7 @@ use sure_core::{
 
 use crate::fx::Fx;
 use crate::ports::{
-    AccountRepo, Clock, CronRepo, ForecastRepo, FxRatesRepo, IncomeRepo, ReportRepo,
+    AccountRepo, Clock, CronRepo, EquityRepo, ForecastRepo, FxRatesRepo, IncomeRepo, ReportRepo,
 };
 use crate::reports;
 
@@ -176,6 +176,16 @@ pub enum AssumptionSource {
     /// rather than an answer. The measured *volatility* is kept: month-to-month scatter is real
     /// either way.
     ContributionDriven,
+    /// A `shares_private` account with grants — projected along its contractual vesting ramp
+    /// rather than a fitted rate.
+    ///
+    /// The fit is not merely weak here, it is the wrong shape. A grant vesting into a company
+    /// that gets re-marked at a funding round reads, as a value series, like an asset compounding
+    /// at hundreds of percent a year; carrying that forward invents wealth. Holding the value
+    /// flat instead ignores the units the deed says will vest. So quantity comes from the
+    /// schedule and price stays at the latest mark unless an override says otherwise — the
+    /// growth shown is about the *share price*, not the position.
+    VestingSchedule,
     /// This category's cash flow comes from per-person income streams, not from its own fitted
     /// trend. The baseline shown is the *residual* — the part of the category the streams do not
     /// explain — so a non-zero one means some income here is still un-modelled.
@@ -208,6 +218,9 @@ pub struct ResolvedAssumption {
     /// schedule actually is, so the forecast can show its working rather than an
     /// unexplained "deterministic".
     pub schedule: Option<LoanScheduleSummary>,
+    /// Only set for a `shares_private` account projected along its vesting schedule — see
+    /// [`AssumptionSource::VestingSchedule`].
+    pub vesting: Option<VestingSummary>,
     /// The account's own currency, so [`LoanScheduleSummary`]'s minor-unit amounts can be
     /// formatted. `None` for a category, whose `baseline_minor` is in the base currency.
     pub currency_code: Option<String>,
@@ -217,6 +230,23 @@ pub struct ResolvedAssumption {
     /// which rate you are about to override has to say whose it is.
     pub ownership: Option<Ownership>,
     pub source: AssumptionSource,
+}
+
+/// The vesting a private-equity account is projected along, so the page can show its working
+/// rather than an unexplained ramp.
+#[derive(Debug, Clone)]
+pub struct VestingSummary {
+    /// Units not yet vested today, across every grant on the account.
+    pub unvested_units: i64,
+    /// What those units add at the current mark once they have all vested — the money the
+    /// projection ramps toward, and precisely what a flat or trend-fitted projection got wrong.
+    pub unvested_value_minor: i64,
+    /// The last month any grant on the account finishes vesting (ISO-8601 date).
+    pub fully_vested_on: Option<String>,
+    /// The mark every figure here is priced at, and the date it was set — so a stale price is
+    /// visible as one.
+    pub unit_value_minor: Option<i64>,
+    pub unit_value_as_of: Option<String>,
 }
 
 /// The repayment schedule a deterministic mortgage/loan is projected from.
@@ -457,10 +487,15 @@ pub struct ForecastService {
     fx: Arc<dyn FxRatesRepo>,
     accounts: Arc<dyn AccountRepo>,
     crons: Arc<dyn CronRepo>,
+    equity: Arc<dyn EquityRepo>,
     clock: Arc<dyn Clock>,
 }
 
 impl ForecastService {
+    // Eight collaborators, one per repository this projection reads. Grouping them into a
+    // struct would only move the same list one line up, and the alternative — the service
+    // reaching for a god-object handle — is what the ports split exists to prevent.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         forecast: Arc<dyn ForecastRepo>,
         income: Arc<dyn IncomeRepo>,
@@ -468,6 +503,7 @@ impl ForecastService {
         fx: Arc<dyn FxRatesRepo>,
         accounts: Arc<dyn AccountRepo>,
         crons: Arc<dyn CronRepo>,
+        equity: Arc<dyn EquityRepo>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
@@ -477,6 +513,7 @@ impl ForecastService {
             fx,
             accounts,
             crons,
+            equity,
             clock,
         }
     }
@@ -598,11 +635,49 @@ impl ForecastService {
                         refix_rate_bps: terms.refix.map(|r| r.rate_bps),
                         refix_rate_uncertainty_bps: terms.refix.map(|r| r.uncertainty_bps),
                     }),
+                    vesting: None,
                     currency_code: Some(a.currency_code.clone()),
                     ownership: Some(a.ownership),
                     source: AssumptionSource::Deterministic,
                 });
                 continue;
+            }
+
+            // A private holding with grants: quantity is contractual, so it is projected along
+            // the schedule rather than a rate fitted from its own past. Placed before the fitted
+            // path below because the fit is not just weak for these accounts, it is the wrong
+            // model — see `AssumptionSource::VestingSchedule`.
+            if a.kind == AccountKind::SharesPrivate
+                && let Some(v) = self.vesting_summary(a.id, today).await?
+            {
+                {
+                    let ov = overrides.get(&(ForecastTargetType::Account, a.id));
+                    out.push(ResolvedAssumption {
+                        target_type: ForecastTargetType::Account,
+                        target_id: a.id,
+                        label: a.name.clone(),
+                        // Any growth here is a view on the *share price*, not on the position:
+                        // the units arrive on their own schedule either way. Zero unless stated,
+                        // because an unlisted company has no measured return to fall back on.
+                        annual_growth_bps: ov.and_then(|o| o.annual_growth_bps).unwrap_or(0),
+                        annual_volatility_bps: ov
+                            .and_then(|o| o.annual_volatility_bps)
+                            .unwrap_or(0),
+                        long_run_growth_bps: 0,
+                        annual_fee_bps: None,
+                        annual_fixed_fee_minor: None,
+                        // Unlisted equity of this kind pays no dividend, and deriving a yield
+                        // from the revaluation history would read the vesting ramp as income.
+                        dividend_yield_bps: None,
+                        baseline_minor: None,
+                        schedule: None,
+                        vesting: Some(v),
+                        currency_code: Some(a.currency_code.clone()),
+                        ownership: Some(a.ownership),
+                        source: AssumptionSource::VestingSchedule,
+                    });
+                    continue;
+                }
             }
 
             let ov = overrides.get(&(ForecastTargetType::Account, a.id));
@@ -656,12 +731,63 @@ impl ForecastService {
                 dividend_yield_bps,
                 baseline_minor: None,
                 schedule: None,
+                vesting: None,
                 currency_code: Some(a.currency_code.clone()),
                 ownership: Some(a.ownership),
                 source,
             });
         }
         Ok(out)
+    }
+
+    /// What an account's grants still have to vest, priced at the current mark.
+    ///
+    /// `None` when there is nothing to project along — no grants, or no mark to price them with
+    /// — in which case the account falls through to the ordinary fitted path and behaves like
+    /// any other manually-valued holding.
+    async fn vesting_summary(
+        &self,
+        account_id: i64,
+        today: NaiveDate,
+    ) -> AppResult<Option<VestingSummary>> {
+        let equity = self
+            .equity
+            .account_equity(account_id, Some(&today.to_string()))
+            .await?;
+        if equity.grants.is_empty() {
+            return Ok(None);
+        }
+        let unvested_units: i64 = equity.grants.iter().map(|g| g.unvested).sum();
+        let Some(mark) = equity.unit_value_minor else {
+            // Grants but no price: the quantity ramp would be all zeros, which would pin the
+            // account at zero for the whole horizon rather than say "unknown".
+            return Ok(None);
+        };
+        // At the mark, not at the intrinsic spread: an unvested option becomes a *share* once
+        // exercised, and the strike is paid in cash out of a different account.
+        let unvested_value_minor = (unvested_units as i128 * mark as i128)
+            .try_into()
+            .unwrap_or(i64::MAX);
+        // The last grant to finish. Read off the grants rather than recomputed here so it cannot
+        // disagree with the ramp the simulation is handed.
+        let fully_vested_on = self
+            .equity
+            .list_grants(account_id)
+            .await?
+            .iter()
+            .filter_map(|g| {
+                let start = NaiveDate::parse_from_str(g.grant_date.get(0..10)?, "%Y-%m-%d").ok()?;
+                Some(add_months(start, g.vest_months.max(1)))
+            })
+            .max()
+            .map(|d| d.to_string());
+        Ok(Some(VestingSummary {
+            unvested_units,
+            unvested_value_minor,
+            fully_vested_on,
+            unit_value_minor: Some(mark),
+            unit_value_as_of: equity.unit_value_as_of,
+        }))
     }
 
     async fn resolve_category_assumptions(
@@ -720,6 +846,7 @@ impl ForecastService {
                 dividend_yield_bps: None,
                 baseline_minor,
                 schedule: None,
+                vesting: None,
                 currency_code: None,
                 ownership: None,
                 source,
@@ -965,6 +1092,29 @@ impl ForecastService {
         accounts.retain(|a| !a.excluded_from_net_worth);
         let (tx_by_acct, val_by_acct) = reports::load_ledger(self.reports.as_ref()).await?;
 
+        // The contractual quantity ramp for every private-equity account that has grants, in
+        // native minor units at each month `0..=horizon`. Resolved here rather than in the loop
+        // below so the port is touched once per account and never per path.
+        //
+        // Keyed only for accounts that actually have grants: a `shares_private` account with
+        // none is an ordinary manually-valued holding and should keep its fitted trend.
+        let mut vesting_ramps: HashMap<i64, Vec<f64>> = HashMap::new();
+        for a in accounts
+            .iter()
+            .filter(|a| a.kind == AccountKind::SharesPrivate)
+        {
+            let ramp = self
+                .equity
+                .projected_values(a.id, &today.to_string(), horizon)
+                .await?;
+            // All-zero means no grants, or no mark to price them with. Either way there is
+            // nothing to ramp along, and a ramp of zeros would pin the account at zero for the
+            // whole horizon — worse than the fitted trend it would be replacing.
+            if ramp.iter().any(|v| *v != 0) {
+                vesting_ramps.insert(a.id, ramp.into_iter().map(|v| v as f64).collect());
+            }
+        }
+
         let mut account_sims = Vec::new();
         for a in &accounts {
             let class = a.kind.class();
@@ -1002,54 +1152,83 @@ impl ForecastService {
                 continue;
             };
 
-            let (projection, monthly_drift) = if let Some(terms) = loan_terms(&a.metadata, today) {
-                (AccountProjection::Deterministic(terms), Vec::new())
-            } else {
-                let resolved = by_target.get(&(ForecastTargetType::Account, a.id));
-                let annual_growth = resolved.map(|r| r.annual_growth_bps).unwrap_or(0);
-                let annual_vol = resolved.map(|r| r.annual_volatility_bps).unwrap_or(0);
-                // The fee comes off the growth rate, which is what a percentage fee is. Subtracted
-                // as a *log* return rather than from the annual bps, so 6% gross less a 1.05% fee
-                // compounds to exactly what 4.95% net would — the two differ by a few basis points
-                // a year otherwise, and over thirty years that is visible.
-                let fee_bps = resolved.and_then(|r| r.annual_fee_bps).unwrap_or(0);
-                let fee_log = annual_rate_to_monthly_log_return(fee_bps);
-                let drift: Vec<f64> = drift_series(
-                    annual_growth,
-                    resolved.and_then(|r| long_run_anchor(r)),
-                    horizon,
-                )
-                .into_iter()
-                .map(|r| r - fee_log)
-                .collect();
-                let monthly_vol = annual_vol_to_monthly_sd(annual_vol);
-                if class == AccountClass::Liability {
-                    // Project a debt the same way its rate was measured. `derive_account_rate`
-                    // fits a liability with a *linear* trend (a log-return is undefined once a
-                    // balance crosses zero), so applying that fit as a compounding rate is a
-                    // different model from the one the data supported: an exponential decay
-                    // approaches zero without ever arriving, leaving a loan that is genuinely
-                    // three years from being cleared still showing a balance a decade out.
-                    // Converting the rate back into the dollars-per-month it was fitted from
-                    // keeps the two consistent, and lets the debt actually finish.
-                    //
-                    // The conversion is per month because the rate now is: `current` is the
-                    // balance the fit was taken against and stays fixed, so a decaying rate
-                    // becomes a decaying dollars-per-month, which is the same fit expressed in
-                    // the same unit it was measured in.
+            let (projection, monthly_drift, vesting_value) =
+                if let Some(terms) = loan_terms(&a.metadata, today) {
                     (
-                        AccountProjection::LinearPaydown {
-                            monthly_vol_abs: current.abs() * monthly_vol,
+                        AccountProjection::Deterministic(terms),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                } else if let Some(ramp) = vesting_ramps.get(&a.id) {
+                    // Quantity from the deed, price from the assumption. Any growth resolved for this
+                    // account is a view on the *share price* and rides on top of the ramp; with none
+                    // set that is flat, which is the right default for a company with no market.
+                    let resolved = by_target.get(&(ForecastTargetType::Account, a.id));
+                    let annual_growth = resolved.map(|r| r.annual_growth_bps).unwrap_or(0);
+                    let annual_vol = resolved.map(|r| r.annual_volatility_bps).unwrap_or(0);
+                    let drift = drift_series(
+                        annual_growth,
+                        resolved.and_then(|r| long_run_anchor(r)),
+                        horizon,
+                    );
+                    (
+                        AccountProjection::Vesting {
+                            monthly_vol: annual_vol_to_monthly_sd(annual_vol),
                         },
-                        drift
-                            .iter()
-                            .map(|r| current * (r.exp() - 1.0))
-                            .collect::<Vec<f64>>(),
+                        drift,
+                        ramp.clone(),
                     )
                 } else {
-                    (AccountProjection::Stochastic { monthly_vol }, drift)
-                }
-            };
+                    let resolved = by_target.get(&(ForecastTargetType::Account, a.id));
+                    let annual_growth = resolved.map(|r| r.annual_growth_bps).unwrap_or(0);
+                    let annual_vol = resolved.map(|r| r.annual_volatility_bps).unwrap_or(0);
+                    // The fee comes off the growth rate, which is what a percentage fee is. Subtracted
+                    // as a *log* return rather than from the annual bps, so 6% gross less a 1.05% fee
+                    // compounds to exactly what 4.95% net would — the two differ by a few basis points
+                    // a year otherwise, and over thirty years that is visible.
+                    let fee_bps = resolved.and_then(|r| r.annual_fee_bps).unwrap_or(0);
+                    let fee_log = annual_rate_to_monthly_log_return(fee_bps);
+                    let drift: Vec<f64> = drift_series(
+                        annual_growth,
+                        resolved.and_then(|r| long_run_anchor(r)),
+                        horizon,
+                    )
+                    .into_iter()
+                    .map(|r| r - fee_log)
+                    .collect();
+                    let monthly_vol = annual_vol_to_monthly_sd(annual_vol);
+                    if class == AccountClass::Liability {
+                        // Project a debt the same way its rate was measured. `derive_account_rate`
+                        // fits a liability with a *linear* trend (a log-return is undefined once a
+                        // balance crosses zero), so applying that fit as a compounding rate is a
+                        // different model from the one the data supported: an exponential decay
+                        // approaches zero without ever arriving, leaving a loan that is genuinely
+                        // three years from being cleared still showing a balance a decade out.
+                        // Converting the rate back into the dollars-per-month it was fitted from
+                        // keeps the two consistent, and lets the debt actually finish.
+                        //
+                        // The conversion is per month because the rate now is: `current` is the
+                        // balance the fit was taken against and stays fixed, so a decaying rate
+                        // becomes a decaying dollars-per-month, which is the same fit expressed in
+                        // the same unit it was measured in.
+                        (
+                            AccountProjection::LinearPaydown {
+                                monthly_vol_abs: current.abs() * monthly_vol,
+                            },
+                            drift
+                                .iter()
+                                .map(|r| current * (r.exp() - 1.0))
+                                .collect::<Vec<f64>>(),
+                            Vec::new(),
+                        )
+                    } else {
+                        (
+                            AccountProjection::Stochastic { monthly_vol },
+                            drift,
+                            Vec::new(),
+                        )
+                    }
+                };
 
             // Event effects reach an account through the per-path overlay, not through the sim —
             // they are per-path now. A deterministic mortgage/loan still takes none: it projects
@@ -1061,6 +1240,7 @@ impl ForecastService {
                 current,
                 projection,
                 monthly_drift,
+                vesting_value,
                 // Exactly the kinds whose own ledger rows are kept out of the income/
                 // expense report: that exclusion is what guarantees the repayment isn't
                 // already inside a category baseline. `StudentLoan` is excluded from
@@ -1636,9 +1816,15 @@ impl ForecastService {
                         Some(AmortSchedule::open(&terms, acc_values[i], today, &mut rng))
                     }
                     AccountProjection::Stochastic { .. }
-                    | AccountProjection::LinearPaydown { .. } => None,
+                    | AccountProjection::LinearPaydown { .. }
+                    | AccountProjection::Vesting { .. } => None,
                 })
                 .collect();
+
+            // Per-path share-price factor, parallel to `acc_values`, for
+            // `AccountProjection::Vesting`. Starts at 1.0: month zero is priced at the mark the
+            // ramp was built with, and drift accumulates from there.
+            let mut price_factors: Vec<f64> = vec![1.0; acc_values.len()];
 
             for m in 1..=horizon {
                 // Base-currency major units, like `cash`.
@@ -1654,6 +1840,32 @@ impl ForecastService {
                             if sim.repayment_debits_cash {
                                 repayments += paid.cash_out() * sim.base_scale;
                             }
+                        }
+                        AccountProjection::Vesting { monthly_vol } => {
+                            if let Some(&(_, val)) =
+                                overlay.acc_step[i].iter().find(|&&(idx, _)| idx == m)
+                            {
+                                // An event setting this account to a level overrides both halves:
+                                // the user is stating the whole value, not a share price.
+                                acc_values[i] = val;
+                            } else {
+                                let noise = if monthly_vol > 0.0 {
+                                    Normal::new(0.0, monthly_vol).unwrap().sample(&mut rng)
+                                } else {
+                                    0.0
+                                };
+                                price_factors[i] *= (sim.monthly_drift[m as usize] + noise).exp();
+                                // Units from the deed, price from the path. Neither compounds
+                                // into the other.
+                                acc_values[i] =
+                                    sim.vesting_value.get(m as usize).copied().unwrap_or(0.0)
+                                        * price_factors[i];
+                            }
+                            acc_values[i] += overlay.acc_one[i]
+                                .iter()
+                                .filter(|&&(idx, _)| idx == m)
+                                .map(|&(_, d)| d)
+                                .sum::<f64>();
                         }
                         AccountProjection::Stochastic { monthly_vol } => {
                             if let Some(&(_, val)) =
@@ -1959,6 +2171,15 @@ enum AccountProjection {
     /// [`AccountSim::monthly_drift`]. Assets and investments, whose rate is fitted as a
     /// compounding return in the first place.
     Stochastic { monthly_vol: f64 },
+    /// `value = vesting_value[m] * price_factor`, where the ramp comes from
+    /// [`AccountSim::vesting_value`] and `price_factor` compounds this path's drift and noise.
+    ///
+    /// The two halves of a holding's value, kept apart: units are contractual and deterministic,
+    /// the price of one is not. Compounding the drift onto a *factor* rather than onto the value
+    /// is what keeps them separate — applied to the value it would compound the vesting ramp too,
+    /// so a month that both vests and re-prices would count the re-pricing against units that
+    /// only just arrived.
+    Vesting { monthly_vol: f64 },
     /// `value += drift + noise` each month, stopping at zero, where `drift` is that month's
     /// entry in [`AccountSim::monthly_drift`] — there an absolute delta rather than a rate. A
     /// liability without a repayment schedule of its own: its rate is fitted as a straight
@@ -1988,6 +2209,10 @@ struct AccountSim {
     /// over; for every other source every entry is the same value, and for any month within
     /// [`TREND_FULL_STRENGTH_MONTHS`] it is the value the scalar had.
     monthly_drift: Vec<f64>,
+    /// Value at each month `0..=horizon` at the current mark, for
+    /// [`AccountProjection::Vesting`] — the contractual quantity ramp. Empty for every other
+    /// projection.
+    vesting_value: Vec<f64>,
     /// Whether this loan's repayment should be debited from the projected cash pool.
     ///
     /// A mortgage's legs are already outside the category cash-flow model — the account
@@ -2589,6 +2814,10 @@ fn long_run_anchor(a: &ResolvedAssumption) -> Option<i64> {
         | AssumptionSource::Cron
         | AssumptionSource::Deterministic
         | AssumptionSource::InsufficientHistory => None,
+        // Nothing was fitted, so there is nothing to decay: the growth here is whatever view of
+        // the *share price* was set explicitly, and an unlisted company has no measured long-run
+        // return to pull it toward. The vesting ramp it multiplies is contractual either way.
+        AssumptionSource::VestingSchedule => None,
         // The baseline here is a *residual* — whatever the income streams did not explain — and the
         // streams themselves carry their own dated schedule. Decaying the residual would be decaying
         // a leftover, which says nothing about the long run either way, so it is left flat.
@@ -4241,6 +4470,109 @@ mod tests {
         };
 
         struct FakeAccounts(Vec<Account>);
+        /// No grants anywhere: every test in this module is about the fitted/deterministic paths,
+        /// and an account with no grants is precisely the state in which `vesting_summary`
+        /// declines to take over. The vesting projection has its own tests.
+        struct FakeEquity;
+
+        #[async_trait]
+        impl EquityRepo for FakeEquity {
+            async fn list_grants(&self, _: i64) -> AppResult<Vec<sure_core::EquityGrant>> {
+                Ok(Vec::new())
+            }
+            async fn create_grant(
+                &self,
+                _: i64,
+                _: sure_core::SaveGrant,
+            ) -> AppResult<sure_core::EquityGrant> {
+                unimplemented!("forecast tests never write grants")
+            }
+            async fn update_grant(
+                &self,
+                _: i64,
+                _: sure_core::SaveGrant,
+            ) -> AppResult<sure_core::EquityGrant> {
+                unimplemented!("forecast tests never write grants")
+            }
+            async fn delete_grant(&self, _: i64) -> AppResult<()> {
+                unimplemented!("forecast tests never write grants")
+            }
+            async fn list_exercises(&self, _: i64) -> AppResult<Vec<sure_core::EquityExercise>> {
+                Ok(Vec::new())
+            }
+            async fn create_exercise(
+                &self,
+                _: i64,
+                _: sure_core::SaveExercise,
+            ) -> AppResult<sure_core::EquityExercise> {
+                unimplemented!("forecast tests never write exercises")
+            }
+            async fn delete_exercise(&self, _: i64) -> AppResult<()> {
+                unimplemented!("forecast tests never write exercises")
+            }
+            async fn grant_vesting(
+                &self,
+                _: i64,
+                _: Option<&str>,
+            ) -> AppResult<sure_core::VestingStatus> {
+                unimplemented!("no grants to report on")
+            }
+            async fn account_equity(
+                &self,
+                id: i64,
+                as_of: Option<&str>,
+            ) -> AppResult<sure_core::AccountEquity> {
+                Ok(sure_core::AccountEquity {
+                    account_id: id,
+                    as_of: as_of.unwrap_or("1970-01-01").to_string(),
+                    currency_code: "NZD".to_string(),
+                    grants: Vec::new(),
+                    total_intrinsic_minor: 0,
+                    total_owned_minor: 0,
+                    total_value_minor: 0,
+                    unit_value_minor: None,
+                    unit_value_as_of: None,
+                })
+            }
+            async fn revalue(
+                &self,
+                _: i64,
+                _: Option<&str>,
+            ) -> AppResult<sure_core::AccountEquity> {
+                unimplemented!("forecast never revalues")
+            }
+            async fn list_marks(&self, _: i64) -> AppResult<Vec<sure_core::EquityMark>> {
+                Ok(Vec::new())
+            }
+            async fn create_mark(
+                &self,
+                _: i64,
+                _: sure_core::SaveMark,
+            ) -> AppResult<sure_core::EquityMark> {
+                unimplemented!("forecast tests never write marks")
+            }
+            async fn delete_mark(&self, _: i64) -> AppResult<()> {
+                unimplemented!("forecast tests never write marks")
+            }
+            async fn list_events(
+                &self,
+                _: i64,
+                _: Option<&str>,
+            ) -> AppResult<Vec<sure_core::EquityEvent>> {
+                Ok(Vec::new())
+            }
+            async fn rebuild_history(
+                &self,
+                _: i64,
+                _: Option<&str>,
+            ) -> AppResult<sure_core::RebuildResult> {
+                unimplemented!("forecast never rebuilds history")
+            }
+            async fn projected_values(&self, _: i64, _: &str, _: i64) -> AppResult<Vec<i64>> {
+                Ok(Vec::new())
+            }
+        }
+
         #[async_trait]
         impl AccountRepo for FakeAccounts {
             async fn list(&self, _include_archived: bool) -> AppResult<Vec<Account>> {
@@ -4701,6 +5033,7 @@ mod tests {
                 Arc::new(FakeFx),
                 Arc::new(FakeAccounts(accounts)),
                 Arc::new(FakeCrons),
+                Arc::new(FakeEquity),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
         }
@@ -5344,6 +5677,7 @@ mod tests {
                 Arc::new(FakeFx),
                 Arc::new(FakeAccounts(accounts)),
                 Arc::new(FakeCrons),
+                Arc::new(FakeEquity),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
         }
@@ -5543,6 +5877,7 @@ mod tests {
                 Arc::new(FakeFx),
                 Arc::new(FakeAccounts(vec![account])),
                 Arc::new(FakeCrons),
+                Arc::new(FakeEquity),
                 Arc::new(crate::test_clock::FixedClock(today)),
             );
             let result = rt
@@ -5624,6 +5959,7 @@ mod tests {
                 Arc::new(FakeFx),
                 Arc::new(FakeAccounts(vec![account(1, AK::Brokerage, "NZD")])),
                 Arc::new(FakeCrons),
+                Arc::new(FakeEquity),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
         }
@@ -6112,6 +6448,7 @@ mod tests {
                 Arc::new(FakeFx),
                 Arc::new(FakeAccounts(accounts)),
                 Arc::new(FakeCrons),
+                Arc::new(FakeEquity),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
         }
