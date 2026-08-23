@@ -228,6 +228,7 @@
   let editingKey = $state<string | null>(null);
   let editForm = $state({
     growth: "0",
+    growthIsReal: false,
     volatility: "0",
     dividendYield: "0",
     longRun: "0",
@@ -237,8 +238,15 @@
 
   function startEdit(a: ResolvedAssumption) {
     editingKey = `${a.target_type}:${a.target_id}`;
+    const isReal = a.growth_is_real ?? false;
     editForm = {
-      growth: (a.annual_growth_bps / 100).toString(),
+      // Pre-filled with the *spread* when the override is real, not the resolved sum: the field
+      // means "above inflation" in that mode, and showing the sum there would silently add the
+      // household rate a second time on the next save.
+      growth: (
+        (isReal ? a.annual_growth_bps - (inflationBps ?? 0) : a.annual_growth_bps) / 100
+      ).toString(),
+      growthIsReal: isReal,
       volatility: (a.annual_volatility_bps / 100).toString(),
       dividendYield: ((a.dividend_yield_bps ?? 0) / 100).toString(),
       longRun: (a.long_run_growth_bps / 100).toString(),
@@ -254,6 +262,7 @@
       target_type: a.target_type,
       target_id: a.target_id,
       annual_growth_bps: Math.round(parseFloat(editForm.growth || "0") * 100),
+      growth_is_real: editForm.growthIsReal,
       annual_volatility_bps: Math.round(parseFloat(editForm.volatility || "0") * 100),
       dividend_yield_bps:
         a.dividend_yield_bps != null
@@ -377,7 +386,12 @@
                 </div>
               {:else if a.source !== "deterministic"}
                 <div class="row" style="gap:14px">
-                  <span class="tabular small">growth {pct(a.annual_growth_bps)}/yr</span>
+                  <span class="tabular small">
+                    growth {pct(a.annual_growth_bps)}/yr
+                    {#if a.growth_is_real && inflationBps != null}
+                      <span class="faint">(inflation {pct(a.annual_growth_bps - inflationBps)})</span>
+                    {/if}
+                  </span>
                   <span class="tabular small faint"
                     >± {(a.annual_volatility_bps / 100).toFixed(1)}%/yr</span
                   >
@@ -435,9 +449,22 @@
             {#if editingKey === key}
               <div class="edit-form">
                 <label class="field">
-                  <span class="small faint">Growth %/yr</span>
+                  <span class="small faint">
+                    {editForm.growthIsReal ? "Growth above inflation %/yr" : "Growth %/yr"}
+                  </span>
                   <input class="input tabular" bind:value={editForm.growth} />
                 </label>
+                {#if a.target_type === "category"}
+                  <!-- Categories only. An account's growth is a market return, which is not a
+                       spread over household CPI and should not be expressible as one. -->
+                  <label class="field">
+                    <span class="small faint">Relative to</span>
+                    <span class="row" style="gap:6px;align-items:center;height:34px">
+                      <input type="checkbox" bind:checked={editForm.growthIsReal} />
+                      <span class="small faint">above inflation</span>
+                    </span>
+                  </label>
+                {/if}
                 <label class="field">
                   <span class="small faint">Volatility %/yr</span>
                   <input class="input tabular" bind:value={editForm.volatility} />

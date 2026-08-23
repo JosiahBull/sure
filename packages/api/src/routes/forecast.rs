@@ -206,6 +206,11 @@ pub struct ResolvedAssumption {
     /// page can grey out what the break excluded rather than simply omitting it. This is the
     /// evidence behind every other figure on the row.
     pub history_minor: Option<Vec<i64>>,
+    /// Only set for categories with a growth override: `annual_growth_bps` is the household
+    /// inflation rate *plus* the spread the user asserted, rather than an absolute rate. Both are
+    /// shown on the row — "+3.5%/yr (inflation + 1.0%)" — because the sum is what ran and the
+    /// spread is what was meant.
+    pub growth_is_real: Option<bool>,
     /// Only set for categories: true for an income category. The page totals the two sides
     /// separately and a label cannot be trusted to say which is which.
     pub is_income: Option<bool>,
@@ -238,6 +243,7 @@ impl From<sure_app::forecast::ResolvedAssumption> for ResolvedAssumption {
             fitted_months: r.fitted_months,
             break_months_ago: r.break_months_ago,
             history_minor: r.history_minor,
+            growth_is_real: r.growth_is_real,
             is_income: r.is_income,
             schedule: r.schedule.map(Into::into),
             vesting: r.vesting.map(Into::into),

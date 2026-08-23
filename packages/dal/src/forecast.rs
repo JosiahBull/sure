@@ -16,6 +16,7 @@ struct ForecastAssumptionRow {
     target_type: String,
     target_id: i64,
     annual_growth_bps: Option<i64>,
+    growth_is_real: bool,
     annual_volatility_bps: Option<i64>,
     dividend_yield_bps: Option<i64>,
     long_run_growth_bps: Option<i64>,
@@ -42,6 +43,7 @@ impl TryFrom<ForecastAssumptionRow> for ForecastAssumption {
             target_type,
             target_id: r.target_id,
             annual_growth_bps: r.annual_growth_bps,
+            growth_is_real: r.growth_is_real,
             annual_volatility_bps: r.annual_volatility_bps,
             dividend_yield_bps: r.dividend_yield_bps,
             long_run_growth_bps: r.long_run_growth_bps,
@@ -59,7 +61,9 @@ impl TryFrom<ForecastAssumptionRow> for ForecastAssumption {
 pub async fn list_assumptions(db: &Db) -> AppResult<Vec<ForecastAssumption>> {
     sqlx::query_as!(
         ForecastAssumptionRow,
-        r#"SELECT id AS "id!", target_type, target_id, annual_growth_bps, annual_volatility_bps,
+        r#"SELECT id AS "id!", target_type, target_id, annual_growth_bps,
+                  growth_is_real AS "growth_is_real!: bool",
+                  annual_volatility_bps,
                   dividend_yield_bps, long_run_growth_bps, annual_fee_bps,
                   annual_fixed_fee_minor, notes, created_at, updated_at
              FROM forecast_assumptions ORDER BY id"#
@@ -118,10 +122,11 @@ pub async fn upsert_assumption(
         r#"INSERT INTO forecast_assumptions
               (target_type, target_id, annual_growth_bps, annual_volatility_bps,
                dividend_yield_bps, long_run_growth_bps, notes, annual_fee_bps,
-               annual_fixed_fee_minor)
-           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+               annual_fixed_fee_minor, growth_is_real)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
            ON CONFLICT(target_type, target_id) DO UPDATE SET
               annual_growth_bps=excluded.annual_growth_bps,
+              growth_is_real=excluded.growth_is_real,
               annual_volatility_bps=excluded.annual_volatility_bps,
               dividend_yield_bps=excluded.dividend_yield_bps,
               long_run_growth_bps=excluded.long_run_growth_bps,
@@ -129,7 +134,9 @@ pub async fn upsert_assumption(
               annual_fixed_fee_minor=excluded.annual_fixed_fee_minor,
               notes=excluded.notes,
               updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-           RETURNING id AS "id!", target_type, target_id, annual_growth_bps, annual_volatility_bps,
+           RETURNING id AS "id!", target_type, target_id, annual_growth_bps,
+                     growth_is_real AS "growth_is_real!: bool",
+                     annual_volatility_bps,
                      dividend_yield_bps, long_run_growth_bps,
                      annual_fee_bps AS "annual_fee_bps?",
                      annual_fixed_fee_minor AS "annual_fixed_fee_minor?",
@@ -142,7 +149,8 @@ pub async fn upsert_assumption(
         input.long_run_growth_bps,
         input.notes,
         input.annual_fee_bps,
-        input.annual_fixed_fee_minor
+        input.annual_fixed_fee_minor,
+        input.growth_is_real
     )
     .fetch_one(db)
     .await?
@@ -623,6 +631,7 @@ mod tests {
             target_type: ForecastTargetType::Account,
             target_id: 1,
             annual_growth_bps: Some(700),
+            growth_is_real: false,
             annual_volatility_bps,
             dividend_yield_bps: None,
             long_run_growth_bps: None,
