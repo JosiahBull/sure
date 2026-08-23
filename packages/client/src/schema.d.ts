@@ -6728,6 +6728,8 @@ export interface components {
              */
             events: components["schemas"]["EventOutcome"][];
             reconciliations: components["schemas"]["StreamReconciliation"][];
+            /** @description Debts this projection expects to clear, soonest first — "the mortgage is gone in 2038". */
+            milestones: components["schemas"]["Milestone"][];
             /**
              * @description Figures the projection is standing in for, and places where linking something changed what an
              *     account's numbers mean. Prose, because each needs to say what to do about it.
@@ -7388,6 +7390,40 @@ export interface components {
          * @enum {string}
          */
         MileageUnit: "mi" | "km";
+        /**
+         * @description A debt the projection expects to be cleared, and when.
+         *
+         *     Derived from the simulated paths rather than configured: unlike a `forecast_event`, which is
+         *     a certainty the household is asserting, this is an outcome that moves whenever a rate, a
+         *     repayment or a salary does. A band rather than a date for the same reason every other figure
+         *     here is one.
+         */
+        Milestone: {
+            /** Format: int64 */
+            account_id: number;
+            /**
+             * @description The account's own name. A household with two student loans has two accounts of this name;
+             *     `person_id` is what tells them apart, and the client pairs the two for a label.
+             */
+            label: string;
+            /** Format: int64 */
+            person_id?: number | null;
+            /**
+             * Format: int64
+             * @description Month offsets from today across the paths that cleared it. P50 is the one to show.
+             */
+            month_p10: number;
+            /** Format: int64 */
+            month_p50: number;
+            /** Format: int64 */
+            month_p90: number;
+            /**
+             * Format: int64
+             * @description Share of paths that cleared it inside the horizon. Below 10 000 the P90 is a lower bound —
+             *     the rest had not finished, so the real spread is wider than the one reported.
+             */
+            cleared_rate_bps: number;
+        };
         /** @description A mortgage secured against a property (link it with `secured_by_account_id`). */
         MortgageMeta: {
             lender?: string | null;

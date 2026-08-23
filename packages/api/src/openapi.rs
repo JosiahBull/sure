@@ -300,6 +300,7 @@ use utoipa::OpenApi;
         crate::routes::forecast::ForecastMonth,
         crate::routes::forecast::ForecastResult,
         crate::routes::forecast::StreamReconciliation,
+        crate::routes::forecast::Milestone,
     )),
     tags(
         (name = "meta", description = "Service metadata"),
