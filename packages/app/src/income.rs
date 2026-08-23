@@ -204,6 +204,7 @@ pub(crate) fn level_schedule(
     stream: &IncomeStream,
     today: NaiveDate,
     horizon: i64,
+    inflation_bps: i64,
 ) -> (f64, Vec<(i64, f64)>, i64, f64) {
     let mut steps: Vec<(i64, f64)> = Vec::new();
     let mut start_level = stream.annual_amount_minor as f64;
@@ -227,10 +228,24 @@ pub(crate) fn level_schedule(
         }
     }
     steps.sort_by_key(|&(m, _)| m);
-    let monthly_increase = if stream.annual_increase_bps == 0 {
+    // Indexation stacks: with `inflation_indexed` on, `annual_increase_bps` is a *real* increase
+    // above the household rate, so 0 means "keeps pace with inflation" and 100 means "CPI + 1%".
+    // With it off the field keeps its original nominal meaning, so no stored value silently
+    // changes meaning — see `0042_income_indexation.sql`.
+    //
+    // A level frozen in nominal terms for thirty years is a claim about a real pay cut, and the
+    // projection says so rather than quietly making it: `frozen_stream_warning` names every stream
+    // this leaves flat. Warned about rather than defaulted to inflation, because defaulting would
+    // restate every existing user's projection on migration.
+    let annual_increase_bps = if stream.inflation_indexed {
+        inflation_bps + stream.annual_increase_bps
+    } else {
+        stream.annual_increase_bps
+    };
+    let monthly_increase = if annual_increase_bps == 0 {
         1.0
     } else {
-        (1.0 + stream.annual_increase_bps as f64 / 10_000.0).powf(1.0 / 12.0)
+        (1.0 + annual_increase_bps as f64 / 10_000.0).powf(1.0 / 12.0)
     };
     (start_level, steps, last_step_month, monthly_increase)
 }
@@ -383,6 +398,7 @@ mod tests {
             starts_on: "2026-01-01".into(),
             ends_on: None,
             annual_increase_bps: 0,
+            inflation_indexed: false,
             kiwisaver_bps: 0,
             employer_kiwisaver_bps: 0,
             student_loan: false,
@@ -664,11 +680,38 @@ mod tests {
                 label: None,
             },
         ];
-        let (start, steps, last, _) = level_schedule(&s, d("2026-06-01"), 60);
+        let (start, steps, last, _) = level_schedule(&s, d("2026-06-01"), 60, 0);
         assert_eq!(start, 90_000_00.0);
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].1, 94_000_00.0);
         assert_eq!(last, steps[0].0);
+    }
+
+    /// Indexation stacks on top of the household rate rather than replacing the field, so the two
+    /// dials compose: 0 means "keeps pace", 100 means "CPI + 1%".
+    #[test]
+    fn an_indexed_level_rises_with_inflation_plus_its_own_real_increase() {
+        let mut s = stream(PayFrequency::Fortnightly);
+        s.annual_increase_bps = 0;
+
+        // Off: the field keeps its original nominal meaning, so a stored 0 is still frozen and no
+        // existing projection is restated by the column arriving.
+        s.inflation_indexed = false;
+        let (_, _, _, increase) = level_schedule(&s, d("2026-06-01"), 60, 250);
+        assert!(
+            (increase - 1.0).abs() < 1e-12,
+            "an un-indexed stream must stay frozen, got {increase}"
+        );
+
+        // On, with no real increase: exactly the household rate.
+        s.inflation_indexed = true;
+        let (_, _, _, increase) = level_schedule(&s, d("2026-06-01"), 60, 250);
+        assert!((increase.powi(12) - 1.025).abs() < 1e-9, "got {increase}");
+
+        // On, with a real increase: CPI + 1%.
+        s.annual_increase_bps = 100;
+        let (_, _, _, increase) = level_schedule(&s, d("2026-06-01"), 60, 250);
+        assert!((increase.powi(12) - 1.035).abs() < 1e-9, "got {increase}");
     }
 
     #[test]
@@ -681,7 +724,7 @@ mod tests {
             annual_amount_minor: 200_000_00,
             label: None,
         }];
-        let (start, steps, _, _) = level_schedule(&s, d("2026-06-01"), 12);
+        let (start, steps, _, _) = level_schedule(&s, d("2026-06-01"), 12, 0);
         assert_eq!(start, 88_000_00.0);
         assert!(steps.is_empty());
     }

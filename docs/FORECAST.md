@@ -17,6 +17,7 @@ the ledger — unlike `crons`, which persists real rows.
 | A category's growth | the one household rate, `settings.inflation_bps` (default 250 bps), unless overridden — never fitted |
 | A category with linked income streams | the **residual**: fitted baseline minus what the streams model |
 | A category carrying a loan's interest | the **residual**: fitted baseline minus the interest that loan's schedule charges |
+| An income stream's growth after its last dated step | `annual_increase_bps`, plus `settings.inflation_bps` when the stream is `inflation_indexed` |
 | A salary's take-home | an override, else "already net", else the **stored** tax scale in force on the date (`sure_core::tax`'s constants seed it and are the fallback) |
 | A KiwiSaver balance's growth | its own rate is discarded when linked; less any fund fee on the assumption |
 | The government's KiwiSaver contribution | matched against the member's own contributions only, capped, and income-tested |
@@ -58,6 +59,20 @@ Three changes, and the third is the one that matters:
 Note what would *not* have fixed this: a robust estimator. Theil–Sen on those same six series
 returns essentially the same slopes as OLS (38.2 against 41.8 on Household), because robust
 regression is robust to outliers and a level shift is not an outlier.
+
+**Income indexes on the same dial, or the fix is worse than the bug.** Inflating expenses while
+income stays frozen in nominal terms removes the overshoot and keeps the deficit — net worth still
+flattens, just for a new reason. `income_streams.inflation_indexed` opts a stream in;
+`annual_increase_bps` then becomes a *real* increase stacked on top of the household rate ("CPI +
+1%"), the same convention a per-category override follows, so the two dials compose instead of
+contradicting each other. With it off the field keeps its original nominal meaning, so the column
+arriving restates nobody's projection.
+
+It defaults to **off**, and the projection instead emits a warning naming every frozen stream and
+the figure it is frozen at. Defaulting to on would silently restate every existing user's numbers on
+migration, which is the objection this document already records against projecting a
+contribution-driven account at an invented rate. The warning is silent when the household rate is
+zero — the two sides then agree, and a frozen level in a world with no inflation is just a level.
 
 An indexed rate does not decay. The `TREND_FULL_STRENGTH_MONTHS`/`TREND_HALF_LIFE_MONTHS` apparatus
 exists to walk a rate fitted over a finite window back toward an anchor once the projection runs

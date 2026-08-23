@@ -47,6 +47,7 @@
 
   let history = $state<{ x: string; y: number }[]>([]);
   let result = $state<Schemas["ForecastResult"] | null>(null);
+  let warningsOpen = $state(false);
   let error = $state<string | null>(null);
   // Paths simulated so far and the total this run will reach, straight off the stream. `total`
   // is the *clamped* count, so a 30-year horizon reports the 2 000 it will really run rather
@@ -267,9 +268,27 @@
 
 {#if result?.warnings.length}
   <!-- Things that changed meaning rather than things that went wrong: linking an account discards
-       its measured rate, and saying so is the only way that is visible. -->
+       its measured rate, and saying so is the only way that is visible.
+       Collapsed past two, because a banner is read once and a wall of six near-identical
+       paragraphs is read never — which would make the loudest signal on the page the easiest one
+       to skip. The count stays visible; the detail is one click away. -->
   <div class="notice" style="margin-bottom:16px">
-    {#each result.warnings as w (w)}<div>{w}</div>{/each}
+    {#if result.warnings.length <= 2 || warningsOpen}
+      {#each result.warnings as w (w)}<div>{w}</div>{/each}
+      {#if result.warnings.length > 2}
+        <button class="btn btn-sm link-btn" onclick={() => (warningsOpen = false)}>Show less</button>
+      {/if}
+    {:else}
+      <div class="row spread" style="gap:12px">
+        <span>
+          <strong>{result.warnings.length} things changed meaning in this projection.</strong>
+          {result.warnings[0]}
+        </span>
+        <button class="btn btn-sm link-btn" onclick={() => (warningsOpen = true)}>
+          Show all {result.warnings.length}
+        </button>
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -353,7 +372,7 @@
 {#if tab === "projection"}
   <ProjectionTab {result} {checkpoints} {currency} />
 {:else if tab === "income"}
-  <IncomeTab {result} {currency} />
+  <IncomeTab {result} {currency} onchanged={() => (runNonce += 1)} />
 {:else if tab === "events"}
   <LifeEventsTab {result} {currency} onchanged={() => (runNonce += 1)} {focusEventId} />
 {:else if tab === "assumptions"}
@@ -369,6 +388,15 @@
 {/if}
 
 <style>
+  /* A disclosure control inside a banner, not an action: it should read as the least important
+     thing in the block it sits in. */
+  .link-btn {
+    flex: none;
+    background: transparent;
+    border-color: transparent;
+    text-decoration: underline;
+  }
+
   /* One line, always: the range only appears on a projected point, and letting it wrap would
      reintroduce the very height change this readout was made permanent to avoid. */
   .readout .label {

@@ -14,14 +14,83 @@
   let {
     result,
     currency,
+    onchanged,
   }: {
     result: Schemas["ForecastResult"] | null;
     currency: string;
+    onchanged?: () => void;
   } = $props();
 
   let streams = $state<IncomeStream[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  let indexing = $state(false);
+
+  // Streams that will be projected at a frozen nominal level. The forecast already warns about
+  // these, but a warning that names a problem in a panel three tabs away from its fix is a
+  // warning most people scroll past — so the action lives here, on the page that owns the data.
+  const frozen = $derived(
+    streams.filter((s) => s.enabled && !s.inflation_indexed && s.annual_increase_bps === 0)
+  );
+
+  /**
+   * Turn on indexation for every frozen stream at once.
+   *
+   * A bulk action rather than six visits to the editor, because the frozen-ness is not a per-stream
+   * opinion anybody formed — it is the column's default, applied to rows that predate it. What is
+   * being corrected is the same mistake in every row, so it should be one decision.
+   *
+   * A full PUT per stream, because that is the only writer the API offers and it is a full replace.
+   * Sequential rather than concurrent: six requests is not worth the failure semantics of a partial
+   * `Promise.all`, and a serial loop can stop at the first error with everything before it saved.
+   */
+  async function indexAll() {
+    indexing = true;
+    for (const s of frozen) {
+      const { error: e } = await api.PUT("/api/income-streams/{id}", {
+        params: { path: { id: s.id } },
+        body: {
+          ownership: s.ownership,
+          label: s.label,
+          employer: s.employer,
+          currency_code: s.currency_code,
+          annual_amount_minor: s.annual_amount_minor,
+          basis: s.basis,
+          pay_frequency: s.pay_frequency,
+          first_payment_on: s.first_payment_on,
+          starts_on: s.starts_on,
+          ends_on: s.ends_on,
+          annual_increase_bps: s.annual_increase_bps,
+          inflation_indexed: true,
+          kiwisaver_bps: s.kiwisaver_bps,
+          employer_kiwisaver_bps: s.employer_kiwisaver_bps,
+          student_loan: s.student_loan,
+          take_home_bps: s.take_home_bps,
+          linked_category_id: s.linked_category_id,
+          kiwisaver_account_id: s.kiwisaver_account_id,
+          student_loan_account_id: s.student_loan_account_id,
+          match_account_id: s.match_account_id,
+          match_pattern: s.match_pattern,
+          pay_treatment: s.pay_treatment,
+          enabled: s.enabled,
+          sort_order: s.sort_order,
+          notes: s.notes,
+          steps: s.steps.map((st) => ({
+            effective_on: st.effective_on,
+            annual_amount_minor: st.annual_amount_minor,
+            label: st.label,
+          })),
+        },
+      });
+      if (e) {
+        error = `Failed to index ${s.label}.`;
+        break;
+      }
+    }
+    indexing = false;
+    await load();
+    onchanged?.();
+  }
 
   async function load() {
     loading = true;
@@ -133,6 +202,27 @@
 
 {#if error}<div class="error-banner" style="margin-bottom:16px">{error}</div>{/if}
 
+{#if frozen.length > 0}
+  <!-- The other half of the inflation decision. Indexing spending while income stays frozen in
+       nominal terms removes the old overshoot and keeps the deficit: net worth still flattens,
+       just for a new reason. So this is offered as one action rather than left to be discovered
+       six times over. -->
+  <div class="error-banner warn-banner frozen-banner" style="margin-bottom:16px">
+    <div>
+      <strong
+        >{frozen.length === 1 ? "1 stream is" : `${frozen.length} streams are`} not indexed.</strong
+      >
+      {frozen.map((s) => s.label).join(", ")} —
+      {frozen.length === 1 ? "it is" : "they are"} projected at today's level for the whole
+      horizon, while spending rises with inflation. Over thirty years that is a projection of a
+      compounding real pay cut.
+    </div>
+    <button class="btn btn-sm btn-primary" onclick={indexAll} disabled={indexing}>
+      {indexing ? "Indexing…" : "Index with inflation"}
+    </button>
+  </div>
+{/if}
+
 {#if result?.unmodelled_streams.length}
   <!-- Left out of the projection entirely rather than counted at a guessed rate. Naming them is
        the whole point: a figure you can see is incomplete beats one you cannot. -->
@@ -231,6 +321,23 @@
 {/if}
 
 <style>
+  .frozen-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  /* Explicit basis so the action sits beside the sentence rather than being wrapped below it: a
+     paragraph with no basis claims the whole row and pushes the button onto its own line, which
+     reads as an afterthought rather than as the thing to do. */
+  .frozen-banner > div {
+    flex: 1 1 420px;
+  }
+  .frozen-banner .btn {
+    flex: none;
+  }
+
   .cards {
     gap: 16px;
   }

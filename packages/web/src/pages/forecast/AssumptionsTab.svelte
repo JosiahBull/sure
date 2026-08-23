@@ -11,6 +11,7 @@
   // only this tab can interpret.
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, type Schemas } from "../../lib/api";
+  import Sparkline from "../../lib/charts/Sparkline.svelte";
   import {
     people,
     ensureLoaded as ensurePeopleLoaded,
@@ -38,6 +39,103 @@
   // an id into a name. Loaded here rather than assumed: this tab is linkable directly.
   onMount(ensurePeopleLoaded);
   const placeholderIds = $derived(new Set(placeholders().map((p) => p.id)));
+
+  // ---- the household inflation dial ------------------------------------------------
+  //
+  // One number, at the top, above the per-row list. It replaced a per-category fitted growth
+  // rate, and the argument for that is in `AssumptionSource::Indexed`: 24 lumpy months pin a
+  // category's mean to roughly ±15% and do not identify its trend at all, so fitting one put six
+  // of seven categories on a ±25%/yr clamp nobody chose. Assuming the trend and measuring the
+  // level is the honest split — and an assumption has to be *visible* to be arguable, which is
+  // what this control is for.
+  let inflationBps = $state<number | null>(null);
+  let inflationField = $state("");
+  let savingInflation = $state(false);
+
+  onMount(async () => {
+    const { data } = await api.GET("/api/settings", {});
+    if (data) {
+      inflationBps = data.inflation_bps;
+      inflationField = (data.inflation_bps / 100).toString();
+    }
+  });
+
+  const inflationDirty = $derived(
+    inflationBps != null && Math.round(parseFloat(inflationField || "0") * 100) !== inflationBps
+  );
+
+  async function saveInflation() {
+    const bps = Math.round(parseFloat(inflationField || "0") * 100);
+    if (!Number.isFinite(bps)) {
+      onerror("That is not a percentage.");
+      return;
+    }
+    savingInflation = true;
+    // The base currency has to go back with it: `UpdateSettings` requires it, and re-sending what
+    // is already stored is the whole body's worth of round-trip rather than a second endpoint.
+    const current = await api.GET("/api/settings", {});
+    const { error: e } = await api.PUT("/api/settings", {
+      body: {
+        base_currency_code: current.data?.base_currency_code ?? currency,
+        inflation_bps: bps,
+      },
+    });
+    savingInflation = false;
+    if (e) {
+      onerror("Failed to save the inflation rate.");
+      return;
+    }
+    inflationBps = bps;
+    onchanged();
+  }
+
+  const categories = $derived((result?.assumptions ?? []).filter((a) => a.target_type === "category"));
+  // The legend is only worth showing if something on the page needs it, and it belongs once in the
+  // card header rather than repeated under every row that happens to have a break.
+  const anyBreak = $derived(categories.some((a) => a.break_months_ago != null));
+  // Only what the dial actually moves. An overridden category is the user's own figure and is
+  // not re-priced by changing the household rate, so including it in the readout below would
+  // overstate what the control does.
+  const indexedSpendMinor = $derived(
+    categories
+      .filter((a) => !a.is_income && a.source === "indexed")
+      .reduce((t, a) => t + (a.baseline_minor ?? 0), 0)
+  );
+  const years = $derived((result?.horizon_months ?? 0) / 12);
+  // The single highest-value figure on this page. Nobody reading "+25.0%/yr" on a row realised it
+  // meant $15,306/mo; everybody reading "$4,051/mo becomes $8,498/mo" does. It is deliberately
+  // computed from the same baselines the projection ran on rather than from a second model, so it
+  // cannot disagree with the chart.
+  const spendAtHorizonMinor = $derived(
+    indexedSpendMinor * Math.pow(1 + (inflationBps ?? 0) / 10_000, years)
+  );
+  const horizonLabel = $derived(
+    result?.months.length ? formatDate(result.months[result.months.length - 1].as_of).slice(-4) : ""
+  );
+
+  /**
+   * What a category row measured its level over, in words. The figure that says how much the rest
+   * of the row is worth — and the one the old UI never showed, which is how a 24-month claim over
+   * an 11-month fit stayed invisible.
+   */
+  function windowNote(a: ResolvedAssumption): string | null {
+    if (a.target_type !== "category" || a.fitted_months == null) return null;
+    const months = a.fitted_months === 1 ? "1 month" : `${a.fitted_months} months`;
+    if (a.break_months_ago != null) {
+      return `measured over ${months}, since spending on it changed level`;
+    }
+    return `measured over ${months}`;
+  }
+
+  /**
+   * What this category's own history says its trend is — shown next to a projection that is not
+   * using it, on purpose. A reader who cannot see the measurement cannot judge whether to
+   * disagree with the assumption that replaced it.
+   */
+  function measuredNote(a: ResolvedAssumption): string | null {
+    if (a.measured_growth_bps == null) return null;
+    return `history suggests ${pct(a.measured_growth_bps)}/yr`;
+  }
 
   function pct(bps: number): string {
     return `${bps >= 0 ? "+" : ""}${(bps / 100).toFixed(1)}%`;
@@ -186,12 +284,59 @@
 </script>
 
 <div class="grid cards">
+  {#if inflationBps != null}
+    <section class="card dial">
+      <div class="card-title">
+        <h2>Spending rises with inflation</h2>
+        <span class="muted small">one rate, both sides of the ledger</span>
+      </div>
+      <div class="dial-row">
+        <label class="field">
+          <span class="small faint">Inflation %/yr</span>
+          <input
+            class="input tabular big"
+            bind:value={inflationField}
+            onkeydown={(e) => e.key === "Enter" && saveInflation()}
+          />
+        </label>
+        {#if inflationDirty}
+          <button class="btn btn-primary btn-sm" onclick={saveInflation} disabled={savingInflation}>
+            {savingInflation ? "Saving…" : "Apply"}
+          </button>
+        {/if}
+        <p class="dial-note small">
+          Applied to every category below without an override of its own, and to any income stream
+          marked as indexed.
+          {#if indexedSpendMinor > 0 && years >= 1}
+            <br />
+            <span class="dial-figure">
+              At {(inflationBps / 100).toFixed(1)}%, the {formatMoney(
+                Math.round(indexedSpendMinor / 100) * 100,
+                currency
+              )}/mo you spend today is {formatMoney(
+                Math.round(spendAtHorizonMinor / 100) * 100,
+                currency
+              )}/mo {#if horizonLabel}by {horizonLabel}{:else}at the horizon{/if}.
+            </span>
+          {/if}
+        </p>
+      </div>
+    </section>
+  {/if}
+
   <section class="card">
     <div class="card-title">
       <h2>Assumptions</h2>
-      <span class="muted small"
-        >tune any of these — clear an override to go back to the derived default</span
-      >
+      <span class="muted small">
+        {#if anyBreak}
+          <span class="spark-key">
+            <span class="swatch excluded"></span> before a change in level
+            <span class="swatch boundary"></span> measured from here
+          </span>
+          ·
+        {/if}
+        tune any of these — clear an override to go back to the measured default
+      </span>
     </div>
     {#if !result?.assumptions.length}
       <div class="empty">
@@ -249,7 +394,9 @@
             </div>
             <div class="a-meta row spread">
               <span class="small faint">
-                {scheduleLabel(a)}{#if decayNote(a)}<span class="faint"> · {decayNote(a)}</span
+                {scheduleLabel(a)}{#if windowNote(a)}<span class="faint"> · {windowNote(a)}</span
+                  >{/if}{#if measuredNote(a)}<span class="measured"> · {measuredNote(a)}</span
+                  >{/if}{#if decayNote(a)}<span class="faint"> · {decayNote(a)}</span
                   >{/if}{#if needsReturn(a)}<span class="needs-return">
                     · set an expected return, or this stays flat</span
                   >{/if}{#if a.source === "vesting_schedule"}<span class="faint">
@@ -272,6 +419,19 @@
                 </div>
               {/if}
             </div>
+            {#if a.history_minor?.length}
+              <!-- The evidence, next to the claim. A row that asserts a level and a growth rate
+                   without showing the months they came from is unfalsifiable by the one person who
+                   knows whether it is right. -->
+              <div class="evidence">
+                <Sparkline
+                  values={a.history_minor}
+                  usedMonths={a.fitted_months ?? a.history_minor.length}
+                  label={`${a.label}: ${a.history_minor.length} months of history`}
+                />
+
+              </div>
+            {/if}
             {#if editingKey === key}
               <div class="edit-form">
                 <label class="field">
@@ -355,6 +515,67 @@
   }
   .needs-return {
     color: var(--warn);
+  }
+  /* The measured figure the projection is deliberately *not* using. Toned down from the assertion
+     beside it so it reads as a footnote rather than as a competing number. */
+  .measured {
+    color: var(--text-muted);
+    font-style: italic;
+  }
+  .dial-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .dial-row .input.big {
+    width: 96px;
+    font-size: 1.35rem;
+    font-weight: 560;
+    /* The one control on this page that sets a number applying to a dozen rows, so it is sized
+       like the decision it is rather than like the per-row override inputs below. */
+    padding: 8px 10px;
+  }
+  .dial-note {
+    flex: 1 1 340px;
+    margin: 0;
+    color: var(--text-muted);
+    line-height: 1.55;
+  }
+  /* The sentence that turns a percentage into a number a household can judge. Nobody reading
+     "+25.0%/yr" on a row realised it meant $15,306/mo; everybody reading "$6,308/mo becomes
+     $7,137/mo" does. */
+  .dial-figure {
+    display: inline-block;
+    margin-top: 4px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    font-weight: 560;
+  }
+  .evidence {
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+  .spark-key {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .swatch {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 1px;
+  }
+  .swatch.excluded {
+    background: var(--border-strong);
+  }
+  .swatch.boundary {
+    background: var(--warn);
+    margin-left: 8px;
   }
   .fee {
     color: var(--negative);
