@@ -127,7 +127,14 @@
    * "how much of this is committed" signal the opacity and dash already encode.
    */
   const chartMilestones = $derived(
-    (result?.milestones ?? []).map((m) => {
+    (result?.milestones ?? [])
+      // Only when the median path actually gets there. Below half, "the P50 month" is the median
+      // of a minority — at a 12-month horizon Josiah's loan clears on one path in a thousand, and
+      // drawing that as a milestone puts a payoff date on the chart for something that, in this
+      // window, does not happen. It reappears on its own once the horizon is long enough to hold
+      // it, which is the honest behaviour: the marker tracks the question being asked.
+      .filter((m) => m.cleared_rate_bps >= 5_000)
+      .map((m) => {
       const who = m.person_id != null ? people.list.find((p) => p.id === m.person_id) : null;
       // Two accounts really are both called "Student loan"; the owner is what tells them apart.
       const name = who ? `${who.name} ${m.label.toLowerCase()} paid off` : `${m.label} paid off`;
