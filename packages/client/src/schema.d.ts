@@ -6730,6 +6730,8 @@ export interface components {
             reconciliations: components["schemas"]["StreamReconciliation"][];
             /** @description Debts this projection expects to clear, soonest first — "the mortgage is gone in 2038". */
             milestones: components["schemas"]["Milestone"][];
+            /** @description Dated pay rises inside the horizon, soonest first. */
+            pay_steps: components["schemas"]["PayStep"][];
             /**
              * @description Figures the projection is standing in for, and places where linking something changed what an
              *     account's numbers mean. Prose, because each needs to say what to do about it.
@@ -7605,6 +7607,29 @@ export interface components {
          * @enum {string}
          */
         PayFrequency: "weekly" | "fortnightly" | "four_weekly" | "semi_monthly" | "monthly" | "quarterly" | "annual";
+        /**
+         * @description A dated pay rise already on an income stream's schedule.
+         *
+         *     Not a [`Milestone`], deliberately. A milestone is an outcome the simulation found, and differs
+         *     across paths, so it carries a band. This is a certainty the household typed in on a date it
+         *     already knows — one month, no spread. Only streams the projection actually modelled appear.
+         */
+        PayStep: {
+            /** Format: int64 */
+            stream_id: number;
+            stream_label: string;
+            /** Format: int64 */
+            person_id?: number | null;
+            /** @description The step's own label if it was given one, e.g. "Step 5 + 1 unit". */
+            label?: string | null;
+            /**
+             * Format: int64
+             * @description Month offset from today, always inside the horizon.
+             */
+            month: number;
+            /** Format: int64 */
+            annual_amount_minor: number;
+        };
         /**
          * @description How one arrival of this income is taxed: as an ordinary payslip, or as an IRD "extra pay".
          *

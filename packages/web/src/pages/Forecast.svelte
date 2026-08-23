@@ -152,6 +152,37 @@
     })
   );
 
+  /**
+   * Ansam's teaching scale, and any other dated raise, drawn on the chart.
+   *
+   * These come back already filtered to the streams the projection modelled and to steps inside
+   * the horizon, so there is nothing to guard here. `probabilityBps` is a flat 10 000 because a
+   * step *is* certain — that is the difference from a milestone, and it shows up as a solid rule
+   * rather than a dashed one. p10 and p90 equal the median for the same reason: one date, no band.
+   *
+   * The id is offset past the milestones' negative range so the three marker sources cannot
+   * collide on the key the chart selects by.
+   */
+  const chartPaySteps = $derived(
+    (result?.pay_steps ?? []).map((s, i) => {
+      const who = s.person_id != null ? people.list.find((p) => p.id === s.person_id) : null;
+      // The step's own label is the useful half ("Step 5 + 1 unit"); the stream name is the
+      // fallback for a step that was never named.
+      const what = s.label?.trim() || `${s.stream_label} rises`;
+      return {
+        id: -100_000 - i,
+        name: who ? `${who.name} — ${what}` : what,
+        color: who ? personColor(who) : "var(--text-muted)",
+        probabilityBps: 10_000,
+        p10: s.month,
+        median: s.month,
+        p90: s.month,
+        truncated: false,
+        kind: "milestone" as const,
+      };
+    })
+  );
+
   /** Set when a chart marker is clicked, so the Life events tab opens that row. */
   let focusEventId = $state<number | null>(null);
   function selectEvent(id: number) {
@@ -211,7 +242,7 @@
     months={result?.months ?? []}
     {currency}
     {checkpoints}
-    events={[...chartEvents, ...chartMilestones]}
+    events={[...chartEvents, ...chartMilestones, ...chartPaySteps]}
     onselectevent={selectEvent}
     onhover={(p) => (hoverPoint = p)}
   />

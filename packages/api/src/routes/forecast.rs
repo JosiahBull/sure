@@ -250,6 +250,36 @@ pub struct StreamReconciliation {
     pub residual_minor: i64,
 }
 
+/// A dated pay rise already on an income stream's schedule.
+///
+/// Not a [`Milestone`], deliberately. A milestone is an outcome the simulation found, and differs
+/// across paths, so it carries a band. This is a certainty the household typed in on a date it
+/// already knows — one month, no spread. Only streams the projection actually modelled appear.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PayStep {
+    pub stream_id: i64,
+    pub stream_label: String,
+    pub person_id: Option<i64>,
+    /// The step's own label if it was given one, e.g. "Step 5 + 1 unit".
+    pub label: Option<String>,
+    /// Month offset from today, always inside the horizon.
+    pub month: i64,
+    pub annual_amount_minor: i64,
+}
+
+impl From<sure_app::forecast::PayStep> for PayStep {
+    fn from(p: sure_app::forecast::PayStep) -> Self {
+        PayStep {
+            stream_id: p.stream_id,
+            stream_label: p.stream_label,
+            person_id: p.person_id,
+            label: p.label,
+            month: p.month,
+            annual_amount_minor: p.annual_amount_minor,
+        }
+    }
+}
+
 /// A debt the projection expects to be cleared, and when.
 ///
 /// Derived from the simulated paths rather than configured: unlike a `forecast_event`, which is
@@ -390,6 +420,8 @@ pub struct ForecastResult {
     pub reconciliations: Vec<StreamReconciliation>,
     /// Debts this projection expects to clear, soonest first — "the mortgage is gone in 2038".
     pub milestones: Vec<Milestone>,
+    /// Dated pay rises inside the horizon, soonest first.
+    pub pay_steps: Vec<PayStep>,
     /// Figures the projection is standing in for, and places where linking something changed what an
     /// account's numbers mean. Prose, because each needs to say what to do about it.
     pub warnings: Vec<String>,
@@ -419,6 +451,7 @@ impl From<sure_app::forecast::ForecastResult> for ForecastResult {
             events: r.events.into_iter().map(Into::into).collect(),
             reconciliations: r.reconciliations.into_iter().map(Into::into).collect(),
             milestones: r.milestones.into_iter().map(Into::into).collect(),
+            pay_steps: r.pay_steps.into_iter().map(Into::into).collect(),
             warnings: r.warnings,
             unmodelled_streams: r.unmodelled_streams,
             negative_cash_rate_bps: r.negative_cash_rate_bps,

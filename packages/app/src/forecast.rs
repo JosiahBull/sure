@@ -293,6 +293,7 @@ pub struct SimulationInputs {
     warnings: Vec<String>,
     reconciliations: Vec<StreamReconciliation>,
     unmodelled_streams: Vec<String>,
+    pay_steps: Vec<PayStep>,
 }
 
 /// A percentile band across every simulated path, in the report currency's minor units.
@@ -350,6 +351,9 @@ pub struct ForecastResult {
     /// Debts the projection expects to clear, and when — "the mortgage is gone in 2038". Derived
     /// from the paths, so it moves with them; see [`Milestone`]. Ordered soonest first.
     pub milestones: Vec<Milestone>,
+    /// Dated pay rises inside the horizon, soonest first. See [`PayStep`] for why these are not
+    /// milestones.
+    pub pay_steps: Vec<PayStep>,
     /// Things that changed meaning, or figures the projection is standing in for. Prose, because
     /// each one needs to say what to do about it and there is nothing for a caller to branch on.
     pub warnings: Vec<String>,
@@ -364,6 +368,33 @@ pub struct ForecastResult {
     /// overdrawn in year three looks identical to one that never did. This is that question,
     /// counted directly. Same length as `months`.
     pub negative_cash_rate_bps: Vec<i64>,
+}
+
+/// A dated pay rise already on an income stream's schedule.
+///
+/// The sibling of [`Milestone`], and deliberately not the same type. A milestone is an *outcome*
+/// the simulation discovered — the month a debt happened to clear, which differs across paths and
+/// so is reported as a band. A pay step is the opposite: a certainty the household typed in, on a
+/// date it already knows, applied identically on every path. It has one month, not a spread, and
+/// pretending otherwise by filling in a P10 and a P90 that equal the P50 would suggest a
+/// distribution nobody computed.
+///
+/// Only emitted for streams the projection actually modelled: a stream left out for want of an
+/// exchange rate is named in [`ForecastResult::unmodelled_streams`], and drawing its raises on the
+/// chart would put money on the picture that the bands underneath do not contain.
+#[derive(Debug, Clone)]
+pub struct PayStep {
+    pub stream_id: i64,
+    /// The stream this belongs to, e.g. "Teaching salary".
+    pub stream_label: String,
+    /// `None` for a stream the household earns jointly.
+    pub person_id: Option<i64>,
+    /// The step's own label if it was given one, e.g. "Step 5 + 1 unit".
+    pub label: Option<String>,
+    /// Month offset from today, always within the projected horizon.
+    pub month: i64,
+    /// The new annual level from this month, in the stream's own currency's minor units.
+    pub annual_amount_minor: i64,
 }
 
 /// A debt the projection expects to be cleared, and when.
@@ -1062,6 +1093,7 @@ impl ForecastService {
         let tax_scales = crate::income::TaxScales::new(&self.income.list_tax_scales().await?);
         let mut stream_sims: Vec<StreamSim> = Vec::new();
         let mut unmodelled_streams: Vec<String> = Vec::new();
+        let mut pay_steps: Vec<PayStep> = Vec::new();
         // Modelled monthly net per linked category, base-currency major units.
         let mut modelled_by_category: HashMap<i64, (Option<i64>, f64)> = HashMap::new();
 
@@ -1104,6 +1136,40 @@ impl ForecastService {
             };
             let (start_level, steps, residual_from_month, monthly_increase) =
                 crate::income::level_schedule(st, today, horizon);
+            // The same filter `level_schedule` applies, over the same dates: a step already in
+            // force is the starting level rather than a future event, and one past the horizon is
+            // not this projection's business. Read off the stream rather than off `steps` above,
+            // because only the stream still has each step's label.
+            //
+            // Employment income only. Every stream can carry dated steps, but on a net stream they
+            // are usually indexation rather than news — two flatmates on a $25-a-year rent ladder
+            // put nineteen markers on a thirty-year chart and bury the six that are somebody's
+            // career. `basis` is already the line between "someone is paid this" and "this arrives",
+            // so it is the one to draw on rather than a count or a percentage cutoff, both of which
+            // would separate these two cases only by luck.
+            for step in st
+                .basis
+                .is_gross()
+                .then_some(&st.steps)
+                .into_iter()
+                .flatten()
+            {
+                let Some(on) = reports::parse_date(&step.effective_on) else {
+                    continue;
+                };
+                let month = months_between(today, on);
+                if month < active_from || month > active_to {
+                    continue;
+                }
+                pay_steps.push(PayStep {
+                    stream_id: st.id,
+                    stream_label: st.label.clone(),
+                    person_id: st.ownership.person_id(),
+                    label: step.label.clone(),
+                    month,
+                    annual_amount_minor: step.annual_amount_minor,
+                });
+            }
             // Zero for a joint stream, which is always net — `take_home` returns all of it
             // without consulting a scale, so there is no bracket to get wrong.
             let gross_total = st
@@ -1253,6 +1319,7 @@ impl ForecastService {
             warnings,
             reconciliations,
             unmodelled_streams,
+            pay_steps,
         })
     }
 
@@ -1298,6 +1365,7 @@ impl ForecastService {
             warnings,
             reconciliations,
             unmodelled_streams,
+            mut pay_steps,
         } = inputs;
 
         let cash_start: f64 = accounts
@@ -1811,11 +1879,13 @@ impl ForecastService {
             });
         }
         milestones.sort_by_key(|m| (m.month_p50, m.account_id));
+        pay_steps.sort_by_key(|p| (p.month, p.stream_id));
 
         Ok(ForecastResult {
             currency: base,
             months,
             milestones,
+            pay_steps,
             assumptions,
             unconverted: fx.unconverted(),
             rates_as_of: fx.rates_as_of().map(str::to_string),
@@ -5379,6 +5449,86 @@ mod tests {
                 "got {:?}",
                 result.warnings
             );
+        }
+
+        /// A dated raise on a salary is reported so the chart can mark it, and a dated rise on
+        /// net income is not.
+        ///
+        /// Both are steps on a stream and the projection applies both. The difference is what a
+        /// reader gets from a marker: a pay scale is somebody's career, while two flatmates on a
+        /// $25-a-year rent ladder are nineteen markers of indexation that bury it.
+        #[test]
+        fn only_employment_income_reports_its_dated_raises() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let account = account(1, AK::Brokerage, "NZD");
+            let valuations = vec![valued(1, today - chrono::Duration::days(1), 10_000_00)];
+
+            let mut salary = repaying_stream(1, today);
+            salary.id = 1;
+            salary.label = "Teaching salary".into();
+            salary.steps = vec![sure_core::IncomeStreamStep {
+                id: 1,
+                income_stream_id: 1,
+                effective_on: "2027-03-01".into(),
+                annual_amount_minor: 84_268_00,
+                label: Some("Step 5".into()),
+            }];
+
+            let mut rent = repaying_stream(1, today);
+            rent.id = 2;
+            rent.label = "Rent".into();
+            rent.basis = sure_core::IncomeBasis::Net;
+            rent.student_loan = false;
+            rent.student_loan_account_id = None;
+            rent.ownership = sure_core::Ownership::Joint;
+            rent.steps = vec![sure_core::IncomeStreamStep {
+                id: 2,
+                income_stream_id: 2,
+                effective_on: "2027-04-01".into(),
+                annual_amount_minor: 16_900_00,
+                label: Some("+$25/wk".into()),
+            }];
+
+            let fake = Arc::new(FakeForecast {
+                events: Vec::new(),
+                overrides: Vec::new(),
+                streams: vec![salary, rent],
+            });
+            let svc = ForecastService::new(
+                fake.clone(),
+                fake,
+                Arc::new(FakeReports {
+                    base_currency: "NZD".into(),
+                    account_currencies: vec![AccountCurrency {
+                        id: 1,
+                        currency_code: "NZD".into(),
+                        ownership: sure_core::Ownership::Joint,
+                        excluded_from_net_worth: false,
+                    }],
+                    valuations,
+                    ..Default::default()
+                }),
+                Arc::new(FakeFx),
+                Arc::new(FakeAccounts(vec![account])),
+                Arc::new(FakeCrons),
+                Arc::new(crate::test_clock::FixedClock(today)),
+            );
+            let result = rt
+                .block_on(svc.simulate(&SimulationParams {
+                    horizon_months: 36,
+                    simulations: 20,
+                    currency: None,
+                    seed: Some(31),
+                }))
+                .unwrap();
+
+            let labels: Vec<_> = result
+                .pay_steps
+                .iter()
+                .map(|p| (p.stream_label.as_str(), p.label.as_deref(), p.month))
+                .collect();
+            assert_eq!(labels, vec![("Teaching salary", Some("Step 5"), 7)]);
         }
 
         /// A debt being repaid reports the month it clears, derived rather than configured.
