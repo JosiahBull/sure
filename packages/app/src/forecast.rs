@@ -35,7 +35,7 @@ use rand_distr::{Distribution, Normal};
 use sure_core::{
     AccountClass, AccountKind, AccountMetadata, AppResult, CategoryKind, CronKind, EffectTarget,
     ForecastAssumption, ForecastEvent, ForecastTargetType, Interval, LifeEffectSpec, LifeEventKind,
-    RateType, RelationKind, RepaymentFrequency, StepAmount,
+    Ownership, RateType, RelationKind, RepaymentFrequency, StepAmount,
 };
 
 use crate::fx::Fx;
@@ -211,6 +211,11 @@ pub struct ResolvedAssumption {
     /// The account's own currency, so [`LoanScheduleSummary`]'s minor-unit amounts can be
     /// formatted. `None` for a category, whose `baseline_minor` is in the base currency.
     pub currency_code: Option<String>,
+    /// Whose account this is. `None` for a category, which is a household-wide cash flow and
+    /// has no owner — the label alone identifies it. An account's label does *not*: two
+    /// people's student loans are both called "Student loan", and the row that tells you
+    /// which rate you are about to override has to say whose it is.
+    pub ownership: Option<Ownership>,
     pub source: AssumptionSource,
 }
 
@@ -366,7 +371,9 @@ pub struct ForecastResult {
 /// a net-worth band and obvious here.
 #[derive(Debug, Clone)]
 pub struct StreamReconciliation {
-    pub person_id: i64,
+    /// `None` when the streams covering this category are the household's rather than one
+    /// person's — rent from a flatmate has no individual to attribute the coverage to.
+    pub person_id: Option<i64>,
     pub category_id: i64,
     pub category_label: String,
     /// Monthly net the streams model as of today, report currency minor units.
@@ -529,6 +536,7 @@ impl ForecastService {
                         refix_rate_uncertainty_bps: terms.refix.map(|r| r.uncertainty_bps),
                     }),
                     currency_code: Some(a.currency_code.clone()),
+                    ownership: Some(a.ownership),
                     source: AssumptionSource::Deterministic,
                 });
                 continue;
@@ -586,6 +594,7 @@ impl ForecastService {
                 baseline_minor: None,
                 schedule: None,
                 currency_code: Some(a.currency_code.clone()),
+                ownership: Some(a.ownership),
                 source,
             });
         }
@@ -649,6 +658,7 @@ impl ForecastService {
                 baseline_minor,
                 schedule: None,
                 currency_code: None,
+                ownership: None,
                 source,
             });
         }
@@ -1018,15 +1028,20 @@ impl ForecastService {
         let mut stream_sims: Vec<StreamSim> = Vec::new();
         let mut unmodelled_streams: Vec<String> = Vec::new();
         // Modelled monthly net per linked category, base-currency major units.
-        let mut modelled_by_category: HashMap<i64, (i64, f64)> = HashMap::new();
+        let mut modelled_by_category: HashMap<i64, (Option<i64>, f64)> = HashMap::new();
 
         // A person's brackets are progressive over their *total* gross, so the level every gross
         // stream is taxed against is the sum of them — pricing each alone would tax each as if the
         // other did not exist and under-tax both.
         let mut person_gross: HashMap<i64, i64> = HashMap::new();
         for st in streams.iter().filter(|s| s.enabled && s.basis.is_gross()) {
+            // A joint stream never reaches here: it cannot be gross, precisely because there is
+            // no one person whose brackets would price it (0038, and `validate` in the DAL).
+            let Some(person_id) = st.ownership.person_id() else {
+                continue;
+            };
             let (level, _, _, _) = crate::income::level_schedule(st, today, horizon);
-            *person_gross.entry(st.person_id).or_default() += level as i64;
+            *person_gross.entry(person_id).or_default() += level as i64;
         }
 
         for st in &streams {
@@ -1054,7 +1069,14 @@ impl ForecastService {
             };
             let (start_level, steps, residual_from_month, monthly_increase) =
                 crate::income::level_schedule(st, today, horizon);
-            let gross_total = person_gross.get(&st.person_id).copied().unwrap_or(0);
+            // Zero for a joint stream, which is always net — `take_home` returns all of it
+            // without consulting a scale, so there is no bracket to get wrong.
+            let gross_total = st
+                .ownership
+                .person_id()
+                .and_then(|p| person_gross.get(&p))
+                .copied()
+                .unwrap_or(0);
             let take_home = crate::income::take_home(st, gross_total, today, &tax_scales);
             let (kiwisaver_fraction, student_loan_fraction) =
                 crate::income::contribution_rates(st, gross_total, today, &tax_scales);
@@ -1089,12 +1111,12 @@ impl ForecastService {
             if let Some(cat) = st.linked_category_id {
                 let entry = modelled_by_category
                     .entry(cat)
-                    .or_insert((st.person_id, 0.0));
+                    .or_insert((st.ownership.person_id(), 0.0));
                 entry.1 += monthly_net_base;
             }
 
             stream_sims.push(StreamSim {
-                person_id: st.person_id,
+                person_id: st.ownership.person_id(),
                 stream_id: st.id,
                 base_scale,
                 payments: crate::income::payment_counts(st.pay_frequency, anchor, today, horizon),
@@ -1388,7 +1410,7 @@ impl ForecastService {
                             // their two jobs. Overlapping pauses take the *lower* replacement rate:
                             // adding them could pay more than 100% of a salary nobody is earning.
                             for (i, sim) in stream_sims.iter().enumerate() {
-                                if sim.person_id == person_id {
+                                if sim.person_id == Some(person_id) {
                                     stream_pauses[i].push((
                                         month,
                                         month + months - 1,
@@ -1819,8 +1841,9 @@ struct CategorySim {
 /// moves it — so that lives in the path loop beside `acc_values`.
 struct StreamSim {
     /// Whose income this is. A career break pauses every stream one person has, so the effect has to
-    /// be able to find them.
-    person_id: i64,
+    /// be able to find them — and `None`, a stream the household earns jointly, is found by
+    /// nobody's career break, which is the right answer for rent from a flatmate.
+    person_id: Option<i64>,
     /// Which stream this is, so an effect naming it can be matched to this slot.
     stream_id: i64,
     /// Native minor units -> base-currency major units, resolved once. A stream whose currency has
@@ -4290,7 +4313,7 @@ mod tests {
             }
             async fn create_income_stream(
                 &self,
-                _person_id: i64,
+                _owner: sure_core::Ownership,
                 _input: sure_core::SaveIncomeStream,
             ) -> AppResult<sure_core::IncomeStream> {
                 unreachable!()
@@ -5058,7 +5081,7 @@ mod tests {
         fn repaying_stream(loan_account_id: i64, today: NaiveDate) -> sure_core::IncomeStream {
             sure_core::IncomeStream {
                 id: 1,
-                person_id: 1,
+                ownership: sure_core::Ownership::Person { person_id: 1 },
                 label: "Salary".into(),
                 employer: None,
                 currency_code: "NZD".into(),

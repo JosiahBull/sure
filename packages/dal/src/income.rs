@@ -3,7 +3,8 @@
 
 use sure_core::{
     AppError, AppResult, IncomeBasis, IncomePayment, IncomePaymentStatus, IncomeStream,
-    IncomeStreamStep, MatchedBy, PayFrequency, PayTreatment, PayeBreakdown, SaveIncomeStream,
+    IncomeStreamStep, MatchedBy, Ownership, PayFrequency, PayTreatment, PayeBreakdown,
+    SaveIncomeStream,
 };
 
 use crate::Db;
@@ -11,7 +12,7 @@ use crate::Db;
 #[derive(Debug)]
 struct IncomeStreamRow {
     id: i64,
-    person_id: i64,
+    person_id: Option<i64>,
     label: String,
     employer: Option<String>,
     currency_code: String,
@@ -26,6 +27,7 @@ struct IncomeStreamRow {
     employer_kiwisaver_bps: i64,
     student_loan: bool,
     take_home_bps: Option<i64>,
+    ownership: String,
     linked_category_id: Option<i64>,
     kiwisaver_account_id: Option<i64>,
     student_loan_account_id: Option<i64>,
@@ -50,9 +52,12 @@ impl IncomeStreamRow {
         let basis: IncomeBasis = self.basis.parse().map_err(bad)?;
         let pay_frequency: PayFrequency = self.pay_frequency.parse().map_err(bad)?;
         let pay_treatment: PayTreatment = self.pay_treatment.parse().map_err(bad)?;
+        // Same contract as the parses above: the 0038 CHECK keeps the pair consistent, so a row
+        // that fails to rebuild came from something that went around every writer we own.
+        let ownership = Ownership::from_stored(&self.ownership, self.person_id).map_err(bad)?;
         Ok(IncomeStream {
             id: self.id,
-            person_id: self.person_id,
+            ownership,
             label: self.label,
             employer: self.employer,
             currency_code: self.currency_code,
@@ -109,7 +114,8 @@ impl From<IncomeStreamStepRow> for IncomeStreamStep {
 pub async fn list(db: &Db) -> AppResult<Vec<IncomeStream>> {
     let rows = sqlx::query_as!(
         IncomeStreamRow,
-        r#"SELECT id AS "id!", person_id, label, employer, currency_code, annual_amount_minor,
+        r#"SELECT id AS "id!", ownership, person_id, label, employer, currency_code,
+                  annual_amount_minor,
                   basis, pay_frequency, first_payment_on, starts_on, ends_on,
                   annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,
                   student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
@@ -149,7 +155,8 @@ pub async fn list(db: &Db) -> AppResult<Vec<IncomeStream>> {
 pub async fn get(db: &Db, id: i64) -> AppResult<IncomeStream> {
     let row = sqlx::query_as!(
         IncomeStreamRow,
-        r#"SELECT id AS "id!", person_id, label, employer, currency_code, annual_amount_minor,
+        r#"SELECT id AS "id!", ownership, person_id, label, employer, currency_code,
+                  annual_amount_minor,
                   basis, pay_frequency, first_payment_on, starts_on, ends_on,
                   annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,
                   student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
@@ -180,6 +187,20 @@ fn validate(input: &SaveIncomeStream) -> AppResult<()> {
     let mut problems: Vec<String> = Vec::new();
     if input.label.trim().is_empty() {
         problems.push("label must not be empty".into());
+    }
+    // A gross figure only means something beside the person whose marginal rate prices it:
+    // `sure_app::income::take_home` values every gross stream against that person's *total*
+    // income, because PAYE brackets are progressive. A joint stream has no such person, and both
+    // ways out are worse than refusing — pricing it against the household's combined income taxes
+    // it at a rate neither person pays, and halving it assumes a 50/50 split nothing records.
+    // Said here as well as in the 0038 CHECK so the caller gets a reason, not a constraint error.
+    if input.ownership == Some(Ownership::Joint) && input.basis.is_gross() {
+        problems.push(
+            "a joint stream must be recorded as net: a gross figure needs one person's tax \
+             position to price it, and joint income has none. Record the after-tax amount, or \
+             split it into one stream per owner."
+                .into(),
+        );
     }
     if !(0..=10_000).contains(&input.kiwisaver_bps) {
         problems.push(format!(
@@ -282,8 +303,20 @@ async fn replace_steps(
 
 /// Create the stream and its whole step schedule in one transaction.
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn create(db: &Db, person_id: i64, input: SaveIncomeStream) -> AppResult<IncomeStream> {
+pub async fn create(db: &Db, owner: Ownership, input: SaveIncomeStream) -> AppResult<IncomeStream> {
     validate(&input)?;
+    // `create` is handed the owner rather than reading `input.ownership`, because the per-person
+    // route's path is the authority there and the bare route has already resolved the body's.
+    // Re-validated against `basis` because that pairing is what 0038's CHECK enforces, and the
+    // body may not have carried an ownership for `validate` to see.
+    if owner == Ownership::Joint && input.basis.is_gross() {
+        return Err(AppError::validation(
+            "a joint stream must be recorded as net: a gross figure needs one person's tax \
+             position to price it, and joint income has none. Record the after-tax amount, or \
+             split it into one stream per owner.",
+        ));
+    }
+    let (ownership, person_id) = owner.as_parts();
     let mut txn = db.begin().await?;
     let label = input.label.trim();
     let employer = input.employer.as_deref();
@@ -307,12 +340,12 @@ pub async fn create(db: &Db, person_id: i64, input: SaveIncomeStream) -> AppResu
     // so this returns that rather than restating all two dozen columns.
     let id = sqlx::query_scalar!(
         r#"INSERT INTO income_streams
-              (person_id, label, employer, currency_code, annual_amount_minor, basis,
+              (ownership, person_id, label, employer, currency_code, annual_amount_minor, basis,
                pay_frequency, first_payment_on, starts_on, ends_on, annual_increase_bps,
                kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled,
                sort_order, notes, employer_kiwisaver_bps, kiwisaver_account_id,
                student_loan_account_id, match_account_id, match_pattern, pay_treatment)
-           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
+           VALUES (?25,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
                    ?22,?23,?24)
            RETURNING id AS "id!""#,
         person_id,
@@ -338,7 +371,8 @@ pub async fn create(db: &Db, person_id: i64, input: SaveIncomeStream) -> AppResu
         input.student_loan_account_id,
         input.match_account_id,
         match_pattern,
-        pay_treatment
+        pay_treatment,
+        ownership
     )
     .fetch_one(&mut *txn)
     .await
@@ -369,8 +403,20 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
         .map(str::trim)
         .filter(|p| !p.is_empty());
     let pay_treatment = input.pay_treatment.as_str();
+    // `None` leaves the owner alone, which is what every caller that only edits the figures
+    // sends. `COALESCE` on the pair rather than two statements: moving a stream between owners
+    // and clearing `person_id` have to happen together or the 0038 CHECK rejects the row.
+    let (ownership, owner_person_id) = match input.ownership {
+        Some(o) => {
+            let (kind, person_id) = o.as_parts();
+            (Some(kind), person_id)
+        }
+        None => (None, None),
+    };
     let updated = sqlx::query!(
         "UPDATE income_streams SET
+            ownership=COALESCE(?25, ownership),
+            person_id=CASE WHEN ?25 IS NULL THEN person_id ELSE ?26 END,
             label=?2, employer=?3, currency_code=?4, annual_amount_minor=?5, basis=?6,
             pay_frequency=?7, first_payment_on=?8, starts_on=?9, ends_on=?10,
             annual_increase_bps=?11, kiwisaver_bps=?12, student_loan=?13, take_home_bps=?14,
@@ -402,7 +448,9 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
         input.student_loan_account_id,
         input.match_account_id,
         match_pattern,
-        pay_treatment
+        pay_treatment,
+        ownership,
+        owner_person_id
     )
     .execute(&mut *txn)
     .await
@@ -775,8 +823,9 @@ pub async fn latest_settled_due_on(db: &Db, stream_id: i64) -> AppResult<Option<
 pub struct MatchedPaymentRow {
     pub income_stream_id: i64,
     pub stream_label: String,
-    pub person_id: i64,
-    pub person_name: String,
+    /// `None` for a stream the household earns jointly, which has no person row to join to.
+    pub person_id: Option<i64>,
+    pub person_name: Option<String>,
     pub transaction_id: i64,
     pub observed_net_minor: i64,
     pub gross_minor: i64,
@@ -803,7 +852,9 @@ pub async fn matched_payments(db: &Db) -> AppResult<Vec<MatchedPaymentRow>> {
                   p.student_loan_minor AS "student_loan_minor!"
              FROM income_payments p
              JOIN income_streams s ON s.id = p.income_stream_id
-             JOIN people pe ON pe.id = s.person_id
+             -- LEFT, because a joint stream has no `person_id`: an inner join would drop every
+             -- payment the household earns together rather than one of its people.
+             LEFT JOIN people pe ON pe.id = s.person_id
              JOIN transactions t ON t.id = p.transaction_id
             WHERE p.status IN ('matched','confirmed')
               AND p.observed_net_minor IS NOT NULL
@@ -845,6 +896,7 @@ mod tests {
 
     fn stream(label: &str) -> SaveIncomeStream {
         SaveIncomeStream {
+            ownership: None,
             label: label.into(),
             employer: Some("Kaimahi Collective".into()),
             currency_code: "NZD".into(),
@@ -891,7 +943,9 @@ mod tests {
                 label: Some("Step 5".into()),
             },
         ];
-        let created = create(&db, person, input).await.unwrap();
+        let created = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap();
         assert_eq!(created.steps.len(), 2);
         assert_eq!(created.steps[0].effective_on, "2027-04-01");
         assert_eq!(created.steps[1].effective_on, "2028-04-01");
@@ -916,7 +970,9 @@ mod tests {
             annual_amount_minor: Money::new(92_000_00).unwrap(),
             label: None,
         }];
-        let created = create(&db, person, input).await.unwrap();
+        let created = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap();
 
         let mut next = stream("Teaching");
         next.steps = vec![];
@@ -935,7 +991,9 @@ mod tests {
             label: None,
         };
         input.steps = vec![dup.clone(), dup];
-        let err = create(&db, person, input).await.unwrap_err();
+        let err = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap_err();
         assert!(
             format!("{err:?}").contains("2027-04-01"),
             "the error should name the clashing date, got {err:?}"
@@ -950,7 +1008,9 @@ mod tests {
         let mut input = stream("  ");
         input.kiwisaver_bps = 50_000;
         input.take_home_bps = Some(20_000);
-        let err = create(&db, person, input).await.unwrap_err();
+        let err = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap_err();
         let msg = format!("{err:?}");
         assert!(msg.contains("label"), "{msg}");
         assert!(msg.contains("kiwisaver_bps"), "{msg}");
@@ -960,7 +1020,9 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_person_is_a_validation_error_not_a_dangling_stream() {
         let db = test_db().await;
-        let err = create(&db, 9_999, stream("Ghost")).await.unwrap_err();
+        let err = create(&db, Ownership::Person { person_id: 9_999 }, stream("Ghost"))
+            .await
+            .unwrap_err();
         assert!(format!("{err:?}").contains("does not exist"), "{err:?}");
     }
 
@@ -976,7 +1038,9 @@ mod tests {
         let person = a_person(&db).await;
         let mut input = stream("Teaching");
         input.match_pattern = Some("KAIMAHI".into());
-        let err = create(&db, person, input).await.unwrap_err();
+        let err = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap_err();
         assert!(
             format!("{err:?}").contains("match_account_id"),
             "should name the missing half, got {err:?}"
@@ -1053,7 +1117,9 @@ mod tests {
         let mut input = stream("Salary");
         input.match_account_id = Some(account);
         input.match_pattern = Some("KAIMAHI".into());
-        let s = create(&db, person, input).await.unwrap();
+        let s = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap();
 
         upsert_expected(&db, s.id, "2026-05-14", 2_700_00)
             .await
@@ -1102,7 +1168,7 @@ mod tests {
         );
         let for_reports = matched_payments(&db).await.unwrap();
         assert_eq!(for_reports.len(), 1);
-        assert_eq!(for_reports[0].person_id, person);
+        assert_eq!(for_reports[0].person_id, Some(person));
         assert_eq!(for_reports[0].transaction_id, tx);
 
         let unlinked = unlink_payment(&db, matched.id).await.unwrap();
@@ -1122,7 +1188,9 @@ mod tests {
         let mut input = stream("Salary");
         input.match_account_id = Some(account);
         input.match_pattern = Some("KAIMAHI".into());
-        let s = create(&db, person, input).await.unwrap();
+        let s = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap();
         upsert_expected(&db, s.id, "2026-05-14", 2_700_00)
             .await
             .unwrap();
@@ -1154,6 +1222,38 @@ mod tests {
     }
 
     /// Two rows sharing one deposit: the salary-plus-bonus case the schema was shaped for.
+    /// Joint income is the household's, so it has no person — and no person means no marginal
+    /// rate, which is why it may only be recorded net. Refused with a reason rather than left to
+    /// the 0038 CHECK, whose message names a constraint instead of the fix.
+    #[tokio::test]
+    async fn a_joint_stream_may_not_be_gross() {
+        let db = test_db().await;
+        let mut input = stream("Rent");
+        input.basis = IncomeBasis::GrossNzPaye;
+        let err = create(&db, Ownership::Joint, input).await.unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("must be recorded as net"), "got {msg}");
+        assert!(
+            msg.contains("split it into one stream per owner"),
+            "got {msg}"
+        );
+    }
+
+    /// …and a net one is stored, read back as `Joint`, and keeps no person.
+    #[tokio::test]
+    async fn a_joint_net_stream_round_trips_without_a_person() {
+        let db = test_db().await;
+        let mut input = stream("Rent from the flat");
+        input.basis = IncomeBasis::Net;
+        let created = create(&db, Ownership::Joint, input).await.unwrap();
+        assert_eq!(created.ownership, Ownership::Joint);
+        let read = get(&db, created.id).await.unwrap();
+        assert_eq!(read.ownership, Ownership::Joint);
+        // And it is listed beside the per-person ones rather than filtered out of the household.
+        let all = list(&db).await.unwrap();
+        assert!(all.iter().any(|s| s.id == created.id));
+    }
+
     #[tokio::test]
     async fn two_streams_may_claim_one_transaction() {
         let db = test_db().await;
@@ -1162,13 +1262,17 @@ mod tests {
         let mut base = stream("Salary");
         base.match_account_id = Some(account);
         base.match_pattern = Some("KAIMAHI".into());
-        let base = create(&db, person, base).await.unwrap();
+        let base = create(&db, Ownership::Person { person_id: person }, base)
+            .await
+            .unwrap();
         let mut bonus = stream("Bonus");
         bonus.pay_frequency = PayFrequency::Quarterly;
         bonus.pay_treatment = PayTreatment::ExtraPay;
         bonus.match_account_id = Some(account);
         bonus.match_pattern = Some("KAIMAHI".into());
-        let bonus = create(&db, person, bonus).await.unwrap();
+        let bonus = create(&db, Ownership::Person { person_id: person }, bonus)
+            .await
+            .unwrap();
 
         upsert_expected(&db, base.id, "2026-05-14", 2_700_00)
             .await

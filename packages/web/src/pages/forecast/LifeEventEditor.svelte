@@ -97,7 +97,8 @@
     f.spread = t.spread.toString();
     const seeded = seedEffects(next, {
       personId: f.person_id ?? people.list[0]?.id ?? null,
-      streamId: streams.find((s) => s.person_id === f.person_id)?.id ?? streams[0]?.id ?? null,
+      streamId: streams.find((s) => s.ownership.kind === "person" && s.ownership.person_id === f.person_id)
+        ?.id ?? streams[0]?.id ?? null,
       categoryId: expenseCategories[0]?.id ?? null,
     });
     if (effects.length === 0) {

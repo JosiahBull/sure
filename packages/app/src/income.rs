@@ -372,7 +372,7 @@ mod tests {
     fn stream(freq: PayFrequency) -> IncomeStream {
         IncomeStream {
             id: 1,
-            person_id: 1,
+            ownership: sure_core::Ownership::Person { person_id: 1 },
             label: "Salary".into(),
             employer: None,
             currency_code: "NZD".into(),

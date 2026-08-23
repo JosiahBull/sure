@@ -1097,11 +1097,18 @@ fn emit_pre_income(
             None => UNCATEGORISED,
         };
         for p in claims {
+            // A joint stream has no earner to build a "— gross pay" node for, and being net it
+            // has no deductions to itemise either: every component below would be zero. It stays
+            // in the income column as the ordinary deposit it is, which is what rent from a
+            // flatmate should look like.
+            let (Some(person_id), Some(person_name)) = (p.person_id, p.person_name.as_ref()) else {
+                continue;
+            };
             // Infallible after the gate above: every component is in the deposit's currency.
             let conv = |minor: i64| fx.try_to_base_major(minor, &t.currency_code).unwrap_or(0.0);
-            let flows = people.entry(p.person_id).or_default();
+            let flows = people.entry(person_id).or_default();
             if flows.label.is_empty() {
-                flows.label.clone_from(&p.person_name);
+                flows.label.clone_from(person_name);
             }
             flows.income_tax += conv(p.income_tax_minor);
             flows.acc += conv(p.acc_levy_minor);
@@ -3597,8 +3604,8 @@ mod tests {
             MatchedIncomePayment {
                 income_stream_id: 1,
                 stream_label: "Salary".to_string(),
-                person_id: 5,
-                person_name: "Rua".to_string(),
+                person_id: Some(5),
+                person_name: Some("Rua".to_string()),
                 transaction_id,
                 observed_net_minor: 2_532_41,
                 gross_minor: 4_000_00,

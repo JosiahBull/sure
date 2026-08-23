@@ -11,6 +11,7 @@ use utoipa::ToSchema;
 
 use crate::iso_date::IsoDate;
 use crate::money::Money;
+use crate::people::Ownership;
 use crate::tax::TaxScaleId;
 
 /// How often a stream pays.
@@ -384,7 +385,11 @@ impl TakeHome {
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct IncomeStream {
     pub id: i64,
-    pub person_id: i64,
+    /// Whose income this is. `Person` for a salary; `Joint` for something the household earns
+    /// together, like rent from a flatmate, which has no one person to attribute it to. A joint
+    /// stream is always `basis: Net` — a gross figure needs the person whose marginal rate
+    /// prices it, and a joint stream has none. Nested, exactly as `Account::ownership` is.
+    pub ownership: Ownership,
     pub label: String,
     pub employer: Option<String>,
     pub currency_code: String,
@@ -437,6 +442,11 @@ pub struct IncomeStreamStep {
 /// One body and one transaction, so a schedule can never be half-saved.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SaveIncomeStream {
+    /// `None` means "don't change it": the per-person create route takes the owner from its
+    /// path, and a `PUT` that omits it leaves the stream where it is. `POST /api/income-streams`
+    /// is the one caller that must say, because it has no path to take an owner from.
+    #[serde(default)]
+    pub ownership: Option<Ownership>,
     pub label: String,
     #[serde(default)]
     pub employer: Option<String>,

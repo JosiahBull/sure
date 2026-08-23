@@ -35,24 +35,47 @@
     await load();
   });
 
+  // Keyed by person id, with `null` for the household's own income — rent from a flatmate
+  // belongs to no one person, so it gets its own group rather than being filed under whichever
+  // person happened to be first.
   const byPerson = $derived.by(() => {
-    const m = new Map<number, IncomeStream[]>();
+    const m = new Map<number | null, IncomeStream[]>();
     for (const s of streams) {
-      const list = m.get(s.person_id);
+      const key = s.ownership.kind === "person" ? s.ownership.person_id : null;
+      const list = m.get(key);
       if (list) list.push(s);
-      else m.set(s.person_id, [s]);
+      else m.set(key, [s]);
     }
     return m;
   });
 
   const reconByPerson = $derived.by(() => {
-    const m = new Map<number, Schemas["StreamReconciliation"][]>();
+    const m = new Map<number | null, Schemas["StreamReconciliation"][]>();
     for (const r of result?.reconciliations ?? []) {
-      const list = m.get(r.person_id);
+      const key = r.person_id ?? null;
+      const list = m.get(key);
       if (list) list.push(r);
-      else m.set(r.person_id, [r]);
+      else m.set(key, [r]);
     }
     return m;
+  });
+
+  // People, then the household itself when it has income of its own — rent from a flatmate
+  // belongs to no one person, and filing it under whoever came first would put a figure on this
+  // page that is not true of them.
+  const owners = $derived.by(() => {
+    const rows: { key: number | null; name: string; color: string; badge: string }[] =
+      people.list.map((p) => ({
+        key: p.id,
+        name: p.name,
+        color: personColor(p),
+        badge: initials(p.name),
+      }));
+    const joint = (byPerson.get(null) ?? []).length + (reconByPerson.get(null) ?? []).length;
+    if (joint > 0) {
+      rows.push({ key: null, name: "Household", color: "var(--muted, #8a8f98)", badge: "HH" });
+    }
+    return rows;
   });
 
   function basisLabel(b: Schemas["IncomeBasis"]): string {
@@ -136,13 +159,13 @@
   {/if}
 
   <div class="grid cards">
-    {#each people.list as p (p.id)}
-      {@const mine = byPerson.get(p.id) ?? []}
-      {@const recon = reconByPerson.get(p.id) ?? []}
-      <section class="card person-card" style="--who:{personColor(p)}">
+    {#each owners as p (p.key ?? "household")}
+      {@const mine = byPerson.get(p.key) ?? []}
+      {@const recon = reconByPerson.get(p.key) ?? []}
+      <section class="card person-card" style="--who:{p.color}">
         <div class="card-title">
           <div class="row" style="gap:10px;min-width:0">
-            <span class="avatar" style="background:{personColor(p)}">{initials(p.name)}</span>
+            <span class="avatar" style="background:{p.color}">{p.badge}</span>
             <h2 style="margin:0">{p.name}</h2>
           </div>
           <a class="btn btn-sm" href="#/settings/household">Configure</a>

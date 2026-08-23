@@ -109,7 +109,11 @@ impl IncomeMatchService {
                     s,
                     due,
                     &scales,
-                    person_regular.get(&s.person_id).copied().unwrap_or(0),
+                    s.ownership
+                        .person_id()
+                        .and_then(|p| person_regular.get(&p))
+                        .copied()
+                        .unwrap_or(0),
                 );
                 self.income
                     .upsert_expected_payment(s.id, &due.to_string(), net)
@@ -210,7 +214,12 @@ impl IncomeMatchService {
                         due,
                         slice,
                         &scales,
-                        person_regular.get(&stream.person_id).copied().unwrap_or(0),
+                        stream
+                            .ownership
+                            .person_id()
+                            .and_then(|p| person_regular.get(&p))
+                            .copied()
+                            .unwrap_or(0),
                     );
                     self.income
                         .record_payment_match(
@@ -297,7 +306,12 @@ impl IncomeMatchService {
             due,
             slice,
             &scales,
-            person_regular.get(&stream.person_id).copied().unwrap_or(0),
+            stream
+                .ownership
+                .person_id()
+                .and_then(|p| person_regular.get(&p))
+                .copied()
+                .unwrap_or(0),
         );
         self.income
             .record_payment_match(
@@ -355,7 +369,11 @@ fn person_regular_annualised(streams: &[IncomeStream], today: NaiveDate) -> Hash
     let mut totals: HashMap<i64, i64> = HashMap::new();
     for s in streams {
         if s.enabled && s.basis.is_gross() && s.pay_treatment == PayTreatment::Regular {
-            *totals.entry(s.person_id).or_default() += level_on(s, today);
+            // Joint income is never gross, so it has no marginal rate to pool.
+            let Some(person_id) = s.ownership.person_id() else {
+                continue;
+            };
+            *totals.entry(person_id).or_default() += level_on(s, today);
         }
     }
     totals
@@ -588,7 +606,7 @@ mod tests {
     fn stream(id: i64, treatment: PayTreatment) -> IncomeStream {
         IncomeStream {
             id,
-            person_id: 1,
+            ownership: sure_core::Ownership::Person { person_id: 1 },
             label: format!("Stream {id}"),
             employer: None,
             currency_code: "NZD".into(),

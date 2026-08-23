@@ -11,7 +11,7 @@ use crate::state::AppState;
 // (`crate::routes::income::IncomeStream`, ...) and the handler annotations resolve.
 pub use sure_core::{
     IncomeBasis, IncomePayment, IncomePaymentStatus, IncomeStream, IncomeStreamStep, MatchedBy,
-    OwnedTaxScale, PayFrequency, PayTreatment, SaveIncomeStream, SaveIncomeStreamStep,
+    OwnedTaxScale, Ownership, PayFrequency, PayTreatment, SaveIncomeStream, SaveIncomeStreamStep,
     SaveTaxScale, StoredTaxScale, TakeHomeSource, TaxScaleId,
 };
 
@@ -22,6 +22,7 @@ use utoipa::{IntoParams, ToSchema};
 const INCOME_LIST: &str = "income.list";
 const INCOME_GET: &str = "income.get";
 const INCOME_CREATE: &str = "income.create";
+const INCOME_CREATE_OWNED: &str = "income.create_owned";
 const INCOME_UPDATE: &str = "income.update";
 const INCOME_DELETE: &str = "income.delete";
 const INCOME_DETECT: &str = "income.detect";
@@ -149,7 +150,44 @@ pub async fn create(
 ) -> AppResult<(StatusCode, Json<IncomeStream>)> {
     Ok((
         StatusCode::CREATED,
-        Json(st.income.create_income_stream(person_id, input).await?),
+        Json(
+            st.income
+                .create_income_stream(Ownership::Person { person_id }, input)
+                .await?,
+        ),
+    ))
+}
+
+/// Record income the household earns rather than one of its people — rent from a flatmate, a
+/// refund the household is owed.
+///
+/// A second create route rather than a nullable path segment: the per-person one above puts the
+/// owner where it cannot be omitted or contradicted, and that property is worth keeping for the
+/// case it covers. Here the body is the only place an owner can come from, so `ownership` is
+/// required and its absence is a 422 rather than a silent guess at whose income this is.
+#[utoipa::path(post, path = "/api/income-streams", tag = "income",
+    request_body = SaveIncomeStream,
+    responses((status = 201, body = IncomeStream), (status = 404, body = crate::error::ErrorBody),
+              (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = INCOME_CREATE_OWNED,
+    level = "debug",
+    skip_all,
+    err(level = tracing::Level::WARN),
+)]
+pub async fn create_owned(
+    State(st): State<AppState>,
+    Json(input): Json<SaveIncomeStream>,
+) -> AppResult<(StatusCode, Json<IncomeStream>)> {
+    let Some(owner) = input.ownership else {
+        return Err(sure_core::AppError::validation(
+            "ownership is required here: say {\"kind\":\"joint\"} for income the household \
+             earns, or POST to /api/people/{person_id}/income-streams for one person's",
+        ));
+    };
+    Ok((
+        StatusCode::CREATED,
+        Json(st.income.create_income_stream(owner, input).await?),
     ))
 }
 
@@ -498,7 +536,7 @@ pub fn router() -> Router<AppState> {
             "/tax-scales/{id}",
             axum::routing::put(update_tax_scale).delete(delete_tax_scale),
         )
-        .route("/income-streams", get(list))
+        .route("/income-streams", get(list).post(create_owned))
         .route(
             "/income-streams/{id}",
             get(get_one).put(update).delete(delete),

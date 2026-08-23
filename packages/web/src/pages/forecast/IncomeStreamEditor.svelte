@@ -13,7 +13,9 @@
     ondelete,
   }: {
     stream?: IncomeStream | null;
-    personId: number;
+    /// Whose income a *new* stream is. `null` means the household's — rent from a flatmate,
+    /// which belongs to no one person and so posts to the un-nested create route.
+    personId: number | null;
     onsaved: () => void;
     oncancel: () => void;
     ondelete?: () => void;
@@ -233,10 +235,16 @@
           params: { path: { id: initial.id } },
           body,
         })
-      : await api.POST("/api/people/{person_id}/income-streams", {
-          params: { path: { person_id: personId } },
-          body,
-        });
+      : personId != null
+        ? await api.POST("/api/people/{person_id}/income-streams", {
+            params: { path: { person_id: personId } },
+            body,
+          })
+        : // The household's own income. `ownership` is required here because there is no path
+          // segment to take an owner from, and joint income is always net (see the 0038 header).
+          await api.POST("/api/income-streams", {
+            body: { ...body, ownership: { kind: "joint" }, basis: "net" },
+          });
     saving = false;
     if (res.error) {
       // Every problem arrives in one message, so it is shown whole rather than split per field.
