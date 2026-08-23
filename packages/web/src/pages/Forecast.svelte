@@ -115,6 +115,36 @@
       })
   );
 
+  /**
+   * Debts the projection expects to clear, drawn through the same marker machinery as events —
+   * both answer "this lands around here, give or take", and a second visual language for the
+   * same question would be one to learn for no reason.
+   *
+   * Two differences it does carry. The id is negated so it cannot collide with a real event's
+   * (the chart keys and selects on it), and `kind` makes the marker inert, because a milestone
+   * has no row to open. `cleared_rate_bps` stands in for probability: it is not a chance of
+   * happening but the share of paths that got there inside the horizon, which is the same
+   * "how much of this is committed" signal the opacity and dash already encode.
+   */
+  const chartMilestones = $derived(
+    (result?.milestones ?? []).map((m) => {
+      const who = m.person_id != null ? people.list.find((p) => p.id === m.person_id) : null;
+      // Two accounts really are both called "Student loan"; the owner is what tells them apart.
+      const name = who ? `${who.name} ${m.label.toLowerCase()} paid off` : `${m.label} paid off`;
+      return {
+        id: -m.account_id,
+        name,
+        color: who ? personColor(who) : "var(--text-muted)",
+        probabilityBps: m.cleared_rate_bps,
+        p10: m.month_p10,
+        median: m.month_p50,
+        p90: m.month_p90,
+        truncated: m.cleared_rate_bps < 10_000,
+        kind: "milestone" as const,
+      };
+    })
+  );
+
   /** Set when a chart marker is clicked, so the Life events tab opens that row. */
   let focusEventId = $state<number | null>(null);
   function selectEvent(id: number) {
@@ -174,7 +204,7 @@
     months={result?.months ?? []}
     {currency}
     {checkpoints}
-    events={chartEvents}
+    events={[...chartEvents, ...chartMilestones]}
     onselectevent={selectEvent}
     onhover={(p) => (hoverPoint = p)}
   />

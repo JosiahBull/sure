@@ -347,6 +347,9 @@ pub struct ForecastResult {
     /// window — relations move timing, so the two genuinely differ.
     pub events: Vec<EventOutcome>,
     pub reconciliations: Vec<StreamReconciliation>,
+    /// Debts the projection expects to clear, and when — "the mortgage is gone in 2038". Derived
+    /// from the paths, so it moves with them; see [`Milestone`]. Ordered soonest first.
+    pub milestones: Vec<Milestone>,
     /// Things that changed meaning, or figures the projection is standing in for. Prose, because
     /// each one needs to say what to do about it and there is nothing for a caller to branch on.
     pub warnings: Vec<String>,
@@ -361,6 +364,33 @@ pub struct ForecastResult {
     /// overdrawn in year three looks identical to one that never did. This is that question,
     /// counted directly. Same length as `months`.
     pub negative_cash_rate_bps: Vec<i64>,
+}
+
+/// A debt the projection expects to be cleared, and when.
+///
+/// Derived from the simulation rather than configured: a `forecast_events` row is a certainty
+/// the household is asserting, and this is the opposite — an *outcome*, which moves whenever a
+/// rate, a repayment or a salary does. Typing one in by hand would be a figure that stopped
+/// being true the moment anything else changed.
+///
+/// A distribution, not a date, for the same reason every other figure here is a band: the month
+/// a mortgage clears differs across paths, and a single number would hide that a P10 of four
+/// years and a P90 of eleven are the same projection.
+#[derive(Debug, Clone)]
+pub struct Milestone {
+    pub account_id: i64,
+    /// The account's own name. Paired with `person_id` by the caller, because a household with
+    /// two student loans has two accounts of the same name and only the owner tells them apart.
+    pub label: String,
+    pub person_id: Option<i64>,
+    /// Month offsets from today, across the paths that cleared it. P50 is the one to show.
+    pub month_p10: i64,
+    pub month_p50: i64,
+    pub month_p90: i64,
+    /// How many paths cleared it at all, in basis points. Below 10 000 the P90 is a lower bound:
+    /// the remaining paths did not finish inside the horizon, so the true spread is wider than
+    /// the one reported here.
+    pub cleared_rate_bps: i64,
 }
 
 /// What the income streams linked to one category claim, beside what that category's own history
@@ -1008,6 +1038,11 @@ impl ForecastService {
                 // the intent where the reader is looking.
                 repayment_debits_cash: reports::is_excluded_from_spend(a.kind)
                     && a.kind != AccountKind::StudentLoan,
+                // Strictly negative: a liability recorded at exactly zero is already paid off,
+                // and reporting that as a milestone in month one would bury the real ones.
+                payoff_watched: class == AccountClass::Liability && current < 0.0,
+                label: a.name.clone(),
+                person_id: a.ownership.person_id(),
                 monthly_fixed_fee: by_target
                     .get(&(ForecastTargetType::Account, a.id))
                     .and_then(|r| r.annual_fixed_fee_minor)
@@ -1310,6 +1345,9 @@ impl ForecastService {
         // Paths whose cash pool was negative, per month. A count rather than samples: the answer
         // is a single fraction, so there is nothing to take percentiles of.
         let mut negative_cash: Vec<u32> = vec![0; horizon as usize];
+        // Per watched debt, the month each path cleared it in. Ragged on purpose: a path that
+        // never cleared contributes nothing, so the length against `n_paths` *is* the clear rate.
+        let mut payoff_months: Vec<Vec<i64>> = vec![Vec::new(); account_sims.len()];
 
         // Sampled before the path loop, from RNGs seeded independently of `rng`. That independence
         // is the acceptance criterion for this whole feature: with no events configured, not one
@@ -1324,6 +1362,10 @@ impl ForecastService {
 
         for outcomes in &event_outcomes {
             let mut acc_values: Vec<f64> = account_sims.iter().map(|s| s.current).collect();
+            // First month this path cleared each watched debt, `None` until it does. Per path,
+            // because the month differs across them — that spread is the whole point of
+            // reporting a band rather than a date.
+            let mut cleared_at: Vec<Option<i64>> = vec![None; account_sims.len()];
             let mut cat_baselines: Vec<f64> = category_sims.iter().map(|s| s.baseline).collect();
             let mut cash = cash_start;
 
@@ -1684,6 +1726,16 @@ impl ForecastService {
                 cash += net_flow + stream_net - repayments;
                 income_samples[(m - 1) as usize].push(stream_net);
 
+                // Cleared the first month the balance is no longer a debt. `>= 0.0` rather than
+                // a tolerance: every arm that pays one down already clamps at zero (the
+                // `LinearPaydown` and student-loan branches both do), so a cleared debt lands on
+                // exactly 0.0 rather than creeping past it by a fraction of a cent.
+                for (i, sim) in account_sims.iter().enumerate() {
+                    if sim.payoff_watched && cleared_at[i].is_none() && acc_values[i] >= 0.0 {
+                        cleared_at[i] = Some(m);
+                    }
+                }
+
                 let mut assets = 0.0;
                 let mut liabilities = 0.0;
                 for (i, sim) in account_sims.iter().enumerate() {
@@ -1711,6 +1763,15 @@ impl ForecastService {
                 month_samples[idx].liabilities.push(liabilities);
                 month_samples[idx].net_worth.push(assets + liabilities);
             }
+
+            // Only the paths that actually cleared contribute a month. A path that ran out of
+            // horizon still owing is counted by its absence, which is what `cleared_rate_bps`
+            // reports — averaging in a sentinel would invent a payoff date.
+            for (i, at) in cleared_at.iter().enumerate() {
+                if let Some(m) = at {
+                    payoff_months[i].push(*m);
+                }
+            }
         }
 
         let mut months = Vec::with_capacity(horizon as usize);
@@ -1724,9 +1785,37 @@ impl ForecastService {
             });
         }
 
+        // Debts the paths cleared, soonest first. A percentile over the months that actually
+        // happened, so a debt cleared on only some paths reports the spread of those — with
+        // `cleared_rate_bps` saying how much of the picture that is.
+        let mut milestones: Vec<Milestone> = Vec::new();
+        for (i, sim) in account_sims.iter().enumerate() {
+            let mut months_cleared = payoff_months[i].clone();
+            if !sim.payoff_watched || months_cleared.is_empty() {
+                continue;
+            }
+            months_cleared.sort_unstable();
+            let at = |q: f64| -> i64 {
+                let idx = ((months_cleared.len() as f64 - 1.0) * q).round() as usize;
+                months_cleared[idx]
+            };
+            milestones.push(Milestone {
+                account_id: sim.account_id,
+                label: sim.label.clone(),
+                person_id: sim.person_id,
+                month_p10: at(0.10),
+                month_p50: at(0.50),
+                month_p90: at(0.90),
+                cleared_rate_bps: ((months_cleared.len() as f64 / n_paths.max(1) as f64) * 10_000.0)
+                    .round() as i64,
+            });
+        }
+        milestones.sort_by_key(|m| (m.month_p50, m.account_id));
+
         Ok(ForecastResult {
             currency: base,
             months,
+            milestones,
             assumptions,
             unconverted: fx.unconverted(),
             rates_as_of: fx.rates_as_of().map(str::to_string),
@@ -1821,6 +1910,16 @@ struct AccountSim {
     account_id: i64,
     /// Whether event effects apply here at all.
     takes_events: bool,
+    /// A debt that starts out owing something, and so has a payoff month worth reporting.
+    /// `false` for every asset, and for a liability already at zero — "paid off in month 1" is
+    /// noise, not news. See [`Milestone`].
+    payoff_watched: bool,
+    /// The account's own name, for the milestone's label. Not the owner's name: this layer has
+    /// no people repo, and two accounts here really are both called "Student loan", so the
+    /// caller pairs this with `person_id` to tell them apart.
+    label: String,
+    /// Whose debt it is, so the chart can name and colour it. `None` for a joint one.
+    person_id: Option<i64>,
 }
 
 struct CategorySim {
@@ -5280,6 +5379,75 @@ mod tests {
                 "got {:?}",
                 result.warnings
             );
+        }
+
+        /// A debt being repaid reports the month it clears, derived rather than configured.
+        ///
+        /// The figure a household actually wants off a thirty-year projection is "when is it
+        /// gone", and reading that off a shrinking band by eye is exactly the sort of thing a
+        /// chart should do for you.
+        #[test]
+        fn a_debt_being_repaid_reports_when_it_clears() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let (loan, valuations) = drawn_down_loan(Some(0), today);
+            let result = rt
+                .block_on(
+                    service_with_repayments(vec![loan], valuations, 1, today).simulate(
+                        &SimulationParams {
+                            horizon_months: 360,
+                            simulations: 100,
+                            currency: None,
+                            seed: Some(21),
+                        },
+                    ),
+                )
+                .unwrap();
+
+            let m = result
+                .milestones
+                .iter()
+                .find(|m| m.account_id == 1)
+                .expect("a loan being repaid should report a payoff month");
+            // The fixture account is jointly owned, which is the mortgage case: no person to
+            // name, so the caller labels it from the account alone.
+            assert_eq!(m.person_id, None);
+            assert_eq!(m.label, "Account 1");
+            // It clears inside the horizon, on every path, and not in month one.
+            assert_eq!(m.cleared_rate_bps, 10_000);
+            assert!(m.month_p50 > 1, "cleared immediately? {}", m.month_p50);
+            assert!(m.month_p50 <= 360, "never cleared: {}", m.month_p50);
+            assert!(m.month_p10 <= m.month_p50 && m.month_p50 <= m.month_p90);
+            // The balance really is gone by then, so the milestone agrees with the band it sits on.
+            let at = &result.months[(m.month_p50 - 1) as usize];
+            assert!(
+                at.liabilities.median_minor >= -1_00,
+                "still owing {} at the reported payoff month",
+                at.liabilities.median_minor
+            );
+        }
+
+        /// An asset never produces one, and neither does a debt already at zero — "paid off in
+        /// month one" would bury the milestones that mean something.
+        #[test]
+        fn only_a_real_debt_gets_a_payoff_milestone() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let fund = account(1, AK::Brokerage, "NZD");
+            let valuations = vec![valued(1, today - chrono::Duration::days(1), 50_000_00)];
+            let result = rt
+                .block_on(
+                    service_with_repayments(vec![fund], valuations, 1, today).simulate(
+                        &SimulationParams {
+                            horizon_months: 60,
+                            simulations: 50,
+                            currency: None,
+                            seed: Some(21),
+                        },
+                    ),
+                )
+                .unwrap();
+            assert!(result.milestones.is_empty(), "got {:?}", result.milestones);
         }
 
         /// The structural half of the above, stated on its own so a regression names itself:

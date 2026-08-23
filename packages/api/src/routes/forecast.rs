@@ -250,6 +250,42 @@ pub struct StreamReconciliation {
     pub residual_minor: i64,
 }
 
+/// A debt the projection expects to be cleared, and when.
+///
+/// Derived from the simulated paths rather than configured: unlike a `forecast_event`, which is
+/// a certainty the household is asserting, this is an outcome that moves whenever a rate, a
+/// repayment or a salary does. A band rather than a date for the same reason every other figure
+/// here is one.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Milestone {
+    pub account_id: i64,
+    /// The account's own name. A household with two student loans has two accounts of this name;
+    /// `person_id` is what tells them apart, and the client pairs the two for a label.
+    pub label: String,
+    pub person_id: Option<i64>,
+    /// Month offsets from today across the paths that cleared it. P50 is the one to show.
+    pub month_p10: i64,
+    pub month_p50: i64,
+    pub month_p90: i64,
+    /// Share of paths that cleared it inside the horizon. Below 10 000 the P90 is a lower bound —
+    /// the rest had not finished, so the real spread is wider than the one reported.
+    pub cleared_rate_bps: i64,
+}
+
+impl From<sure_app::forecast::Milestone> for Milestone {
+    fn from(m: sure_app::forecast::Milestone) -> Self {
+        Milestone {
+            account_id: m.account_id,
+            label: m.label,
+            person_id: m.person_id,
+            month_p10: m.month_p10,
+            month_p50: m.month_p50,
+            month_p90: m.month_p90,
+            cleared_rate_bps: m.cleared_rate_bps,
+        }
+    }
+}
+
 impl From<sure_app::forecast::StreamReconciliation> for StreamReconciliation {
     fn from(r: sure_app::forecast::StreamReconciliation) -> Self {
         StreamReconciliation {
@@ -352,6 +388,8 @@ pub struct ForecastResult {
     /// How each event landed across the paths. What the chart draws.
     pub events: Vec<EventOutcome>,
     pub reconciliations: Vec<StreamReconciliation>,
+    /// Debts this projection expects to clear, soonest first — "the mortgage is gone in 2038".
+    pub milestones: Vec<Milestone>,
     /// Figures the projection is standing in for, and places where linking something changed what an
     /// account's numbers mean. Prose, because each needs to say what to do about it.
     pub warnings: Vec<String>,
@@ -380,6 +418,7 @@ impl From<sure_app::forecast::ForecastResult> for ForecastResult {
             income_net: r.income_net.into_iter().map(Into::into).collect(),
             events: r.events.into_iter().map(Into::into).collect(),
             reconciliations: r.reconciliations.into_iter().map(Into::into).collect(),
+            milestones: r.milestones.into_iter().map(Into::into).collect(),
             warnings: r.warnings,
             unmodelled_streams: r.unmodelled_streams,
             negative_cash_rate_bps: r.negative_cash_rate_bps,

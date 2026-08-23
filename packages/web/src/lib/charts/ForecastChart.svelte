@@ -52,6 +52,12 @@
     p90: number;
     /** The p90 ran past the horizon, so the band's right edge must not read as a committed date. */
     truncated: boolean;
+    /**
+     * A configured event, or a milestone the projection *derived* (a debt clearing). They draw
+     * identically — both are "this lands around here, give or take" — but only an event has a row
+     * to open, so the marker is inert for a milestone.
+     */
+    kind?: "event" | "milestone";
   };
 
   const W = CHART_W;
@@ -409,14 +415,17 @@
           onblur={() => (evHover = null)}
           onclick={() => {
             selectedEvent = e.id;
-            onselectevent?.(e.id);
+            // A milestone has no row to open — it is an outcome of the projection, not an input.
+            if (e.kind !== "milestone") onselectevent?.(e.id);
           }}
         >
           <span class="ev-dot" class:hollow={!e.filled}></span>
           <span class="ev-name">{e.name}</span>
           <!-- The fourth probability channel, and the only unambiguous one: every visual encoding
                is a hint, the number is the answer. -->
-          <span class="ev-pct tabular">{Math.round(e.p * 100)}%</span>
+          <span class="ev-pct tabular">
+            {e.kind === "milestone" && e.p >= 1 ? "" : `${Math.round(e.p * 100)}%`}
+          </span>
         </button>
       {/each}
     </div>
