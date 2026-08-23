@@ -2493,6 +2493,183 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/expense-commitments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every expense commitment, enabled or not. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ExpenseCommitment"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveExpenseCommitment"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ExpenseCommitment"];
+                    };
+                };
+                /** @description unknown category/currency/merchant, or an end before the start */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/expense-commitments/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ExpenseCommitment"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveExpenseCommitment"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ExpenseCommitment"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/forecast": {
         parameters: {
             query?: never;
@@ -6327,7 +6504,7 @@ export interface components {
          */
         AreaUnit: "sqft" | "sqm";
         /** @enum {string} */
-        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history" | "contribution_driven" | "modelled_from_income" | "indexed" | "modelled_from_schedule" | "vesting_schedule";
+        AssumptionSource: "override" | "cron" | "derived" | "deterministic" | "insufficient_history" | "contribution_driven" | "modelled_from_income" | "commitment_driven" | "indexed" | "modelled_from_schedule" | "vesting_schedule";
         BackfillResult: {
             /**
              * Format: int64
@@ -6990,6 +7167,54 @@ export interface components {
             clamped_early_rate_bps: number;
             /** @description The p90 ran past the horizon, so the chart should draw an open end. */
             truncated: boolean;
+        };
+        ExpenseCommitment: {
+            /** Format: int64 */
+            id: number;
+            /**
+             * Format: int64
+             * @description The category this is netted out of. May be a subcategory — the forecast resolves it to its
+             *     top-level ancestor, because that is the level assumptions are made at.
+             */
+            category_id: number;
+            label: string;
+            /**
+             * Format: int64
+             * @description Minor units of `currency_code`, per `cadence` period. Always positive: this type is a cost,
+             *     and a signed amount would make "a negative commitment" expressible without meaning anything.
+             */
+            amount_minor: number;
+            currency_code: string;
+            cadence: components["schemas"]["PayFrequency"];
+            first_due_on: string;
+            /**
+             * @description When the obligation ends, if it does. A fixed-term contract expiring is the single most
+             *     useful thing this type can express that a fitted trend cannot represent at all.
+             */
+            ends_on?: string | null;
+            /**
+             * Format: int64
+             * @description Annual escalation *relative to* `settings.inflation_bps`. 0 means "rises with inflation",
+             *     300 means "inflation + 3%", -250 at a 2.5% household rate means "flat in nominal terms".
+             *
+             *     Relative rather than absolute for the reason `0043_real_growth_override.sql` gives: an
+             *     opinion about one bill outrunning everything else has to survive a revision of the household
+             *     rate, and an absolute figure is a copy of that rate that does not get revised with it.
+             */
+            escalation_delta_bps: number;
+            /**
+             * Format: int64
+             * @description The merchant whose transactions *are* this commitment.
+             *
+             *     Load-bearing, not decorative. With it set, the forecast removes those transactions from the
+             *     series before fitting, so the residual's volatility narrows as well as its level; without
+             *     it, only the level is corrected. See `sure_app::forecast`'s `CommitmentNetting`.
+             */
+            merchant_id?: number | null;
+            enabled: boolean;
+            notes?: string | null;
+            created_at: string;
+            updated_at: string;
         };
         ForecastAssumption: {
             /** Format: int64 */
@@ -8483,6 +8708,21 @@ export interface components {
              */
             history_minor?: number[] | null;
             /**
+             * Format: int64
+             * @description Only set for categories: the level fitted from history *before* commitments or a loan's
+             *     scheduled interest were netted out. Compare against `committed_minor`: they will not agree
+             *     exactly, and a large disagreement means a commitment is mis-entered or payments are missing.
+             */
+            observed_minor?: number | null;
+            /**
+             * Format: int64
+             * @description Only set for a category with commitments: what they come to a month, base-currency minor
+             *     units. `baseline_minor` is the residual beside it, and the ratio is how much of this
+             *     category is stated rather than fitted. Deliberately unclamped — over 100% is the signal
+             *     that a commitment is wrong or double-entered.
+             */
+            committed_minor?: number | null;
+            /**
              * @description Only set for categories with a growth override: `annual_growth_bps` is the household
              *     inflation rate *plus* the spread the user asserted, rather than an absolute rate. Both are
              *     shown on the row — "+3.5%/yr (inflation + 1.0%)" — because the sum is what ran and the
@@ -8704,6 +8944,23 @@ export interface components {
             /** Format: int64 */
             price_minor?: number;
             note?: string | null;
+        };
+        SaveExpenseCommitment: {
+            /** Format: int64 */
+            category_id: number;
+            label: string;
+            /** Format: int64 */
+            amount_minor: number;
+            currency_code: string;
+            cadence: components["schemas"]["PayFrequency"];
+            first_due_on: string;
+            ends_on?: string | null;
+            /** Format: int64 */
+            escalation_delta_bps?: number;
+            /** Format: int64 */
+            merchant_id?: number | null;
+            enabled?: boolean;
+            notes?: string | null;
         };
         /**
          * @description Upsert body, keyed by `(target_type, target_id)`. A field left `None` means "no

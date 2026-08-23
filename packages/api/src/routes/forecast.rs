@@ -65,6 +65,11 @@ pub enum AssumptionSource {
     /// trend. `baseline_minor` is then the *residual* — the part of the category the streams do
     /// not explain — so a non-zero one means some income here is still un-modelled.
     ModelledFromIncome,
+    /// Part of this category is modelled from stated commitments — a power bill, a rates
+    /// instalment, an insurance premium — and only the remainder is projected stochastically.
+    /// `baseline_minor` is that remainder and `committed_minor` is what the commitments come to,
+    /// so the ratio says how much of this category is a stated fact rather than a guess.
+    CommitmentDriven,
     /// The level was measured from this category's current regime; the growth is the household
     /// inflation rate (`settings.inflation_bps`) rather than anything fitted from the history.
     ///
@@ -105,6 +110,7 @@ impl From<sure_app::forecast::AssumptionSource> for AssumptionSource {
             S::ContributionDriven => AssumptionSource::ContributionDriven,
             S::VestingSchedule => AssumptionSource::VestingSchedule,
             S::Indexed => AssumptionSource::Indexed,
+            S::CommitmentDriven => AssumptionSource::CommitmentDriven,
         }
     }
 }
@@ -206,6 +212,15 @@ pub struct ResolvedAssumption {
     /// page can grey out what the break excluded rather than simply omitting it. This is the
     /// evidence behind every other figure on the row.
     pub history_minor: Option<Vec<i64>>,
+    /// Only set for categories: the level fitted from history *before* commitments or a loan's
+    /// scheduled interest were netted out. Compare against `committed_minor`: they will not agree
+    /// exactly, and a large disagreement means a commitment is mis-entered or payments are missing.
+    pub observed_minor: Option<i64>,
+    /// Only set for a category with commitments: what they come to a month, base-currency minor
+    /// units. `baseline_minor` is the residual beside it, and the ratio is how much of this
+    /// category is stated rather than fitted. Deliberately unclamped — over 100% is the signal
+    /// that a commitment is wrong or double-entered.
+    pub committed_minor: Option<i64>,
     /// Only set for categories with a growth override: `annual_growth_bps` is the household
     /// inflation rate *plus* the spread the user asserted, rather than an absolute rate. Both are
     /// shown on the row — "+3.5%/yr (inflation + 1.0%)" — because the sum is what ran and the
@@ -243,6 +258,8 @@ impl From<sure_app::forecast::ResolvedAssumption> for ResolvedAssumption {
             fitted_months: r.fitted_months,
             break_months_ago: r.break_months_ago,
             history_minor: r.history_minor,
+            observed_minor: r.observed_minor,
+            committed_minor: r.committed_minor,
             growth_is_real: r.growth_is_real,
             is_income: r.is_income,
             schedule: r.schedule.map(Into::into),

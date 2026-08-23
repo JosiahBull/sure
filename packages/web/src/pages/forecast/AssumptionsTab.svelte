@@ -150,6 +150,8 @@
         return "from history";
       case "indexed":
         return "measured level, rising with inflation";
+      case "commitment_driven":
+        return "mostly stated commitments";
       case "deterministic":
         return "amortisation schedule";
       case "insufficient_history":
@@ -408,9 +410,9 @@
             </div>
             <div class="a-meta row spread">
               <span class="small faint">
-                {scheduleLabel(a)}{#if windowNote(a)}<span class="faint"> · {windowNote(a)}</span
-                  >{/if}{#if measuredNote(a)}<span class="measured"> · {measuredNote(a)}</span
-                  >{/if}{#if decayNote(a)}<span class="faint"> · {decayNote(a)}</span
+                {scheduleLabel(a)}{#if windowNote(a)}<span class="faint">&nbsp;· {windowNote(a)}</span
+                  >{/if}{#if measuredNote(a)}<span class="measured">&nbsp;· {measuredNote(a)}</span
+                  >{/if}{#if decayNote(a)}<span class="faint">&nbsp;· {decayNote(a)}</span
                   >{/if}{#if needsReturn(a)}<span class="needs-return">
                     · set an expected return, or this stays flat</span
                   >{/if}{#if a.source === "vesting_schedule"}<span class="faint">
@@ -433,6 +435,27 @@
                 </div>
               {/if}
             </div>
+            {#if a.committed_minor != null}
+              {@const residual = a.baseline_minor ?? 0}
+              {@const observed = a.observed_minor ?? 0}
+              {@const pct =
+                observed > 0 ? Math.min(100, (a.committed_minor / observed) * 100) : 100}
+              {@const over = observed > 0 && a.committed_minor > observed * 1.1}
+              <div class="split">
+                <span class="bar" class:over aria-hidden="true">
+                  <span class="fill" style="width:{pct}%"></span>
+                </span>
+                <span class="small faint">
+                  <strong>{formatMoney(a.committed_minor, currency)}/mo</strong> committed ·
+                  {formatMoney(residual, currency)}/mo discretionary
+                  {#if over}
+                    <span class="needs-return">
+                      · more than the {formatMoney(observed, currency)}/mo recorded
+                    </span>
+                  {/if}
+                </span>
+              </div>
+            {/if}
             {#if a.history_minor?.length}
               <!-- The evidence, next to the claim. A row that asserts a level and a growth rate
                    without showing the months they came from is unfalsifiable by the one person who
@@ -578,6 +601,32 @@
     color: var(--text);
     font-variant-numeric: tabular-nums;
     font-weight: 560;
+  }
+  /* How much of this category is a stated amount rather than a fitted guess — `coverage_bps` made
+     visual, and the honest answer to "how much of this projection do you actually know". */
+  .split {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 5px;
+    flex-wrap: wrap;
+  }
+  .split .bar {
+    flex: none;
+    width: 120px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--border-strong);
+    overflow: hidden;
+  }
+  .split .fill {
+    display: block;
+    height: 100%;
+    background: var(--positive);
+  }
+  /* Over-committed: the bar is full and the colour says it is full for the wrong reason. */
+  .split .bar.over .fill {
+    background: var(--warn);
   }
   .evidence {
     display: flex;

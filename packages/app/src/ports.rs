@@ -19,16 +19,16 @@ use serde_json::Value;
 use sure_core::{
     Account, AccountEquity, AccountKind, AppResult, BulkUpdate, Category, CategoryKind,
     CategoryNode, Cron, CronRun, CronRunResult, Currency, DividendDetail, EquityExercise,
-    EquityGrant, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot,
-    HousePricerLink, ImportRecord, ImportSource, IncomePayment, IncomePaymentStatus, IncomeStream,
-    LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind, MatchedBy, McpMode, Merchant,
-    NewCurrency, NewValuation, Ownership, PayeBreakdown, Person, Provider, ProviderAccount,
-    ProviderKind, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult,
-    SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent,
-    SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
-    SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
-    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
-    VestingStatus,
+    EquityGrant, ExpenseCommitment, ForecastAssumption, ForecastEvent, ForecastTargetType,
+    HoldingLot, HousePricerLink, ImportRecord, ImportSource, IncomePayment, IncomePaymentStatus,
+    IncomeStream, LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind, MatchedBy, McpMode,
+    Merchant, NewCurrency, NewValuation, Ownership, PayeBreakdown, Person, Provider,
+    ProviderAccount, ProviderKind, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind,
+    RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveExpenseCommitment,
+    SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot, SaveIncomeStream,
+    SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTaxScale, SaveTransaction, Settings,
+    StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId, Transaction, TransferRequest, TxQuery,
+    UpdateSettings, Valuation, ValuationQuery, VestingStatus,
 };
 pub use sure_core::{EquityEvent, EquityMark, RebuildResult, SaveMark};
 
@@ -1227,6 +1227,28 @@ pub trait CronRepo: Send + Sync {
 /// which knob wins between an override, an existing cron's rate, and a historical
 /// default — lives in `crate::forecast::ForecastService`, which also depends on
 /// `ReportRepo`, `AccountRepo`, `CronRepo`, and `FxRatesRepo` for the read side.
+#[async_trait]
+/// `expense_commitments` CRUD — the spending-side mirror of the income-stream methods on
+/// [`IncomeRepo`].
+///
+/// Its own trait rather than more methods on `ForecastRepo`, because commitments are edited from a
+/// screen of their own and read by the projection: two callers with different lifetimes, which is
+/// the same split `IncomeRepo` already has.
+#[async_trait]
+pub trait CommitmentRepo: Send + Sync {
+    /// Every commitment, enabled or not. The projection filters; the editor needs all of them.
+    async fn list_commitments(&self) -> AppResult<Vec<ExpenseCommitment>>;
+    async fn get_commitment(&self, id: i64) -> AppResult<ExpenseCommitment>;
+    async fn create_commitment(&self, input: SaveExpenseCommitment)
+    -> AppResult<ExpenseCommitment>;
+    async fn update_commitment(
+        &self,
+        id: i64,
+        input: SaveExpenseCommitment,
+    ) -> AppResult<ExpenseCommitment>;
+    async fn delete_commitment(&self, id: i64) -> AppResult<()>;
+}
+
 #[async_trait]
 pub trait ForecastRepo: Send + Sync {
     async fn list_assumptions(&self) -> AppResult<Vec<ForecastAssumption>>;
