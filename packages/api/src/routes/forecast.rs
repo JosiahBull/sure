@@ -201,6 +201,14 @@ pub struct ResolvedAssumption {
     /// Only set for categories: months back to a detected change in level, or absent when the
     /// window is one regime. What the row's explanation and the sparkline's rule are drawn from.
     pub break_months_ago: Option<i64>,
+    /// Only set for categories: the monthly totals the fit saw, oldest first, base-currency minor
+    /// units — after empty leading months were trimmed but *before* any break split them, so the
+    /// page can grey out what the break excluded rather than simply omitting it. This is the
+    /// evidence behind every other figure on the row.
+    pub history_minor: Option<Vec<i64>>,
+    /// Only set for categories: true for an income category. The page totals the two sides
+    /// separately and a label cannot be trusted to say which is which.
+    pub is_income: Option<bool>,
     /// Only set for a mortgage/loan projected from an amortisation schedule.
     pub schedule: Option<LoanScheduleSummary>,
     /// Only set for a private holding projected along its vesting schedule.
@@ -229,6 +237,8 @@ impl From<sure_app::forecast::ResolvedAssumption> for ResolvedAssumption {
             measured_growth_bps: r.measured_growth_bps,
             fitted_months: r.fitted_months,
             break_months_ago: r.break_months_ago,
+            history_minor: r.history_minor,
+            is_income: r.is_income,
             schedule: r.schedule.map(Into::into),
             vesting: r.vesting.map(Into::into),
             currency_code: r.currency_code,

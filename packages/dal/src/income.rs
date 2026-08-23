@@ -23,6 +23,7 @@ struct IncomeStreamRow {
     starts_on: String,
     ends_on: Option<String>,
     annual_increase_bps: i64,
+    inflation_indexed: bool,
     kiwisaver_bps: i64,
     employer_kiwisaver_bps: i64,
     student_loan: bool,
@@ -68,6 +69,7 @@ impl IncomeStreamRow {
             starts_on: self.starts_on,
             ends_on: self.ends_on,
             annual_increase_bps: self.annual_increase_bps,
+            inflation_indexed: self.inflation_indexed,
             kiwisaver_bps: self.kiwisaver_bps,
             employer_kiwisaver_bps: self.employer_kiwisaver_bps,
             student_loan: self.student_loan,
@@ -117,7 +119,9 @@ pub async fn list(db: &Db) -> AppResult<Vec<IncomeStream>> {
         r#"SELECT id AS "id!", ownership, person_id, label, employer, currency_code,
                   annual_amount_minor,
                   basis, pay_frequency, first_payment_on, starts_on, ends_on,
-                  annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,
+                  annual_increase_bps,
+                  inflation_indexed AS "inflation_indexed!: bool",
+                  kiwisaver_bps, employer_kiwisaver_bps,
                   student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
                   kiwisaver_account_id, student_loan_account_id, match_account_id, match_pattern,
                   pay_treatment, enabled AS "enabled!: bool",
@@ -158,7 +162,9 @@ pub async fn get(db: &Db, id: i64) -> AppResult<IncomeStream> {
         r#"SELECT id AS "id!", ownership, person_id, label, employer, currency_code,
                   annual_amount_minor,
                   basis, pay_frequency, first_payment_on, starts_on, ends_on,
-                  annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,
+                  annual_increase_bps,
+                  inflation_indexed AS "inflation_indexed!: bool",
+                  kiwisaver_bps, employer_kiwisaver_bps,
                   student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
                   kiwisaver_account_id, student_loan_account_id, match_account_id, match_pattern,
                   pay_treatment, enabled AS "enabled!: bool",
@@ -344,9 +350,10 @@ pub async fn create(db: &Db, owner: Ownership, input: SaveIncomeStream) -> AppRe
                pay_frequency, first_payment_on, starts_on, ends_on, annual_increase_bps,
                kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled,
                sort_order, notes, employer_kiwisaver_bps, kiwisaver_account_id,
-               student_loan_account_id, match_account_id, match_pattern, pay_treatment)
+               student_loan_account_id, match_account_id, match_pattern, pay_treatment,
+               inflation_indexed)
            VALUES (?25,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
-                   ?22,?23,?24)
+                   ?22,?23,?24,?26)
            RETURNING id AS "id!""#,
         person_id,
         label,
@@ -372,7 +379,8 @@ pub async fn create(db: &Db, owner: Ownership, input: SaveIncomeStream) -> AppRe
         input.match_account_id,
         match_pattern,
         pay_treatment,
-        ownership
+        ownership,
+        input.inflation_indexed
     )
     .fetch_one(&mut *txn)
     .await
@@ -423,6 +431,7 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
             linked_category_id=?15, enabled=?16, sort_order=?17, notes=?18,
             employer_kiwisaver_bps=?19, kiwisaver_account_id=?20, student_loan_account_id=?21,
             match_account_id=?22, match_pattern=?23, pay_treatment=?24,
+            inflation_indexed=?27,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id=?1",
         id,
@@ -450,7 +459,8 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
         match_pattern,
         pay_treatment,
         ownership,
-        owner_person_id
+        owner_person_id,
+        input.inflation_indexed
     )
     .execute(&mut *txn)
     .await
@@ -920,6 +930,7 @@ mod tests {
             starts_on: IsoDate::parse("2026-04-01").unwrap(),
             ends_on: None,
             annual_increase_bps: 0,
+            inflation_indexed: false,
             kiwisaver_bps: 350,
             employer_kiwisaver_bps: 350,
             student_loan: true,

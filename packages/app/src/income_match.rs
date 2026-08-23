@@ -617,6 +617,7 @@ mod tests {
             starts_on: "2026-01-01".into(),
             ends_on: None,
             annual_increase_bps: 0,
+            inflation_indexed: false,
             kiwisaver_bps: 350,
             employer_kiwisaver_bps: 350,
             student_loan: true,

@@ -399,7 +399,15 @@ pub struct IncomeStream {
     pub first_payment_on: String,
     pub starts_on: String,
     pub ends_on: Option<String>,
+    /// Annual increase in basis points. Nominal when `inflation_indexed` is false; a *real*
+    /// increase stacked on top of the household inflation rate when it is true.
     pub annual_increase_bps: i64,
+    /// Whether this level rises with `settings.inflation_bps` once its dated steps run out.
+    ///
+    /// False means frozen in nominal terms, which over thirty years is a claim about a real pay
+    /// cut — so the projection warns rather than letting it pass silently. See
+    /// `0042_income_indexation.sql`.
+    pub inflation_indexed: bool,
     pub kiwisaver_bps: i64,
     /// The employer's contribution, in basis points of gross. Never part of take-home.
     pub employer_kiwisaver_bps: i64,
@@ -464,6 +472,10 @@ pub struct SaveIncomeStream {
     pub ends_on: Option<IsoDate>,
     #[serde(default)]
     pub annual_increase_bps: i64,
+    /// Absent reads as false, which keeps a caller that predates indexation posting the same
+    /// stream it always did.
+    #[serde(default)]
+    pub inflation_indexed: bool,
     #[serde(default)]
     pub kiwisaver_bps: i64,
     #[serde(default)]

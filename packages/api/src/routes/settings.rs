@@ -32,6 +32,11 @@ pub struct SettingsView {
     pub mcp_ceiling: McpMode,
     /// What is actually served: `mcp_mode` clamped to `mcp_ceiling`.
     pub mcp_effective: McpMode,
+    /// The one household inflation rate, basis points a year. Every forecast category with no
+    /// override of its own grows at this, and so does any income stream marked
+    /// `inflation_indexed` — the two sides of the ledger index together or the projection is
+    /// nonsense either way.
+    pub inflation_bps: i64,
     pub updated_at: String,
 }
 
@@ -42,6 +47,7 @@ impl SettingsView {
             mcp_ceiling: ceiling,
             base_currency_code: settings.base_currency_code,
             mcp_mode: settings.mcp_mode,
+            inflation_bps: settings.inflation_bps,
             updated_at: settings.updated_at,
         }
     }

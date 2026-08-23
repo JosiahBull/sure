@@ -7493,8 +7493,20 @@ export interface components {
             first_payment_on: string;
             starts_on: string;
             ends_on?: string | null;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Annual increase in basis points. Nominal when `inflation_indexed` is false; a *real*
+             *     increase stacked on top of the household inflation rate when it is true.
+             */
             annual_increase_bps: number;
+            /**
+             * @description Whether this level rises with `settings.inflation_bps` once its dated steps run out.
+             *
+             *     False means frozen in nominal terms, which over thirty years is a claim about a real pay
+             *     cut — so the projection warns rather than letting it pass silently. See
+             *     `0042_income_indexation.sql`.
+             */
+            inflation_indexed: boolean;
             /** Format: int64 */
             kiwisaver_bps: number;
             /**
@@ -8457,6 +8469,18 @@ export interface components {
              *     window is one regime. What the row's explanation and the sparkline's rule are drawn from.
              */
             break_months_ago?: number | null;
+            /**
+             * @description Only set for categories: the monthly totals the fit saw, oldest first, base-currency minor
+             *     units — after empty leading months were trimmed but *before* any break split them, so the
+             *     page can grey out what the break excluded rather than simply omitting it. This is the
+             *     evidence behind every other figure on the row.
+             */
+            history_minor?: number[] | null;
+            /**
+             * @description Only set for categories: true for an income category. The page totals the two sides
+             *     separately and a label cannot be trusted to say which is which.
+             */
+            is_income?: boolean | null;
             schedule?: null | components["schemas"]["LoanScheduleSummary"];
             vesting?: null | components["schemas"]["VestingSummary"];
             /** @description The account's own currency, for formatting `schedule`. Absent for a category. */
@@ -8784,6 +8808,11 @@ export interface components {
             ends_on?: string | null;
             /** Format: int64 */
             annual_increase_bps?: number;
+            /**
+             * @description Absent reads as false, which keeps a caller that predates indexation posting the same
+             *     stream it always did.
+             */
+            inflation_indexed?: boolean;
             /** Format: int64 */
             kiwisaver_bps?: number;
             /** Format: int64 */
@@ -8957,6 +8986,14 @@ export interface components {
             mcp_ceiling: components["schemas"]["McpMode"];
             /** @description What is actually served: `mcp_mode` clamped to `mcp_ceiling`. */
             mcp_effective: components["schemas"]["McpMode"];
+            /**
+             * Format: int64
+             * @description The one household inflation rate, basis points a year. Every forecast category with no
+             *     override of its own grows at this, and so does any income stream marked
+             *     `inflation_indexed` — the two sides of the ledger index together or the projection is
+             *     nonsense either way.
+             */
+            inflation_bps: number;
             updated_at: string;
         };
         /** @description Share / equity holdings (NZ, US, or private). */

@@ -68,3 +68,4 @@ partly-options/
 .idea
 .vscode/*
 !.vscode/extensions.json
+.playwright-mcp/

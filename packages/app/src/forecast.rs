@@ -312,6 +312,20 @@ pub struct ResolvedAssumption {
     /// *why* the window is short and the sparkline can grey out what was excluded. `None` when
     /// the window is one regime — which is the common case and must not be reported as a break.
     pub break_months_ago: Option<i64>,
+    /// Only set for categories: the monthly totals the fit actually saw, oldest first, in
+    /// base-currency minor units — the window after leading structural zeros were trimmed, but
+    /// *before* the break split it, so the UI can grey out what the break excluded rather than
+    /// simply not showing it.
+    ///
+    /// Carried on the wire because "why does it say that?" is the question this page exists to
+    /// answer, and 24 integers per category is a cheaper answer than a second endpoint. It is
+    /// also what made the original defect invisible: a row reporting `+25.0%/yr` next to no
+    /// history at all gives a reader nothing to disbelieve.
+    pub history_minor: Option<Vec<i64>>,
+    /// Only set for categories: whether this is an income category rather than an expense one.
+    /// The page needs it to total the two sides separately, and a label cannot be relied on to
+    /// say ("Interest charged" and "Interest earned" differ by one word).
+    pub is_income: Option<bool>,
     /// Only set for a mortgage/loan projected from an amortisation schedule: what that
     /// schedule actually is, so the forecast can show its working rather than an
     /// unexplained "deterministic".
@@ -770,6 +784,8 @@ impl ForecastService {
                     measured_growth_bps: None,
                     fitted_months: None,
                     break_months_ago: None,
+                    history_minor: None,
+                    is_income: None,
                     schedule: Some(LoanScheduleSummary {
                         monthly_payment_minor: schedule.payment.round() as i64,
                         current_rate_bps: terms.rate_bps,
@@ -816,6 +832,8 @@ impl ForecastService {
                         measured_growth_bps: None,
                         fitted_months: None,
                         break_months_ago: None,
+                        history_minor: None,
+                        is_income: None,
                         schedule: None,
                         vesting: Some(v),
                         currency_code: Some(a.currency_code.clone()),
@@ -879,6 +897,8 @@ impl ForecastService {
                 measured_growth_bps: None,
                 fitted_months: None,
                 break_months_ago: None,
+                history_minor: None,
+                is_income: None,
                 schedule: None,
                 vesting: None,
                 currency_code: Some(a.currency_code.clone()),
@@ -1035,6 +1055,9 @@ impl ForecastService {
                 baseline_minor,
                 fitted_months: fit.map(|f| f.fitted_months),
                 break_months_ago: fit.and_then(|f| f.break_months_ago),
+                history_minor: (!totals.is_empty())
+                    .then(|| totals.iter().map(|v| fx.base_minor(*v)).collect()),
+                is_income: Some(matches!(kind, CategoryKind::Income)),
                 schedule: None,
                 vesting: None,
                 currency_code: None,
@@ -1184,6 +1207,11 @@ impl ForecastService {
         let loads = self.load_once(today).await?;
 
         let mut assumptions = self.resolved_assumptions_with(&fx, &loads).await?;
+
+        // One household rate, both sides of the ledger. Read here as well as in
+        // `resolve_category_assumptions` because the two run independently, and a single number is
+        // cheaper to fetch twice than to thread through the loads.
+        let inflation_bps = self.forecast.inflation_bps().await?;
 
         // Loaded before `by_target`, because which accounts receive payroll contributions decides
         // whether their fitted rate may be used at all — and that has to be settled before the
@@ -1505,7 +1533,7 @@ impl ForecastService {
             let Some(person_id) = st.ownership.person_id() else {
                 continue;
             };
-            let (level, _, _, _) = crate::income::level_schedule(st, today, horizon);
+            let (level, _, _, _) = crate::income::level_schedule(st, today, horizon, inflation_bps);
             *person_gross.entry(person_id).or_default() += level as i64;
         }
 
@@ -1533,7 +1561,7 @@ impl ForecastService {
                 continue;
             };
             let (start_level, steps, residual_from_month, monthly_increase) =
-                crate::income::level_schedule(st, today, horizon);
+                crate::income::level_schedule(st, today, horizon, inflation_bps);
             // The same filter `level_schedule` applies, over the same dates: a step already in
             // force is the starting level rather than a future event, and one past the horizon is
             // not this projection's business. Read off the stream rather than off `steps` above,
@@ -1601,6 +1629,48 @@ impl ForecastService {
             };
             let kiwisaver_target = target(st.kiwisaver_account_id, "KiwiSaver contributions");
             let student_loan_target = target(st.student_loan_account_id, "student loan repayments");
+
+            // A level frozen in nominal terms while every expense category rises with inflation is
+            // not a neutral default, it is a projection of a compounding real pay cut — and over a
+            // thirty-year horizon it is most of the difference between net worth compounding and
+            // net worth flattening. It is warned about rather than silently indexed because
+            // indexing on migration would restate every existing projection, which is the same
+            // objection `docs/FORECAST.md` records against projecting a contribution-driven account
+            // at an invented rate.
+            //
+            // Silent when nothing inflates, which is not a special case but the same argument: the
+            // warning exists because the two sides of the ledger disagree, and at a household rate
+            // of zero they agree. A frozen level in a world with no inflation is just a level.
+            //
+            // Only worth saying where it actually bites: a stream with real increases already
+            // configured is a deliberate schedule, and one whose steps run past the horizon never
+            // reaches the frozen stretch. `residual_from_month` is the last step inside the
+            // horizon, so `< horizon` is "there are months after the schedule runs out".
+            if inflation_bps > 0
+                && !st.inflation_indexed
+                && st.annual_increase_bps == 0
+                && residual_from_month < horizon
+                && active_to > residual_from_month
+            {
+                let from = if residual_from_month == 0 {
+                    "for the whole projection".to_string()
+                } else {
+                    format!(
+                        "from {} on",
+                        add_months(today, residual_from_month + 1).format("%b %Y")
+                    )
+                };
+                warnings.push(format!(
+                    "{} is not indexed: it is projected at {} {:.0} a year {}, while spending \
+                     rises at {:.1}%/yr. Index it on the Income tab, or give it its own annual \
+                     increase.",
+                    st.label,
+                    st.currency_code,
+                    start_level / 100.0,
+                    from,
+                    inflation_bps as f64 / 100.0,
+                ));
+            }
 
             // The monthly net this stream claims, for netting and for the reconciliation. Annual
             // over twelve, not this month's paydays: a category baseline is a monthly *average*, so
@@ -7231,6 +7301,7 @@ mod tests {
                 starts_on: today.to_string(),
                 ends_on: None,
                 annual_increase_bps: 0,
+                inflation_indexed: false,
                 kiwisaver_bps: 300,
                 employer_kiwisaver_bps: 300,
                 student_loan: true,

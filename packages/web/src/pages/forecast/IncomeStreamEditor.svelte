@@ -36,6 +36,7 @@
     starts_on: initial?.starts_on ?? today,
     ends_on: initial?.ends_on ?? "",
     annual_increase: ((initial?.annual_increase_bps ?? 0) / 100).toString(),
+    inflation_indexed: initial?.inflation_indexed ?? false,
     kiwisaver: ((initial?.kiwisaver_bps ?? 350) / 100).toString(),
     // Left blank for a new stream and filled once the tax rates load, because the compulsory
     // employer minimum is a dated setting rather than a constant — hardcoding today's 3.5% here
@@ -211,6 +212,7 @@
       starts_on: f.starts_on,
       ends_on: f.ends_on || null,
       annual_increase_bps: Math.round(parseFloat(f.annual_increase || "0") * 100),
+      inflation_indexed: f.inflation_indexed,
       kiwisaver_bps: Math.round(parseFloat(f.kiwisaver || "0") * 100),
       employer_kiwisaver_bps: Math.round(parseFloat(f.employer_kiwisaver || "0") * 100),
       kiwisaver_account_id: f.kiwisaver_account_id,
@@ -489,10 +491,33 @@
         <input class="input" type="date" bind:value={f.ends_on} />
       </label>
       <label class="field">
-        <span class="lbl">Rise per year after the last step %</span>
+        <!-- The label changes with the checkbox because the *field* changes meaning: nominal on
+             its own, real (on top of inflation) once indexed. Two dials that compose only make
+             sense if the page says which one you are turning. -->
+        <span class="lbl">
+          {f.inflation_indexed
+            ? "Rise above inflation, per year %"
+            : "Rise per year after the last step %"}
+        </span>
         <input class="input tabular" bind:value={f.annual_increase} />
       </label>
+      <label class="field check">
+        <span class="lbl">Indexed</span>
+        <span class="row" style="gap:6px;align-items:center">
+          <input type="checkbox" bind:checked={f.inflation_indexed} />
+          <span class="small faint">rises with household inflation</span>
+        </span>
+      </label>
     </div>
+    {#if !f.inflation_indexed && parseFloat(f.annual_increase || "0") === 0}
+      <!-- A level frozen in nominal terms for thirty years is a projection of a compounding real
+           pay cut, and it is most of the difference between net worth compounding and net worth
+           flattening. Said here, next to the control that fixes it, rather than only in the
+           projection's warnings. -->
+      <p class="frozen-note small">
+        This level is frozen after its last dated step, while spending rises with inflation.
+      </p>
+    {/if}
 
     <div class="steps">
       {#each steps as s, i (i)}
@@ -533,6 +558,14 @@
 </div>
 
 <style>
+  .frozen-note {
+    margin: 6px 0 0;
+    color: var(--warn);
+  }
+  .field.check {
+    justify-content: flex-end;
+  }
+
   .editor {
     margin-top: 10px;
     padding: 12px;
