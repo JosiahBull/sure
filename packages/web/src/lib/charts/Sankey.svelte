@@ -149,27 +149,114 @@
   }
 
   /**
-   * Vertical order within a column: the statutory deductions ride along the top, everything
-   * else keeps the order d3 settled on by itself.
+   * Vertical order for every column, computed before the layout runs.
    *
-   * A deduction sink shares the first income column with the ordinary income categories, and
-   * left alone d3 puts it wherever its gross-pay source pulls it — the middle, because that
-   * is where a person's pay node sits. Its ribbons then cross the widest, busiest part of the
-   * diagram to get there. Lifting them out is purely cosmetic: the same money, drawn along
-   * the top edge instead of through the body.
+   * Two goals that look opposed and are not. Sorting each column purely by value reads
+   * beautifully — every column ranks top to bottom by size — but it scatters each parent's
+   * children across the column by their own magnitude, so a big leaf of a small branch sits
+   * above a small leaf of a big one and its ribbon crosses the whole diagram to reach its
+   * parent. Measured on this household's own graph that is 23-35 crossings; d3's own ordering
+   * has none, but it minimises crossings *only*, so it puts a $700 category above an $18,000 one
+   * whenever that shortens a ribbon and the eye cannot rank anything by position.
    *
-   * `nodeSort` is d3's only hook for this, and it is all-or-nothing — supplying a comparator
-   * *replaces* the crossing-minimisation pass rather than refining it, because both
-   * relaxation directions skip their `column.sort(ascendingBreadth)` as soon as one is set.
-   * So the order d3 would have chosen is measured first, from a throwaway layout, and handed
-   * back as the tiebreak. Everything but the deductions therefore lands where it already did.
+   * The resolution is that this graph is a **tree**: every category has exactly one hub-ward
+   * link, income flowing leaf→parent→hub and expense hub→parent→leaf. For a layered tree a
+   * planar order always exists — group each column by parent, keep the groups in their parents'
+   * order — and *within* a sibling group the order is free, so value ordering there costs
+   * nothing. Sweeping outward from the hub and applying both rules gives zero crossings with
+   * size ordering everywhere it is achievable.
+   *
+   * Why zero falls out: for two links p1→c1 and p2→c2 in one gap, either p1 and p2 are the same
+   * node (siblings, consistently ordered) or they are not, in which case every child of the
+   * earlier parent precedes every child of the later one. Neither case can invert.
+   *
+   * What is given up is *global* size order in the outer columns — a big grandchild of a small
+   * root sits below a small grandchild of a big root. That is not a tuning choice: any
+   * zero-crossing order must group by parent, so it is the price of the crossings going away.
+   *
+   * This has to be a pre-pass rather than a comparator. `computeNodeLayers` sorts each column
+   * before any node has a y-position, so a parent's placement is unknowable from inside a
+   * comparator. It is safe to decide the order here because supplying a comparator makes the
+   * array order final: both relaxation directions skip their `column.sort(ascendingBreadth)`,
+   * and `resolveCollisions` only pushes nodes apart in array order, never reorders them.
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function deductionsFirst(settled: any[]): (a: any, b: any) => number {
-    const y = new Map<string, number>(settled.map((n) => [n.id, n.y0]));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rank = (n: any) => (n.kind === "deduction" ? 0 : 1);
-    return (a, b) => rank(a) - rank(b) || (y.get(a.id) ?? 0) - (y.get(b.id) ?? 0);
+  function outwardOrder(live: Placed[], links: Link[], cols: Cols): Map<string, number> {
+    const byId = new Map(live.map((n) => [n.id, n]));
+    const columnOfId = new Map(live.map((n) => [n.id, columnOf(n, cols)]));
+
+    // d3's own `computeNodeValues`, which has not run yet: a node is as tall as the larger of
+    // what flows in and what flows out.
+    const inSum = new Map<string, number>();
+    const outSum = new Map<string, number>();
+    for (const l of links) {
+      outSum.set(l.source, (outSum.get(l.source) ?? 0) + l.value);
+      inSum.set(l.target, (inSum.get(l.target) ?? 0) + l.value);
+    }
+    const valueOf = (id: string) => Math.max(inSum.get(id) ?? 0, outSum.get(id) ?? 0);
+    const bigFirst = (a: string, b: string) => valueOf(b) - valueOf(a) || (a < b ? -1 : 1);
+
+    // Hub-rooted child lists, using the same orientation trick `foldHairlines` uses: on the
+    // income side the source is the child, on the expense side the target is. `center→savings`
+    // lands in the expense case and makes savings an ordinary hub child.
+    //
+    // A gross node's links are skipped entirely. They point *outward* from column 0 rather than
+    // hub-ward, so they are not tree edges — and following the `gross→center` fallback (used
+    // when a take-home leaf rounded away) would make the hub a child of a payslip.
+    const kids = new Map<string, string[]>();
+    const inward = new Map<string, number>();
+    for (const l of links) {
+      const s = byId.get(l.source);
+      const t = byId.get(l.target);
+      if (!s || !t || s.kind === "gross") continue;
+      const [child, parent] = s.kind === "income" ? [s, t] : [t, s];
+      kids.set(parent.id, [...(kids.get(parent.id) ?? []), child.id]);
+      inward.set(child.id, l.value);
+    }
+    for (const list of kids.values()) {
+      list.sort((a, b) => (inward.get(b) ?? 0) - (inward.get(a) ?? 0) || (a < b ? -1 : 1));
+    }
+
+    const inColumn = new Map<number, string[]>();
+    for (const n of live) {
+      const c = columnOfId.get(n.id)!;
+      inColumn.set(c, [...(inColumn.get(c) ?? []), n.id]);
+    }
+
+    const rank = new Map<string, number>();
+    function layColumn(c: number, prevIds: string[]): string[] {
+      const here = inColumn.get(c) ?? [];
+      const hereSet = new Set(here);
+      const out: string[] = [];
+      const seen = new Set<string>();
+      const take = (ids: string[]) => {
+        for (const id of ids) {
+          if (hereSet.has(id) && !seen.has(id)) {
+            seen.add(id);
+            out.push(id);
+          }
+        }
+      };
+      // The deductions ride above the income they are taken out of, wherever that column lands —
+      // `columnOf` puts them in the deepest income column normally, but in the hub's own column
+      // when there are no income categories at all.
+      take(here.filter((id) => byId.get(id)!.kind === "deduction").sort(bigFirst));
+      // The tree: each parent's children, in the parents' own order.
+      for (const p of prevIds) take(kids.get(p) ?? []);
+      // The hub, the gross nodes, and anything with no hub-ward edge. `foldHairlines` takes a
+      // folded node's whole subtree with it, so this is a safety net rather than a live path.
+      take([...here].sort(bigFirst));
+      out.forEach((id, i) => rank.set(id, i));
+      return out;
+    }
+
+    const hub = layColumn(cols.center, []);
+    for (const dir of [1, -1]) {
+      let cur = hub;
+      for (let c = cols.center + dir; c >= 0 && c < cols.total; c += dir) {
+        cur = layColumn(c, cur);
+      }
+    }
+    return rank;
   }
 
   /**
@@ -334,9 +421,8 @@
     const live = within.filter((n) => connected.has(n.id));
     const index = new Map(live.map((n, i) => [n.id, i]));
     const cols = columnsOf(live);
-    // d3 mutates the graph it is handed — it resolves each link's endpoints to the node
-    // objects and fills their sourceLinks/targetLinks — so a second pass needs its own copy
-    // rather than the one the first pass already chewed on.
+    // d3 mutates the graph it is handed: it resolves each link's endpoints to the node objects
+    // and fills their sourceLinks/targetLinks, so the input cannot be reused or shared.
     const build = () => ({
       nodes: live.map((n) => ({ ...n })),
       links: kept.map((l) => ({
@@ -356,13 +442,10 @@
           [MARGIN_X, MARGIN_TOP],
           [boxW - MARGIN_X, boxH - MARGIN_BOTTOM],
         ]);
-    let laid = gen()(build()) as { nodes: any[]; links: any[] };
-    // Lift the deduction sinks to the top of their column — see {@link deductionsFirst} for
-    // why that costs a second layout. A graph with no pre-income layer has nothing to lift
-    // and skips it, so every other chart lays out exactly as it did before.
-    if (live.some((n) => n.kind === "deduction")) {
-      laid = gen().nodeSort(deductionsFirst(laid.nodes))(build());
-    }
+    const rank = outwardOrder(live, kept, cols);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const order = (a: any, b: any) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0);
+    const laid = gen().nodeSort(order)(build()) as { nodes: any[]; links: any[] };
     // Column pitch — how much room a label has between its own column and the next.
     const kx = pitchOf(cols, boxW);
     return { ...laid, cols, kx: Number.isFinite(kx) ? kx : boxW };
