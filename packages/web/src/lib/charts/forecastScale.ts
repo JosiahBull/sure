@@ -42,12 +42,12 @@ export function seriesIndex(histLen: number, monthOffset: number): number {
 }
 
 /**
- * Horizon options, in months. Years rather than months because life events are decade-scale:
- * at the old five-year ceiling most of them fell outside the window entirely.
+ * Horizon options, in months. Years rather than months because life events are decade-scale, and
+ * five years is the *floor* for the same reason: a mortgage payoff, a career step or a house
+ * purchase does not land inside one or two years, so those horizons drew a chart with nothing on
+ * it but the noise band. The first entry is the default (see `Forecast.svelte`).
  */
 export const HORIZONS = [
-  { months: 12, label: "1 year" },
-  { months: 24, label: "2 years" },
   { months: 60, label: "5 years" },
   { months: 120, label: "10 years" },
   { months: 240, label: "20 years" },
@@ -60,16 +60,12 @@ export const HORIZONS = [
  * A fixed +3/+6/+9/+12 is four labels inside the first 3% of a 30-year chart — technically
  * correct and completely useless. The last month is always included because "where does this end
  * up" is the question the page exists to answer.
+ *
+ * Only two step sets, because the shortest horizon `HORIZONS` offers is five years; the
+ * sub-three-year sets this used to carry could no longer be reached from anywhere.
  */
 export function checkpointsFor(horizon: number): number[] {
-  const steps =
-    horizon <= 12
-      ? [3, 6, 9, 12]
-      : horizon <= 36
-        ? [6, 12, 24, 36]
-        : horizon <= 120
-          ? [12, 24, 60, 120]
-          : [12, 60, 120, 240, 360];
+  const steps = horizon <= 120 ? [12, 24, 60, 120] : [12, 60, 120, 240, 360];
   const within = steps.filter((m) => m <= horizon);
   return within.at(-1) === horizon ? within : [...within, horizon];
 }
