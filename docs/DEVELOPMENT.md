@@ -172,6 +172,39 @@ usually moves both, and `pnpm snapshots:update` regenerates the Linux half local
 container so it lands in the same commit — see
 [Regenerating the Linux baselines](TESTING.md#regenerating-the-linux-baselines).
 
+## Profiling
+
+`[profile.release]` sets `strip = true`, which leaves a sampling profiler nothing but addresses;
+a debug build profiles the wrong program, since it is full of bounds checks and unoptimised float
+work the shipped binary does not have. So there is a third profile that is release codegen with
+symbols kept:
+
+```sh
+cargo build --profile profiling -p sure-server --bin sure-api
+```
+
+Point it at a **copy** of the database, never `data/sure.db` and never port 8080 — that is the
+live dev server, on the live data (see the `data/sure.db` convention in
+[CLAUDE.md](../CLAUDE.md)). `BIND_ADDR` is the port knob; there is no `PORT`.
+
+```sh
+cp data/sure.db /tmp/prof.db
+DATABASE_URL=sqlite:/tmp/prof.db BIND_ADDR=127.0.0.1:8137 SURE_MCP=off \
+  ./target/profiling/sure-api &
+# ...then, while a load generator hammers the endpoint under test:
+sample <pid> 8 1 -file /tmp/profile.txt          # macOS, no sudo, human-readable call tree
+samply record -p <pid>                            # or, for a flame graph in the browser
+```
+
+`sample`'s output is a per-thread call tree with inclusive counts, which is enough to answer
+"which phase is this request spending its time in" without leaving the terminal. Read it by
+summing the frames you care about rather than by eye: the flat "sort by top of stack" table at
+the bottom is dominated by idle threads parked in `__psynch_cvwait`.
+
+What this found, the one time it has been used in anger (`docs/FORECAST.md` has the numbers): a
+12-month forecast was 88% loading and 12% simulating, and over half the loading was the *same
+two queries run twice*. Measure before optimising the arithmetic.
+
 ## Further reading
 
 | Doc | What it covers |
