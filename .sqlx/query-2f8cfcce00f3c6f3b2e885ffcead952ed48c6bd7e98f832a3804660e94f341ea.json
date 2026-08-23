@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT inflation_bps FROM settings WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "inflation_bps",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "inflation_bps"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2f8cfcce00f3c6f3b2e885ffcead952ed48c6bd7e98f832a3804660e94f341ea"
+}

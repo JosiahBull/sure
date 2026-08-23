@@ -56,12 +56,8 @@ const CATEGORY_TREND_MONTHS: i64 = 24;
 /// study, finishing a renovation, changing how an account is used — drops out of the fit
 /// instead of being averaged against the present.
 const ACCOUNT_TREND_MONTHS: i64 = 36;
-/// Months a category's history must span before a *direction* is read into it. Below this
-/// its run-rate is held flat: the baseline is still projected, but the slope of three or
-/// four lumpy months is noise, and compounding it over a multi-year horizon is how a
-/// category that saw one large month comes to dominate the whole forecast.
-const MIN_CATEGORY_TREND_MONTHS: i64 = 6;
-/// …and how many of those months must contain actual spend. A series that is mostly zeros
+/// How many of a category's fitted months must contain actual spend before a direction is read
+/// into them. A series that is mostly zeros
 /// with a couple of spikes has a steep OLS slope that describes the spikes' placement, not
 /// a trend in the household's behaviour.
 const MIN_CATEGORY_ACTIVE_MONTHS: i64 = 4;
@@ -69,6 +65,57 @@ const MIN_CATEGORY_ACTIVE_MONTHS: i64 = 4;
 /// as a direction rather than an accident of which months happened to be expensive.
 /// Roughly the 95% two-tailed threshold for the 6-24 month windows this fits over.
 const MIN_TREND_T_STATISTIC: f64 = 2.0;
+/// How long a leading run of zeros has to be before it is read as "this category did not exist
+/// yet" rather than "this category is occasional", and dropped from the window.
+///
+/// [`category_monthly_totals`] anchors on a category's *first activity*, and its doc comment is
+/// right that quiet months are what make an occasional category occasional. But a single stray
+/// early transaction — one $16 school fee in 2024-09, then fourteen empty months — drags the
+/// window back over a year of structural zeros, and those zeros do not describe an occasional
+/// category. They describe a category that had not started, and they roughly double the apparent
+/// slope of one that later becomes real.
+///
+/// Three, because an annual subscription is the shortest genuinely-occasional pattern worth
+/// preserving and it leaves gaps of eleven: this trims only the *leading* run, so a series whose
+/// first two years are empty and whose third is annual keeps every gap that matters.
+const MAX_LEADING_ZERO_MONTHS: usize = 3;
+/// Shortest segment either side of a candidate structural break, in months — and, being the
+/// smallest window this file will draw any conclusion from, the unit the other window constants
+/// are expressed against.
+///
+/// Six because below it there is nothing to compare: a break accepted with two months on one side
+/// is a description of two months.
+const MIN_BREAK_SEGMENT_MONTHS: usize = 6;
+/// How large the Chow F statistic must be before a candidate mean-shift is accepted as a
+/// structural break.
+///
+/// Deliberately well above the textbook 95% value (~4.3 at these window sizes). Household
+/// spending is serially correlated, and a Chow test calibrated on i.i.d. residuals over-accepts
+/// when it is not — so the threshold is set by what it does to real data rather than by a table.
+/// At 5.0 all six of this household's post-house-purchase categories are accepted (F = 5.6 to
+/// 19.4) and Food, which has no break, is rejected at F = 1.4. That margin either side is the
+/// argument for the number.
+const MIN_BREAK_CHOW_F: f64 = 5.0;
+/// Months of post-break history required before a *slope* is fitted, as opposed to a level.
+///
+/// Twice [`MIN_BREAK_SEGMENT_MONTHS`], and the doubling is the whole point. A slope is
+/// technically computable from 6 months, and a slope computed from 6 months of household
+/// spending is precisely the artefact this segmentation exists to stop: having correctly
+/// identified that the last 11 months are a different regime, reading a multi-decade trend out
+/// of those 11 months repeats the original error on a shorter window. Under this, a segment too
+/// short to support a direction gets growth 0 and keeps its measured volatility — the treatment
+/// [`category_fit`] already applies to a series that fails the t-gate.
+const MIN_CATEGORY_SLOPE_MONTHS: usize = 12;
+/// Months of the current regime the projected *level* is averaged over.
+///
+/// A year, for two reasons that happen to agree. It spans every seasonal pattern a household has
+/// exactly once, so Christmas is counted once rather than weighted by where the window's edge
+/// fell; and it is short enough that a category which ramped into its current level rather than
+/// stepping into it — a power bill settling in over the months after a move — is anchored near
+/// where it has ended up rather than near the middle of the ramp. That second case is why this cap
+/// applies even when no break was found: [`strongest_mean_break`] deliberately keeps a ramp's
+/// whole window, so something else has to keep the level current.
+const CATEGORY_LEVEL_MONTHS: usize = 12;
 /// Ceiling on a *derived* category growth rate, ±25%/yr. Household spending on a category
 /// does not compound at triple digits; a fit that says so is over-fitting a short series.
 /// An explicit override is deliberately not clamped — that's the user asserting something.
@@ -192,6 +239,22 @@ pub enum AssumptionSource {
     /// trend. The baseline shown is the *residual* — the part of the category the streams do not
     /// explain — so a non-zero one means some income here is still un-modelled.
     ModelledFromIncome,
+    /// The level was measured from this category's current regime; the growth is the household
+    /// inflation rate rather than anything fitted from the history.
+    ///
+    /// This is the default for every category with no override, and it is a claim about what the
+    /// data can support rather than a preference. A 24-month window of household spending
+    /// estimates a category's *mean* to maybe ±15% and does not identify its *trend* at all. The
+    /// evidence is what this codebase shipped: with growth fitted, six of this household's seven
+    /// categories came out between +43%/yr and +126%/yr — every one of them a level shift after a
+    /// house purchase, read as a compounding rate — and all six were clamped to
+    /// [`MAX_DERIVED_CATEGORY_GROWTH_BPS`]. A ceiling that six of seven categories sit exactly on
+    /// has stopped being a guard against over-fitting and become the model, and over 360 months it
+    /// multiplied projected spending by 5.97.
+    ///
+    /// So the level is measured and the trend is assumed. [`CategoryFit::measured_growth_bps`] is
+    /// still reported alongside, as evidence the user can weigh, but nothing reads it.
+    Indexed,
 }
 
 #[derive(Debug, Clone)]
@@ -216,6 +279,21 @@ pub struct ResolvedAssumption {
     /// minor units) the simulation grows forward from. `None` if there's no derived
     /// trend to anchor to (an override alone doesn't imply a baseline).
     pub baseline_minor: Option<i64>,
+    /// Only set for categories: how many months `baseline_minor` was measured over, after the
+    /// leading-zero trim and after any structural break. Surfaced because it is what tells a
+    /// reader how much the baseline is worth, and because a UI implying the full
+    /// [`CATEGORY_TREND_MONTHS`] window over an 11-month fit is how the clamp stayed invisible.
+    pub fitted_months: Option<i64>,
+    /// Only set for categories: what the fitted window's own slope works out to, annualised, in
+    /// bps — **evidence, not an input.** Nothing in the simulation reads it. It exists so the row
+    /// can say "history suggests +3%/yr" beside a projection running at the household inflation
+    /// rate, which is what lets a user judge whether to disagree. `None` means the window cannot
+    /// support a direction — a different and more honest statement than `Some(0)`.
+    pub measured_growth_bps: Option<i64>,
+    /// Only set for categories: months back to an accepted structural break, so the row can say
+    /// *why* the window is short and the sparkline can grey out what was excluded. `None` when
+    /// the window is one regime — which is the common case and must not be reported as a break.
+    pub break_months_ago: Option<i64>,
     /// Only set for a mortgage/loan projected from an amortisation schedule: what that
     /// schedule actually is, so the forecast can show its working rather than an
     /// unexplained "deterministic".
@@ -671,6 +749,9 @@ impl ForecastService {
                     annual_fixed_fee_minor: None,
                     dividend_yield_bps: None,
                     baseline_minor: None,
+                    measured_growth_bps: None,
+                    fitted_months: None,
+                    break_months_ago: None,
                     schedule: Some(LoanScheduleSummary {
                         monthly_payment_minor: schedule.payment.round() as i64,
                         current_rate_bps: terms.rate_bps,
@@ -714,6 +795,9 @@ impl ForecastService {
                         // from the revaluation history would read the vesting ramp as income.
                         dividend_yield_bps: None,
                         baseline_minor: None,
+                        measured_growth_bps: None,
+                        fitted_months: None,
+                        break_months_ago: None,
                         schedule: None,
                         vesting: Some(v),
                         currency_code: Some(a.currency_code.clone()),
@@ -774,6 +858,9 @@ impl ForecastService {
                 annual_fixed_fee_minor: ov.and_then(|o| o.annual_fixed_fee_minor),
                 dividend_yield_bps,
                 baseline_minor: None,
+                measured_growth_bps: None,
+                fitted_months: None,
+                break_months_ago: None,
                 schedule: None,
                 vesting: None,
                 currency_code: Some(a.currency_code.clone()),
@@ -847,6 +934,9 @@ impl ForecastService {
         // it per person would need per-person income/expense assumptions that don't exist.
         let spend =
             reports::load_spend(self.reports.as_ref(), cats, from, today, false, None).await?;
+        // One rate for the household, read once. Both sides of the ledger index at it — see
+        // `AssumptionSource::Indexed`, and `income::level_schedule` for the income half.
+        let inflation_bps = self.forecast.inflation_bps().await?;
 
         let mut out = Vec::new();
         for (id, kind) in cats.top_level_kinds() {
@@ -858,24 +948,22 @@ impl ForecastService {
 
             let totals = category_monthly_totals(&spend, cats, id, today, fx);
             let fit = category_fit(&totals);
-            // The baseline survives even when no trend could be fitted. Previously it came
+            // The baseline survives even when no direction could be measured. Previously it came
             // only from a successful regression, so a category with a few months of history
             // dropped out of the simulation altogether — silently projecting *no* spending
             // on it, which is a worse error than projecting it flat.
             //
-            // The volatility survives too. `category_fit` reports a growth of 0 when the
-            // slope isn't distinguishable from flat, but the month-to-month scatter around
-            // that flat line is measured and real — gating it on a *trend* having been
-            // fitted would claim a category's spend is known to the cent.
+            // The volatility survives too: the month-to-month scatter around a flat line is
+            // measured and real, and gating it on a *trend* having been fitted would claim a
+            // category's spend is known to the cent.
             let baseline_minor = fit.map(|f| fx.base_minor(f.baseline));
-            let derived = fit.map(|f| (f.growth_bps, f.vol_bps));
 
             let ov = overrides.get(&(ForecastTargetType::Category, id));
-            let (growth, vol, source) = resolve_growth(
+            let (growth, vol, source) = resolve_category_growth(
                 ov.and_then(|o| o.annual_growth_bps),
                 ov.and_then(|o| o.annual_volatility_bps),
-                None,
-                derived,
+                fit.map(|f| f.vol_bps),
+                inflation_bps,
             );
 
             out.push(ResolvedAssumption {
@@ -884,12 +972,15 @@ impl ForecastService {
                 label: cats.name_of(id),
                 annual_growth_bps: growth,
                 annual_volatility_bps: vol,
+                measured_growth_bps: fit.and_then(|f| f.measured_growth_bps),
                 long_run_growth_bps: ov.and_then(|o| o.long_run_growth_bps).unwrap_or(0),
                 // A category has no balance to charge a fee against.
                 annual_fee_bps: None,
                 annual_fixed_fee_minor: None,
                 dividend_yield_bps: None,
                 baseline_minor,
+                fitted_months: fit.map(|f| f.fitted_months),
+                break_months_ago: fit.and_then(|f| f.break_months_ago),
                 schedule: None,
                 vesting: None,
                 currency_code: None,
@@ -3428,6 +3519,12 @@ fn long_run_anchor(a: &ResolvedAssumption) -> Option<i64> {
         // The rate here is already the long-run anchor (or an override that was left alone), because
         // the fitted one was discarded — so there is nothing left to decay toward.
         AssumptionSource::ContributionDriven => None,
+        // Nothing was extrapolated, so there is nothing to walk back. The whole
+        // `TREND_FULL_STRENGTH_MONTHS`/`TREND_HALF_LIFE_MONTHS` apparatus exists to decay a rate
+        // fitted over a finite window once the projection runs past that window; an inflation
+        // assumption *is* the long-run rate, from month 1. Decaying it toward a second anchor
+        // would be walking one chosen number toward another for no reason.
+        AssumptionSource::Indexed => None,
     }
 }
 
@@ -3989,111 +4086,259 @@ fn linear_trend_and_vol(values: &[f64]) -> Option<(i64, i64, f64)> {
 /// A category's cash-flow assumption, fitted from its own monthly history.
 #[derive(Debug, Clone, Copy)]
 struct CategoryFit {
-    /// The monthly run-rate to grow forward from, base-currency major units.
+    /// The monthly run-rate to project forward, base-currency major units. The mean of the
+    /// trailing [`CATEGORY_LEVEL_MONTHS`] of the current regime — see [`category_fit`].
     baseline: f64,
-    /// Annual growth in bps — `0` when the history can't support a direction.
-    growth_bps: i64,
-    /// Annual volatility in bps. Measured whether or not a slope was fitted — the
-    /// month-to-month scatter is real even when its direction isn't.
+    /// Annual volatility in bps, measured over the current regime.
     vol_bps: i64,
+    /// What the current regime's own slope works out to, annualised, in bps — **evidence, not an
+    /// input.** Nothing in the simulation reads this; it exists so the UI can say "history
+    /// suggests +3%/yr" beside a projection that is running at the household inflation rate, and
+    /// so a user who disagrees can see what they are disagreeing with.
+    ///
+    /// `None` means the window cannot support a direction: fewer than
+    /// [`MIN_CATEGORY_SLOPE_MONTHS`], too few active months, or a slope that does not clear
+    /// [`MIN_TREND_T_STATISTIC`]. `None` renders as "not enough history to say", which is a
+    /// different and more honest statement than `Some(0)` ("history says flat").
+    measured_growth_bps: Option<i64>,
+    /// How many months `baseline` was measured over. Reported rather than inferred because it is
+    /// the one number that says how much the rest is worth, and because a UI implying the full
+    /// [`CATEGORY_TREND_MONTHS`] window over an 11-month fit is how the old clamp stayed
+    /// invisible for so long.
+    fitted_months: i64,
+    /// Months back from the end of the window to an accepted structural break, or `None` when the
+    /// series is one regime. `Some(11)` reads as "the level changed 11 months ago", which is what
+    /// the row's explanation line and the sparkline's rule are drawn from.
+    break_months_ago: Option<i64>,
 }
 
-/// Fit a category's monthly totals into a baseline, a growth rate and a volatility.
+/// Sum of squared deviations from the mean.
+fn sse_about_mean(xs: &[f64]) -> f64 {
+    if xs.is_empty() {
+        return 0.0;
+    }
+    let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+    xs.iter().map(|v| (v - mean).powi(2)).sum()
+}
+
+/// Sum of squared residuals about the OLS line through `xs` against `0..n`.
+fn sse_about_trend(xs: &[f64]) -> f64 {
+    let n = xs.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let x_mean = (n - 1) as f64 / 2.0;
+    let y_mean = xs.iter().sum::<f64>() / n as f64;
+    let mut cov = 0.0;
+    let mut var_x = 0.0;
+    for (i, y) in xs.iter().enumerate() {
+        cov += (i as f64 - x_mean) * (y - y_mean);
+        var_x += (i as f64 - x_mean).powi(2);
+    }
+    let slope = if var_x > 0.0 { cov / var_x } else { 0.0 };
+    let intercept = y_mean - slope * x_mean;
+    xs.iter()
+        .enumerate()
+        .map(|(i, y)| (y - (intercept + slope * i as f64)).powi(2))
+        .sum()
+}
+
+/// The strongest single mean-shift in `totals`, as an index into it, or `None` if there isn't one
+/// worth accepting.
 ///
-/// The baseline is the plain mean of the window — total spend over months elapsed, which
-/// is what "what do I spend on this per month" actually means. Deliberately *not* the
-/// OLS-fitted value at the latest point, which is what the account path uses: for a
-/// household category the series is lumpy and often mostly zeros, and the fitted endpoint
-/// chases the most recent spike. (Professional Services in a real database: twelve months
-/// near $3 and then one $2,188 month, which put the fitted endpoint an order of magnitude
-/// above anything the household actually spends.)
+/// Binary segmentation on the mean, one break only. Not a recursive search, deliberately: two
+/// accepted breaks in 24 months of household spending is not two regimes, it is a splitter
+/// finding noise, and a recursive splitter working on six-month segments will always find
+/// something. One house purchase is one break.
 ///
-/// A slope is only fitted when there is enough activity to mean anything —
-/// [`MIN_CATEGORY_TREND_MONTHS`] of span and [`MIN_CATEGORY_ACTIVE_MONTHS`] with real
-/// spend. Below that the run-rate is held flat, because the alternative is extrapolating
-/// the slope of a mostly-empty series for years. (Same database: Housing had three months
-/// of data — $10, $1,079, $70 — from which the old code derived +325%/yr, compounding to
-/// roughly 1,400× over a five-year horizon.)
+/// Two gates, and the second is the one that matters:
 ///
-/// Both are then clamped. A household category does not compound at triple digits, and a
-/// volatility measured as a multiple of a near-zero denominator is a divide-by-small
-/// artefact rather than an estimate of anything.
+/// 1. **Chow F against the one-mean model** ≥ [`MIN_BREAK_CHOW_F`] — is there any level structure
+///    here at all?
+/// 2. **A step must beat a ramp.** The two-mean model is compared against a single *linear trend*
+///    model, and the break is only accepted if the step explains the series better. Both models
+///    spend exactly two parameters, so their residual sums are directly comparable and no F is
+///    needed. Without this gate a smooth monotone rise is diagnosed as a step every time — a
+///    ramp's best mean-split has a large Chow F, because half of a rising line really does sit
+///    above the other half — and the fit then throws away half its window and reports a category
+///    that is genuinely accelerating as one that changed level once. Measured on a synthetic
+///    +4%/month ramp: the step model's residual is 85k against the line's 1k, so the line wins by
+///    two orders of magnitude and the break is correctly refused.
+///
+/// The returned index is the first month of the *later* segment, so `totals[k..]` is the current
+/// regime.
+fn strongest_mean_break(totals: &[f64]) -> Option<usize> {
+    let n = totals.len();
+    if n < MIN_BREAK_SEGMENT_MONTHS * 2 {
+        return None;
+    }
+    let pooled = sse_about_mean(totals);
+    // A series with no scatter at all has no break to find, and dividing by its zero residual
+    // would report an infinite F for a flat line.
+    if pooled <= 0.0 {
+        return None;
+    }
+
+    let mut best: Option<(usize, f64)> = None;
+    for k in MIN_BREAK_SEGMENT_MONTHS..=(n - MIN_BREAK_SEGMENT_MONTHS) {
+        let split = sse_about_mean(&totals[..k]) + sse_about_mean(&totals[k..]);
+        if best.is_none_or(|(_, b)| split < b) {
+            best = Some((k, split));
+        }
+    }
+    let (k, split) = best?;
+    // A break whose later segment is entirely empty says "this category has stopped", and that is
+    // a claim this function is not in a position to make. The strongest mean-split of any series
+    // that has gone quiet lands exactly here — a salary whose last payment was seven months ago
+    // splits at the last payday with a residual of zero, which is as significant as a break can
+    // possibly look — and accepting it takes the baseline to zero, which drops the category out of
+    // the simulation altogether. Projecting *no* spending on a category is the error the rest of
+    // this module goes out of its way to avoid (see `resolve_category_assumptions`), because it is
+    // silent: an over-projected category is visible on the Assumptions tab and one line to
+    // override, and a category that vanished is neither.
+    //
+    // A genuinely-ended category is therefore projected on until the user says otherwise, which is
+    // the behaviour that predates any of this. Distinguishing "ended" from "seasonal gap" from
+    // "between annual payments" needs more than 24 months of totals, and guessing wrong in this
+    // direction costs more than guessing wrong in the other.
+    if totals[k..].iter().all(|v| *v <= 0.0) {
+        return None;
+    }
+    // Gate 2: the cheaper claim to refute, and it does not divide by anything.
+    if split >= sse_about_trend(totals) {
+        return None;
+    }
+    if split <= 0.0 {
+        // The two-mean model explains the series exactly, which is as strong as a break gets. It
+        // takes a fixture rather than real spending to reach here, but it must not divide by zero.
+        return Some(k);
+    }
+    // Chow F for one restriction: one mean against two, over the two-mean model's residual.
+    // `n - 2` because the unrestricted model spends two parameters.
+    let f = (pooled - split) / (split / (n as f64 - 2.0));
+    (f >= MIN_BREAK_CHOW_F).then_some(k)
+}
+
+/// Fit a category's monthly totals into a level, a volatility, and a measured direction.
+///
+/// # The level
+///
+/// The mean of the trailing [`CATEGORY_LEVEL_MONTHS`] of the **current regime** — not of the whole
+/// window, and deliberately not the OLS-fitted value at the latest point. The fitted endpoint is
+/// what the account path uses and it is wrong here: a household category is lumpy and often mostly
+/// zeros, so the endpoint chases the most recent spike. (Professional Services in a real database:
+/// twelve months near $3 and then one $2,188 month, which put the fitted endpoint an order of
+/// magnitude above anything the household actually spends.)
+///
+/// "Current regime" is the load-bearing phrase, and it is what this function used to get wrong. A
+/// window spanning a change of household — buying a house, a child starting daycare, a flatmate
+/// moving out — averages two different households and describes neither. Six of this household's
+/// categories averaged $2,515/mo across a window whose post-purchase half runs at $4,051/mo: a
+/// 38% understatement of what they currently spend, sitting underneath a projection everyone was
+/// reading as too *high*.
+///
+/// So: leading structural zeros are dropped by [`category_monthly_totals`], one structural break
+/// is found by [`strongest_mean_break`], everything before it is discarded, and the level is the
+/// trailing year of what remains. The trailing-year cap matters independently of the break — it is
+/// what keeps a category that ramped rather than stepped (a power bill settling in after a move)
+/// anchored near its current level, since a ramp keeps its whole window by design.
+///
+/// # The direction
+///
+/// Measured and reported, and **not projected**. `measured_growth_bps` feeds the UI, never the
+/// simulation: growth for a category comes from the household inflation assumption
+/// ([`AssumptionSource::Indexed`]). The reason is that 24 lumpy months estimate a category's *mean*
+/// to perhaps ±15% and do not identify its *trend* at all. The evidence for that is what this
+/// codebase shipped: six of seven fitted slopes ran between +43%/yr and +126%/yr and were clamped
+/// to [`MAX_DERIVED_CATEGORY_GROWTH_BPS`] — at which point the clamp, a number nobody chose, *was*
+/// the model — and the seventh was rejected by the t-gate. A level shift passes a significance
+/// test honestly, because across a window containing it a step genuinely is a monotone rise.
+///
+/// Note what would *not* have fixed this: a robust estimator. Theil–Sen on those same six series
+/// returns essentially the same slopes as OLS (38.2 against 41.8 on Household, 48.0 against 56.4
+/// on Lifestyle), because robust regression is robust to outliers and a level shift is not an
+/// outlier. It is a real trend, over a window that should not have been one window.
 fn category_fit(totals: &[f64]) -> Option<CategoryFit> {
     if totals.is_empty() {
         return None;
     }
-    let n = totals.len();
-    let baseline = totals.iter().sum::<f64>() / n as f64;
-    // No activity at all in the window: the category contributes nothing to project.
+    // `break_months_ago` counts from the end of the *original* window, because "the level changed
+    // 11 months ago" is what it means to a reader.
+    let full_len = totals.len();
+    let break_at = strongest_mean_break(totals);
+    let regime = match break_at {
+        Some(k) => &totals[k..],
+        None => totals,
+    };
+    let break_months_ago = break_at.map(|k| (full_len - k) as i64);
+
+    // The level window: the trailing year of the current regime.
+    let level_from = regime.len().saturating_sub(CATEGORY_LEVEL_MONTHS);
+    let level_window = &regime[level_from..];
+    let n = level_window.len();
+    let baseline = level_window.iter().sum::<f64>() / n as f64;
+    // No activity at all in the level window: nothing to project. Checked on the level window
+    // rather than the regime, because a category that has genuinely stopped should stop.
     if baseline <= 0.0 {
         return None;
     }
 
-    let active = totals.iter().filter(|v| **v > 0.0).count() as i64;
-    let flat = CategoryFit {
-        baseline,
-        growth_bps: 0,
-        vol_bps: 0,
-    };
-    if (n as i64) < MIN_CATEGORY_TREND_MONTHS || active < MIN_CATEGORY_ACTIVE_MONTHS {
-        return Some(flat);
-    }
+    // Volatility is measured on the same window as the level, so the two describe one thing.
+    let residual_var = sse_about_trend(level_window) / (n.saturating_sub(2)).max(1) as f64;
+    let vol = (residual_var.sqrt() * 12f64.sqrt() / baseline)
+        .clamp(0.0, MAX_DERIVED_CATEGORY_VOL_BPS as f64 / 10_000.0);
+    let vol_bps = bps_pair(0.0, vol).1;
 
-    let xs: Vec<f64> = (0..n).map(|i| i as f64).collect();
-    let x_mean = xs.iter().sum::<f64>() / n as f64;
+    Some(CategoryFit {
+        baseline,
+        vol_bps,
+        measured_growth_bps: measured_growth(level_window, baseline, residual_var),
+        fitted_months: n as i64,
+        break_months_ago,
+    })
+}
+
+/// The window's own annualised slope, or `None` when it cannot support a direction.
+///
+/// Evidence for the UI only — see [`CategoryFit::measured_growth_bps`]. Every gate here returns
+/// `None` rather than `Some(0)`, because "we cannot tell" and "history says flat" are different
+/// claims and the row says different things about them.
+fn measured_growth(window: &[f64], baseline: f64, residual_var: f64) -> Option<i64> {
+    let n = window.len();
+    if n < MIN_CATEGORY_SLOPE_MONTHS {
+        return None;
+    }
+    let active = window.iter().filter(|v| **v > 0.0).count() as i64;
+    if active < MIN_CATEGORY_ACTIVE_MONTHS {
+        return None;
+    }
+    let x_mean = (n - 1) as f64 / 2.0;
     let mut cov = 0.0;
     let mut var_x = 0.0;
-    for i in 0..n {
-        cov += (xs[i] - x_mean) * (totals[i] - baseline);
-        var_x += (xs[i] - x_mean).powi(2);
+    for (i, y) in window.iter().enumerate() {
+        cov += (i as f64 - x_mean) * (y - baseline);
+        var_x += (i as f64 - x_mean).powi(2);
     }
-    if var_x == 0.0 {
-        return Some(flat);
+    if var_x <= 0.0 {
+        return None;
     }
     let slope = cov / var_x;
-    let intercept = baseline - slope * x_mean;
-    let residual_var: f64 = xs
-        .iter()
-        .zip(totals)
-        .map(|(x, y)| (y - (intercept + slope * x)).powi(2))
-        .sum::<f64>()
-        / (n.saturating_sub(2)).max(1) as f64;
-
-    // Only read a direction into the series if the slope actually stands out from the
-    // scatter around it. Every OLS fit produces *some* slope, and on a dozen lumpy months
-    // of household spending that slope is usually describing where the big months happened
-    // to fall, not a change in behaviour — projecting it for years then turns an accident
-    // of timing into the dominant term. The standard t-statistic on the slope is the
-    // textbook way to ask "is this distinguishable from flat?", and |t| >= 2 is roughly the
-    // 95% threshold at the window sizes in play (6-24 months).
+    // Only read a direction into the series if the slope stands out from the scatter around it.
+    // Every OLS fit produces *some* slope, and on a dozen lumpy months of household spending that
+    // slope usually describes where the big months happened to fall.
     let slope_stderr = (residual_var / var_x).sqrt();
     if !(slope_stderr.is_finite() && slope_stderr > 0.0)
         || (slope / slope_stderr).abs() < MIN_TREND_T_STATISTIC
     {
-        // Flat run-rate, but keep the measured volatility: the scatter is real even when
-        // the direction isn't.
-        let vol = (residual_var.sqrt() * 12f64.sqrt() / baseline)
-            .clamp(0.0, MAX_DERIVED_CATEGORY_VOL_BPS as f64 / 10_000.0);
-        return Some(CategoryFit {
-            baseline,
-            growth_bps: 0,
-            vol_bps: bps_pair(0.0, vol).1,
-        });
+        return None;
     }
-
-    // Both relative to the mean, not to the fitted endpoint — a stable denominator.
+    // Relative to the mean, not to the fitted endpoint — a stable denominator. Still clamped: the
+    // figure is shown to a human, and "+126%/yr" is not information, it is an artefact.
     let growth = (12.0 * slope / baseline).clamp(
         -(MAX_DERIVED_CATEGORY_GROWTH_BPS as f64 / 10_000.0),
         MAX_DERIVED_CATEGORY_GROWTH_BPS as f64 / 10_000.0,
     );
-    let vol = (residual_var.sqrt() * 12f64.sqrt() / baseline)
-        .clamp(0.0, MAX_DERIVED_CATEGORY_VOL_BPS as f64 / 10_000.0);
-    let (growth_bps, vol_bps) = bps_pair(growth, vol);
-    Some(CategoryFit {
-        baseline,
-        growth_bps,
-        vol_bps,
-    })
+    Some(bps_pair(growth, 0.0).0)
 }
 
 fn bps_pair(growth: f64, vol: f64) -> (i64, i64) {
@@ -4158,7 +4403,60 @@ fn category_monthly_totals(
     if vals.len() > cap {
         vals.drain(0..vals.len() - cap);
     }
+    trim_leading_structural_zeros(&mut vals);
     vals
+}
+
+/// Drop a leading run of empty months longer than [`MAX_LEADING_ZERO_MONTHS`].
+///
+/// Kept separate from [`category_monthly_totals`] so it can be tested on a bare series, and
+/// applied *after* the trailing-window cap rather than before: the cap is about how much history
+/// is relevant, this is about when the category started, and doing it in the other order would let
+/// a 24-month cap re-admit zeros the trim had already removed.
+///
+/// The whole run goes, not the run minus three. Once a series is known to begin with structural
+/// emptiness there is no argument for keeping an arbitrary tail of it — the threshold decides
+/// *whether* the leading zeros are structural, not how many of them to forgive.
+fn trim_leading_structural_zeros(vals: &mut Vec<f64>) {
+    let lead = vals.iter().take_while(|v| **v <= 0.0).count();
+    if lead > MAX_LEADING_ZERO_MONTHS {
+        vals.drain(0..lead);
+    }
+}
+
+/// Resolve a *category's* growth and volatility.
+///
+/// Split from [`resolve_growth`] rather than sharing it, because the two no longer resolve the same
+/// thing. An account's growth is fitted from its own value series, which is a series of the right
+/// shape for the question; a category's growth is not fitted at all — see
+/// [`AssumptionSource::Indexed`]. What remains shared is only the precedence rule, and the rule is
+/// one line.
+///
+/// Volatility still comes from the measurement in every case: the month-to-month scatter of a
+/// category's spending is real and observable whatever is assumed about its trend, and an override
+/// of the growth is not a claim about the spread.
+fn resolve_category_growth(
+    override_growth: Option<i64>,
+    override_vol: Option<i64>,
+    measured_vol: Option<i64>,
+    inflation_bps: i64,
+) -> (i64, i64, AssumptionSource) {
+    let vol = override_vol.or(measured_vol).unwrap_or(0);
+    match override_growth {
+        // The user asserting a rate. Not clamped and not indexed — that is the whole point of an
+        // override, and it is the same line `MAX_DERIVED_CATEGORY_GROWTH_BPS` already declines to
+        // cross.
+        Some(g) => (g, vol, AssumptionSource::Override),
+        // An override of the volatility alone still reads as an override, so the row says so and
+        // offers to clear it; the growth it carries is the indexed default.
+        None if override_vol.is_some() => (inflation_bps, vol, AssumptionSource::Override),
+        None => match measured_vol {
+            Some(_) => (inflation_bps, vol, AssumptionSource::Indexed),
+            // No history at all: nothing to index, and inventing a baseline-free rate would put a
+            // growth figure on a row that projects nothing.
+            None => (0, 0, AssumptionSource::InsufficientHistory),
+        },
+    }
 }
 
 /// Resolve one knob's value + provenance: an explicit override wins, then an existing
@@ -4318,14 +4616,12 @@ mod tests {
     /// The Housing case from a real database: three months of data ($10, $1,079, $70) in a
     /// seven-month window. The old code fitted a slope to that and derived +325%/yr, which
     /// compounds to ~1,400× over five years and swamps the whole projection. Too few active
-    /// months to read a direction into — hold the run-rate flat instead.
+    /// months to say anything about a direction.
     #[test]
     fn category_fit_holds_a_sparse_series_flat_instead_of_extrapolating_it() {
         let totals = vec![10.0, 0.0, 0.0, 0.0, 0.0, 1_079.0, 70.0];
         let fit = category_fit(&totals).unwrap();
-        assert_eq!(fit.growth_bps, 0);
-        assert_eq!(fit.growth_bps, 0);
-        assert_eq!(fit.vol_bps, 0);
+        assert_eq!(fit.measured_growth_bps, None);
         // …but it still contributes: total spend over months elapsed.
         assert!((fit.baseline - 1_159.0 / 7.0).abs() < 0.01);
     }
@@ -4336,22 +4632,27 @@ mod tests {
     #[test]
     fn category_fit_keeps_a_baseline_for_a_series_too_short_to_trend() {
         let fit = category_fit(&[300.0, 200.0]).unwrap();
-        assert_eq!(fit.growth_bps, 0);
+        assert_eq!(fit.measured_growth_bps, None);
         assert!((fit.baseline - 250.0).abs() < 0.01);
     }
 
-    /// A genuine, sustained trend is still read — the clamp only bites the absurd.
+    /// A genuine, sustained rise is still *measured* — and is still not projected. The figure
+    /// exists so the row can show the user what their history says next to what the projection
+    /// assumes; `simulate` reads the household inflation rate instead. See
+    /// `AssumptionSource::Indexed`.
     #[test]
-    fn category_fit_reads_a_real_trend() {
+    fn category_fit_measures_a_real_trend_without_projecting_it() {
         // Rising ~4%/month from 1000, twelve months: a real direction, plainly visible.
         let totals: Vec<f64> = (0..12).map(|i| 1_000.0 * 1.04f64.powi(i)).collect();
         let fit = category_fit(&totals).unwrap();
-        assert!(
-            fit.growth_bps > 1_000,
-            "expected a clear rise, got {}",
-            fit.growth_bps
-        );
-        assert!(fit.growth_bps <= MAX_DERIVED_CATEGORY_GROWTH_BPS);
+        let measured = fit.measured_growth_bps.expect("a clear rise is measurable");
+        assert!(measured > 1_000, "expected a clear rise, got {measured}");
+        assert!(measured <= MAX_DERIVED_CATEGORY_GROWTH_BPS);
+        // The whole twelve months were used: a smooth ramp is one regime, not a step. Without
+        // the step-beats-ramp gate in `strongest_mean_break` this splits at month 6, and the
+        // 6-month remainder is then too short to measure a direction from at all.
+        assert_eq!(fit.fitted_months, 12);
+        assert_eq!(fit.break_months_ago, None);
     }
 
     /// A lumpy series' fitted endpoint chases the latest spike; the mean does not. The
@@ -4368,7 +4669,7 @@ mod tests {
             "baseline {} chased the spike",
             fit.baseline
         );
-        assert_eq!(fit.growth_bps, 0);
+        assert_eq!(fit.measured_growth_bps, None);
         // …but the scatter is real, so the volatility survives.
         assert!(fit.vol_bps > 0);
     }
@@ -4383,19 +4684,163 @@ mod tests {
             .map(|i| if i % 2 == 0 { 300.0 } else { 700.0 })
             .collect();
         let fit = category_fit(&totals).unwrap();
-        assert_eq!(fit.growth_bps, 0);
-        assert_eq!(fit.growth_bps, 0);
+        assert_eq!(fit.measured_growth_bps, None);
         assert!((fit.baseline - 500.0).abs() < 0.01);
     }
 
-    /// Both knobs are bounded, whatever the data does.
+    /// Both reported figures are bounded, whatever the data does. The growth here is only ever
+    /// shown to a human, and "+8,900%/yr" is not information — but it must still be bounded,
+    /// because an override form pre-filled from it would carry the absurdity into the projection.
     #[test]
-    fn category_fit_clamps_growth_and_volatility() {
-        // A violently accelerating series: unclamped this fits several hundred percent.
+    fn category_fit_clamps_the_measured_growth_and_volatility() {
+        // A violently accelerating series: unclamped this measures several hundred percent.
         let totals: Vec<f64> = (0..12).map(|i| 10.0 * 3f64.powi(i)).collect();
         let fit = category_fit(&totals).unwrap();
-        assert_eq!(fit.growth_bps, MAX_DERIVED_CATEGORY_GROWTH_BPS);
+        assert_eq!(
+            fit.measured_growth_bps,
+            Some(MAX_DERIVED_CATEGORY_GROWTH_BPS)
+        );
         assert!(fit.vol_bps <= MAX_DERIVED_CATEGORY_VOL_BPS);
+    }
+
+    /// The defect this whole arrangement exists for, on the real series that exposed it.
+    ///
+    /// Household spending over the 24 months either side of a house purchase. Fitted as one
+    /// window this produced +69%/yr, clamped to the +25%/yr ceiling, compounding to ×5.97 over
+    /// thirty years — while *simultaneously* reporting a $724/mo baseline against a household
+    /// actually spending $1,125/mo. Too hot for five years and too cold for twenty-five, from one
+    /// window that should have been two.
+    #[test]
+    fn a_level_shift_reads_as_a_break_not_as_a_trend() {
+        let totals = vec![
+            106.0, 93.0, 335.0, 120.0, 264.0, 380.0, 410.0, 2_021.0, 158.0, 156.0, 157.0, 612.0,
+            182.0, 3_354.0, 297.0, 545.0, 1_759.0, 862.0, 912.0, 1_130.0, 523.0, 474.0, 1_014.0,
+            1_506.0,
+        ];
+        let fit = category_fit(&totals).unwrap();
+
+        // The break is found, and near the settlement date rather than anywhere in the window.
+        assert_eq!(fit.break_months_ago, Some(11));
+        assert_eq!(fit.fitted_months, 11);
+
+        // The level is the current household, not the average of two households. The 24-month
+        // mean is $724; what they actually spend is $1,125.
+        assert!(
+            (fit.baseline - 1_125.0).abs() < 15.0,
+            "baseline {} should be the post-break level, not the 24-month mean of 724",
+            fit.baseline
+        );
+
+        // And nothing is pinned to the growth ceiling any more, because an 11-month segment is
+        // not asked for a direction at all.
+        assert_eq!(fit.measured_growth_bps, None);
+    }
+
+    /// A category that did not exist for the first half of its window used to have those empty
+    /// months counted as evidence of how occasional it is. Education: one $16 school fee in
+    /// 2024-09, then fourteen empty months, then a real category. The zeros roughly doubled the
+    /// apparent slope and halved the apparent level.
+    #[test]
+    fn leading_structural_zeros_leave_the_window() {
+        let mut vals = vec![0.0, 16.0, 0.0, 0.0, 0.0, 0.0];
+        trim_leading_structural_zeros(&mut vals);
+        // One leading zero is not a structural run, so nothing moves.
+        assert_eq!(vals.len(), 6);
+
+        let mut vals = vec![0.0, 0.0, 0.0, 0.0, 0.0, 92.0, 35.0, 61.0];
+        trim_leading_structural_zeros(&mut vals);
+        assert_eq!(vals, vec![92.0, 35.0, 61.0]);
+
+        // An occasional category keeps every gap that makes it occasional: the run has to be
+        // *leading* to count, and eleven months between two annual payments is not.
+        let mut vals = vec![300.0];
+        vals.extend([0.0; 11]);
+        vals.push(300.0);
+        let before = vals.clone();
+        trim_leading_structural_zeros(&mut vals);
+        assert_eq!(vals, before);
+    }
+
+    /// The gate that keeps a genuinely accelerating category from being flattened into a step.
+    /// Without it every monotone rise is diagnosed as a break, because half of a rising line
+    /// really does sit above the other half.
+    #[test]
+    fn a_smooth_ramp_is_not_a_structural_break() {
+        let ramp: Vec<f64> = (0..24).map(|i| 100.0 + 20.0 * i as f64).collect();
+        assert_eq!(strongest_mean_break(&ramp), None);
+
+        // …but a genuine step still is one, at the right month.
+        let mut step = vec![500.0; 12];
+        step.extend([1_500.0; 12]);
+        assert_eq!(strongest_mean_break(&step), Some(12));
+    }
+
+    /// A category that has gone quiet must not be declared over. The split at the last payday is
+    /// the most significant break a series can produce — residual exactly zero — and accepting it
+    /// takes the baseline to zero, which drops the category out of the projection silently. An
+    /// over-projected category is one line to override on the Assumptions tab; a vanished one is
+    /// invisible.
+    #[test]
+    fn a_category_that_has_gone_quiet_is_not_declared_over() {
+        let mut stopped = vec![5_000.0; 12];
+        stopped.extend([0.0; 7]);
+        assert_eq!(strongest_mean_break(&stopped), None);
+
+        // So it keeps projecting, off the whole window, rather than disappearing.
+        let fit = category_fit(&stopped).unwrap();
+        assert!(fit.baseline > 0.0);
+        assert_eq!(fit.break_months_ago, None);
+    }
+
+    /// Growth for a category comes from the household rate, and an override still wins. The
+    /// provenance has to differ too: a row that says `indexed` offers a different explanation and
+    /// a different button from one that says `override`.
+    #[test]
+    fn a_category_is_indexed_at_the_household_rate_unless_overridden() {
+        assert_eq!(
+            resolve_category_growth(None, None, Some(4_000), 250),
+            (250, 4_000, AssumptionSource::Indexed)
+        );
+        // An assertion is not indexed, and not clamped.
+        assert_eq!(
+            resolve_category_growth(Some(9_000), None, Some(4_000), 250),
+            (9_000, 4_000, AssumptionSource::Override)
+        );
+        // Overriding only the spread leaves the growth indexed but the row still an override.
+        assert_eq!(
+            resolve_category_growth(None, Some(100), Some(4_000), 250),
+            (250, 100, AssumptionSource::Override)
+        );
+        // Nothing measured: nothing to index.
+        assert_eq!(
+            resolve_category_growth(None, None, None, 250),
+            (0, 0, AssumptionSource::InsufficientHistory)
+        );
+    }
+
+    /// The arithmetic the Assumptions tab prints, pinned. An indexed rate does not decay — it *is*
+    /// the long-run rate — so 2.5%/yr over 360 months is 1.025^30, and the ×5.97 the old clamped
+    /// path produced is unreachable.
+    #[test]
+    fn an_indexed_rate_compounds_without_decaying() {
+        let series = drift_series(250, None, 360);
+        let multiplier: f64 = series[1..=360].iter().sum::<f64>().exp();
+        assert!(
+            (multiplier - 1.025f64.powi(30)).abs() < 0.01,
+            "expected 1.025^30 = {:.3}, got {multiplier:.3}",
+            1.025f64.powi(30)
+        );
+        assert!(multiplier < 2.2, "an indexed rate must not blow up");
+
+        // For contrast, the path this replaced: the derived ceiling, decayed toward 0.
+        let clamped: f64 = drift_series(MAX_DERIVED_CATEGORY_GROWTH_BPS, Some(0), 360)[1..=360]
+            .iter()
+            .sum::<f64>()
+            .exp();
+        assert!(
+            clamped > 5.0,
+            "the old clamped path multiplied by {clamped:.2}, which is the bug"
+        );
     }
 
     #[test]
@@ -5369,9 +5814,17 @@ mod tests {
             /// here — see the impl below — and set only by the ones about what a contribution
             /// target does to the account it points at.
             streams: Vec<sure_core::IncomeStream>,
+            /// The household inflation rate the fake reports. `Default` gives 0, so every test
+            /// that does not care about indexation gets nominally flat categories and its
+            /// existing figures stand — the ones that do care set it explicitly.
+            inflation_bps: i64,
         }
         #[async_trait]
         impl ForecastRepo for FakeForecast {
+            async fn inflation_bps(&self) -> AppResult<i64> {
+                Ok(self.inflation_bps)
+            }
+
             async fn list_assumptions(&self) -> AppResult<Vec<ForecastAssumption>> {
                 Ok(self
                     .overrides
@@ -6513,6 +6966,7 @@ mod tests {
                 events: Vec::new(),
                 overrides: Vec::new(),
                 streams: vec![repaying_stream(loan_account_id, today)],
+                ..Default::default()
             });
             ForecastService::new(
                 fake_forecast.clone(),
@@ -6716,6 +7170,7 @@ mod tests {
                 events: Vec::new(),
                 overrides: Vec::new(),
                 streams: vec![salary, rent],
+                ..Default::default()
             });
             let svc = ForecastService::new(
                 fake.clone(),
@@ -6790,6 +7245,7 @@ mod tests {
                 events: Vec::new(),
                 overrides: Vec::new(),
                 streams,
+                ..Default::default()
             });
             ForecastService::new(
                 fake.clone(),
@@ -7284,6 +7740,7 @@ mod tests {
                 events: Vec::new(),
                 overrides: vec![(1, Some(700), annual_volatility_bps)],
                 streams: Vec::new(),
+                ..Default::default()
             });
             ForecastService::new(
                 fake_forecast.clone(),

@@ -70,6 +70,10 @@ pub struct Settings {
     /// How much of the MCP surface the household has asked for. What is actually served is
     /// this clamped to the `SURE_MCP` ceiling — see [`SettingsView::mcp_ceiling`].
     pub mcp_mode: McpMode,
+    /// One household inflation rate, basis points a year, applied to every forecast category the
+    /// user has not overridden. See `0041_inflation_setting.sql` for why a fitted per-category
+    /// rate was the wrong shape, and `sure_app::forecast`'s `AssumptionSource::Indexed`.
+    pub inflation_bps: i64,
     pub updated_at: String,
 }
 
@@ -80,6 +84,10 @@ pub struct UpdateSettings {
     /// not know this field exists.
     #[serde(default)]
     pub mcp_mode: Option<McpMode>,
+    /// Absent leaves the stored rate alone, for the same reason `mcp_mode` is optional: the
+    /// settings page predates this field and still sends a body without it.
+    #[serde(default)]
+    pub inflation_bps: Option<i64>,
 }
 
 #[cfg(test)]

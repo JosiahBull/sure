@@ -65,6 +65,15 @@ pub enum AssumptionSource {
     /// trend. `baseline_minor` is then the *residual* — the part of the category the streams do
     /// not explain — so a non-zero one means some income here is still un-modelled.
     ModelledFromIncome,
+    /// The level was measured from this category's current regime; the growth is the household
+    /// inflation rate (`settings.inflation_bps`) rather than anything fitted from the history.
+    ///
+    /// The default for every category with no override. `measured_growth_bps` reports what the
+    /// history *would* have said, as evidence — nothing in the simulation reads it. A 24-month
+    /// window of household spending pins a category's mean to roughly ±15% and does not identify
+    /// its trend at all; fitting one anyway put six of seven categories on the ±25%/yr clamp,
+    /// every one of them a level shift after a house purchase read as a compounding rate.
+    Indexed,
     /// A private holding with equity grants: projected along its contractual vesting schedule
     /// rather than a rate fitted from its own history. `vesting` says what is still to come.
     ///
@@ -86,6 +95,7 @@ impl From<sure_app::forecast::AssumptionSource> for AssumptionSource {
             S::ModelledFromIncome => AssumptionSource::ModelledFromIncome,
             S::ContributionDriven => AssumptionSource::ContributionDriven,
             S::VestingSchedule => AssumptionSource::VestingSchedule,
+            S::Indexed => AssumptionSource::Indexed,
         }
     }
 }
@@ -169,6 +179,19 @@ pub struct ResolvedAssumption {
     /// Only set for categories: the current fitted monthly run-rate the simulation
     /// grows forward from.
     pub baseline_minor: Option<i64>,
+    /// Only set for categories: what this category's own history says its trend is, annualised in
+    /// basis points — **evidence, not an input.** The projection runs at the household inflation
+    /// rate; this is here so a reader can see what they would be disagreeing with, and so the
+    /// override form can be pre-filled from it. Absent when the window cannot support a
+    /// direction, which is a different claim from zero.
+    pub measured_growth_bps: Option<i64>,
+    /// Only set for categories: how many months `baseline_minor` was measured over, after
+    /// leading empty months and any structural break were dropped. The figure a reader needs
+    /// in order to know what the baseline is worth.
+    pub fitted_months: Option<i64>,
+    /// Only set for categories: months back to a detected change in level, or absent when the
+    /// window is one regime. What the row's explanation and the sparkline's rule are drawn from.
+    pub break_months_ago: Option<i64>,
     /// Only set for a mortgage/loan projected from an amortisation schedule.
     pub schedule: Option<LoanScheduleSummary>,
     /// Only set for a private holding projected along its vesting schedule.
@@ -194,6 +217,9 @@ impl From<sure_app::forecast::ResolvedAssumption> for ResolvedAssumption {
             annual_fixed_fee_minor: r.annual_fixed_fee_minor,
             dividend_yield_bps: r.dividend_yield_bps,
             baseline_minor: r.baseline_minor,
+            measured_growth_bps: r.measured_growth_bps,
+            fitted_months: r.fitted_months,
+            break_months_ago: r.break_months_ago,
             schedule: r.schedule.map(Into::into),
             vesting: r.vesting.map(Into::into),
             currency_code: r.currency_code,

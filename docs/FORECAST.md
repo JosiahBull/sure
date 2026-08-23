@@ -13,7 +13,8 @@ the ledger — unlike `crons`, which persists real rows.
 |---|---|
 | An account's growth / volatility | an override, else an enabled appreciation/depreciation/interest cron's rate, else fitted from up to 36 months of its own value series |
 | A mortgage/loan's balance | its own amortisation schedule, exactly — no rate to resolve |
-| A category's monthly baseline | mean of up to 24 trailing complete months of its own spend |
+| A category's monthly baseline | mean of the trailing 12 complete months of its **current regime** — see "A level is not a trend" |
+| A category's growth | the one household rate, `settings.inflation_bps` (default 250 bps), unless overridden — never fitted |
 | A category with linked income streams | the **residual**: fitted baseline minus what the streams model |
 | A salary's take-home | an override, else "already net", else the **stored** tax scale in force on the date (`sure_core::tax`'s constants seed it and are the fallback) |
 | A KiwiSaver balance's growth | its own rate is discarded when linked; less any fund fee on the assumption |
@@ -23,6 +24,43 @@ the ledger — unlike `crons`, which persists real rows.
 | A student loan's paydown | the deductions themselves, plus `StudentLoanMeta::interest_rate_bps` (0 for an NZ-based borrower) |
 
 ## The traps, and why the code looks the way it does
+
+**A level is not a trend, and a window spanning a house purchase confuses the two.** A category's
+growth used to be fitted by OLS over 24 months of its own spend. On a household that bought a house
+mid-window this produced, for six of seven categories, fitted rates between +43%/yr and +126%/yr —
+each of them one level shift read as a compounding rate, because across a window containing a step
+a step genuinely *is* a monotone rise and passes a significance test honestly. All six were clamped
+to the ±25%/yr derived ceiling, which over 360 months multiplies spending by 5.97. A ceiling that
+six of seven categories sit exactly on is no longer a guard against over-fitting; it *is* the model,
+and it is a number nobody chose. The same window simultaneously understated their current spending
+by 38% ($2,515/mo against $4,051/mo), because a mean across two regimes describes neither.
+
+Three changes, and the third is the one that matters:
+
+1. **Leading structural zeros leave the window.** The series is anchored on a category's first
+   activity, so one stray early transaction dragged the window back over a year of months in which
+   the category did not exist yet. A leading run longer than three months is now dropped.
+2. **One structural break is detected and everything before it discarded** (`strongest_mean_break`).
+   Binary segmentation on the mean, gated on a Chow F ≥ 5.0 *and* on the step model beating a single
+   linear trend at equal parameter cost. That second gate is what stops a genuinely accelerating
+   category being flattened into a step — a ramp's best mean-split has a large F, because half of a
+   rising line does sit above the other half. The level is then the trailing 12 months of what
+   survives, which keeps a category that *ramped* into its current level anchored near where it
+   ended up rather than near the middle of the ramp.
+3. **Growth is not fitted at all.** It is `settings.inflation_bps`, one household rate, shown on the
+   Assumptions tab with the dollars it implies at the horizon printed beneath it. 24 lumpy months
+   estimate a category's mean to perhaps ±15% and do not identify its trend; assuming the trend and
+   measuring the level is the honest division. The measured slope is still reported, as
+   `measured_growth_bps`, so a reader can see what their history says — but nothing in the
+   simulation reads it, and `AssumptionSource::Indexed` says so on the row.
+
+Note what would *not* have fixed this: a robust estimator. Theil–Sen on those same six series
+returns essentially the same slopes as OLS (38.2 against 41.8 on Household), because robust
+regression is robust to outliers and a level shift is not an outlier.
+
+An indexed rate does not decay. The `TREND_FULL_STRENGTH_MONTHS`/`TREND_HALF_LIFE_MONTHS` apparatus
+exists to walk a rate fitted over a finite window back toward an anchor once the projection runs
+past that window; an inflation assumption *is* the long-run rate, from month 1.
 
 **Double counting income.** A stream already landing in the bank is *also* inside the fitted
 baseline of the category it lands in. `income_streams.linked_category_id` is what prevents counting
