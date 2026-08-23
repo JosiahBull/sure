@@ -123,6 +123,7 @@ use utoipa::OpenApi;
         crate::routes::income::list,
         crate::routes::income::get_one,
         crate::routes::income::create,
+        crate::routes::income::create_owned,
         crate::routes::income::update,
         crate::routes::income::delete,
         crate::routes::income::detect,

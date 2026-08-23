@@ -3233,7 +3233,53 @@ export interface paths {
             };
         };
         put?: never;
-        post?: never;
+        /**
+         * Record income the household earns rather than one of its people — rent from a flatmate, a
+         *     refund the household is owed.
+         * @description A second create route rather than a nullable path segment: the per-person one above puts the
+         *     owner where it cannot be omitted or contradicted, and that property is worth keeping for the
+         *     case it covers. Here the body is the only place an owner can come from, so `ownership` is
+         *     required and its absence is a 422 rather than a silent guess at whose income this is.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveIncomeStream"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncomeStream"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -7016,8 +7062,13 @@ export interface components {
         IncomeStream: {
             /** Format: int64 */
             id: number;
-            /** Format: int64 */
-            person_id: number;
+            /**
+             * @description Whose income this is. `Person` for a salary; `Joint` for something the household earns
+             *     together, like rent from a flatmate, which has no one person to attribute it to. A joint
+             *     stream is always `basis: Net` — a gross figure needs the person whose marginal rate
+             *     prices it, and a joint stream has none. Nested, exactly as `Account::ownership` is.
+             */
+            ownership: components["schemas"]["Ownership"];
             label: string;
             employer?: string | null;
             currency_code: string;
@@ -7896,6 +7947,7 @@ export interface components {
             schedule?: null | components["schemas"]["LoanScheduleSummary"];
             /** @description The account's own currency, for formatting `schedule`. Absent for a category. */
             currency_code?: string | null;
+            ownership?: null | components["schemas"]["Ownership"];
             source: components["schemas"]["AssumptionSource"];
         };
         Rule: {
@@ -8195,6 +8247,7 @@ export interface components {
          *     One body and one transaction, so a schedule can never be half-saved.
          */
         SaveIncomeStream: {
+            ownership?: null | components["schemas"]["Ownership"];
             label: string;
             employer?: string | null;
             currency_code: string;
@@ -8437,8 +8490,12 @@ export interface components {
          *     modelled as take-home.
          */
         StreamReconciliation: {
-            /** Format: int64 */
-            person_id: number;
+            /**
+             * Format: int64
+             * @description `None` when the covering streams are the household's rather than one person's — rent
+             *     from a flatmate has nobody to attribute the coverage to.
+             */
+            person_id?: number | null;
             /** Format: int64 */
             category_id: number;
             category_label: string;

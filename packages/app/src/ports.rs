@@ -1239,7 +1239,8 @@ pub trait ForecastRepo: Send + Sync {
 pub struct MatchedIncomePayment {
     pub income_stream_id: i64,
     pub stream_label: String,
-    pub person_id: i64,
+    /// `None` for a stream the household earns jointly, which has no person row to join to.
+    pub person_id: Option<i64>,
     pub transaction_id: i64,
     /// This stream's slice of the deposit; slices of a shared deposit sum to it.
     pub observed_net_minor: i64,
@@ -1264,7 +1265,7 @@ pub trait IncomeRepo: Send + Sync {
     /// Create the stream and its whole step schedule in one transaction.
     async fn create_income_stream(
         &self,
-        person_id: i64,
+        owner: sure_core::Ownership,
         input: SaveIncomeStream,
     ) -> AppResult<IncomeStream>;
     /// Full replace, steps included — a step omitted from `input` is deleted.

@@ -1120,10 +1120,10 @@ impl IncomeRepo for SqliteStore {
 
     async fn create_income_stream(
         &self,
-        person_id: i64,
+        owner: sure_core::Ownership,
         input: SaveIncomeStream,
     ) -> AppResult<IncomeStream> {
-        crate::income::create(&self.db, person_id, input).await
+        crate::income::create(&self.db, owner, input).await
     }
 
     async fn update_income_stream(

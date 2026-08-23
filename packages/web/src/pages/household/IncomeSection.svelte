@@ -17,7 +17,12 @@
   let error = $state<string | null>(null);
   /** A stream id, or `addingFor` a person, never both — one editor open at a time. */
   let editing = $state<number | null>(null);
-  let addingFor = $state<number | null>(null);
+  /**
+   * Which owner's "+ Add income" form is open. `"household"` rather than `null` for the joint
+   * card, because `null` already means *closed* here — and the household's own owner key *is*
+   * `null`, so sharing the sentinel would leave that form permanently open.
+   */
+  let addingFor = $state<number | "household" | null>(null);
   let confirmDelete = $state<number | null>(null);
   let delError = $state<string | null>(null);
 
@@ -54,14 +59,35 @@
     await saved();
   }
 
+  // Keyed by person id, with `null` for the household's own income — rent from a flatmate
+  // belongs to no one person, so it gets its own group rather than being filed under whichever
+  // person happened to be first.
   const byPerson = $derived.by(() => {
-    const m = new Map<number, IncomeStream[]>();
+    const m = new Map<number | null, IncomeStream[]>();
     for (const s of streams) {
-      const list = m.get(s.person_id);
+      const key = s.ownership.kind === "person" ? s.ownership.person_id : null;
+      const list = m.get(key);
       if (list) list.push(s);
-      else m.set(s.person_id, [s]);
+      else m.set(key, [s]);
     }
     return m;
+  });
+
+  // People, then the household itself — one row per owner a stream can have. The household card
+  // is only drawn when it has income, unlike a person's: an empty person card is how you notice
+  // you forgot someone, whereas an empty "Household" card is just a control nobody asked for.
+  const owners = $derived.by(() => {
+    const rows: { key: number | null; name: string; color: string; badge: string }[] =
+      people.list.map((p) => ({
+        key: p.id,
+        name: p.name,
+        color: personColor(p),
+        badge: initials(p.name),
+      }));
+    if ((byPerson.get(null) ?? []).length > 0) {
+      rows.push({ key: null, name: "Household", color: "var(--muted, #8a8f98)", badge: "HH" });
+    }
+    return rows;
   });
 
   function basisLabel(b: Schemas["IncomeBasis"]): string {
@@ -108,15 +134,18 @@
   <div class="row" style="justify-content:center;padding:24px"><span class="spinner"></span></div>
 {:else}
   <div class="grid cards">
-    {#each people.list as p (p.id)}
-      {@const mine = byPerson.get(p.id) ?? []}
-      <section class="card person-card" style="--who:{personColor(p)}">
+    {#each owners as p (p.key ?? "household")}
+      {@const mine = byPerson.get(p.key) ?? []}
+      <section class="card person-card" style="--who:{p.color}">
         <div class="card-title">
           <div class="row" style="gap:10px;min-width:0">
-            <span class="avatar" style="background:{personColor(p)}">{initials(p.name)}</span>
+            <span class="avatar" style="background:{p.color}">{p.badge}</span>
             <h2 style="margin:0">{p.name}</h2>
           </div>
-          <button class="btn btn-sm" onclick={() => ((addingFor = p.id), (editing = null))}>
+          <button
+            class="btn btn-sm"
+            onclick={() => ((addingFor = p.key ?? "household"), (editing = null))}
+          >
             + Add income
           </button>
         </div>
@@ -169,7 +198,7 @@
                 {#if editing === s.id}
                   <IncomeStreamEditor
                     stream={s}
-                    personId={p.id}
+                    personId={p.key}
                     onsaved={saved}
                     oncancel={() => (editing = null)}
                     ondelete={() => (confirmDelete = s.id)}
@@ -180,10 +209,10 @@
           </div>
         {/if}
 
-        {#if addingFor === p.id}
+        {#if addingFor === (p.key ?? "household")}
           <IncomeStreamEditor
             stream={null}
-            personId={p.id}
+            personId={p.key}
             onsaved={saved}
             oncancel={() => (addingFor = null)}
           />

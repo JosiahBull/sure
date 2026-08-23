@@ -360,7 +360,12 @@ pub struct ForecastAssumptionRow {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IncomeStreamRow {
     pub id: i64,
-    pub person_id: i64,
+    /// Added by 0038 — `#[serde(default)]` reads as `'person'`, which is what every row in a
+    /// snapshot taken before joint income could exist actually was.
+    #[serde(default = "ownership_person")]
+    pub ownership: String,
+    /// Nullable from 0038: a joint stream has no person. Older snapshots always carry one.
+    pub person_id: Option<i64>,
     pub label: String,
     pub employer: Option<String>,
     pub currency_code: String,
@@ -401,6 +406,12 @@ pub struct IncomeStreamRow {
 /// What 0037 backfills existing rows to; `String::default()`'s `""` would fail the CHECK.
 fn default_pay_treatment() -> String {
     "regular".into()
+}
+
+/// What 0038 backfills existing rows to. Same reason as above: `""` fails the CHECK, and every
+/// stream that existed before joint income could be recorded was one person's.
+fn ownership_person() -> String {
+    "person".into()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -678,7 +689,8 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
     table!(
         "income_streams",
         IncomeStreamRow,
-        r#"SELECT id AS "id!", person_id, label, employer, currency_code, annual_amount_minor,
+        r#"SELECT id AS "id!", ownership, person_id, label, employer, currency_code,
+                  annual_amount_minor,
                   basis, pay_frequency, first_payment_on, starts_on, ends_on,
                   annual_increase_bps, kiwisaver_bps, student_loan AS "student_loan!: bool",
                   take_home_bps, linked_category_id, enabled AS "enabled!: bool", sort_order,
@@ -893,7 +905,7 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         .await?,
         income_streams: sqlx::query_as!(
             IncomeStreamRow,
-            r#"SELECT id AS "id!", person_id, label, employer, currency_code,
+            r#"SELECT id AS "id!", ownership, person_id, label, employer, currency_code,
                       annual_amount_minor, basis, pay_frequency, first_payment_on, starts_on,
                       ends_on, annual_increase_bps, kiwisaver_bps,
                       student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
@@ -1384,9 +1396,9 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
                  kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled,
                  sort_order, notes, created_at, updated_at, employer_kiwisaver_bps,
                  kiwisaver_account_id, student_loan_account_id, match_account_id, match_pattern,
-                 pay_treatment)
+                 pay_treatment, ownership)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
-             ?22,?23,?24,?25,?26,?27)",
+             ?22,?23,?24,?25,?26,?27,?28)",
             s.id,
             s.person_id,
             s.label,
@@ -1413,7 +1425,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             s.student_loan_account_id,
             s.match_account_id,
             s.match_pattern,
-            s.pay_treatment
+            s.pay_treatment,
+            s.ownership
         )
         .execute(&mut *txn)
         .await?;
