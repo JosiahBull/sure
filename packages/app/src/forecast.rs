@@ -794,6 +794,17 @@ impl ForecastService {
         // whether their fitted rate may be used at all — and that has to be settled before the
         // account projections are built from it.
         let streams = self.income.list_income_streams().await?;
+        // A student loan's own interest rate, off the account. This is the one contribution
+        // target that already knows what its balance does between repayments, and it is a fact
+        // about the loan rather than a market expectation: an NZ-resident borrower's loan is
+        // interest-free, so `Some(0)` is an answer and not a missing input. Loaded here, next to
+        // the streams, because the loop below has to decide between using it and asking for one.
+        let mut student_loan_rate_bps: HashMap<i64, Option<i64>> = HashMap::new();
+        for a in self.accounts.list(false).await? {
+            if let AccountMetadata::StudentLoan(m) = &a.metadata {
+                student_loan_rate_bps.insert(a.id, m.interest_rate_bps);
+            }
+        }
         let mut warnings: Vec<String> = Vec::new();
         let mut contribution_targets: HashMap<i64, &'static str> = HashMap::new();
         for st in streams.iter().filter(|s| s.enabled) {
@@ -818,16 +829,44 @@ impl ForecastService {
             }
             let asserted = a.source == AssumptionSource::Override;
             if !asserted {
-                // The fitted rate contains the contributions. Drop it rather than double count.
-                a.annual_growth_bps = a.long_run_growth_bps;
+                // The fitted rate contains the contributions either way, so it goes. What replaces
+                // it is the difference between a loan and a fund.
                 a.source = AssumptionSource::ContributionDriven;
-                if a.long_run_growth_bps == 0 {
-                    warnings.push(format!(
-                        "{} now receives {what}, so its own measured growth rate was discarded — a \
-                         balance that rose while money was flowing in cannot tell the two apart. It \
-                         is projected flat until you set an expected return on it.",
-                        a.label
-                    ));
+                match student_loan_rate_bps.get(&a.target_id) {
+                    // A student loan being repaid. Its rate is recorded on the account, so there
+                    // is nothing to ask and nothing to warn about — the balance moves by that rate
+                    // and by the repayments, which is the whole of what a student loan does. The
+                    // usual value is 0, and a projection that holds an interest-free debt flat
+                    // while repayments eat it is correct rather than degraded.
+                    Some(&Some(bps)) => a.annual_growth_bps = bps,
+                    // A student loan with no rate recorded. Still not an "expected return"
+                    // question — asking one about a debt is what made this confusing — so the
+                    // warning names the field that is actually missing, and its usual answer.
+                    Some(&None) => {
+                        a.annual_growth_bps = a.long_run_growth_bps;
+                        warnings.push(format!(
+                            "{} now receives {what}, so the rate fitted from its balance was \
+                             discarded — a balance that moved while money was flowing in cannot \
+                             tell borrowing from interest. Set the loan's interest rate on the \
+                             account: for an NZ-based borrower a student loan is interest-free, \
+                             so 0 is usually the answer.",
+                            a.label
+                        ));
+                    }
+                    // A KiwiSaver fund, or any other account taking contributions. Here an
+                    // expected return really is the missing input.
+                    None => {
+                        a.annual_growth_bps = a.long_run_growth_bps;
+                        if a.long_run_growth_bps == 0 {
+                            warnings.push(format!(
+                                "{} now receives {what}, so its own measured growth rate was \
+                                 discarded — a balance that rose while money was flowing in cannot \
+                                 tell the two apart. It is projected flat until you set an expected \
+                                 return on it.",
+                                a.label
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -4168,6 +4207,10 @@ mod tests {
             /// than whole `ForecastAssumption`s because that type isn't `Clone` and this port
             /// hands out owned values.
             overrides: Vec<(i64, Option<i64>, Option<i64>)>,
+            /// What `IncomeRepo::list_income_streams` hands back. Empty for almost every test
+            /// here — see the impl below — and set only by the ones about what a contribution
+            /// target does to the account it points at.
+            streams: Vec<sure_core::IncomeStream>,
         }
         #[async_trait]
         impl ForecastRepo for FakeForecast {
@@ -4237,10 +4280,10 @@ mod tests {
         impl crate::ports::IncomeRepo for FakeForecast {
             // These sim tests are about assumption resolution and the Monte Carlo loop, so the
             // fake household earns nothing modelled — income streams have their own DAL tests
-            // and their own e2e coverage. An empty list is also what makes these tests keep
-            // asserting the pre-income behaviour they were written for.
+            // and their own e2e coverage. `streams` is empty by default, which is what makes
+            // these tests keep asserting the pre-income behaviour they were written for.
             async fn list_income_streams(&self) -> AppResult<Vec<sure_core::IncomeStream>> {
-                Ok(Vec::new())
+                Ok(self.streams.clone())
             }
             async fn get_income_stream(&self, _id: i64) -> AppResult<sure_core::IncomeStream> {
                 unreachable!()
@@ -5010,6 +5053,212 @@ mod tests {
             assert_eq!(result.months[5].assets.median_minor, 0);
         }
 
+        /// A stream whose student loan deductions pay down `loan_account_id`. Everything else
+        /// is the smallest thing that models: gross PAYE, monthly, already started.
+        fn repaying_stream(loan_account_id: i64, today: NaiveDate) -> sure_core::IncomeStream {
+            sure_core::IncomeStream {
+                id: 1,
+                person_id: 1,
+                label: "Salary".into(),
+                employer: None,
+                currency_code: "NZD".into(),
+                annual_amount_minor: 80_000_00,
+                basis: sure_core::IncomeBasis::GrossNzPaye,
+                pay_frequency: sure_core::PayFrequency::Monthly,
+                first_payment_on: today.to_string(),
+                starts_on: today.to_string(),
+                ends_on: None,
+                annual_increase_bps: 0,
+                kiwisaver_bps: 300,
+                employer_kiwisaver_bps: 300,
+                student_loan: true,
+                take_home_bps: None,
+                linked_category_id: None,
+                kiwisaver_account_id: None,
+                student_loan_account_id: Some(loan_account_id),
+                match_account_id: None,
+                match_pattern: None,
+                pay_treatment: sure_core::PayTreatment::Regular,
+                enabled: true,
+                sort_order: 0,
+                notes: None,
+                steps: Vec::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            }
+        }
+
+        /// `accounts` + one repaying income stream, which is the pairing the warnings below
+        /// are about: a contribution target is only ever created by a stream pointing at it.
+        fn service_with_repayments(
+            accounts: Vec<Account>,
+            valuations: Vec<LedgerValuation>,
+            loan_account_id: i64,
+            today: NaiveDate,
+        ) -> ForecastService {
+            let fake_forecast = Arc::new(FakeForecast {
+                events: Vec::new(),
+                overrides: Vec::new(),
+                streams: vec![repaying_stream(loan_account_id, today)],
+            });
+            ForecastService::new(
+                fake_forecast.clone(),
+                fake_forecast,
+                Arc::new(FakeReports {
+                    base_currency: "NZD".into(),
+                    account_currencies: accounts
+                        .iter()
+                        .map(|a| AccountCurrency {
+                            id: a.id,
+                            currency_code: a.currency_code.clone(),
+                            ownership: sure_core::Ownership::Joint,
+                            excluded_from_net_worth: a.excluded_from_net_worth,
+                        })
+                        .collect(),
+                    valuations,
+                    ..Default::default()
+                }),
+                Arc::new(FakeFx),
+                Arc::new(FakeAccounts(accounts)),
+                Arc::new(FakeCrons),
+                Arc::new(crate::test_clock::FixedClock(today)),
+            )
+        }
+
+        /// A student loan two years of valuations deep, so there is a fitted rate to discard.
+        fn drawn_down_loan(
+            interest_rate_bps: Option<i64>,
+            today: NaiveDate,
+        ) -> (Account, Vec<LedgerValuation>) {
+            let loan = Account {
+                kind: AK::StudentLoan,
+                class: AK::StudentLoan.class(),
+                metadata: AM::StudentLoan(StudentLoanMeta {
+                    lender: Some("Inland Revenue".into()),
+                    interest_rate_bps,
+                    ..Default::default()
+                }),
+                ..account(1, AK::StudentLoan, "NZD")
+            };
+            let mut valuations = Vec::new();
+            for i in 0..24 {
+                let date = add_months(today, i - 24);
+                valuations.push(valued(1, date, -40_000_00 - (i * 300_00)));
+            }
+            (loan, valuations)
+        }
+
+        /// An interest-free student loan being repaid out of pay must not ask the household
+        /// for an "expected return". It is a debt: the only two things that move it are the
+        /// repayments, which the projection already applies, and the loan's own interest
+        /// rate, which is recorded on the account and is `0` for an NZ-based borrower.
+        ///
+        /// The warning this replaces was the visible half of the confusion. Its advice —
+        /// "projected flat until you set an expected return on it" — described a fund, named
+        /// a control that means nothing on a liability, and appeared precisely when the
+        /// household had finished wiring income to the loan correctly.
+        #[test]
+        fn an_interest_free_student_loan_being_repaid_asks_for_nothing() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let (loan, valuations) = drawn_down_loan(Some(0), today);
+            let result = rt
+                .block_on(
+                    service_with_repayments(vec![loan], valuations, 1, today).simulate(
+                        &SimulationParams {
+                            horizon_months: 12,
+                            simulations: 100,
+                            currency: None,
+                            seed: Some(11),
+                        },
+                    ),
+                )
+                .unwrap();
+
+            assert!(
+                result.warnings.is_empty(),
+                "an interest-free loan has nothing left to ask about, got {:?}",
+                result.warnings
+            );
+            // The fitted drawdown rate is gone — the point of discarding it — and what
+            // replaced it is the loan's own 0%, not a guess.
+            let a = result
+                .assumptions
+                .iter()
+                .find(|a| a.target_type == ForecastTargetType::Account && a.target_id == 1)
+                .expect("the loan is projected");
+            assert_eq!(a.annual_growth_bps, 0);
+            assert_eq!(a.source, AssumptionSource::ContributionDriven);
+        }
+
+        /// The same loan with no rate recorded still warns — something *is* missing — but it
+        /// names the field that is missing and the answer it usually takes, rather than
+        /// asking for a return on a debt.
+        #[test]
+        fn a_student_loan_with_no_rate_recorded_asks_for_the_rate() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let (loan, valuations) = drawn_down_loan(None, today);
+            let result = rt
+                .block_on(
+                    service_with_repayments(vec![loan], valuations, 1, today).simulate(
+                        &SimulationParams {
+                            horizon_months: 12,
+                            simulations: 100,
+                            currency: None,
+                            seed: Some(11),
+                        },
+                    ),
+                )
+                .unwrap();
+
+            let warning = result
+                .warnings
+                .iter()
+                .find(|w| w.contains("student loan repayments"))
+                .expect("a loan with no rate on it should say so");
+            assert!(
+                warning.contains("interest rate"),
+                "should name the missing field: {warning}"
+            );
+            assert!(
+                !warning.contains("expected return"),
+                "an expected return is not a thing a debt has: {warning}"
+            );
+        }
+
+        /// …while an ordinary contribution target that is *not* a loan keeps the original
+        /// wording, because for a KiwiSaver fund an expected return is exactly the input the
+        /// projection is missing. The two branches exist to be different.
+        #[test]
+        fn a_fund_receiving_contributions_still_asks_for_a_return() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let fund = account(1, AK::Brokerage, "NZD");
+            let valuations = vec![valued(1, today - chrono::Duration::days(1), 50_000_00)];
+            let result = rt
+                .block_on(
+                    service_with_repayments(vec![fund], valuations, 1, today).simulate(
+                        &SimulationParams {
+                            horizon_months: 12,
+                            simulations: 100,
+                            currency: None,
+                            seed: Some(11),
+                        },
+                    ),
+                )
+                .unwrap();
+
+            assert!(
+                result
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("expected return")),
+                "got {:?}",
+                result.warnings
+            );
+        }
+
         /// The structural half of the above, stated on its own so a regression names itself:
         /// a student loan cannot be projected as an amortisation schedule, however complete
         /// its metadata is, because its profile has nowhere to put a principal or a term.
@@ -5301,6 +5550,7 @@ mod tests {
             let fake_forecast = Arc::new(FakeForecast {
                 events: Vec::new(),
                 overrides: vec![(1, Some(700), annual_volatility_bps)],
+                streams: Vec::new(),
             });
             ForecastService::new(
                 fake_forecast.clone(),
