@@ -149,6 +149,30 @@
   }
 
   /**
+   * Vertical order within a column: the statutory deductions ride along the top, everything
+   * else keeps the order d3 settled on by itself.
+   *
+   * A deduction sink shares the first income column with the ordinary income categories, and
+   * left alone d3 puts it wherever its gross-pay source pulls it — the middle, because that
+   * is where a person's pay node sits. Its ribbons then cross the widest, busiest part of the
+   * diagram to get there. Lifting them out is purely cosmetic: the same money, drawn along
+   * the top edge instead of through the body.
+   *
+   * `nodeSort` is d3's only hook for this, and it is all-or-nothing — supplying a comparator
+   * *replaces* the crossing-minimisation pass rather than refining it, because both
+   * relaxation directions skip their `column.sort(ascendingBreadth)` as soon as one is set.
+   * So the order d3 would have chosen is measured first, from a throwaway layout, and handed
+   * back as the tiebreak. Everything but the deductions therefore lands where it already did.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function deductionsFirst(settled: any[]): (a: any, b: any) => number {
+    const y = new Map<string, number>(settled.map((n) => [n.id, n.y0]));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rank = (n: any) => (n.kind === "deduction" ? 0 : 1);
+    return (a, b) => rank(a) - rank(b) || (y.get(a.id) ?? 0) - (y.get(b.id) ?? 0);
+  }
+
+  /**
    * Padding shrinks as the node count grows, so a deep graph doesn't spend most of its
    * height on gaps. Ported from the previous app's `#calculateNodePadding`.
    */
@@ -310,26 +334,35 @@
     const live = within.filter((n) => connected.has(n.id));
     const index = new Map(live.map((n, i) => [n.id, i]));
     const cols = columnsOf(live);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const g: any = {
+    // d3 mutates the graph it is handed — it resolves each link's endpoints to the node
+    // objects and fills their sourceLinks/targetLinks — so a second pass needs its own copy
+    // rather than the one the first pass already chewed on.
+    const build = () => ({
       nodes: live.map((n) => ({ ...n })),
       links: kept.map((l) => ({
         source: index.get(l.source)!,
         target: index.get(l.target)!,
         value: l.value,
       })),
-    };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const gen = (sankey() as any)
-      .nodeWidth(NODE_W)
-      .nodePadding(nodePadding(live.length, available))
+    });
+    const gen = () =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .nodeAlign((n: any) => columnOf(n, cols))
-      .extent([
-        [MARGIN_X, MARGIN_TOP],
-        [boxW - MARGIN_X, boxH - MARGIN_BOTTOM],
-      ]);
-    const laid = gen(g) as { nodes: any[]; links: any[] };
+      (sankey() as any)
+        .nodeWidth(NODE_W)
+        .nodePadding(nodePadding(live.length, available))
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .nodeAlign((n: any) => columnOf(n, cols))
+        .extent([
+          [MARGIN_X, MARGIN_TOP],
+          [boxW - MARGIN_X, boxH - MARGIN_BOTTOM],
+        ]);
+    let laid = gen()(build()) as { nodes: any[]; links: any[] };
+    // Lift the deduction sinks to the top of their column — see {@link deductionsFirst} for
+    // why that costs a second layout. A graph with no pre-income layer has nothing to lift
+    // and skips it, so every other chart lays out exactly as it did before.
+    if (live.some((n) => n.kind === "deduction")) {
+      laid = gen().nodeSort(deductionsFirst(laid.nodes))(build());
+    }
     // Column pitch — how much room a label has between its own column and the next.
     const kx = pitchOf(cols, boxW);
     return { ...laid, cols, kx: Number.isFinite(kx) ? kx : boxW };
