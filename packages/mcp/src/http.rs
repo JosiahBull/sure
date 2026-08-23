@@ -22,8 +22,15 @@ use crate::state::McpState;
 /// `legacy_session_mode: false` + `json_response: true` means every call is one POST in and
 /// one JSON body out, with no long-lived SSE stream behind it. That is not a performance
 /// preference — it is what keeps this endpoint compatible with the machinery already
-/// wrapped around it. A held-open stream would sit against `sure_api::cache::timeout`'s
-/// 30-second request deadline, and would still be open when the shutdown drain came for it.
+/// wrapped around it: a held-open stream would still be open when the shutdown drain came
+/// for it.
+///
+/// This used to cite `sure_api::cache::timeout`'s 30-second deadline as the other reason, and
+/// that half was wrong: the timeout wraps `next.run(request)`, which resolves once the response
+/// *head* is ready, so a streamed body is not bounded by it. `GET /api/forecast/stream` holds
+/// one open for as long as its simulation takes and is perfectly well behaved — because it
+/// lives for milliseconds and stops within a path of the client disconnecting, where an MCP
+/// session's would live as long as the client cared to keep it. The drain is the argument.
 ///
 /// # The `Host` allowlist is load-bearing
 ///

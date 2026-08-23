@@ -669,12 +669,32 @@ impl Categories {
     /// Every top-level (no parent) category id and its flow `kind` — the granularity the
     /// forecast's category assumptions resolve at, matching `category_breakdown`'s own
     /// top-level roll-up.
+    /// Every top-level category and its kind, **by id**.
+    ///
+    /// Sorted, and that is not cosmetic. `parents` is a `HashMap`, so this used to hand back a
+    /// fresh permutation on every call — `RandomState` is seeded per process, and iteration
+    /// order is not even stable within one. Three things followed, all of them observed on real
+    /// data before this line existed:
+    ///
+    /// * `?seed=` did not reproduce a forecast. The category order *is* the order
+    ///   `category_sims` consumes its random draws in, so permuting it hands a different
+    ///   realisation to each category — two identically-seeded requests differed in every band.
+    /// * the `ETag` on `/api/forecast/assumptions` never matched, because the JSON came back in
+    ///   a different order each time, so every conditional request re-sent the whole body
+    ///   instead of a `304`.
+    /// * the Assumptions tab shuffled its rows on each load.
+    ///
+    /// Id order rather than name order because it is the one ordering available here that
+    /// cannot change when a category is renamed.
     pub(crate) fn top_level_kinds(&self) -> Vec<(i64, CategoryKind)> {
-        self.parents
+        let mut out: Vec<(i64, CategoryKind)> = self
+            .parents
             .iter()
             .filter(|(_, parent)| parent.is_none())
             .filter_map(|(id, _)| self.kinds.get(id).map(|k| (*id, *k)))
-            .collect()
+            .collect();
+        out.sort_unstable_by_key(|&(id, _)| id);
+        out
     }
 
     pub(crate) fn name_of(&self, id: i64) -> String {
@@ -730,13 +750,6 @@ pub(crate) type Ledger = (
     HashMap<i64, Vec<(NaiveDate, i64, String)>>,
     HashMap<i64, Vec<(NaiveDate, i64, String)>>,
 );
-
-/// The whole ledger, from the first row on record. Only the forecast wants this: it fits
-/// growth trends and dividend yields over all of an account's history, so there is no window
-/// to push down. Every *report* goes through [`load_ledger_from`] instead.
-pub(crate) async fn load_ledger(reports: &dyn ReportRepo) -> AppResult<Ledger> {
-    load_ledger_window(reports, None).await
-}
 
 /// The ledger a report needs to value accounts on any date from `from` onwards.
 ///
