@@ -103,6 +103,47 @@
     events.slice().sort((a, b) => a.expected_on.localeCompare(b.expected_on))
   );
 
+  /**
+   * What one relation says, in words.
+   *
+   * A `switch` over the kind rather than a ternary, and the difference is not style: this was a
+   * ternary that handled `after` and let everything else fall through to "only if X happens", so
+   * the day `only_if_not` arrived every negated event started claiming the exact opposite of its
+   * condition — "Series C, only if Partly fails happens". A typed switch with no default makes the
+   * next kind a compile error here instead.
+   */
+  function relationLabel(r: Schemas["ForecastEventRelation"]): string {
+    const on = eventName.get(r.depends_on_event_id) ?? "another change";
+    switch (r.kind) {
+      case "after":
+        return `after ${on}${r.min_gap_months ? ` +${r.min_gap_months}mo` : ""}`;
+      case "only_if":
+        return `only if ${on} happens`;
+      case "only_if_not":
+        return `only if ${on} does not happen`;
+    }
+  }
+
+  /**
+   * The gap between what was configured and what actually happened, where there is one.
+   *
+   * A conditional event is stored at its probability *given* its condition — "Series C is certain if
+   * the company survives" is 100% — so the configured figure alone reads as a certainty and is
+   * exactly the wrong number to plan around. `occurrence_rate_bps` is what the simulation observed
+   * across every path, which is the unconditional answer, and the two differ precisely when a
+   * condition bound. Shown only then, because on an ordinary event it would be noise.
+   */
+  function conditionalNote(
+    e: Schemas["ForecastEvent"],
+    o: Schemas["EventOutcome"] | undefined
+  ): string | null {
+    if (!o) return null;
+    // A percentage point of slack, so sampling noise on a genuinely unconditional event does not
+    // produce a note on every row.
+    if (Math.abs(o.occurrence_rate_bps - e.probability_bps) < 100) return null;
+    return `${(o.occurrence_rate_bps / 100).toFixed(0)}% once its conditions are counted`;
+  }
+
   function spreadLabel(months: number): string {
     if (months === 0) return "on the date";
     if (months % 12 === 0) return `± ${months / 12} ${months === 12 ? "year" : "years"}`;
@@ -168,23 +209,23 @@
             <span class="sentence">
               <strong>{e.label}</strong>
               <span class="faint">·</span>
-              <!-- Opacity tracks probability here and on the chart, so the list and the picture
-                   encode certainty the same way. -->
-              <span class="pct" style="--o:{0.5 + 0.5 * (e.probability_bps / 10_000)}">
+              <!-- Opacity tracks the *realised* rate here and on the chart, so the list and the
+                   picture encode certainty the same way — and so a conditional event does not read
+                   as a certainty. See `conditionalNote`. -->
+              <span
+                class="pct"
+                style="--o:{0.5 + 0.5 * ((o?.occurrence_rate_bps ?? e.probability_bps) / 10_000)}"
+              >
                 {(e.probability_bps / 100).toFixed(0)}% likely
               </span>
+              {#if conditionalNote(e, o)}
+                <span class="conditional small">{conditionalNote(e, o)}</span>
+              {/if}
               <span class="faint">·</span>
               <span>around {formatDate(e.expected_on)}</span>
               <span class="faint small">{spreadLabel(e.timing_spread_months)}</span>
               {#each e.relations as r (r.id)}
-                <span class="faint small">
-                  ·
-                  {r.kind === "after"
-                    ? `after ${eventName.get(r.depends_on_event_id) ?? "another change"}${
-                        r.min_gap_months ? ` +${r.min_gap_months}mo` : ""
-                      }`
-                    : `only if ${eventName.get(r.depends_on_event_id) ?? "another change"} happens`}
-                </span>
+                <span class="faint small">· {relationLabel(r)}</span>
               {/each}
             </span>
           </div>
@@ -302,6 +343,11 @@
     gap: 5px;
     min-width: 0;
     font-size: 13px;
+  }
+  /* The number to actually plan around, so it must not read as a footnote to the configured one. */
+  .conditional {
+    color: var(--warn);
+    font-variant-numeric: tabular-nums;
   }
   .pct {
     opacity: var(--o);
