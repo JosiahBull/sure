@@ -150,6 +150,10 @@
         target: { kind: "account", account_id: acct },
         amount_minor: 0,
       } as never,
+      // 10000 bps is a no-op, so a freshly added re-mark changes nothing until it is edited —
+      // better than defaulting to a number that quietly re-prices a holding.
+      revalue: { kind: "revalue", account_id: acct, factor_bps: 10_000 } as never,
+      liquidate: { kind: "liquidate", account_id: acct, share_bps: 5_000 } as never,
     };
     effects.push(made[kind]);
   }
@@ -325,7 +329,39 @@
           <input class="input tabular narrow" bind:value={r.ramp_months} />
           <span class="unit small faint">for</span>
           <input class="input tabular narrow" bind:value={r.duration_months} placeholder="∞" />
-        {:else}
+        {:else if r.kind === "revalue"}
+          <select class="select" bind:value={r.account_id}>
+            {#each accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+          </select>
+          <span class="unit small faint">is worth</span>
+          <input
+            class="input tabular narrow"
+            value={(r.factor_bps as unknown as number) / 100}
+            oninput={(ev) =>
+              ((r.factor_bps as unknown as number) = Math.round(
+                parseFloat((ev.currentTarget as HTMLInputElement).value || "0") * 100
+              ))}
+          />
+          <!-- A multiple of what it is worth now, not a new value: for a holding projected as
+               units x price, setting the value would overwrite the vesting ramp. 600% is a 6x
+               round; 0% is the company being worth nothing, and that is permanent. -->
+          <span class="unit small faint">% of what it is now (0% = worthless)</span>
+        {:else if r.kind === "liquidate"}
+          <span class="unit small faint">sell</span>
+          <input
+            class="input tabular narrow"
+            value={(r.share_bps as unknown as number) / 100}
+            oninput={(ev) =>
+              ((r.share_bps as unknown as number) = Math.round(
+                parseFloat((ev.currentTarget as HTMLInputElement).value || "0") * 100
+              ))}
+          />
+          <span class="unit small faint">% of</span>
+          <select class="select" bind:value={r.account_id}>
+            {#each accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+          </select>
+          <span class="unit small faint">into cash</span>
+        {:else if r.kind === "set_baseline" || r.kind === "one_off_amount"}
           <select
             class="select"
             value={(r.target as never as { kind: string }).kind}
@@ -363,6 +399,15 @@
                 parseFloat((ev.currentTarget as HTMLInputElement).value || "0") * 100
               ))}
           />
+        {:else}
+          <!-- Every arm above tests an explicit kind, so this is only reached by a kind added to
+               the API and not yet to this editor. It says so instead of rendering a wrong control
+               or crashing: the previous version of this chain ended in a bare `{:else}` that
+               assumed a `.target`, so the day `revalue` arrived, opening any event that had one
+               threw on `r.target.kind` and took the whole editor down. -->
+          <span class="unmapped small">
+            “{r.kind}” has no editor here yet — it will still run, but edit it through the API.
+          </span>
         {/if}
         <button class="btn btn-sm btn-danger" onclick={() => effects.splice(i, 1)}>✕</button>
       </div>
@@ -380,6 +425,8 @@
     </button>
     <button class="btn btn-sm" onclick={() => addEffect("one_off_amount")}>+ One-off</button>
     <button class="btn btn-sm" onclick={() => addEffect("set_baseline")}>+ Set a baseline</button>
+    <button class="btn btn-sm" onclick={() => addEffect("revalue")}>+ Re-price a holding</button>
+    <button class="btn btn-sm" onclick={() => addEffect("liquidate")}>+ Sell some of a holding</button>
   </div>
 
   <!-- ---- relations -------------------------------------------------------------- -->
@@ -388,9 +435,14 @@
     {#each relations as r, i (i)}
       <div class="eff-row">
         <span class="unit small faint">Happens</span>
+        <!-- Every relation kind needs an option here. A stored kind with no matching option binds
+             to nothing, so the control renders blank and *saving* writes whichever value the empty
+             selection resolves to — silently turning "only if X does not happen" into something
+             else. That is exactly what `only_if_not` did before it was listed. -->
         <select class="select" bind:value={r.kind}>
           <option value="after">after</option>
           <option value="only_if">only if</option>
+          <option value="only_if_not">only if NOT</option>
         </select>
         {#if r.kind === "after"}
           <input class="input tabular narrow" bind:value={r.min_gap_months} />
@@ -507,6 +559,10 @@
   .eff-row :global(.input.narrow) {
     min-width: 52px;
     width: 52px;
+  }
+  /* A gap in this editor, not a broken event: the projection still runs it. */
+  .unmapped {
+    color: var(--warn);
   }
   .unit {
     white-space: nowrap;
