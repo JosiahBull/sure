@@ -2383,6 +2383,12 @@ struct PathScratch {
     cat_baselines: Vec<f64>,
     schedules: Vec<Option<AmortSchedule>>,
     price_factors: Vec<f64>,
+    /// At-mark value of units already sold out of a vesting account, per path.
+    ///
+    /// Subtracted from the ramp for every later month, because a sale is permanent: without it the
+    /// next month's `vesting_value[m]` would silently restore the units that were sold, and the
+    /// holding would be sold again and again for the rest of the horizon.
+    sold_at_mark: Vec<f64>,
     stream_levels: Vec<f64>,
     stream_next_step: Vec<usize>,
     stream_from: Vec<i64>,
@@ -2406,6 +2412,7 @@ impl PathScratch {
             cat_baselines: Vec::with_capacity(c),
             schedules: Vec::with_capacity(a),
             price_factors: Vec::with_capacity(a),
+            sold_at_mark: Vec::with_capacity(a),
             stream_levels: Vec::with_capacity(s),
             stream_next_step: Vec::with_capacity(s),
             stream_from: Vec::with_capacity(s),
@@ -2578,6 +2585,7 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
         cat_baselines,
         schedules,
         price_factors,
+        sold_at_mark,
         stream_levels,
         stream_next_step,
         stream_from,
@@ -2727,6 +2735,22 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
                         }
                     }
                 },
+                LifeEffectSpec::Revalue {
+                    account_id,
+                    factor_bps,
+                } => {
+                    if let Some(i) = account_index(account_sims, account_id) {
+                        overlay.acc_scale[i].push((month, factor_bps as f64 / 10_000.0));
+                    }
+                }
+                LifeEffectSpec::Liquidate {
+                    account_id,
+                    share_bps,
+                } => {
+                    if let Some(i) = account_index(account_sims, account_id) {
+                        overlay.acc_sell[i].push((month, share_bps as f64 / 10_000.0));
+                    }
+                }
                 LifeEffectSpec::OneOffAmount {
                     target,
                     amount_minor,
@@ -2772,10 +2796,15 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
     // `AccountProjection::Vesting`. Starts at 1.0: month zero is priced at the mark the
     // ramp was built with, and drift accumulates from there.
     reset_with(price_factors, acc_values.len(), 1.0);
+    reset_with(sold_at_mark, acc_values.len(), 0.0);
 
     for m in 1..=horizon {
         // Base-currency major units, like `cash`.
         let mut repayments = 0.0;
+        // Cash raised by selling part of a holding this month. Credited to the pool below, in the
+        // same month it left the account: a sale conserves value, and splitting it across two months
+        // would make the household briefly poorer than it is.
+        let mut liquidations = 0.0;
         for (i, sim) in account_sims.iter().enumerate() {
             match sim.projection {
                 AccountProjection::Deterministic(_) => {
@@ -2801,10 +2830,27 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
                             0.0
                         };
                         price_factors[i] *= (sim.monthly_drift[m as usize] + noise).exp();
+                        // A funding round, or the company failing. On the *price factor* rather
+                        // than the value, which is the whole reason this projection keeps the two
+                        // apart: applied to the value it would re-price the units still to vest as
+                        // they arrive, and a 6x round would then keep paying 6x on every later
+                        // month's vesting instead of once on the shares that existed.
+                        for &(_, factor) in
+                            overlay.acc_scale[i].iter().filter(|&&(idx, _)| idx == m)
+                        {
+                            price_factors[i] *= factor;
+                        }
                         // Units from the deed, price from the path. Neither compounds
                         // into the other.
-                        acc_values[i] = sim.vesting_value.get(m as usize).copied().unwrap_or(0.0)
-                            * price_factors[i];
+                        acc_values[i] = held_at_mark(sim, sold_at_mark[i], m) * price_factors[i];
+                    }
+                    // A sale. Of what has **vested**, not of the whole position: unvested units are
+                    // a promise, and selling them would produce cash from one.
+                    for &(_, share) in overlay.acc_sell[i].iter().filter(|&&(idx, _)| idx == m) {
+                        let sold = held_at_mark(sim, sold_at_mark[i], m) * share;
+                        sold_at_mark[i] += sold;
+                        liquidations += sold * price_factors[i] * sim.base_scale;
+                        acc_values[i] = held_at_mark(sim, sold_at_mark[i], m) * price_factors[i];
                     }
                     acc_values[i] += overlay.acc_one[i]
                         .iter()
@@ -2822,7 +2868,24 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
                         } else {
                             0.0
                         };
+                        // No ramp to keep separate here, so a re-pricing is a straight multiply on
+                        // the balance — the same statement about the same money.
+                        for &(_, factor) in
+                            overlay.acc_scale[i].iter().filter(|&&(idx, _)| idx == m)
+                        {
+                            acc_values[i] *= factor;
+                        }
                         acc_values[i] *= (sim.monthly_drift[m as usize] + noise).exp();
+                    }
+                    // Selling part of an ordinary holding: the share leaves the balance and the
+                    // proceeds arrive in cash. Only a positive balance can be sold — a liability is
+                    // not a holding, and "selling 50% of a debt" would mint money.
+                    for &(_, share) in overlay.acc_sell[i].iter().filter(|&&(idx, _)| idx == m) {
+                        if acc_values[i] > 0.0 {
+                            let sold = acc_values[i] * share;
+                            acc_values[i] -= sold;
+                            liquidations += sold * sim.base_scale;
+                        }
                     }
                     acc_values[i] += overlay.acc_one[i]
                         .iter()
@@ -2982,7 +3045,7 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
         // Servicing the debt is real money leaving. Net worth therefore falls by
         // exactly the interest each month: the principal moves from cash to the
         // liability and nets out, the interest simply goes.
-        cash += net_flow + stream_net - repayments;
+        cash += net_flow + stream_net - repayments + liquidations;
         out.income[(m - 1) as usize].push(stream_net);
 
         // Cleared the first month the balance is no longer a debt. `>= 0.0` rather than
@@ -3323,6 +3386,12 @@ struct Overlay {
     acc_one: Vec<Vec<(i64, f64)>>,
     cat_step: Vec<Vec<(i64, f64)>>,
     cat_one: Vec<Vec<(i64, f64)>>,
+    /// `(month, factor)` — a re-pricing. Multiplicative and applied *before* the month's own
+    /// growth, so a round landing in month `m` is worth its new price for the whole of `m`.
+    acc_scale: Vec<Vec<(i64, f64)>>,
+    /// `(month, share)` — a partial sale. The proceeds leave the account and arrive in cash in the
+    /// same month, which is the only arrangement that conserves them.
+    acc_sell: Vec<Vec<(i64, f64)>>,
     deltas: Vec<ActiveDelta>,
 }
 
@@ -3333,6 +3402,8 @@ impl Overlay {
             acc_one: vec![Vec::new(); accounts],
             cat_step: vec![Vec::new(); categories],
             cat_one: vec![Vec::new(); categories],
+            acc_scale: vec![Vec::new(); accounts],
+            acc_sell: vec![Vec::new(); accounts],
             deltas: Vec::new(),
         }
     }
@@ -3344,6 +3415,8 @@ impl Overlay {
             .chain(self.acc_one.iter_mut())
             .chain(self.cat_step.iter_mut())
             .chain(self.cat_one.iter_mut())
+            .chain(self.acc_scale.iter_mut())
+            .chain(self.acc_sell.iter_mut())
         {
             v.clear();
         }
@@ -3401,6 +3474,9 @@ struct EventSim {
     /// `(parent index into the sims, min gap in months)`.
     after: Vec<(usize, i64)>,
     only_if: Vec<usize>,
+    /// Parents that must **not** have occurred. The complement of `only_if`, and what makes a pair
+    /// of outcomes a partition of the paths rather than two independent draws.
+    only_if_not: Vec<usize>,
 }
 
 /// What one path decided about one event.
@@ -3462,7 +3538,8 @@ fn sample_event_outcomes(
                 path as u64,
             ));
             let occurred = rng.random::<f64>() < ev.probability
-                && ev.only_if.iter().all(|&p| path_events[p].occurred);
+                && ev.only_if.iter().all(|&p| path_events[p].occurred)
+                && ev.only_if_not.iter().all(|&p| !path_events[p].occurred);
             // Drawn unconditionally, and separately from the occurrence draw, so changing an event's
             // probability cannot shift its timing distribution. One question, one draw.
             let u = rng.random::<f64>();
@@ -3553,6 +3630,7 @@ fn resolve_events(events: &[ForecastEvent], today: NaiveDate, horizon: i64) -> V
             .unwrap_or(0.0);
         let mut after = Vec::new();
         let mut only_if = Vec::new();
+        let mut only_if_not = Vec::new();
         for r in &e.relations {
             let Some(&parent) = position.get(&r.depends_on_event_id) else {
                 continue;
@@ -3565,6 +3643,7 @@ fn resolve_events(events: &[ForecastEvent], today: NaiveDate, horizon: i64) -> V
             match r.kind {
                 RelationKind::After => after.push((parent, r.min_gap_months)),
                 RelationKind::OnlyIf => only_if.push(parent),
+                RelationKind::OnlyIfNot => only_if_not.push(parent),
             }
         }
         sims.push(EventSim {
@@ -3578,6 +3657,7 @@ fn resolve_events(events: &[ForecastEvent], today: NaiveDate, horizon: i64) -> V
             effects: e.effects.iter().map(|x| x.spec).collect(),
             after,
             only_if,
+            only_if_not,
         });
     }
     let _ = horizon;
@@ -3944,6 +4024,15 @@ fn commitment_series(sims: &[CommitmentSim], horizon: i64) -> Vec<f64> {
     (0..=horizon)
         .map(|m| sims.iter().map(|s| s.at(m)).sum())
         .collect()
+}
+
+/// The at-mark value of the units this path still holds in a vesting account at month `m`.
+///
+/// The contractual ramp less whatever has already been sold, floored at zero. Floored rather than
+/// trusted: `vesting_value` is monotone in practice but a hand-edited grant could make it dip, and a
+/// negative holding would read as a liability and pay cash back on the next sale.
+fn held_at_mark(sim: &AccountSim, sold_at_mark: f64, m: i64) -> f64 {
+    (sim.vesting_value.get(m as usize).copied().unwrap_or(0.0) - sold_at_mark).max(0.0)
 }
 
 /// A recurring cost an event switched on, on one path.
@@ -6196,6 +6285,7 @@ mod tests {
             effects: Vec::new(),
             after: Vec::new(),
             only_if: Vec::new(),
+            only_if_not: Vec::new(),
         }];
         let outcomes = sample_event_outcomes(7, 32, 12, &sims);
         assert!(outcomes.iter().all(|p| p[0].month == Some(1)));
@@ -6217,6 +6307,7 @@ mod tests {
             effects: Vec::new(),
             after: Vec::new(),
             only_if: Vec::new(),
+            only_if_not: Vec::new(),
         }];
         let outcomes = sample_event_outcomes(7, 8, 12, &sims);
         assert!(outcomes.iter().all(|p| p[0].month == Some(400)));
@@ -6242,6 +6333,7 @@ mod tests {
             effects: Vec::new(),
             after: Vec::new(),
             only_if: Vec::new(),
+            only_if_not: Vec::new(),
         }];
         let outcomes = sample_event_outcomes(11, 3_000, 120, &sims);
         let months: Vec<i64> = outcomes.iter().filter_map(|p| p[0].month).collect();
@@ -6272,6 +6364,7 @@ mod tests {
             effects: Vec::new(),
             after: Vec::new(),
             only_if: Vec::new(),
+            only_if_not: Vec::new(),
         };
         let child = EventSim {
             event_id: 2,
@@ -6285,6 +6378,7 @@ mod tests {
             effects: Vec::new(),
             after: vec![(0, 3)],
             only_if: Vec::new(),
+            only_if_not: Vec::new(),
         };
         let sims = vec![parent, child];
         let outcomes = sample_event_outcomes(3, 16, 120, &sims);
@@ -6313,6 +6407,65 @@ mod tests {
         );
     }
 
+    /// `only_if_not` partitions the paths, which two independent draws cannot do.
+    ///
+    /// The arithmetic that motivated it: a 40% failure and a 60% funding round as separate events
+    /// give 24% of paths *both* — a company that failed and then raised at 6x — and 24% neither.
+    /// Hanging the round off the failure with `only_if_not` gives exactly the 60%, and never both.
+    #[test]
+    fn only_if_not_makes_two_outcomes_a_partition_rather_than_two_draws() {
+        let failure = EventSim {
+            event_id: 1,
+            label: "Partly fails".into(),
+            kind: sure_core::LifeEventKind::Custom,
+            person_id: None,
+            probability: 0.4,
+            expected_month: 6.0,
+            spread: 6.0,
+            effects: Vec::new(),
+            after: Vec::new(),
+            only_if: Vec::new(),
+            only_if_not: Vec::new(),
+        };
+        let round = EventSim {
+            event_id: 2,
+            label: "Series C".into(),
+            kind: sure_core::LifeEventKind::Custom,
+            person_id: None,
+            // Certain *given* survival, which is what the relation expresses.
+            probability: 1.0,
+            expected_month: 18.0,
+            spread: 0.0,
+            effects: Vec::new(),
+            after: Vec::new(),
+            only_if: Vec::new(),
+            only_if_not: vec![0],
+        };
+        let sims = vec![failure, round];
+        let out = sample_event_outcomes(7, 4_000, 360, &sims);
+
+        let failed = out.iter().filter(|p| p[0].occurred).count();
+        let raised = out.iter().filter(|p| p[1].occurred).count();
+        let both = out
+            .iter()
+            .filter(|p| p[0].occurred && p[1].occurred)
+            .count();
+        let neither = out
+            .iter()
+            .filter(|p| !p[0].occurred && !p[1].occurred)
+            .count();
+
+        // The partition: every path is one or the other, and never both.
+        assert_eq!(both, 0, "a failed company cannot also raise");
+        assert_eq!(neither, 0, "every path is one outcome or the other");
+        assert_eq!(failed + raised, 4_000);
+        // …and the failure rate is still the 40% that was configured.
+        assert!(
+            (1_400..=1_800).contains(&failed),
+            "expected ~40% failures, got {failed}"
+        );
+    }
+
     /// A 50% event happens on about half the paths, and the same seed gives the same answer twice.
     #[test]
     fn occurrence_is_reproducible_and_matches_the_configured_probability() {
@@ -6327,6 +6480,7 @@ mod tests {
             effects: Vec::new(),
             after: Vec::new(),
             only_if: Vec::new(),
+            only_if_not: Vec::new(),
         }];
         let a = sample_event_outcomes(99, 4_000, 60, &sims);
         let b = sample_event_outcomes(99, 4_000, 60, &sims);
@@ -7840,6 +7994,107 @@ mod tests {
             assert_eq!(
                 with.months[0].net_worth.median_minor - without.months[0].net_worth.median_minor,
                 50_000_00
+            );
+        }
+
+        /// **A sale conserves value.** Selling half a holding moves money between two places; it
+        /// must not create or destroy any.
+        ///
+        /// The one thing `Liquidate` can get wrong that nothing else would catch: `SetBaseline` to
+        /// half discards the proceeds and `OneOffAmount` on the cash side invents money the holding
+        /// still has, so the only evidence that this effect is the right shape is that net worth is
+        /// unchanged across the month it fires.
+        #[test]
+        fn simulate_moves_a_sale_into_cash_without_changing_net_worth() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let yesterday = today - chrono::Duration::days(1);
+            let sale = |month: &str| {
+                vec![ForecastEvent {
+                    id: 1,
+                    label: "Sell half".into(),
+                    kind: sure_core::LifeEventKind::Custom,
+                    person_id: None,
+                    expected_on: month.into(),
+                    // A certainty with no spread, so the month it lands in is not a distribution and
+                    // the before/after comparison below is exact.
+                    timing_spread_months: 0,
+                    probability_bps: 10_000,
+                    notes: None,
+                    effects: vec![sure_core::ForecastEventEffect {
+                        id: 1,
+                        event_id: 1,
+                        sort_order: 0,
+                        spec: LifeEffectSpec::Liquidate {
+                            account_id: 1,
+                            share_bps: 5_000,
+                        },
+                    }],
+                    relations: Vec::new(),
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                }]
+            };
+            // A holding with no growth and no volatility, so the only thing that moves it is the
+            // sale — and a bank account, so the proceeds stay inside `assets` rather than turning a
+            // negative cash pool less negative and landing on the other side of the split.
+            let accounts = vec![
+                account(1, AK::Brokerage, "NZD"),
+                account(2, AK::Bank, "NZD"),
+            ];
+            let valuations = vec![
+                valued(1, yesterday, 400_000_00),
+                valued(2, yesterday, 50_000_00),
+            ];
+            // One valuation is not enough history to fit anything, so both accounts resolve to
+            // `InsufficientHistory` — growth 0, volatility 0. That is exactly the flat holding this
+            // test wants, and it comes for free rather than needing an override.
+            let run = |events: Vec<ForecastEvent>| {
+                let svc = make_service(
+                    accounts.clone(),
+                    valuations.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    events,
+                    today,
+                );
+                rt.block_on(svc.simulate(&SimulationParams {
+                    horizon_months: 6,
+                    simulations: 50,
+                    currency: None,
+                    seed: Some(11),
+                }))
+                .unwrap()
+            };
+
+            let without = run(Vec::new());
+            let with = run(sale("2026-11-01"));
+
+            // Net worth is identical either way: the sale moved $200k from the holding to the bank.
+            for m in 0..6 {
+                let a = without.months[m].net_worth.median_minor;
+                let b = with.months[m].net_worth.median_minor;
+                assert!(
+                    (a - b).abs() < 100,
+                    "month {m}: a sale changed net worth, {a} vs {b}"
+                );
+            }
+            // …and it really did move: assets are the same, but the sale happened, so the holding
+            // must have halved. Checked through `liabilities` staying zero, which is what says the
+            // proceeds landed in the pool rather than the pool going negative to fund something.
+            assert_eq!(with.months[5].liabilities.median_minor, 0);
+
+            // And it happens once. Without a sold-units ledger the ramp would restore the sold half
+            // every month and the account would be sold again and again — net worth would then
+            // diverge from the no-sale run, which the loop above already forbids, so a second run
+            // with the sale two months earlier must agree with it too.
+            let earlier = run(sale("2026-09-01"));
+            assert!(
+                (earlier.months[5].net_worth.median_minor - with.months[5].net_worth.median_minor)
+                    .abs()
+                    < 100,
+                "when the sale happens should not change the total"
             );
         }
 

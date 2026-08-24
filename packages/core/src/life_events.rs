@@ -73,6 +73,8 @@ pub enum LifeEffectKind {
     RecurringDelta,
     SetBaseline,
     OneOffAmount,
+    Revalue,
+    Liquidate,
 }
 
 impl LifeEffectKind {
@@ -85,6 +87,8 @@ impl LifeEffectKind {
             LifeEffectKind::RecurringDelta => "recurring_delta",
             LifeEffectKind::SetBaseline => "set_baseline",
             LifeEffectKind::OneOffAmount => "one_off_amount",
+            LifeEffectKind::Revalue => "revalue",
+            LifeEffectKind::Liquidate => "liquidate",
         }
     }
 }
@@ -101,6 +105,8 @@ impl FromStr for LifeEffectKind {
             "recurring_delta" => Ok(LifeEffectKind::RecurringDelta),
             "set_baseline" => Ok(LifeEffectKind::SetBaseline),
             "one_off_amount" => Ok(LifeEffectKind::OneOffAmount),
+            "revalue" => Ok(LifeEffectKind::Revalue),
+            "liquidate" => Ok(LifeEffectKind::Liquidate),
             other => Err(format!("unknown forecast effect kind '{other}'")),
         }
     }
@@ -177,6 +183,30 @@ pub enum LifeEffectSpec {
         target: EffectTarget,
         amount_minor: i64,
     },
+    /// Re-price an account: multiply what it is worth by `factor_bps`, from this month on.
+    ///
+    /// A funding round, a down round, a company failing. Deliberately a *factor* rather than a
+    /// value, and deliberately not `SetBaseline`: a private holding is projected as
+    /// `units x price`, and setting the value would overwrite the quantity ramp with a constant so
+    /// that units still to vest would stop arriving. A round changes the price of a share, not how
+    /// many you are owed. `10000` is a no-op, `60000` a 6x round, `0` the company being worth
+    /// nothing — and zero is permanent, because anything multiplied by it stays there.
+    ///
+    /// On an account without a vesting ramp it multiplies the balance instead, which is the same
+    /// statement about the same money.
+    Revalue { account_id: i64, factor_bps: i64 },
+    /// Sell `share_bps` of an account and put the proceeds in the bank.
+    ///
+    /// The only effect that moves value *between* things rather than changing one of them, and the
+    /// only shape that conserves it: `SetBaseline` to half discards the proceeds, and
+    /// `OneOffAmount` on the cash side invents money the holding still has. What lands in cash is
+    /// then whatever an active investment strategy does with it — paying down expensive debt,
+    /// buying an index fund — which is the point of splitting the two concepts.
+    ///
+    /// For a holding on a vesting ramp this sells a share of what has **vested** by the sampled
+    /// month. Unvested units are not yours to sell, and counting them would produce cash from a
+    /// promise.
+    Liquidate { account_id: i64, share_bps: i64 },
 }
 
 /// The nine nullable columns a `forecast_event_effects` row carries.
@@ -206,6 +236,8 @@ impl LifeEffectSpec {
             LifeEffectSpec::RecurringDelta { .. } => LifeEffectKind::RecurringDelta,
             LifeEffectSpec::SetBaseline { .. } => LifeEffectKind::SetBaseline,
             LifeEffectSpec::OneOffAmount { .. } => LifeEffectKind::OneOffAmount,
+            LifeEffectSpec::Revalue { .. } => LifeEffectKind::Revalue,
+            LifeEffectSpec::Liquidate { .. } => LifeEffectKind::Liquidate,
         }
     }
 
@@ -278,6 +310,25 @@ impl LifeEffectSpec {
                     ..EffectColumns::default()
                 }
             }
+            // Both are an account plus a basis-point figure, so both borrow `rate_bps`. Sharing the
+            // column is safe because `kind` disambiguates and the CHECK pins each shape, and it
+            // keeps the table from growing a column per effect.
+            LifeEffectSpec::Revalue {
+                account_id,
+                factor_bps,
+            } => EffectColumns {
+                account_id: Some(account_id),
+                rate_bps: Some(factor_bps),
+                ..EffectColumns::default()
+            },
+            LifeEffectSpec::Liquidate {
+                account_id,
+                share_bps,
+            } => EffectColumns {
+                account_id: Some(account_id),
+                rate_bps: Some(share_bps),
+                ..EffectColumns::default()
+            },
         }
     }
 
@@ -349,6 +400,14 @@ impl LifeEffectSpec {
                 target: target(&c)?,
                 amount_minor: want(c.amount_minor, "amount_minor")?,
             }),
+            LifeEffectKind::Revalue => Ok(LifeEffectSpec::Revalue {
+                account_id: want(c.account_id, "account_id")?,
+                factor_bps: want(c.rate_bps, "rate_bps")?,
+            }),
+            LifeEffectKind::Liquidate => Ok(LifeEffectSpec::Liquidate {
+                account_id: want(c.account_id, "account_id")?,
+                share_bps: want(c.rate_bps, "rate_bps")?,
+            }),
         }
     }
 }
@@ -361,6 +420,12 @@ pub enum RelationKind {
     After,
     /// Only on paths where the parent occurred.
     OnlyIf,
+    /// Only on paths where the parent did **not** occur — the complement of [`Self::OnlyIf`].
+    ///
+    /// What makes two outcomes a partition rather than two coin flips. Modelling "a 40% chance of
+    /// failure, otherwise a funding round" as two independent events gives 24% of paths both and
+    /// 24% neither; hanging the round off the failure with this gives exactly the 60% that is meant.
+    OnlyIfNot,
 }
 
 impl RelationKind {
@@ -368,6 +433,7 @@ impl RelationKind {
         match self {
             RelationKind::After => "after",
             RelationKind::OnlyIf => "only_if",
+            RelationKind::OnlyIfNot => "only_if_not",
         }
     }
 }
@@ -379,6 +445,7 @@ impl FromStr for RelationKind {
         match s {
             "after" => Ok(RelationKind::After),
             "only_if" => Ok(RelationKind::OnlyIf),
+            "only_if_not" => Ok(RelationKind::OnlyIfNot),
             other => Err(format!("unknown forecast event relation kind '{other}'")),
         }
     }
@@ -525,6 +592,26 @@ impl SaveForecastEvent {
                         }
                     }
                 }
+                LifeEffectSpec::Revalue { factor_bps, .. } => {
+                    // Zero is legal and means the holding became worthless. Negative is not a
+                    // valuation: a share cannot be worth less than nothing, and the projection
+                    // would flip the account from an asset to a liability.
+                    if factor_bps < 0 {
+                        problems.push(at(
+                            "a valuation factor cannot be negative — 0 is a company worth nothing"
+                                .into(),
+                        ));
+                    }
+                }
+                LifeEffectSpec::Liquidate { share_bps, .. } => {
+                    // Bounded at both ends, and the upper bound matters: selling 150% of a holding
+                    // is a typo, and the projection would cheerfully produce the cash for it.
+                    if !(1..=10_000).contains(&share_bps) {
+                        problems.push(at(format!(
+                            "a sale must be between 1 and 10000 bps of the holding, got {share_bps}"
+                        )));
+                    }
+                }
                 LifeEffectSpec::IncomeStart { .. }
                 | LifeEffectSpec::IncomeEnd { .. }
                 | LifeEffectSpec::SetBaseline { .. }
@@ -566,9 +653,13 @@ pub fn effect_amounts_in_range(effects: &[LifeEffectSpec]) -> Result<(), Vec<Str
             | LifeEffectSpec::OneOffAmount { amount_minor, .. } => {
                 check(amount_minor, &mut problems)
             }
+            // Neither carries a money amount — a factor and a share are both basis points, and
+            // their ranges are checked in `validate` where the other bps fields are.
             LifeEffectSpec::IncomeStart { .. }
             | LifeEffectSpec::IncomeEnd { .. }
-            | LifeEffectSpec::IncomePause { .. } => {}
+            | LifeEffectSpec::IncomePause { .. }
+            | LifeEffectSpec::Revalue { .. }
+            | LifeEffectSpec::Liquidate { .. } => {}
         }
     }
     if problems.is_empty() {
