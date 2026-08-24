@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE investment_strategies SET\n            label=?2, active_from=?3, active_to=?4, income_share_bps=?5, income_stream_id=?6,\n            windfall_share_bps=?7, debt_above_bps=?8, target_account_id=?9, enabled=?10,\n            sort_order=?11, notes=?12, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n         WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": []
+  },
+  "hash": "df600afb796450ca06c64c38f253b32939344954d60e28b953697e8d5275a657"
+}

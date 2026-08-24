@@ -468,6 +468,7 @@ pub struct SimulationInputs {
     category_sims: Vec<CategorySim>,
     stream_sims: Vec<StreamSim>,
     event_sims: Vec<EventSim>,
+    strategies: Vec<StrategySim>,
     /// Every commitment's cost in each month `0..=horizon`, summed, base-currency major units.
     ///
     /// One table rather than a list of commitments, because they are deterministic: the whole of
@@ -644,11 +645,12 @@ pub struct ForecastService {
     crons: Arc<dyn CronRepo>,
     equity: Arc<dyn EquityRepo>,
     commitments: Arc<dyn crate::ports::CommitmentRepo>,
+    strategies: Arc<dyn crate::ports::StrategyRepo>,
     clock: Arc<dyn Clock>,
 }
 
 impl ForecastService {
-    // Nine collaborators, one per repository this projection reads. Grouping them into a
+    // Ten collaborators, one per repository this projection reads. Grouping them into a
     // struct would only move the same list one line up, and the alternative — the service
     // reaching for a god-object handle — is what the ports split exists to prevent.
     #[allow(clippy::too_many_arguments)]
@@ -661,6 +663,7 @@ impl ForecastService {
         crons: Arc<dyn CronRepo>,
         equity: Arc<dyn EquityRepo>,
         commitments: Arc<dyn crate::ports::CommitmentRepo>,
+        strategies: Arc<dyn crate::ports::StrategyRepo>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
@@ -672,6 +675,7 @@ impl ForecastService {
             crons,
             equity,
             commitments,
+            strategies,
             clock,
         }
     }
@@ -1947,6 +1951,18 @@ impl ForecastService {
         // `SimulationInputs` produce different numbers each time it were used.
         let seed = params.seed.unwrap_or_else(rand::random);
 
+        // Resolved here rather than in the compute half: it needs the account list and the stream
+        // slots, and it can add a warning — none of which the pure simulation has.
+        let strategies = strategy_sims(
+            &self.strategies.list_strategies().await?,
+            &accounts,
+            &account_sims,
+            &stream_sims,
+            today,
+            horizon,
+            &mut warnings,
+        );
+
         Ok(SimulationInputs {
             accounts,
             today,
@@ -1962,6 +1978,7 @@ impl ForecastService {
             category_sims,
             stream_sims,
             event_sims,
+            strategies,
             commitments,
             warnings,
             reconciliations,
@@ -2082,6 +2099,7 @@ impl ForecastService {
             category_sims,
             stream_sims,
             event_sims,
+            strategies,
             commitments,
             warnings,
             reconciliations,
@@ -2140,6 +2158,7 @@ impl ForecastService {
             event_sims: &event_sims,
             event_outcomes: &event_outcomes,
             commitments: &commitments,
+            strategies: &strategies,
             // One `powi` for the run rather than three per event per path.
             minor_per_major: 10f64.powi(fx.dp(&base)),
         };
@@ -2312,6 +2331,7 @@ struct PathCtx<'a> {
     event_outcomes: &'a [Vec<PathEvent>],
     /// Indexed by month, base-currency major units. See [`SimulationInputs::commitments`].
     commitments: &'a [f64],
+    strategies: &'a [StrategySim],
     /// `10^decimals` for the report currency — the divisor turning an event's minor-unit amount
     /// into the major units the projection works in.
     minor_per_major: f64,
@@ -2383,6 +2403,11 @@ struct PathScratch {
     cat_baselines: Vec<f64>,
     schedules: Vec<Option<AmortSchedule>>,
     price_factors: Vec<f64>,
+    /// This month's net pay from each stream, so a strategy can sweep a share of *one* salary.
+    ///
+    /// Reused across months rather than allocated per month: the whole `PathScratch` arrangement
+    /// exists because a `Vec` per path per month was measurable in the profile.
+    stream_nets: Vec<f64>,
     /// At-mark value of units already sold out of a vesting account, per path.
     ///
     /// Subtracted from the ramp for every later month, because a sale is permanent: without it the
@@ -2413,6 +2438,7 @@ impl PathScratch {
             schedules: Vec::with_capacity(a),
             price_factors: Vec::with_capacity(a),
             sold_at_mark: Vec::with_capacity(a),
+            stream_nets: Vec::with_capacity(s),
             stream_levels: Vec::with_capacity(s),
             stream_next_step: Vec::with_capacity(s),
             stream_from: Vec::with_capacity(s),
@@ -2572,6 +2598,7 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
         event_sims,
         event_outcomes,
         commitments,
+        strategies,
         minor_per_major,
     } = *ctx;
     // Destructured so the arithmetic below reads exactly as it did when this state was local:
@@ -2586,6 +2613,7 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
         schedules,
         price_factors,
         sold_at_mark,
+        stream_nets,
         stream_levels,
         stream_next_step,
         stream_from,
@@ -2797,6 +2825,7 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
     // ramp was built with, and drift accumulates from there.
     reset_with(price_factors, acc_values.len(), 1.0);
     reset_with(sold_at_mark, acc_values.len(), 0.0);
+    reset_with(stream_nets, stream_sims.len(), 0.0);
 
     for m in 1..=horizon {
         // Base-currency major units, like `cash`.
@@ -2980,6 +3009,9 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
         // first (a pay-scale step effective this month pays at the new level *this*
         // month), then the residual increase, then the window gate, then the calendar.
         let mut stream_net = 0.0;
+        // Zeroed every month, not just per path: a stream with no payday in this month contributes
+        // nothing, and a stale figure here would have a strategy sweep a salary that was not paid.
+        stream_nets.fill(0.0);
         for (i, sim) in stream_sims.iter().enumerate() {
             while stream_next_step[i] < path_levels[i].len()
                 && path_levels[i][stream_next_step[i]].0 <= m
@@ -3014,7 +3046,9 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
             // the top bracket for that month alone, which is not how PAYE works.
             let net_annual = sim.take_home.net_annual(level, sim.calibrated_level);
             let ratio = if level > 0.0 { net_annual / level } else { 0.0 };
-            stream_net += gross * ratio * sim.base_scale;
+            let this_stream_net = gross * ratio * sim.base_scale;
+            stream_net += this_stream_net;
+            stream_nets[i] = this_stream_net;
 
             // The deductions no longer vanish. Over thirty years these two lines are most of
             // a retirement balance and the whole of a student loan being cleared.
@@ -3046,6 +3080,48 @@ fn run_path(path: usize, ctx: &PathCtx, scratch: &mut PathScratch, out: &mut Acc
         // exactly the interest each month: the principal moves from cash to the
         // liability and nets out, the interest simply goes.
         cash += net_flow + stream_net - repayments + liquidations;
+
+        // ---- investment strategies ------------------------------------------------------
+        //
+        // Last in the month, on purpose: a strategy invests what is *left*, so it has to run after
+        // spending, pay, repayments and any sale have all settled. Running it earlier would let the
+        // household invest money it then needed for the power bill.
+        for strat in strategies.iter().filter(|s| s.active(m)) {
+            let contributing = match strat.stream {
+                Some(i) => stream_nets[i],
+                None => stream_net,
+            };
+            let desired = contributing * strat.income_share + liquidations * strat.windfall_share;
+            // Capped at the cash that actually exists. A household cannot invest money it does not
+            // have, and letting the sweep run the pool negative would report a household in
+            // overdraft *because* it was saving — which is not a projection anybody should act on.
+            let mut sweep = desired.min(cash.max(0.0));
+            if sweep <= 0.0 {
+                continue;
+            }
+            cash -= sweep;
+            // Expensive debt first, most expensive of all first. Only down to zero: overpaying a
+            // liability past settlement would turn it into an asset, which is the same clamp the
+            // `LinearPaydown` arm and the student-loan branch already apply.
+            for &i in &strat.payoff {
+                if sweep <= 0.0 {
+                    break;
+                }
+                let owed = -acc_values[i] * account_sims[i].base_scale;
+                if owed <= 0.0 {
+                    continue;
+                }
+                let paid = sweep.min(owed);
+                acc_values[i] += paid / account_sims[i].base_scale;
+                sweep -= paid;
+            }
+            // Whatever is left is invested. Its *return* is the target account's own assumption,
+            // resolved on the Assumptions tab — see `InvestmentStrategy::target_account_id` for why
+            // the rate deliberately does not live on the strategy.
+            if sweep > 0.0 {
+                acc_values[strat.target] += sweep / account_sims[strat.target].base_scale;
+            }
+        }
         out.income[(m - 1) as usize].push(stream_net);
 
         // Cleared the first month the balance is no longer a debt. `>= 0.0` rather than
@@ -4024,6 +4100,163 @@ fn commitment_series(sims: &[CommitmentSim], horizon: i64) -> Vec<f64> {
     (0..=horizon)
         .map(|m| sims.iter().map(|s| s.at(m)).sum())
         .collect()
+}
+
+// ---- investment strategies ----------------------------------------------------------
+//
+// What the household does with money it does not spend. Everything else here models what arrives
+// and what leaves; this is the decision in between, and without it surplus cash accumulated in the
+// pool at no return — which understates a household that saves and badly misrepresents one about to
+// receive a lump sum.
+
+/// One strategy, resolved against today's date: months rather than dates, slots rather than ids.
+#[derive(Debug, Clone)]
+struct StrategySim {
+    // No `label`, deliberately: nothing in the simulation needs to name a strategy, and the only
+    // message that does — the missing-target warning — is raised in `strategy_sims` where the
+    // stored row is still in hand. Reporting per-strategy contributions back out *would* want it,
+    // and is not built: the tab lists the configured rows, which is what a reader needs first.
+    from_month: i64,
+    to_month: Option<i64>,
+    /// Share of contributing income, as a fraction.
+    income_share: f64,
+    /// Slot in `stream_sims` whose net pay contributes, or `None` for every stream.
+    stream: Option<usize>,
+    /// Share of any cash raised by a sale in the same month.
+    windfall_share: f64,
+    /// Slots in `account_sims` to pay down first, **most expensive first**, each with the rate that
+    /// qualified it. Ordered here, once, rather than sorted per path per month.
+    payoff: Vec<usize>,
+    /// Slot the remainder is invested into.
+    target: usize,
+}
+
+impl StrategySim {
+    fn active(&self, m: i64) -> bool {
+        m >= self.from_month && self.to_month.is_none_or(|t| m <= t)
+    }
+}
+
+/// A liability's annual interest rate, in basis points, if one is actually recorded.
+///
+/// `None` is a real answer and the reason this returns an `Option` rather than defaulting to zero: a
+/// strategy that pays off "anything above 8%" has to decide about each debt, and a debt whose rate
+/// nobody wrote down cannot be decided. Paying it off anyway would be acting on a threshold with no
+/// number to compare against; treating it as 0% would silently exempt it. So it is skipped and the
+/// projection says so — see the warning in `strategy_sims`.
+///
+/// Measured on a real database: of six liabilities, the mortgage (4.49%), the solar loan (1%) and
+/// two student loans (0%) have rates on record, while a revolving-credit account and a credit card —
+/// the two most likely to be *expensive* — have only a credit limit. That is exactly the gap this
+/// `None` exists to surface.
+fn liability_rate_bps(a: &sure_core::Account, today: NaiveDate) -> Option<i64> {
+    if let Some(terms) = loan_terms(&a.metadata, today) {
+        return Some(terms.rate_bps);
+    }
+    match &a.metadata {
+        AccountMetadata::Mortgage(m) => m.interest_rate_bps,
+        AccountMetadata::Loan(l) => l.interest_rate_bps,
+        AccountMetadata::StudentLoan(s) => s.interest_rate_bps,
+        // A credit limit is not a rate. Every other kind of metadata carries no rate at all, and
+        // naming them one by one is what makes adding a kind a compile error here rather than a
+        // liability that silently stops being payable.
+        AccountMetadata::Depository(_)
+        | AccountMetadata::Property(_)
+        | AccountMetadata::Vehicle(_)
+        | AccountMetadata::Shares(_)
+        | AccountMetadata::Brokerage(_)
+        | AccountMetadata::Crypto(_)
+        | AccountMetadata::Generic(_) => None,
+    }
+}
+
+/// Resolve every enabled strategy, and warn about liabilities a payoff rule cannot decide about.
+fn strategy_sims(
+    strategies: &[sure_core::InvestmentStrategy],
+    accounts: &[sure_core::Account],
+    account_sims: &[AccountSim],
+    stream_sims: &[StreamSim],
+    today: NaiveDate,
+    horizon: i64,
+    warnings: &mut Vec<String>,
+) -> Vec<StrategySim> {
+    let mut out = Vec::new();
+    let mut unrated: Vec<&str> = Vec::new();
+    for st in strategies.iter().filter(|s| s.enabled) {
+        let Some(from) = reports::parse_date(&st.active_from) else {
+            continue;
+        };
+        // Clamped at 1: month 0 is today, already inside the history everything was fitted from.
+        let from_month = months_between(today, from).max(1);
+        if from_month > horizon {
+            continue;
+        }
+        let to_month = st
+            .active_to
+            .as_deref()
+            .and_then(reports::parse_date)
+            .map(|d| months_between(today, d));
+        if to_month.is_some_and(|t| t < from_month) {
+            continue;
+        }
+        // A strategy whose target is not in the projection cannot invest anywhere, and inventing a
+        // destination would put the money somewhere nobody chose. Named rather than dropped
+        // silently, because the money would then simply vanish from the plan.
+        let Some(target) = account_sims
+            .iter()
+            .position(|s| s.account_id == st.target_account_id)
+        else {
+            warnings.push(format!(
+                "The strategy \"{}\" has nowhere to invest: the account it points at is not in the \
+                 projection (a pooled cash account, or one with no exchange rate).",
+                st.label
+            ));
+            continue;
+        };
+        let stream = st
+            .income_stream_id
+            .and_then(|id| stream_sims.iter().position(|s| s.stream_id == id));
+
+        let mut payoff: Vec<(usize, i64)> = Vec::new();
+        if let Some(threshold) = st.debt_above_bps {
+            for (i, sim) in account_sims.iter().enumerate() {
+                let Some(a) = accounts.iter().find(|a| a.id == sim.account_id) else {
+                    continue;
+                };
+                if a.kind.class() != AccountClass::Liability {
+                    continue;
+                }
+                match liability_rate_bps(a, today) {
+                    Some(rate) if rate > threshold => payoff.push((i, rate)),
+                    Some(_) => {}
+                    None => unrated.push(&a.name),
+                }
+            }
+        }
+        // Most expensive first, which is the only ordering a payoff rule can mean.
+        payoff.sort_by_key(|&(_, rate)| std::cmp::Reverse(rate));
+
+        out.push(StrategySim {
+            from_month,
+            to_month,
+            income_share: st.income_share_bps as f64 / 10_000.0,
+            stream,
+            windfall_share: st.windfall_share_bps as f64 / 10_000.0,
+            payoff: payoff.into_iter().map(|(i, _)| i).collect(),
+            target,
+        });
+    }
+    if !unrated.is_empty() {
+        unrated.sort_unstable();
+        unrated.dedup();
+        warnings.push(format!(
+            "No interest rate is recorded for {}, so a strategy that pays off debt above a rate \
+             cannot include {}. Record the rate on the account, or the payoff will skip it.",
+            unrated.join(", "),
+            if unrated.len() == 1 { "it" } else { "them" },
+        ));
+    }
+    out
 }
 
 /// The at-mark value of the units this path still holds in a vesting account at month `m`.
@@ -6407,6 +6640,83 @@ mod tests {
         );
     }
 
+    fn strategy(target: usize, income_share: f64, payoff: Vec<usize>) -> StrategySim {
+        StrategySim {
+            from_month: 1,
+            to_month: None,
+            income_share,
+            stream: None,
+            windfall_share: 1.0,
+            payoff,
+            target,
+        }
+    }
+
+    /// A strategy is active over a window, inclusive at both ends, and open-ended when it has no
+    /// end. The whole reason strategies are windowed rather than singular: "80% until March 2028,
+    /// then 50%" is two rows that tile time.
+    #[test]
+    fn a_strategy_is_active_only_inside_its_window() {
+        let open = strategy(0, 0.8, Vec::new());
+        assert!(!open.active(0), "month 0 is today, already inside history");
+        assert!(open.active(1));
+        assert!(open.active(360));
+
+        let mut closed = strategy(0, 0.8, Vec::new());
+        closed.from_month = 6;
+        closed.to_month = Some(18);
+        assert!(!closed.active(5));
+        assert!(closed.active(6), "inclusive at the start");
+        assert!(closed.active(18), "inclusive at the end");
+        assert!(!closed.active(19));
+    }
+
+    /// A rate on record is a decision the strategy can make; no rate is not.
+    ///
+    /// Measured on the real database this was written for: the mortgage, the solar loan and two
+    /// student loans have rates, while a revolving-credit account and a credit card — the two most
+    /// likely to be expensive — carry only a credit limit. So an "above 8%" rule cannot reach the
+    /// debts it most wants to, and the projection has to say so rather than quietly skipping them.
+    #[test]
+    fn a_liability_with_no_recorded_rate_cannot_be_decided_about() {
+        let today = d("2026-08-01");
+        let rated = sure_core::AccountMetadata::Loan(sure_core::LoanMeta {
+            interest_rate_bps: Some(1_200),
+            ..Default::default()
+        });
+        let card = sure_core::AccountMetadata::Depository(sure_core::DepositoryMeta {
+            credit_limit_minor: Some(10_000_00),
+            ..Default::default()
+        });
+        let acct =
+            |id: i64, kind: AccountKind, metadata: sure_core::AccountMetadata| sure_core::Account {
+                id,
+                name: format!("Account {id}"),
+                kind,
+                class: kind.class(),
+                currency_code: "NZD".into(),
+                institution: None,
+                metadata,
+                archived: false,
+                excluded_from_net_worth: false,
+                sort_order: 0,
+                secured_by_account_id: None,
+                created_at: String::new(),
+                updated_at: String::new(),
+                ownership: Ownership::Joint,
+            };
+        assert_eq!(
+            liability_rate_bps(&acct(1, AccountKind::Loan, rated), today),
+            Some(1_200)
+        );
+        // A credit limit is not a rate, and pretending it were 0% would silently exempt the debt
+        // most likely to be the expensive one.
+        assert_eq!(
+            liability_rate_bps(&acct(2, AccountKind::CreditCard, card), today),
+            None
+        );
+    }
+
     /// `only_if_not` partitions the paths, which two independent draws cannot do.
     ///
     /// The arithmetic that motivated it: a 40% failure and a 60% funding round as separate events
@@ -6984,11 +7294,39 @@ mod tests {
             /// that does not care about indexation gets nominally flat categories and its
             /// existing figures stand — the ones that do care set it explicitly.
             inflation_bps: i64,
+            /// Strategies the fake reports. Empty for every test that predates them.
+            strategies: Vec<sure_core::InvestmentStrategy>,
             /// Commitments the fake reports. Empty for every test that predates them, so their
             /// figures are untouched by the feature existing.
             commitments: Vec<sure_core::ExpenseCommitment>,
         }
         #[async_trait]
+        #[async_trait]
+        impl crate::ports::StrategyRepo for FakeForecast {
+            async fn list_strategies(&self) -> AppResult<Vec<sure_core::InvestmentStrategy>> {
+                Ok(self.strategies.clone())
+            }
+            async fn get_strategy(&self, _: i64) -> AppResult<sure_core::InvestmentStrategy> {
+                unimplemented!("the projection only ever lists")
+            }
+            async fn create_strategy(
+                &self,
+                _: sure_core::SaveInvestmentStrategy,
+            ) -> AppResult<sure_core::InvestmentStrategy> {
+                unimplemented!("the projection only ever lists")
+            }
+            async fn update_strategy(
+                &self,
+                _: i64,
+                _: sure_core::SaveInvestmentStrategy,
+            ) -> AppResult<sure_core::InvestmentStrategy> {
+                unimplemented!("the projection only ever lists")
+            }
+            async fn delete_strategy(&self, _: i64) -> AppResult<()> {
+                unimplemented!("the projection only ever lists")
+            }
+        }
+
         #[async_trait]
         impl crate::ports::CommitmentRepo for FakeForecast {
             async fn list_commitments(&self) -> AppResult<Vec<sure_core::ExpenseCommitment>> {
@@ -7288,6 +7626,7 @@ mod tests {
                 Arc::new(FakeCrons),
                 Arc::new(FakeEquity),
                 fake_forecast.clone().clone(),
+                fake_forecast.clone(),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
         }
@@ -8413,6 +8752,7 @@ mod tests {
                 Arc::new(FakeCrons),
                 Arc::new(FakeEquity),
                 fake_forecast.clone().clone(),
+                fake_forecast.clone(),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
         }
@@ -8615,6 +8955,7 @@ mod tests {
                 Arc::new(FakeCrons),
                 Arc::new(FakeEquity),
                 fake.clone(),
+                fake.clone(),
                 Arc::new(crate::test_clock::FixedClock(today)),
             );
             let result = rt
@@ -8698,6 +9039,7 @@ mod tests {
                 Arc::new(FakeAccounts(vec![account(1, AK::Brokerage, "NZD")])),
                 Arc::new(FakeCrons),
                 Arc::new(FakeEquity),
+                fake.clone(),
                 fake.clone(),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
@@ -9190,6 +9532,7 @@ mod tests {
                 Arc::new(FakeCrons),
                 Arc::new(FakeEquity),
                 fake_forecast.clone().clone(),
+                fake_forecast.clone(),
                 Arc::new(crate::test_clock::FixedClock(today)),
             )
         }

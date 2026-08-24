@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO investment_strategies\n              (label, active_from, active_to, income_share_bps, income_stream_id,\n               windfall_share_bps, debt_above_bps, target_account_id, enabled, sort_order, notes)\n           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)\n           RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "18fc0e05fe9513359b50c2bd9c028ad7b6fbc929c559c6d43822e81ab8c1a04b"
+}

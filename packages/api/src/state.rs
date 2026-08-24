@@ -7,8 +7,8 @@ use sure_app::income_match::IncomeMatchService;
 use sure_app::ports::{
     AccountRepo, CategoryRepo, CommitmentRepo, CronRepo, CurrencyRepo, EquityRepo, IncomeRepo,
     MerchantRepo, PersonRepo, PropertyEstimateProvider, ProviderRegistry, ProviderRepo,
-    SettingsRepo, SnapshotRepo, StockPriceCacheRepo, StockPriceProvider, TransactionRepo,
-    ValuationRepo,
+    SettingsRepo, SnapshotRepo, StockPriceCacheRepo, StockPriceProvider, StrategyRepo,
+    TransactionRepo, ValuationRepo,
 };
 use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
@@ -48,6 +48,8 @@ pub struct AppState {
     /// Expense commitments — the spending-side mirror of `income`, and the repo directly for the
     /// same reason: five delegating methods and no use-case logic between them.
     pub commitments: Arc<dyn CommitmentRepo>,
+    /// Investment strategies — what the household does with money it does not spend.
+    pub strategies: Arc<dyn StrategyRepo>,
     /// The matching/reconstruction logic behind the manual-link and rematch endpoints — the
     /// same pass the scheduled `income_match` task runs on its timer.
     pub income_match: Arc<IncomeMatchService>,

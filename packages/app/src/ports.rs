@@ -21,14 +21,15 @@ use sure_core::{
     CategoryNode, Cron, CronRun, CronRunResult, Currency, DividendDetail, EquityExercise,
     EquityGrant, ExpenseCommitment, ForecastAssumption, ForecastEvent, ForecastTargetType,
     HoldingLot, HousePricerLink, ImportRecord, ImportSource, IncomePayment, IncomePaymentStatus,
-    IncomeStream, LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind, MatchedBy, McpMode,
-    Merchant, NewCurrency, NewValuation, Ownership, PayeBreakdown, Person, Provider,
-    ProviderAccount, ProviderKind, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind,
-    RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveExpenseCommitment,
-    SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot, SaveIncomeStream,
-    SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTaxScale, SaveTransaction, Settings,
-    StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId, Transaction, TransferRequest, TxQuery,
-    UpdateSettings, Valuation, ValuationQuery, VestingStatus,
+    IncomeStream, InvestmentStrategy, LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind,
+    MatchedBy, McpMode, Merchant, NewCurrency, NewValuation, Ownership, PayeBreakdown, Person,
+    Provider, ProviderAccount, ProviderKind, ProviderSync, Rule, RuleApplicationDetail, RuleRun,
+    RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise,
+    SaveExpenseCommitment, SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot,
+    SaveIncomeStream, SaveInvestmentStrategy, SaveMerchant, SavePerson, SaveProvider, SaveRule,
+    SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
+    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
+    VestingStatus,
 };
 pub use sure_core::{EquityEvent, EquityMark, RebuildResult, SaveMark};
 
@@ -1234,6 +1235,21 @@ pub trait CronRepo: Send + Sync {
 /// Its own trait rather than more methods on `ForecastRepo`, because commitments are edited from a
 /// screen of their own and read by the projection: two callers with different lifetimes, which is
 /// the same split `IncomeRepo` already has.
+#[async_trait]
+pub trait StrategyRepo: Send + Sync {
+    /// Every strategy, enabled or not. The projection filters; the editor needs all of them.
+    async fn list_strategies(&self) -> AppResult<Vec<InvestmentStrategy>>;
+    async fn get_strategy(&self, id: i64) -> AppResult<InvestmentStrategy>;
+    async fn create_strategy(&self, input: SaveInvestmentStrategy)
+    -> AppResult<InvestmentStrategy>;
+    async fn update_strategy(
+        &self,
+        id: i64,
+        input: SaveInvestmentStrategy,
+    ) -> AppResult<InvestmentStrategy>;
+    async fn delete_strategy(&self, id: i64) -> AppResult<()>;
+}
+
 #[async_trait]
 pub trait CommitmentRepo: Send + Sync {
     /// Every commitment, enabled or not. The projection filters; the editor needs all of them.
