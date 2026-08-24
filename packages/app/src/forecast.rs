@@ -1063,6 +1063,9 @@ impl ForecastService {
             inflation_bps,
         );
 
+        // Collected inside the loop and turned into warnings after it, because `warnings` is only
+        // assembled once the loop has finished — a declaration inside would not survive it.
+        let mut sparse_levels: Vec<(String, i64, i64, f64)> = Vec::new();
         let mut out = Vec::new();
         for (id, kind) in cats.top_level_kinds() {
             match kind {
@@ -1092,6 +1095,19 @@ impl ForecastService {
             // The volatility survives too: the month-to-month scatter around a flat line is
             // measured and real, and gating it on a *trend* having been fitted would claim a
             // category's spend is known to the cent.
+            // A level measured over months of which almost none had activity is an event divided by
+            // the window, not a run-rate. Recorded here and warned about below.
+            if let Some(f) = fit
+                && (1..MIN_CATEGORY_ACTIVE_MONTHS).contains(&f.active_months)
+            {
+                sparse_levels.push((
+                    cats.name_of(id),
+                    f.active_months,
+                    f.fitted_months,
+                    f.baseline,
+                ));
+            }
+
             let ov = overrides.get(&(ForecastTargetType::Category, id));
             let (growth, vol, mut source) = resolve_category_growth(
                 ov.and_then(|o| o.annual_growth_bps),
@@ -1197,6 +1213,14 @@ impl ForecastService {
         }
         let mut warnings = stale_commitments(&commitments, &spend, today);
         warnings.extend(over_covered_categories(&out));
+        for (label, active, months, baseline) in sparse_levels {
+            warnings.push(format!(
+                "{label} is projected at {baseline:.0} a month from only {active} month{} of \
+                 activity in {months}. That is one payment spread over the window rather than a \
+                 run-rate — if it was a one-off, mark it so on the transaction.",
+                if active == 1 { "" } else { "s" },
+            ));
+        }
         Ok((out, warnings))
     }
 
@@ -5086,6 +5110,13 @@ struct CategoryFit {
     /// [`MIN_TREND_T_STATISTIC`]. `None` renders as "not enough history to say", which is a
     /// different and more honest statement than `Some(0)` ("history says flat").
     measured_growth_bps: Option<i64>,
+    /// How many of `fitted_months` had any activity at all.
+    ///
+    /// Reported because `fitted_months` cannot tell an eight-month run-rate from one event divided
+    /// by eight, and those want opposite corrections. A level with one active month is not a
+    /// run-rate, and unlike a growth rate there is no override for a level on the Assumptions tab —
+    /// so the only fix is in the ledger, which means the household has to be told.
+    active_months: i64,
     /// How many months `baseline` was measured over. Reported rather than inferred because it is
     /// the one number that says how much the rest is worth, and because a UI implying the full
     /// [`CATEGORY_TREND_MONTHS`] window over an 11-month fit is how the old clamp stayed
@@ -5269,6 +5300,7 @@ fn category_fit(totals: &[f64]) -> Option<CategoryFit> {
     }
 
     // Volatility is measured on the same window as the level, so the two describe one thing.
+    let active_months = level_window.iter().filter(|v| **v > 0.0).count() as i64;
     let residual_var = sse_about_trend(level_window) / (n.saturating_sub(2)).max(1) as f64;
     let vol = (residual_var.sqrt() * 12f64.sqrt() / baseline)
         .clamp(0.0, MAX_DERIVED_CATEGORY_VOL_BPS as f64 / 10_000.0);
@@ -5276,6 +5308,7 @@ fn category_fit(totals: &[f64]) -> Option<CategoryFit> {
 
     Some(CategoryFit {
         baseline,
+        active_months,
         vol_bps,
         measured_growth_bps: measured_growth(level_window, baseline, residual_var),
         fitted_months: n as i64,
@@ -5349,6 +5382,9 @@ fn category_monthly_totals(
     fx: &Fx,
     exclude_merchants: &[i64],
 ) -> Vec<f64> {
+    // Which sign counts as this category's own money. An expense category's run-rate is its
+    // debits; an income category's is its credits.
+    let is_income = cats.kind_of(top_id) == Some(CategoryKind::Income);
     let this_month = (today.year(), today.month());
     let mut totals: std::collections::BTreeMap<(i32, u32), f64> = std::collections::BTreeMap::new();
     let mut earliest: Option<NaiveDate> = None;
@@ -5381,6 +5417,24 @@ fn category_monthly_totals(
         let Some(base_major) = fx.try_to_base_major(t.amount_minor, &t.currency_code) else {
             continue;
         };
+        // A credit in an expense category is not negative spending, and `.abs()` on its own was
+        // counting it as *positive* spending: a refund, a rebate, or a transfer leg some rule
+        // mis-filed became recurring outflow at a twelfth of its value a month, indexed for thirty
+        // years. Measured on a real ledger, two inbound brokerage credits mis-booked to an expense
+        // category were 75% of that category's entire run-rate — $947 of $1,266 a month.
+        //
+        // Filtered per row rather than netted per month, and the difference matters: netting would
+        // let one unrelated inflow cancel a month that had real spending in it, and on this ledger
+        // that deleted two months of genuine expense outright. `reports`'s own `FlowSide` decides a
+        // row's side by sign and routes it to the other half of the money-flow graph rather than
+        // subtracting it, so a run-rate that nets would disagree with the report it sits beside.
+        //
+        // Before the `earliest` update below, deliberately: a category whose only early rows are
+        // wrong-signed must not gain leading zeros from them and then look like it has been running
+        // since then.
+        if (base_major > 0.0) != is_income {
+            continue;
+        }
         *totals.entry(key).or_default() += base_major.abs();
         earliest = Some(earliest.map_or(d, |e| e.min(d)));
     }
@@ -5735,6 +5789,62 @@ mod tests {
         // And nothing is pinned to the growth ceiling any more, because an 11-month segment is
         // not asked for a direction at all.
         assert_eq!(fit.measured_growth_bps, None);
+    }
+
+    /// A credit in an expense category is not spending, and `.abs()` was counting it as spending.
+    ///
+    /// The general bug behind a category whose run-rate was 75% inbound money: a refund, a rebate,
+    /// or a transfer leg some rule mis-filed became recurring outflow at a twelfth of its value a
+    /// month, indexed for thirty years. No pre-existing case in this module fed a positive row into
+    /// an expense category, which is exactly why it survived.
+    #[test]
+    fn a_credit_in_an_expense_category_is_not_counted_as_spending() {
+        let mut cats = reports::Categories::default_for_test();
+        cats.insert_for_test(10, None, "Household", CategoryKind::Expense);
+        cats.insert_for_test(20, None, "Cashback", CategoryKind::Income);
+        let fx = Fx::parity("NZD");
+        let today = d("2026-06-01");
+
+        let row =
+            |id: i64, month: &str, minor: i64, category_id: i64| crate::ports::SpendTransaction {
+                id,
+                posted_at: format!("{month}-15"),
+                amount_minor: minor,
+                currency_code: "NZD".into(),
+                category_id: Some(category_id),
+                is_one_off: false,
+                linked_transaction_id: None,
+                account_id: 1,
+                account_name: "Everyday".into(),
+                account_kind: AccountKind::Bank,
+                merchant_id: None,
+                merchant: None,
+                attribution: Ownership::Joint,
+            };
+
+        // A month with $300 of real spending and a $500 refund in it.
+        let spend = vec![
+            row(1, "2026-05", -300_00, 10),
+            row(2, "2026-05", 500_00, 10),
+            row(3, "2026-04", -300_00, 10),
+        ];
+        let totals = category_monthly_totals(&spend, &cats, 10, today, &fx, &[]);
+        // Two months, each $300. The refund is gone and — this is the half that netting would get
+        // wrong — the month it landed in *keeps* its real spending rather than being cancelled to
+        // zero or, worse, reported as $200 of income-shaped expense.
+        assert_eq!(totals.len(), 2);
+        for (i, v) in totals.iter().enumerate() {
+            assert!(
+                (v - 300.0).abs() < 0.01,
+                "month {i} came to {v}, expected 300"
+            );
+        }
+
+        // And the mirror image: in an *income* category the credits count and the debits do not.
+        let income = vec![row(4, "2026-05", 900_00, 20), row(5, "2026-05", -50_00, 20)];
+        let totals = category_monthly_totals(&income, &cats, 20, today, &fx, &[]);
+        assert_eq!(totals.len(), 1);
+        assert!((totals[0] - 900.0).abs() < 0.01, "got {}", totals[0]);
     }
 
     /// A category that did not exist for the first half of its window used to have those empty
