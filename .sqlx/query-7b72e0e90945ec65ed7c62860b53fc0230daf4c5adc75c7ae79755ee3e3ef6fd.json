@@ -1,0 +1,182 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", label, active_from, active_to, income_share_bps, income_stream_id,\n                  windfall_share_bps, debt_above_bps, target_account_id,\n                  enabled AS \"enabled!: bool\", sort_order, notes, created_at, updated_at\n             FROM investment_strategies ORDER BY active_from, sort_order, id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "label",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "name": "active_from",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "active_from"
+          }
+        }
+      },
+      {
+        "name": "active_to",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "active_to"
+          }
+        }
+      },
+      {
+        "name": "income_share_bps",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "income_share_bps"
+          }
+        }
+      },
+      {
+        "name": "income_stream_id",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "income_stream_id"
+          }
+        }
+      },
+      {
+        "name": "windfall_share_bps",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "windfall_share_bps"
+          }
+        }
+      },
+      {
+        "name": "debt_above_bps",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "debt_above_bps"
+          }
+        }
+      },
+      {
+        "name": "target_account_id",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "target_account_id"
+          }
+        }
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "name": "sort_order",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "sort_order"
+          }
+        }
+      },
+      {
+        "name": "notes",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "notes"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "investment_strategies",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "7b72e0e90945ec65ed7c62860b53fc0230daf4c5adc75c7ae79755ee3e3ef6fd"
+}

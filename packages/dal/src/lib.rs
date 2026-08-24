@@ -92,6 +92,7 @@ pub mod settings;
 pub mod snapshot;
 pub mod stock_prices;
 pub mod store;
+pub mod strategies;
 pub mod tax_scales;
 pub mod transactions;
 pub mod valuations;

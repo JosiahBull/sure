@@ -86,6 +86,34 @@ dial moves; written as absolutes, all three silently become wrong. Defaults to a
 override stored before this keeps meaning what it meant. Categories only — an account's growth is a
 market return, not a spread over household CPI.
 
+**Investment strategies: what happens to money you do not spend.** Everything else models what
+arrives and what leaves; `investment_strategies` is the decision in between, and without it surplus
+cash accumulated in the pool at no return — which understates a household that saves and badly
+misrepresents one about to receive a lump sum. A strategy sweeps a share of income (all of it, or one
+named stream) plus a share of any cash a `liquidate` raised that month, pays off liabilities above a
+stated rate most-expensive-first, and invests the remainder into a target account.
+
+Three decisions worth knowing:
+
+- **Windowed, not singular.** "80% of one salary until March 2028, then 50%" is two strategies that
+  tile time, not one with a schedule inside it — the alternative invents a second calendar beside the
+  one `forecast_events` already owns. Overlapping windows both sweep, because a household can be
+  saving a share of a salary *and* directing a windfall.
+- **The return lives on the target account, not on the strategy.** There is deliberately no
+  `assumed_return_bps`: that would be a second source of truth for one account's rate, when
+  `forecast_assumptions` is already where the user edits it and the Assumptions tab already shows it.
+  "Invest in the S&P at 10%" is therefore an account with a +10%/yr override, which keeps the
+  assumption arguable instead of buried in a strategy row.
+- **A sweep is capped at the cash that exists**, and runs last in the month — after spending, pay,
+  repayments and any sale have settled. A household cannot invest money it does not have, and letting
+  the sweep run the pool negative would report someone in overdraft *because* they were saving.
+
+`debt_above_bps` is matched against a liability's **recorded** annual rate, and a liability with no
+rate on record is skipped with a warning. Paying off a debt on the strength of a rate threshold when
+the rate is unknown is a guess dressed as a policy — and the gap is real: on the database this was
+built against, the mortgage, the solar loan and two student loans have rates, while a revolving-credit
+account and a credit card, the two most likely to be expensive, carry only a credit limit.
+
 **A round, a wipe-out, and a partial sale.** Three primitives a venture-equity scenario needed and
 the event model could not express:
 

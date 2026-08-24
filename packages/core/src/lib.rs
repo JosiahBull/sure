@@ -26,6 +26,7 @@ pub mod providers;
 pub mod rules;
 pub mod settings;
 pub mod stock_prices;
+pub mod strategies;
 pub mod tax;
 pub mod transactions;
 pub mod types;
@@ -76,6 +77,7 @@ pub use rules::{
 };
 pub use settings::{McpMode, Settings, UpdateSettings};
 pub use stock_prices::StockPrice;
+pub use strategies::{InvestmentStrategy, SaveInvestmentStrategy};
 pub use tax::{
     ExtraPayInput, KIWISAVER_DEFAULT_BPS, KIWISAVER_EMPLOYEE_RATES_BPS, NZ_TAX_SCALES,
     OwnedTaxScale, PayeBreakdown, PayeInput, PeriodPayeInput, ResolvedScale, SaveTaxScale,

@@ -15,6 +15,7 @@
   import FxNotice from "../lib/FxNotice.svelte";
   import ProjectionTab from "./forecast/ProjectionTab.svelte";
   import AssumptionsTab from "./forecast/AssumptionsTab.svelte";
+  import StrategiesTab from "./forecast/StrategiesTab.svelte";
   import IncomeTab from "./forecast/IncomeTab.svelte";
   import LifeEventsTab from "./forecast/LifeEventsTab.svelte";
   import { people, personColor } from "../lib/people.svelte";
@@ -25,6 +26,7 @@
     { key: "projection", label: "Projection" },
     { key: "income", label: "Income" },
     { key: "events", label: "Life events" },
+    { key: "strategies", label: "Strategies" },
     { key: "assumptions", label: "Assumptions" },
   ] as const;
   type TabKey = (typeof TABS)[number]["key"];
@@ -375,6 +377,8 @@
   <IncomeTab {result} {currency} onchanged={() => (runNonce += 1)} />
 {:else if tab === "events"}
   <LifeEventsTab {result} {currency} onchanged={() => (runNonce += 1)} {focusEventId} />
+{:else if tab === "strategies"}
+  <StrategiesTab {result} onchanged={() => (runNonce += 1)} onerror={(m) => (error = m)} />
 {:else if tab === "assumptions"}
   <AssumptionsTab {result} {currency} onchanged={() => (runNonce += 1)} onerror={(m) => (error = m)} />
 {/if}

@@ -23,6 +23,7 @@ pub mod rules;
 pub mod settings;
 pub mod snapshot;
 pub mod stock_prices;
+pub mod strategies;
 pub mod transactions;
 pub mod valuations;
 
@@ -46,6 +47,7 @@ pub fn router(limits: &Limits) -> Router<AppState> {
         .merge(crons::router())
         .merge(equity::router())
         .merge(commitments::routes())
+        .merge(strategies::routes())
         .merge(brokerage::router())
         .merge(import::router(limits))
         .merge(providers::router())

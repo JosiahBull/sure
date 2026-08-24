@@ -3928,6 +3928,183 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/investment-strategies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every investment strategy, enabled or not. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InvestmentStrategy"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveInvestmentStrategy"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InvestmentStrategy"];
+                    };
+                };
+                /** @description unknown target account or income stream, or a window that ends before it starts */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/investment-strategies/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InvestmentStrategy"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveInvestmentStrategy"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InvestmentStrategy"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/merchants": {
         parameters: {
             query?: never;
@@ -7795,6 +7972,48 @@ export interface components {
             annual_amount_minor: number;
             label?: string | null;
         };
+        InvestmentStrategy: {
+            /** Format: int64 */
+            id: number;
+            label: string;
+            active_from: string;
+            /** @description `None` is open-ended. */
+            active_to?: string | null;
+            /**
+             * Format: int64
+             * @description Share of contributing income swept each month, basis points.
+             */
+            income_share_bps: number;
+            /**
+             * Format: int64
+             * @description Which income contributes. `None` means all of it.
+             */
+            income_stream_id?: number | null;
+            /**
+             * Format: int64
+             * @description Share of any cash raised by a sale in the same month.
+             */
+            windfall_share_bps: number;
+            /**
+             * Format: int64
+             * @description Pay down liabilities whose recorded annual rate exceeds this, highest first, before investing
+             *     anything. `None` leaves debt alone.
+             */
+            debt_above_bps?: number | null;
+            /**
+             * Format: int64
+             * @description Where the remainder goes. Its **own** growth assumption is the return — there is deliberately
+             *     no rate on this type, so the figure stays visible on the Assumptions tab where it can be
+             *     argued with rather than buried in a strategy row.
+             */
+            target_account_id: number;
+            enabled: boolean;
+            /** Format: int64 */
+            sort_order: number;
+            notes?: string | null;
+            created_at: string;
+            updated_at: string;
+        };
         /**
          * @description The discriminant of a `forecast_event_effects` row. Text only at the column edge.
          * @enum {string}
@@ -9132,6 +9351,25 @@ export interface components {
             /** Format: int64 */
             annual_amount_minor: number;
             label?: string | null;
+        };
+        SaveInvestmentStrategy: {
+            label: string;
+            active_from: string;
+            active_to?: string | null;
+            /** Format: int64 */
+            income_share_bps?: number;
+            /** Format: int64 */
+            income_stream_id?: number | null;
+            /** Format: int64 */
+            windfall_share_bps?: number;
+            /** Format: int64 */
+            debt_above_bps?: number | null;
+            /** Format: int64 */
+            target_account_id: number;
+            enabled?: boolean;
+            /** Format: int64 */
+            sort_order?: number;
+            notes?: string | null;
         };
         SaveMark: {
             as_of: string;

@@ -18,21 +18,21 @@ use sure_app::ports::{
     IncomeRepo, LedgerTx, LedgerValuation, MatchedIncomePayment, MerchantRepo, PersonRepo,
     PlannedApplication, ProviderRepo, ReportCategory, ReportRepo, RuleRepo,
     SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo, StockPriceCacheRepo,
-    TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
+    StrategyRepo, TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
     CronRunResult, Currency, DividendDetail, EquityEvent, EquityExercise, EquityGrant, EquityMark,
     ExpenseCommitment, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot,
     HousePricerLink, ImportRecord, IncomePayment, IncomePaymentStatus, IncomeStream,
-    LinkProviderAccount, LinkProviderGroup, LinkRequest, MatchedBy, Merchant, NewCurrency,
-    NewValuation, Ownership, PayeBreakdown, Person, Provider, ProviderSync, RebuildResult, Rule,
-    RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
-    SaveExercise, SaveExpenseCommitment, SaveForecastAssumption, SaveForecastEvent, SaveGrant,
-    SaveHoldingLot, SaveIncomeStream, SaveMark, SaveMerchant, SavePerson, SaveProvider, SaveRule,
-    SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
-    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
-    VestingStatus,
+    InvestmentStrategy, LinkProviderAccount, LinkProviderGroup, LinkRequest, MatchedBy, Merchant,
+    NewCurrency, NewValuation, Ownership, PayeBreakdown, Person, Provider, ProviderSync,
+    RebuildResult, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount,
+    SaveCategory, SaveCron, SaveExercise, SaveExpenseCommitment, SaveForecastAssumption,
+    SaveForecastEvent, SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveInvestmentStrategy,
+    SaveMark, SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTaxScale, SaveTransaction,
+    Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId, Transaction, TransferRequest,
+    TxQuery, UpdateSettings, Valuation, ValuationQuery, VestingStatus,
 };
 
 use crate::Db;
@@ -1123,6 +1123,32 @@ impl CronRepo for SqliteStore {
 
     async fn undo_run(&self, run_id: i64) -> AppResult<()> {
         crate::crons::undo_run(&self.db, run_id).await
+    }
+}
+
+#[async_trait]
+impl StrategyRepo for SqliteStore {
+    async fn list_strategies(&self) -> AppResult<Vec<InvestmentStrategy>> {
+        crate::strategies::list(&self.db).await
+    }
+    async fn get_strategy(&self, id: i64) -> AppResult<InvestmentStrategy> {
+        crate::strategies::get(&self.db, id).await
+    }
+    async fn create_strategy(
+        &self,
+        input: SaveInvestmentStrategy,
+    ) -> AppResult<InvestmentStrategy> {
+        crate::strategies::create(&self.db, input).await
+    }
+    async fn update_strategy(
+        &self,
+        id: i64,
+        input: SaveInvestmentStrategy,
+    ) -> AppResult<InvestmentStrategy> {
+        crate::strategies::update(&self.db, id, input).await
+    }
+    async fn delete_strategy(&self, id: i64) -> AppResult<()> {
+        crate::strategies::delete(&self.db, id).await
     }
 }
 
