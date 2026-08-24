@@ -12,13 +12,13 @@ use chrono::NaiveDate;
 use sure_app::ports::{
     AccountCurrency, AccountRepo, ActiveAccount, Activity30dRow, AssetAccount, BrokerageRepo,
     CategoryRepo, CommitmentRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo,
-    DeductionDestination,
-    DividendImport, EquityRepo, ExchangeRateRepo, ExchangeRateRow, ForecastRepo, FxRatesRepo,
-    HoldingImport, HoldingRow, HousePricerSubscription, ImportCounts, ImportHistoryRepo, ImportRow,
-    IncomeRepo, LedgerTx, LedgerValuation, MatchedIncomePayment, MerchantRepo, PersonRepo,
-    PlannedApplication, ProviderRepo, ReportCategory, ReportRepo, RuleRepo,
-    SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo, StockPriceCacheRepo,
-    StrategyRepo, TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
+    DeductionDestination, DividendImport, EquityRepo, ExchangeRateRepo, ExchangeRateRow,
+    ForecastRepo, FxRatesRepo, HoldingImport, HoldingRow, HousePricerSubscription, ImportCounts,
+    ImportHistoryRepo, ImportRow, IncomeRepo, LedgerTx, LedgerValuation, MatchedIncomePayment,
+    MerchantRepo, PersonRepo, PlannedApplication, ProviderRepo, ReportCategory, ReportRepo,
+    RuleRepo, SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo,
+    StockPriceCacheRepo, StrategyRepo, TransactionRepo, TransferRepo, TxCtx, ValuationRepo,
+    WalletRow,
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
