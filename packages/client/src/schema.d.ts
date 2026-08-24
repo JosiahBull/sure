@@ -7799,7 +7799,7 @@ export interface components {
          * @description The discriminant of a `forecast_event_effects` row. Text only at the column edge.
          * @enum {string}
          */
-        LifeEffectKind: "income_step" | "income_start" | "income_end" | "income_pause" | "recurring_delta" | "set_baseline" | "one_off_amount";
+        LifeEffectKind: "income_step" | "income_start" | "income_end" | "income_pause" | "recurring_delta" | "set_baseline" | "one_off_amount" | "revalue" | "liquidate";
         /**
          * @description One thing an event does. An event has N of them, which is what lets "a child" mean daycare *and*
          *     a paused salary *and* a pram in one place.
@@ -7854,6 +7854,20 @@ export interface components {
             amount_minor: number;
             /** @enum {string} */
             kind: "one_off_amount";
+        } | {
+            /** Format: int64 */
+            account_id: number;
+            /** Format: int64 */
+            factor_bps: number;
+            /** @enum {string} */
+            kind: "revalue";
+        } | {
+            /** Format: int64 */
+            account_id: number;
+            /** Format: int64 */
+            share_bps: number;
+            /** @enum {string} */
+            kind: "liquidate";
         };
         /**
          * @description What sort of event this is, for presentation and for choosing a form template.
@@ -8617,7 +8631,7 @@ export interface components {
          * @description How one event constrains another.
          * @enum {string}
          */
-        RelationKind: "after" | "only_if";
+        RelationKind: "after" | "only_if" | "only_if_not";
         /** @description What a rematch pass did — the same summary the scheduled task logs. */
         RematchSummary: {
             /**

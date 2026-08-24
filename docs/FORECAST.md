@@ -86,6 +86,25 @@ dial moves; written as absolutes, all three silently become wrong. Defaults to a
 override stored before this keeps meaning what it meant. Categories only — an account's growth is a
 market return, not a spread over household CPI.
 
+**A round, a wipe-out, and a partial sale.** Three primitives a venture-equity scenario needed and
+the event model could not express:
+
+- `Revalue { account_id, factor_bps }` multiplies an account's **price**, not its value. For a
+  holding projected as `units x price` that distinction is the whole point: `set_baseline` would
+  overwrite the quantity ramp with a constant, so units still to vest would stop arriving, and a 6x
+  round would keep paying 6x on every later month's vesting instead of once on the shares that
+  existed. A factor of 0 is the company being worth nothing, and it is permanent because anything
+  multiplied by zero stays there.
+- `Liquidate { account_id, share_bps }` sells a share of a holding into the cash pool — the only
+  effect that moves value *between* things. It is the only shape that conserves it: `set_baseline`
+  to half discards the proceeds, and `one_off_amount` on the cash side invents money the holding
+  still has. On a vesting ramp it sells a share of what has **vested**; unvested units are a promise
+  and selling them would produce cash from one. A per-path sold-units ledger keeps the sale
+  permanent, or the next month's ramp would restore what was sold and it would be sold again.
+- `RelationKind::OnlyIfNot` is the complement of `only_if`, and it is what makes two outcomes a
+  partition instead of two coin flips. A 40% failure and a 60% round as independent events give 24%
+  of paths *both* — a company that failed and then raised — and 24% neither.
+
 **Commitments: the deterministic half of spending.** `expense_commitments` holds a recurring
 obligation with a *stated* amount — rates, insurance, power, internet, a subscription — on a
 cadence, escalating at the household rate plus its own delta, optionally ending. A category is then
