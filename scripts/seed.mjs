@@ -98,7 +98,10 @@ async function main() {
   // than banishing to the far column with everyone else's leaves.
   const transport = (await cat("Transport", "expense")).id;
   const bankFees = (await cat("Bank fees", "expense")).id;
-  const transfers = (await cat("Transfers", "transfer")).id;
+  // "Transfer", the one spelling both provider adapters now emit — see sharesies.rs. A seeded tree
+  // that disagrees with them would make the e2e fixtures and the visual baselines describe a
+  // category shape no real import produces.
+  const transfers = (await cat("Transfer", "transfer")).id;
 
   // The household. Every account has to name an owner, so a database always starts with a
   // placeholder person (see migration 0016) — renaming it is what the app asks a real user to
@@ -332,7 +335,7 @@ async function main() {
 
   // A rule recognising internal bank transfers by their statement wording, then run it.
   const transferRule = await post("/api/rules", {
-    name: "Internal bank transfers → Transfers",
+    name: "Internal bank transfers → Transfer",
     expression: "contains(lower(description), 'mb transfer')",
     set_category_id: transfers,
     overwrite_manual: false,

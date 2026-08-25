@@ -153,7 +153,7 @@ pub struct BrokerageSnapshot {
 /// ordinary `transactions` rows, and today nothing distinguishes an external top-up/
 /// withdrawal from internal trade-settlement cash movement at the data-model level (e.g.
 /// the Sharesies importer files deposits, withdrawals, and trade settlement all under one
-/// `"Transfers"` category). This matches on the raw transaction `description` text
+/// `"Transfer"` category). This matches on the raw transaction `description` text
 /// (provider-specific phrasing like "Wallet top up"/"Withdrawal"), so it only recognises
 /// contributions/withdrawals it has seen a pattern for — not a durable classification.
 #[derive(Debug, Serialize, ToSchema, Clone, Default)]
