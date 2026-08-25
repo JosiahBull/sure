@@ -12,12 +12,13 @@ use chrono::NaiveDate;
 use sure_app::ports::{
     AccountCurrency, AccountRepo, ActiveAccount, Activity30dRow, AssetAccount, BrokerageRepo,
     CategoryRepo, CommitmentRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo,
-    DividendImport, EquityRepo, ExchangeRateRepo, ExchangeRateRow, ForecastRepo, FxRatesRepo,
-    HoldingImport, HoldingRow, HousePricerSubscription, ImportCounts, ImportHistoryRepo, ImportRow,
-    IncomeRepo, LedgerTx, LedgerValuation, MatchedIncomePayment, MerchantRepo, PersonRepo,
-    PlannedApplication, ProviderRepo, ReportCategory, ReportRepo, RuleRepo,
-    SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo, StockPriceCacheRepo,
-    StrategyRepo, TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
+    DeductionDestination, DividendImport, EquityRepo, ExchangeRateRepo, ExchangeRateRow,
+    ForecastRepo, FxRatesRepo, HoldingImport, HoldingRow, HousePricerSubscription, ImportCounts,
+    ImportHistoryRepo, ImportRow, IncomeRepo, LedgerTx, LedgerValuation, MatchedIncomePayment,
+    MerchantRepo, PersonRepo, PlannedApplication, ProviderRepo, ReportCategory, ReportRepo,
+    RuleRepo, SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo,
+    StockPriceCacheRepo, StrategyRepo, TransactionRepo, TransferRepo, TxCtx, ValuationRepo,
+    WalletRow,
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
@@ -649,6 +650,17 @@ impl ReportRepo for SqliteStore {
                 acc_levy_minor: r.acc_levy_minor,
                 kiwisaver_minor: r.kiwisaver_minor,
                 student_loan_minor: r.student_loan_minor,
+                // The id and the name come out of one LEFT JOIN, so they are both present or
+                // both absent; zipping them is what makes that pairing a type instead of an
+                // assumption the report would have to repeat.
+                kiwisaver_account: r
+                    .kiwisaver_account_id
+                    .zip(r.kiwisaver_account_name)
+                    .map(|(account_id, name)| DeductionDestination { account_id, name }),
+                student_loan_account: r
+                    .student_loan_account_id
+                    .zip(r.student_loan_account_name)
+                    .map(|(account_id, name)| DeductionDestination { account_id, name }),
             })
             .collect())
     }
