@@ -1260,6 +1260,19 @@ pub struct MatchedIncomePayment {
     pub acc_levy_minor: i64,
     pub kiwisaver_minor: i64,
     pub student_loan_minor: i64,
+    /// The accounts this stream's KiwiSaver contributions and student-loan repayments land in,
+    /// with the name to label them by — `None` when the stream names no account, which is what
+    /// keeps the deduction a terminal sink instead of routing it somewhere invented. Resolved in
+    /// the same join as the person, so the report needs no second lookup.
+    pub kiwisaver_account: Option<DeductionDestination>,
+    pub student_loan_account: Option<DeductionDestination>,
+}
+
+/// An account a payroll deduction lands in, as the sankey's pre-income layer labels it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeductionDestination {
+    pub account_id: i64,
+    pub name: String,
 }
 
 /// Per-person income: the streams someone earns, the tax scales that price them, and the

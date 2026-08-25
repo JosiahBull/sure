@@ -148,6 +148,14 @@ pub enum SankeyNodeKind {
     /// payslip before the bank ever saw it, which is why it can only come from reconstruction
     /// and never from a transaction.
     Deduction,
+    /// The balance-sheet account a deduction lands in, when the stream names one: a student
+    /// loan being repaid ([`sure_core::IncomeStream::student_loan_account_id`]) or a KiwiSaver
+    /// fund being added to ([`sure_core::IncomeStream::kiwisaver_account_id`]). It is a
+    /// *destination*, not a second flow — the money is already counted once, in the deduction
+    /// sink it comes from, and the account's own ledger is a separate record the graph never
+    /// reads. PAYE and the ACC levy have no such node: that money genuinely leaves the
+    /// household.
+    Destination,
 }
 
 impl SankeyNodeKind {
@@ -159,6 +167,7 @@ impl SankeyNodeKind {
             SankeyNodeKind::Savings => "savings",
             SankeyNodeKind::Gross => "gross",
             SankeyNodeKind::Deduction => "deduction",
+            SankeyNodeKind::Destination => "destination",
         }
     }
 }
@@ -1060,17 +1069,26 @@ fn emit_pre_income(
 
     /// One earner's accumulated flows, in base-currency major units — minor once, at emission,
     /// like the forest.
+    ///
+    /// KiwiSaver and the student loan are kept *by destination* rather than as one figure
+    /// each, because the account is a property of the stream: someone with two jobs paying
+    /// into two funds is two flows, and rolling them up would have to pick one to name. The
+    /// `None` key is a stream that names no account, whose deduction stays a terminal sink.
     #[derive(Default)]
     struct PersonFlows {
         label: String,
         income_tax: f64,
         acc: f64,
-        kiwisaver: f64,
-        student_loan: f64,
+        kiwisaver: BTreeMap<Option<i64>, f64>,
+        student_loan: BTreeMap<Option<i64>, f64>,
         /// Take-home by the category node it lands in (the deposit's own, depth-capped).
         take_home: BTreeMap<i64, f64>,
     }
     let mut people: BTreeMap<i64, PersonFlows> = BTreeMap::new();
+    // Every destination account seen, so each gets exactly one node however many streams and
+    // earners feed it — a household repaying two loans gets two nodes, a couple paying into
+    // one joint fund gets one.
+    let mut destinations: BTreeMap<i64, String> = BTreeMap::new();
 
     for t in spend {
         if t.amount_minor < 0 {
@@ -1112,8 +1130,24 @@ fn emit_pre_income(
             }
             flows.income_tax += conv(p.income_tax_minor);
             flows.acc += conv(p.acc_levy_minor);
-            flows.kiwisaver += conv(p.kiwisaver_minor);
-            flows.student_loan += conv(p.student_loan_minor);
+            for (dest, minor, bucket) in [
+                (
+                    &p.kiwisaver_account,
+                    p.kiwisaver_minor,
+                    &mut flows.kiwisaver,
+                ),
+                (
+                    &p.student_loan_account,
+                    p.student_loan_minor,
+                    &mut flows.student_loan,
+                ),
+            ] {
+                let key = dest.as_ref().map(|d| d.account_id);
+                if let Some(d) = dest {
+                    destinations.insert(d.account_id, d.name.clone());
+                }
+                *bucket.entry(key).or_default() += conv(minor);
+            }
             *flows.take_home.entry(leaf).or_default() += conv(p.observed_net_minor);
         }
     }
@@ -1130,6 +1164,10 @@ fn emit_pre_income(
         ("ded:sl", "Student loan", 0i64),
         ("ded:kiwisaver", "KiwiSaver", 0i64),
     ];
+    // The second hop: `(sink slot, destination account) -> total`. Keyed by the sink as well as
+    // the account so a household that happens to point a KiwiSaver stream and a student-loan
+    // stream at one account still draws two ribbons rather than one that means neither.
+    let mut routed: BTreeMap<(usize, i64), i64> = BTreeMap::new();
 
     for (person_id, flows) in &people {
         let node_id = format!("gross:{person_id}");
@@ -1137,23 +1175,34 @@ fn emit_pre_income(
         // node's width is d3's max(in, out), so there is no second figure to reconcile.
         let mut out_minor = 0i64;
         let mut person_links = Vec::new();
-        for (slot, major) in [
-            (0, flows.income_tax),
-            (1, flows.acc),
-            (2, flows.student_loan),
-            (3, flows.kiwisaver),
-        ] {
+        // Held until the `out_minor` guard below has confirmed this payslip is drawn at all: a
+        // sink carrying a figure no link accounts for would lay out taller than its inflows.
+        let mut person_sinks = [0i64; 4];
+        let mut person_routed: Vec<((usize, i64), i64)> = Vec::new();
+        // Every deduction this earner had, as (sink slot, destination account, amount). PAYE and
+        // the ACC levy never name an account; the other two arrive already split by the account
+        // their stream pointed at, `None` for a stream that pointed at none.
+        let mut deductions: Vec<(usize, Option<i64>, f64)> =
+            vec![(0, None, flows.income_tax), (1, None, flows.acc)];
+        deductions.extend(flows.student_loan.iter().map(|(d, major)| (2, *d, *major)));
+        deductions.extend(flows.kiwisaver.iter().map(|(d, major)| (3, *d, *major)));
+        for (slot, dest, major) in deductions {
             let minor = fx.base_minor(major);
             if minor <= 0 {
                 continue;
             }
-            sinks[slot].2 += minor;
+            person_sinks[slot] += minor;
             out_minor += minor;
             person_links.push(SankeyLink {
                 source: node_id.clone(),
                 target: sinks[slot].0.to_string(),
                 value_minor: minor,
             });
+            // The second hop carries *this* rounded figure onward, so the sink's inflow and its
+            // outflow agree to the cent and d3's max(in, out) is not a third number.
+            if let Some(account_id) = dest {
+                person_routed.push(((slot, account_id), minor));
+            }
         }
         for (leaf, major) in &flows.take_home {
             let minor = fx.base_minor(*major);
@@ -1177,6 +1226,12 @@ fn emit_pre_income(
         }
         if out_minor <= 0 {
             continue; // everything rounded to nothing at this currency's precision
+        }
+        for (slot, minor) in person_sinks.into_iter().enumerate() {
+            sinks[slot].2 += minor;
+        }
+        for (key, minor) in person_routed {
+            *routed.entry(key).or_default() += minor;
         }
         nodes.push(SankeyNode {
             id: node_id,
@@ -1203,7 +1258,42 @@ fn emit_pre_income(
             });
         }
     }
+
+    // The second hop, once every sink it can leave from exists. A sink's total is the sum of
+    // the per-earner figures these were taken from, so `routed` can never exceed it and a
+    // destination can never appear above a sink that was skipped.
+    let mut received: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for ((slot, account_id), minor) in &routed {
+        if *minor <= 0 {
+            continue;
+        }
+        received.insert(*account_id);
+        links.push(SankeyLink {
+            source: sinks[*slot].0.to_string(),
+            target: format!("{DESTINATION_PREFIX}{account_id}"),
+            value_minor: *minor,
+        });
+    }
+    for (account_id, name) in destinations {
+        if received.contains(&account_id) {
+            nodes.push(SankeyNode {
+                id: format!("{DESTINATION_PREFIX}{account_id}"),
+                // The account's own name, which is also how the balance sheet lists it. Two
+                // accounts sharing a name draw two nodes reading the same, exactly as they
+                // already read the same there.
+                label: name,
+                kind: SankeyNodeKind::Destination,
+                category_id: None,
+                depth: None,
+                root_id: None,
+                root_color: None,
+            });
+        }
+    }
 }
+
+/// Node-id prefix for a [`SankeyNodeKind::Destination`], the account a deduction landed in.
+const DESTINATION_PREFIX: &str = "dest:";
 
 // ---- loaded inputs: the boundary between awaiting and computing -------------
 
@@ -3571,7 +3661,7 @@ mod tests {
     /// The sankey's pre-income layer, on the pure compute path — invented figures throughout.
     mod pre_income {
         use super::*;
-        use crate::ports::MatchedIncomePayment;
+        use crate::ports::{DeductionDestination, MatchedIncomePayment};
 
         fn cats() -> Categories {
             let mut c = Categories::default_for_test();
@@ -3613,7 +3703,26 @@ mod tests {
                 acc_levy_minor: 70_00,
                 kiwisaver_minor: 140_00,
                 student_loan_minor: 359_36,
+                // Named per-test by `into`, because whether a deduction has somewhere to go is
+                // the property these tests are about.
+                kiwisaver_account: None,
+                student_loan_account: None,
             }
+        }
+
+        /// The same payslip, with its two deduction destinations named.
+        fn into(
+            mut p: MatchedIncomePayment,
+            kiwisaver: Option<(i64, &str)>,
+            student_loan: Option<(i64, &str)>,
+        ) -> MatchedIncomePayment {
+            let dest = |(account_id, name): (i64, &str)| DeductionDestination {
+                account_id,
+                name: name.to_string(),
+            };
+            p.kiwisaver_account = kiwisaver.map(dest);
+            p.student_loan_account = student_loan.map(dest);
+            p
         }
 
         fn graph(spend: Vec<SpendTransaction>, payments: Vec<MatchedIncomePayment>) -> SankeyGraph {
@@ -3732,6 +3841,102 @@ mod tests {
                     .filter(|n| n.kind == SankeyNodeKind::Gross)
                     .count(),
                 1
+            );
+        }
+
+        /// A stream that names no account leaves both deductions terminal: the sinks are drawn,
+        /// and nothing leaves them.
+        #[test]
+        fn an_unnamed_destination_keeps_the_deduction_a_sink() {
+            let g = graph(vec![deposit(7, 2_532_41, Some(20))], vec![payment(7)]);
+            assert!(
+                g.nodes
+                    .iter()
+                    .all(|n| n.kind != SankeyNodeKind::Destination)
+            );
+            assert!(
+                g.links
+                    .iter()
+                    .all(|l| !l.source.starts_with("ded:") && !l.target.starts_with("dest:"))
+            );
+        }
+
+        /// Naming an account routes that deduction onward at exactly the figure the sink
+        /// received, so the sink's inflow and outflow agree and d3's max(in, out) is not a
+        /// third number. PAYE and ACC stay terminal — that money leaves the household.
+        #[test]
+        fn a_named_destination_carries_the_deduction_onward() {
+            let g = graph(
+                vec![deposit(7, 2_532_41, Some(20))],
+                vec![into(
+                    payment(7),
+                    Some((41, "KiwiSaver")),
+                    Some((42, "Student loan")),
+                )],
+            );
+
+            assert_eq!(
+                link(&g, "ded:kiwisaver", "dest:41").unwrap().value_minor,
+                140_00
+            );
+            assert_eq!(link(&g, "ded:sl", "dest:42").unwrap().value_minor, 359_36);
+            assert!(link(&g, "ded:paye", "dest:41").is_none());
+            assert!(
+                g.links
+                    .iter()
+                    .all(|l| l.source != "ded:paye" && l.source != "ded:acc")
+            );
+
+            let dests: Vec<_> = g
+                .nodes
+                .iter()
+                .filter(|n| n.kind == SankeyNodeKind::Destination)
+                .collect();
+            assert_eq!(dests.len(), 2);
+            assert_eq!(
+                dests.iter().find(|n| n.id == "dest:41").unwrap().label,
+                "KiwiSaver"
+            );
+            assert_eq!(
+                dests.iter().find(|n| n.id == "dest:42").unwrap().label,
+                "Student loan"
+            );
+            // The gross node still fans into the four sinks and nothing else changed upstream.
+            let out: i64 = g
+                .links
+                .iter()
+                .filter(|l| l.source == "gross:5")
+                .map(|l| l.value_minor)
+                .sum();
+            assert_eq!(out, 4_000_00);
+        }
+
+        /// Two earners paying into one fund draw one destination node fed by one ribbon
+        /// carrying both — the account is the node, not the payslip.
+        #[test]
+        fn one_fund_two_earners_is_one_node() {
+            let mut other = into(payment(8), Some((41, "KiwiSaver")), None);
+            other.income_stream_id = 2;
+            other.person_id = Some(6);
+            other.person_name = Some("Tama".to_string());
+            other.kiwisaver_minor = 60_00;
+            let g = graph(
+                vec![
+                    deposit(7, 2_532_41, Some(20)),
+                    deposit(8, 2_532_41, Some(20)),
+                ],
+                vec![into(payment(7), Some((41, "KiwiSaver")), None), other],
+            );
+            assert_eq!(
+                g.nodes
+                    .iter()
+                    .filter(|n| n.kind == SankeyNodeKind::Destination)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                link(&g, "ded:kiwisaver", "dest:41").unwrap().value_minor,
+                140_00 + 60_00
             );
         }
     }

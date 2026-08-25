@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT p.income_stream_id, s.label AS stream_label, s.person_id,\n                  pe.name AS person_name,\n                  p.transaction_id AS \"transaction_id!\", p.observed_net_minor AS \"observed_net_minor!\",\n                  p.gross_minor AS \"gross_minor!\", p.income_tax_minor AS \"income_tax_minor!\",\n                  p.acc_levy_minor AS \"acc_levy_minor!\", p.kiwisaver_minor AS \"kiwisaver_minor!\",\n                  p.student_loan_minor AS \"student_loan_minor!\"\n             FROM income_payments p\n             JOIN income_streams s ON s.id = p.income_stream_id\n             JOIN people pe ON pe.id = s.person_id\n             JOIN transactions t ON t.id = p.transaction_id\n            WHERE p.status IN ('matched','confirmed')\n              AND p.observed_net_minor IS NOT NULL\n              AND p.gross_minor IS NOT NULL\n            ORDER BY p.due_on, p.income_stream_id",
+  "query": "SELECT p.income_stream_id, s.label AS stream_label, s.person_id,\n                  pe.name AS person_name,\n                  p.transaction_id AS \"transaction_id!\", p.observed_net_minor AS \"observed_net_minor!\",\n                  p.gross_minor AS \"gross_minor!\", p.income_tax_minor AS \"income_tax_minor!\",\n                  p.acc_levy_minor AS \"acc_levy_minor!\", p.kiwisaver_minor AS \"kiwisaver_minor!\",\n                  p.student_loan_minor AS \"student_loan_minor!\",\n                  ks.id AS \"kiwisaver_account_id?\", ks.name AS \"kiwisaver_account_name?\",\n                  sl.id AS \"student_loan_account_id?\", sl.name AS \"student_loan_account_name?\"\n             FROM income_payments p\n             JOIN income_streams s ON s.id = p.income_stream_id\n             -- LEFT, because a joint stream has no `person_id`: an inner join would drop every\n             -- payment the household earns together rather than one of its people.\n             LEFT JOIN people pe ON pe.id = s.person_id\n             -- LEFT for the same reason twice over: most streams name neither account, and the\n             -- column is nullable, so an inner join here would drop every payment that has no\n             -- deduction destination — i.e. nearly all of them.\n             LEFT JOIN accounts ks ON ks.id = s.kiwisaver_account_id\n             LEFT JOIN accounts sl ON sl.id = s.student_loan_account_id\n             JOIN transactions t ON t.id = p.transaction_id\n            WHERE p.status IN ('matched','confirmed')\n              AND p.observed_net_minor IS NOT NULL\n              AND p.gross_minor IS NOT NULL\n            ORDER BY p.due_on, p.income_stream_id",
   "describe": {
     "columns": [
       {
@@ -123,6 +123,50 @@
             "name": "student_loan_minor"
           }
         }
+      },
+      {
+        "name": "kiwisaver_account_id?",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "kiwisaver_account_name?",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "student_loan_account_id?",
+        "ordinal": 13,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "student_loan_account_name?",
+        "ordinal": 14,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "name"
+          }
+        }
       }
     ],
     "parameters": {
@@ -131,16 +175,20 @@
     "nullable": [
       false,
       false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
       false,
+      true,
       false,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
       true
     ]
   },
-  "hash": "d030f1670320ca80c9cbddb61b07841434cb27fb2a1e2139761cedd07d39ae13"
+  "hash": "e32b4342806af97e8c0b15253cc77ee3179fd1fb155497e12e063c1ecf0f5b09"
 }
