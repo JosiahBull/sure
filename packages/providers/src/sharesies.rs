@@ -274,7 +274,11 @@ fn is_cancelled_order(reason: &str, description: &str) -> bool {
 
 fn transfer_category() -> ProviderCategory {
     ProviderCategory {
-        name: "Transfers".to_string(),
+        // "Transfer", matching what `asb.rs` emits. `find_or_create` keys on the literal name
+        // (`name = ?1 COLLATE NOCASE AND parent_id IS ?2`), so two adapters spelling one concept
+        // differently created two transfer roots in a real database — 1,861 rows under one and 349
+        // under the other, which then had to be merged by hand.
+        name: "Transfer".to_string(),
         group: None,
         kind: Some(CategoryKind::Transfer),
     }
@@ -765,7 +769,7 @@ mod tests {
         // A withdrawal is internal money movement → transfer-kind (excluded from reports,
         // eligible for auto-linking to the bank side).
         let w = txns[0].category.as_ref().unwrap();
-        assert_eq!(w.name, "Transfers");
+        assert_eq!(w.name, "Transfer");
         assert_eq!(w.kind, Some(CategoryKind::Transfer));
         // A dividend payout is real investment income.
         let d = txns[1].category.as_ref().unwrap();

@@ -45,6 +45,9 @@ dist-ssr
 # Exports from asb.
 asb-export/
 
+# Personal share data for partly
+partly-options/
+
 # Recorded traffic from the two upstreams that may never be published (see
 # scripts/pii-scan.mjs's PRIVATE_UPSTREAMS). Akahu's is real account numbers, balances and
 # transaction memos; House Pricer's is a street address, GPS centroid, title boundary and land
