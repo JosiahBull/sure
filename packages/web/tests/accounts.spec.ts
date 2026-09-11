@@ -117,9 +117,14 @@ test("excluding an account drops it out of the Net worth figure, but keeps it li
   await expect(toggle).not.toBeChecked();
   await expect(row.getByText("not in net worth")).toBeVisible();
   // Still listed, with its balance — hiding an account is what archiving is for.
-  await expect(row).toContainText("836,319");
+  //
+  // $820,000 valued six months before DEMO_TODAY, plus the seven monthly steps of the 3%/yr
+  // "Home appreciation" cron between its start (2026-01-01) and DEMO_TODAY. Stable only
+  // because seed.mjs now runs that cron with `?to=` — left to default it caught up to the
+  // *server's* clock, and this figure grew by a step on the 1st of every real month.
+  await expect(row).toContainText("834,261");
   // It left the total by exactly its own value.
-  await expect.poll(async () => before - (await figure())).toBeCloseTo(836_319.07, 1);
+  await expect.poll(async () => before - (await figure())).toBeCloseTo(834_261.56, 1);
 
   await label.click();
   await expect(toggle).toBeChecked();
