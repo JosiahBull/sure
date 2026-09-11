@@ -401,7 +401,7 @@ async function main() {
     start_date: monthsAgo(6, 1),
     enabled: true,
   });
-  await post(`/api/crons/${cron.id}/run`, {});
+  await runCron(cron.id);
 
   // The car depreciates 12%/yr, applied monthly.
   const carCron = await post("/api/crons", {
@@ -412,9 +412,23 @@ async function main() {
     start_date: monthsAgo(6, 1),
     enabled: true,
   });
-  await post(`/api/crons/${carCron.id}/run`, {});
+  await runCron(carCron.id);
 
   console.log("Seed complete.");
+
+  // `?to=` rather than letting it default to today. A cron catches up one period at a time
+  // from `start_date` to the date it is told, and with no date that is the *server's* clock —
+  // the one instant in this seed not derived from TODAY. So the house gained a monthly 3%
+  // step on the 1st of every real month, and the demo data drifted even though every date in
+  // it was pinned: `SEED_TODAY` fixed when the cron starts and never when it stops.
+  //
+  // That is what expired the visual baselines and `accounts.spec.ts`'s "836,319" on 1 Sep
+  // 2026, having been minted in August — a failure that arrives on a calendar boundary with
+  // nobody's change attached to it, which is the worst kind to debug. See demo-date.ts, which
+  // already lists the three clocks the suite pins; this was a fourth.
+  async function runCron(id) {
+    await post(`/api/crons/${id}/run?to=${iso(TODAY)}`, {});
+  }
 
   async function val(account_id, as_of, value_minor) {
     await post(`/api/accounts/${account_id}/valuations`, { as_of, value_minor });
