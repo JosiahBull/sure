@@ -532,8 +532,7 @@ async fn record_run(
     .try_into()
 }
 
-/// Deliberately the same number, for the same reason, as `sure_app::forecast`'s
-/// `MAX_RATE_BPS`: 1000%/yr. Past this a "rate" is a data-entry slip, not a rate, and the
+/// 1000%/yr. Past this a "rate" is a data-entry slip, not a rate, and the
 /// compounding it feeds is exactly where a projection turns into `inf`/`NaN`. A cron rate
 /// is also never *negative* — which way it moves the balance is [`ValuationDirection`]'s
 /// job, not the sign of `rate_bps`, and a negative rate just flips the direction back

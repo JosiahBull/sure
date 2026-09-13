@@ -86,11 +86,10 @@ impl Slots {
 
 /// One mandatory slot, plus as many spare ones as can be taken without emptying the pool.
 ///
-/// The counterpart to `sure_app::forecast::Parallelism`: the forecast can now run its paths
-/// across threads, and something has to decide how many without over-subscribing the machine.
-/// That decision belongs here, because this semaphore is the only thing that knows what else is
-/// running — the same question [`slots`] already answers for concurrent *requests*, asked per
-/// request instead of per core.
+/// For a handler that fans work across threads, something has to decide how many without
+/// over-subscribing the machine. That decision belongs here, because this semaphore is the only
+/// thing that knows what else is running — the same question [`slots`] already answers for
+/// concurrent *requests*, asked per request instead of per core.
 ///
 /// Every thread a run spawns is backed by a permit it actually holds, which is the invariant
 /// that matters: **this pool bounds cores, not requests.** So a wide run does admit fewer
@@ -101,10 +100,10 @@ impl Slots {
 ///
 /// # Why it does not simply take everything
 ///
-/// The first version was greedy, and greedy is wrong here. A forecast that grabs all nine slots
-/// on this box sheds the three or four `/api/reports/*` calls the *same dashboard load* fires
+/// The first version was greedy, and greedy is wrong here. A run that grabs all nine slots on
+/// this box sheds the three or four `/api/reports/*` calls the *same dashboard load* fires
 /// beside it — each of which is tens of milliseconds and would have been served — in exchange
-/// for finishing the forecast a bit sooner. Refusing cheap work to hurry expensive work is the
+/// for finishing one expensive job a bit sooner. Refusing cheap work to hurry expensive work is the
 /// wrong trade, and it is not a trade anything asked for.
 ///
 /// So half the pool is left alone. On an idle nine-slot box the first run takes five and leaves

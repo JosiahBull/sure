@@ -82,43 +82,6 @@ test("an employer minimum above 100% is refused", async ({ api }) => {
   expect(JSON.stringify(error)).toContain("kiwisaver_employer_min_bps");
 });
 
-test("editing a tax rate changes what a salary takes home", async ({ api }) => {
-  const p = await createPerson(api, "Rua");
-  await createIncomeStream(api, p.id, {
-    label: "Salary",
-    basis: "gross_nz_paye",
-    annual_amount_minor: 100_000_00,
-    pay_frequency: "monthly",
-    first_payment_on: firstOfNextMonth(),
-    starts_on: firstOfNextMonth(),
-  });
-  const before = await api.GET("/api/forecast", { params: { query: params } });
-
-  // Put every band at 50%. The point is that a stored rate is what the projection reads — with the
-  // figures as constants this edit would have changed nothing at all.
-  //
-  // The scale *in force*, not the newest one: the built-ins run ahead of today (there is a 2028
-  // scale for the legislated KiwiSaver step), and editing one that has not taken effect yet would
-  // leave the month this asserts on priced by the scale below it.
-  const scales = await api.GET("/api/tax-scales", {});
-  const today = new Date().toISOString().slice(0, 10);
-  const latest = scales.data!.filter((s) => s.effective_from <= today).at(-1)!;
-  const put = await api.PUT("/api/tax-scales/{id}", {
-    params: { path: { id: latest.id } },
-    body: {
-      ...latest,
-      brackets: [[null, 5_000]],
-      source_note: "hand-edited",
-    },
-  });
-  expect(put.response.status, JSON.stringify(put.error)).toBe(200);
-
-  const after = await api.GET("/api/forecast", { params: { query: params } });
-  expect(after.data!.income_net[1].median_minor).toBeLessThan(
-    before.data!.income_net[1].median_minor
-  );
-});
-
 test("an unusable set of rates is refused with every problem named", async ({ api }) => {
   const { response, error } = await api.POST("/api/tax-scales", {
     body: {
@@ -169,41 +132,6 @@ test("the last set of rates cannot be deleted", async ({ api }) => {
     params: { path: { id: left.data![0].id } },
   });
   expect(response.status).toBe(409);
-});
-
-test("a fund fee drags on the account it is charged against", async ({ api }) => {
-  const fund = await createAccount(api, "Managed fund", "brokerage");
-  await api.POST("/api/accounts/{id}/valuations", {
-    params: { path: { id: fund.id } },
-    body: { as_of: new Date().toISOString().slice(0, 10), value_minor: 100_000_00 },
-  });
-  // A fixed expected return on both runs, so the fee is the only thing that differs.
-  const base = {
-    target_type: "account" as const,
-    target_id: fund.id,
-    annual_growth_bps: 600,
-    annual_volatility_bps: 0,
-  };
-  await api.PUT("/api/forecast/assumptions", { body: base });
-  const before = await api.GET("/api/forecast", { params: { query: params } });
-
-  await api.PUT("/api/forecast/assumptions", {
-    body: { ...base, annual_fee_bps: 105, annual_fixed_fee_minor: 30_00 },
-  });
-  const after = await api.GET("/api/forecast", { params: { query: params } });
-
-  expect(after.data!.months[23].assets.median_minor).toBeLessThan(
-    before.data!.months[23].assets.median_minor
-  );
-  // Two years of 1.05% on ~$100k plus $60 of flat fees is roughly $2,200 — enough to see, and not
-  // so much that a typo in the units would pass.
-  const drag =
-    before.data!.months[23].assets.median_minor - after.data!.months[23].assets.median_minor;
-  expect(drag).toBeGreaterThan(1_500_00);
-  expect(drag).toBeLessThan(3_500_00);
-
-  const a = after.data!.assumptions.find((x) => x.target_id === fund.id);
-  expect(a!.annual_fee_bps).toBe(105);
 });
 
 /** A salary paid on two fixed days a month — what people call "fortnightly on the 14th and 28th". */
@@ -268,33 +196,6 @@ test("a genuinely fortnightly salary is detected as fortnightly", async ({ api }
   const { data } = await api.GET("/api/income-streams/detect", { params: { query: {} } });
   expect(data![0].pay_frequency).toBe("fortnightly");
   expect(data![0].annual_net_minor).toBe(5_192_00 * 26);
-});
-
-test("a detected salary can be recorded as-is and reaches the projection", async ({ api }) => {
-  const p = await createPerson(api, "Rua");
-  const { salary } = await seedTwiceMonthly(api, 5_625_00);
-  const detected = await api.GET("/api/income-streams/detect", { params: { query: {} } });
-  const d = detected.data![0];
-
-  // Exactly what the UI does with a detected row: net, because the figures are what landed.
-  const stream = await createIncomeStream(api, p.id, {
-    label: d.label,
-    basis: "net",
-    annual_amount_minor: d.annual_net_minor,
-    pay_frequency: d.pay_frequency,
-    first_payment_on: d.next_payment_on,
-    starts_on: d.next_payment_on,
-    linked_category_id: salary.id,
-  });
-  expect(stream.pay_frequency).toBe("semi_monthly");
-
-  const { data } = await api.GET("/api/forecast", {
-    params: { query: { horizon_months: 12, simulations: 200, seed: 6 } },
-  });
-  // Twice a month, every month — so each month carries two payments' worth.
-  const monthly = data!.income_net.find((b) => b.median_minor > 0)!;
-  expect(monthly.median_minor).toBeGreaterThan(11_000_00);
-  expect(monthly.median_minor).toBeLessThan(11_500_00);
 });
 
 test("irregular credits are not offered as a salary", async ({ api }) => {

@@ -215,14 +215,14 @@ fn next_after(last: NaiveDate, freq: PayFrequency, days_of_month: &[u32]) -> Nai
             match days.iter().find(|&&d| d > last.day()) {
                 Some(&d) => last.with_day(d).unwrap_or(last),
                 None => {
-                    let next_month = crate::forecast::add_months_pub(last, 1);
+                    let next_month = crate::dates::add_months(last, 1);
                     next_month.with_day(days[0]).unwrap_or(next_month)
                 }
             }
         }
-        PayFrequency::Monthly => crate::forecast::add_months_pub(last, 1),
-        PayFrequency::Quarterly => crate::forecast::add_months_pub(last, 3),
-        PayFrequency::Annual => crate::forecast::add_months_pub(last, 12),
+        PayFrequency::Monthly => crate::dates::add_months(last, 1),
+        PayFrequency::Quarterly => crate::dates::add_months(last, 3),
+        PayFrequency::Annual => crate::dates::add_months(last, 12),
     }
 }
 
@@ -362,7 +362,7 @@ mod tests {
         let start = d(from_month);
         (0..n)
             .map(|i| {
-                let month = crate::forecast::add_months_pub(start, (i / 2) as i64);
+                let month = crate::dates::add_months(start, (i / 2) as i64);
                 let day = if i % 2 == 0 { 14 } else { 28 };
                 let date = month.with_day(day).unwrap();
                 tx(&date.to_string(), amount, "ACME PAYROLL")
@@ -411,7 +411,7 @@ mod tests {
         // Monthly drifts with month length, so it is matched on a range.
         let monthly: Vec<Transaction> = (0..8)
             .map(|i| {
-                let date = crate::forecast::add_months_pub(d("2026-01-20"), i);
+                let date = crate::dates::add_months(d("2026-01-20"), i);
                 tx(&date.to_string(), 4_000_00, "PAYROLL RUN")
             })
             .collect();

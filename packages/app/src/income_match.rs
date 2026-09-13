@@ -68,6 +68,25 @@ impl IncomeMatchService {
         Self { income, clock }
     }
 
+    /// Salaries the ledger appears to contain, for someone about to record one by hand.
+    ///
+    /// Reads a two-year window, which is enough to see an annual payment twice and far more than
+    /// enough for anything more frequent.
+    ///
+    /// Lives here rather than on a service of its own because it needs exactly what this one
+    /// already holds — the income repo and a clock. It hung off `ForecastService` until the
+    /// forecast engine was removed, which was never where it belonged: detecting a salary in the
+    /// ledger is a statement about what *has* happened, not a projection of what will.
+    pub async fn detect_income(
+        &self,
+        account_id: Option<i64>,
+    ) -> AppResult<Vec<crate::detect::DetectedStream>> {
+        let today = self.clock.today();
+        let from = (today - chrono::Duration::days(730)).to_string();
+        let txns = self.income.income_transactions(&from, account_id).await?;
+        Ok(crate::detect::detect(&txns, today))
+    }
+
     /// One full pass: repair orphans, regenerate every matchable stream's expected schedule,
     /// and claim whatever deposits the ledger now holds. Idempotent — every write is either an
     /// upsert behind a unique key or guarded on status — so the scheduler can run it forever.

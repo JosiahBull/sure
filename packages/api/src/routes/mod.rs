@@ -9,7 +9,6 @@ pub mod categories;
 pub mod crons;
 pub mod currencies;
 pub mod equity;
-pub mod forecast;
 pub mod health;
 pub mod import;
 pub mod income;
@@ -51,7 +50,6 @@ pub fn router(limits: &Limits) -> Router<AppState> {
         .merge(reports::router())
         .merge(stock_prices::router())
         .merge(property_estimates::router())
-        .merge(forecast::router())
         .merge(income::router());
     Router::new().nest("/api", api)
 }

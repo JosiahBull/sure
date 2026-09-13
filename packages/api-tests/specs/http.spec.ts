@@ -24,7 +24,6 @@ function header(res: Response, name: string): string {
   return value!;
 }
 
-
 // ---- cache directives -------------------------------------------------------------
 
 test("API reads are private and revalidated, never CDN-cacheable", async ({ server }) => {
@@ -61,13 +60,6 @@ test("mutations and sensitive reads are never stored", async ({ server, api }) =
     expect(res.status, path).toBe(200);
     expect(header(res, "cache-control"), path).toBe("no-store");
   }
-});
-
-test("expensive projections may be reused briefly by the browser only", async ({ server }) => {
-  const res = await fetch(`${server.baseURL}/api/forecast`);
-  expect(res.status).toBe(200);
-  expect(header(res, "cache-control")).toMatch(/^private, max-age=\d+/);
-  expect(header(res, "cdn-cache-control")).toBe("no-store");
 });
 
 test("the CDN directives can be turned off", async () => {

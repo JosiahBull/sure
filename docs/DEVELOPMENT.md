@@ -201,9 +201,9 @@ samply record -p <pid>                            # or, for a flame graph in the
 summing the frames you care about rather than by eye: the flat "sort by top of stack" table at
 the bottom is dominated by idle threads parked in `__psynch_cvwait`.
 
-What this found, the one time it has been used in anger (`docs/FORECAST.md` has the numbers): a
-12-month forecast was 88% loading and 12% simulating, and over half the loading was the *same
-two queries run twice*. Measure before optimising the arithmetic.
+What this found, the one time it has been used in anger: the expensive endpoint of the day was
+88% loading and 12% computing, and over half the loading was the *same two queries run twice*.
+Measure before optimising the arithmetic.
 
 ## Further reading
 
@@ -216,5 +216,4 @@ two queries run twice*. Measure before optimising the arithmetic.
 | [SANDBOX.md](SANDBOX.md) | The Landlock policy and its two deliberate compromises |
 | [MCP.md](MCP.md) | The MCP server: tools, resources, and the two opt-in gates |
 | [IMPORT.md](IMPORT.md) | The one-drop file import pipeline |
-| [FORECAST.md](FORECAST.md) | Where each forecast number comes from |
 | [STUDENT-LOAN.md](STUDENT-LOAN.md) | Importing and tracking an IR student loan |
