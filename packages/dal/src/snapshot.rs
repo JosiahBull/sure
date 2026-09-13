@@ -867,15 +867,6 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         // Audit, like the four above: a log of actions taken against *this* database, so it is
         // cleared and not restored. Re-inserting another database's log would be a false history.
         "DELETE FROM imports",
-        // The forecast feature is gone and these tables are no longer read, written or exported
-        // — but they are still *cleared*, and must stay ahead of `income_streams` below.
-        // `forecast_event_effects.income_stream_id` is `ON DELETE RESTRICT`, so a database that
-        // still holds pre-removal rows would refuse the `DELETE FROM income_streams` and fail the
-        // whole restore. Clearing the events first cascades the effects away (`ON DELETE CASCADE`
-        // on `event_id`) and takes the restriction with them. Nothing re-inserts them, which is
-        // the point: a restore now leaves these empty.
-        "DELETE FROM forecast_events",
-        "DELETE FROM forecast_assumptions",
         // Before both tables it references (income_streams, transactions).
         "DELETE FROM income_payments",
         "DELETE FROM income_stream_steps",

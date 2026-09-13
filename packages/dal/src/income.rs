@@ -465,20 +465,12 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
 
 /// Delete a stream.
 ///
-/// Refused with a 409 naming the forecast events whose effects target it, rather than left to the
-/// `ON DELETE RESTRICT`: a bare constraint failure tells the user nothing about which event to fix
-/// first. This is `people::delete`'s pattern, and it fires here for the same reason — an effect
-/// pointing at a deleted stream would become a silent no-op the forecast keeps pretending to model.
-///
-/// The lookup is guarded so this still works before 0022 creates that table: a stream can be
-/// deleted in the release that ships streams alone.
+/// Nothing blocks it any more. This used to refuse with a 409 naming the forecast events whose
+/// effects targeted the stream — `forecast_event_effects.income_stream_id` was `ON DELETE
+/// RESTRICT`, and a bare constraint failure told the user nothing about which event to fix. That
+/// table is gone (migration 0041), so the only thing that could refuse is gone with it.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
-    if let Some(blockers) = blocking_events(db, id).await? {
-        return Err(AppError::conflict(format!(
-            "Remove or repoint the forecast changes that use this income first: {blockers}"
-        )));
-    }
     let res = sqlx::query!("DELETE FROM income_streams WHERE id=?1", id)
         .execute(db)
         .await?;
@@ -486,33 +478,6 @@ pub async fn delete(db: &Db, id: i64) -> AppResult<()> {
         return Err(AppError::NotFound("income stream"));
     }
     Ok(())
-}
-
-/// Labels of the forecast events whose effects target `stream_id`, or `None` if there are none.
-async fn blocking_events(db: &Db, stream_id: i64) -> AppResult<Option<String>> {
-    let exists = sqlx::query_scalar!(
-        r#"SELECT 1 AS "one!" FROM sqlite_master
-            WHERE type='table' AND name='forecast_event_effects'"#
-    )
-    .fetch_optional(db)
-    .await?;
-    if exists.is_none() {
-        return Ok(None);
-    }
-    let labels = sqlx::query_scalar!(
-        "SELECT DISTINCT e.label
-           FROM forecast_event_effects f
-           JOIN forecast_events e ON e.id = f.event_id
-          WHERE f.income_stream_id = ?1
-          ORDER BY e.label",
-        stream_id
-    )
-    .fetch_all(db)
-    .await?;
-    if labels.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(crate::people::summarise(&labels)))
 }
 
 // ---- income payments -------------------------------------------------------
