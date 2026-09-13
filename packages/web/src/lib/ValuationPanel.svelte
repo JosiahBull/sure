@@ -132,12 +132,11 @@
 </script>
 
 <div class="valuations">
-  <div class="row wrap" style="gap:8px;align-items:flex-end">
-    <label class="field">
+  <div class="value-form">
+    <label class="field f-amount">
       <span class="small muted">{amountLabel}</span>
       <input
         class="input tabular"
-        style="min-width:130px"
         placeholder={isLiability ? "59020.76" : "850000"}
         aria-label={amountLabel}
         bind:value={amount}
@@ -147,7 +146,7 @@
       <span class="small muted">As of</span>
       <input class="input" type="date" aria-label="Value as of" bind:value={asOf} />
     </label>
-    <label class="field grow">
+    <label class="field f-note">
       <span class="small muted">Note (optional)</span>
       <input class="input" placeholder="e.g. opening balance from the IR letter" bind:value={note} />
     </label>
@@ -160,15 +159,15 @@
   </div>
 
   {#if editing}
-    <div class="small faint" style="margin-top:6px">
+    <p class="small hint">
       Editing the value set on {formatDate(asOf)}. Changing the date moves it.
-    </div>
+    </p>
   {/if}
 
   {#if isLiability}
-    <div class="small faint" style="margin-top:6px">
+    <p class="small hint">
       Enter what's owed as a positive number — it's stored as a negative balance.
-    </div>
+    </p>
   {/if}
 
   {#if hasTransactions}
@@ -179,11 +178,11 @@
     </div>
   {/if}
 
-  {#if error}<div class="small" style="color:var(--negative);margin-top:6px">{error}</div>{/if}
+  {#if error}<p class="small err">{error}</p>{/if}
 
-  <div class="row spread" style="margin:12px 0 4px">
-    <span class="small muted">Values set</span>
-    <label class="small faint" style="display:inline-flex;gap:6px;align-items:center;cursor:pointer">
+  <div class="ledger-head">
+    <span class="small muted ledger-title">Values set</span>
+    <label class="small faint toggle">
       <input type="checkbox" bind:checked={showAll} aria-label="Show synced and scheduled values" />
       Show synced &amp; scheduled
     </label>
@@ -191,15 +190,17 @@
 
   {#each rows as v, i (v.id)}
     <div class="row spread line" class:editing={editingId === v.id}>
-      <div style="min-width:0">
+      <div class="line-main">
         <span class="tabular">{formatMoney(v.value_minor, v.currency_code ?? currency)}</span>
         <span class="badge">{SOURCE_LABEL[v.source]}</span>
-        <div class="small faint">
+        <!-- At `--text-muted`, not `--text-faint`: this line carries the note, and the faint
+             shade fails contrast at 13px against the panel's own fill. -->
+        <div class="small line-meta">
           {formatDate(v.as_of)} · {heldUntil(i)}{v.note ? ` · ${v.note}` : ""}
         </div>
       </div>
       {#if v.source === "manual"}
-        <div class="row" style="gap:6px">
+        <div class="line-acts">
           <button
             class="btn btn-sm"
             aria-label="Edit value from {v.as_of}"
@@ -234,6 +235,12 @@
 
 <style>
   .valuations {
+    /* `--surface-2` is the same colour as `--bg-elev` in both palettes, and this panel is
+       painted `--bg-elev` — so every fill built on it (the source `.badge` on each row, the
+       transactions warning below) was drawing nothing at all. Derive the inset from the ink,
+       which steps away from the panel in whichever direction the active theme needs. */
+    --inset: color-mix(in srgb, var(--text) 5%, transparent);
+
     background: var(--bg-elev);
     border: 1px solid var(--border);
     border-radius: var(--r);
@@ -245,6 +252,58 @@
     flex-direction: column;
     gap: 3px;
   }
+  .badge {
+    background: var(--inset);
+  }
+
+  .value-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 10px;
+  }
+  /* Floors, not just grow weights: a flex row shrinks its items before it wraps, so without
+     these the note input was squeezed to a clipped "e.g. op" on a phone — the width this app
+     actually targets — instead of dropping to a line of its own. */
+  .value-form .f-amount {
+    flex: 1 1 130px;
+    min-width: 120px;
+  }
+  .value-form .f-note {
+    flex: 4 1 180px;
+    min-width: 160px;
+  }
+
+  .hint {
+    margin: 6px 0 0;
+    color: var(--text-muted);
+  }
+  .err {
+    margin: 6px 0 0;
+    color: var(--negative);
+  }
+
+  .ledger-head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 4px 12px;
+    margin: 12px 0 4px;
+  }
+  /* Both halves opt out of wrapping so the row wraps as two whole labels: "Values set" was
+     breaking across two lines rather than the toggle moving down. */
+  .ledger-title,
+  .toggle {
+    white-space: nowrap;
+  }
+  .toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+
   .line {
     padding: 7px 0;
     border-top: 1px solid var(--border);
@@ -254,11 +313,22 @@
     background: color-mix(in srgb, var(--accent) 6%, transparent);
     border-radius: var(--r-sm);
   }
+  .line-main {
+    min-width: 0;
+  }
+  .line-meta {
+    color: var(--text-muted);
+  }
+  .line-acts {
+    display: flex;
+    gap: 6px;
+  }
   .warn {
     margin-top: 8px;
     padding: 7px 9px;
     border-radius: var(--r);
-    background: var(--surface-2);
+    background: var(--inset);
+    border: 1px solid var(--border);
     color: var(--text-muted);
   }
 </style>

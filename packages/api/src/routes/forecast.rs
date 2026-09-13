@@ -57,6 +57,13 @@ pub enum AssumptionSource {
     /// trend. `baseline_minor` is then the *residual* — the part of the category the streams do
     /// not explain — so a non-zero one means some income here is still un-modelled.
     ModelledFromIncome,
+    /// A private holding with equity grants: projected along its contractual vesting schedule
+    /// rather than a rate fitted from its own history. `vesting` says what is still to come.
+    ///
+    /// `annual_growth_bps` here is a view on the *share price*, not on the position — the units
+    /// arrive on their own schedule regardless — and is zero unless an override sets it, because
+    /// an unlisted company has no measured return to fall back on.
+    VestingSchedule,
 }
 
 impl From<sure_app::forecast::AssumptionSource> for AssumptionSource {
@@ -70,6 +77,7 @@ impl From<sure_app::forecast::AssumptionSource> for AssumptionSource {
             S::InsufficientHistory => AssumptionSource::InsufficientHistory,
             S::ModelledFromIncome => AssumptionSource::ModelledFromIncome,
             S::ContributionDriven => AssumptionSource::ContributionDriven,
+            S::VestingSchedule => AssumptionSource::VestingSchedule,
         }
     }
 }
@@ -102,6 +110,35 @@ impl From<sure_app::forecast::LoanScheduleSummary> for LoanScheduleSummary {
     }
 }
 
+/// What a private holding's grants still have to vest, and what that is worth at the current
+/// mark — the ramp the projection follows.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VestingSummary {
+    /// Units not yet vested today, across every grant on the account.
+    pub unvested_units: i64,
+    /// What those units add once vested, at the current mark, in the account's minor units.
+    /// This is the money a flat or trend-fitted projection got wrong.
+    pub unvested_value_minor: i64,
+    /// When the last grant on the account finishes vesting (ISO-8601 date).
+    pub fully_vested_on: Option<String>,
+    /// The mark every figure here is priced at, and when it was set — so a stale price reads as
+    /// stale rather than current.
+    pub unit_value_minor: Option<i64>,
+    pub unit_value_as_of: Option<String>,
+}
+
+impl From<sure_app::forecast::VestingSummary> for VestingSummary {
+    fn from(v: sure_app::forecast::VestingSummary) -> Self {
+        VestingSummary {
+            unvested_units: v.unvested_units,
+            unvested_value_minor: v.unvested_value_minor,
+            fully_vested_on: v.fully_vested_on,
+            unit_value_minor: v.unit_value_minor,
+            unit_value_as_of: v.unit_value_as_of,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ResolvedAssumption {
     pub target_type: ForecastTargetType,
@@ -126,6 +163,8 @@ pub struct ResolvedAssumption {
     pub baseline_minor: Option<i64>,
     /// Only set for a mortgage/loan projected from an amortisation schedule.
     pub schedule: Option<LoanScheduleSummary>,
+    /// Only set for a private holding projected along its vesting schedule.
+    pub vesting: Option<VestingSummary>,
     /// The account's own currency, for formatting `schedule`. Absent for a category.
     pub currency_code: Option<String>,
     /// Whose account this is. Absent for a category, which belongs to the household rather
@@ -148,6 +187,7 @@ impl From<sure_app::forecast::ResolvedAssumption> for ResolvedAssumption {
             dividend_yield_bps: r.dividend_yield_bps,
             baseline_minor: r.baseline_minor,
             schedule: r.schedule.map(Into::into),
+            vesting: r.vesting.map(Into::into),
             currency_code: r.currency_code,
             ownership: r.ownership,
             source: r.source.into(),

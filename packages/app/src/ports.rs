@@ -30,6 +30,7 @@ use sure_core::{
     Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
     VestingStatus,
 };
+pub use sure_core::{EquityEvent, EquityMark, RebuildResult, SaveMark};
 
 // ---- Clock ------------------------------------------------------------------
 
@@ -1195,6 +1196,18 @@ pub trait EquityRepo: Send + Sync {
     async fn grant_vesting(&self, id: i64, as_of: Option<&str>) -> AppResult<VestingStatus>;
     async fn account_equity(&self, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity>;
     async fn revalue(&self, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity>;
+    async fn list_marks(&self, account_id: i64) -> AppResult<Vec<EquityMark>>;
+    async fn create_mark(&self, account_id: i64, input: SaveMark) -> AppResult<EquityMark>;
+    async fn delete_mark(&self, id: i64) -> AppResult<()>;
+    async fn list_events(
+        &self,
+        account_id: i64,
+        as_of: Option<&str>,
+    ) -> AppResult<Vec<EquityEvent>>;
+    async fn rebuild_history(&self, id: i64, today: Option<&str>) -> AppResult<RebuildResult>;
+    /// Value at each month from `from`, for `0..=months`. See
+    /// `sure_dal::equity::projected_values`.
+    async fn projected_values(&self, id: i64, from: &str, months: i64) -> AppResult<Vec<i64>>;
 }
 
 #[async_trait]

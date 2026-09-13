@@ -137,9 +137,22 @@
 
   // Per-account brokerage snapshots (positions + 30d activity), fetched in parallel once the
   // balances store identifies the investment-class accounts.
+  //
+  // Narrowed to the kinds that keep their quantities as `holdings` lots, rather than every
+  // investment-class account: the endpoint answers 422 for the others, so a `shares_private` or
+  // `crypto` account meant one wasted request and one console error per dashboard render. The
+  // failure was invisible because the result is filtered on `r.data` below, which is exactly
+  // what let it sit here.
+  //
+  // Kept in step with `ensure_holdings_account` in `api/routes/brokerage.rs` — the two lists are
+  // the same set, and narrowing this one further would silently drop a listed single holding's
+  // position out of the dashboard while its account page still showed it.
+  const HOLDS_LOTS: Schemas["AccountKind"][] = ["brokerage", "shares_nz", "shares_us"];
   let snapshots = $state<Record<number, Schemas["BrokerageSnapshot"]>>({});
   $effect(() => {
-    const ids = investmentAccounts.map((a) => a.account_id);
+    const ids = investmentAccounts
+      .filter((a) => HOLDS_LOTS.includes(a.kind))
+      .map((a) => a.account_id);
     if (ids.length === 0) {
       snapshots = {};
       return;

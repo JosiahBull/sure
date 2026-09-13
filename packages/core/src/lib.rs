@@ -38,7 +38,8 @@ pub use categories::{Category, CategoryKind, CategoryNode, MAX_CATEGORY_DEPTH, S
 pub use crons::{Cron, CronKind, CronRun, CronRunResult, SaveCron};
 pub use currencies::{Currency, NewCurrency};
 pub use equity::{
-    AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
+    AccountEquity, EquityEvent, EquityEventKind, EquityExercise, EquityGrant, EquityMark,
+    RebuildResult, SaveExercise, SaveGrant, SaveMark, VestingStatus,
 };
 pub use error::{AppError, AppResult, ErrorBody, ErrorDetail};
 pub use forecast::{ForecastAssumption, ForecastTargetType, SaveForecastAssumption};

@@ -10,7 +10,8 @@ use crate::extract::Json;
 use crate::state::AppState;
 
 pub use sure_core::{
-    AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
+    AccountEquity, EquityEvent, EquityEventKind, EquityExercise, EquityGrant, EquityMark,
+    RebuildResult, SaveExercise, SaveGrant, SaveMark, VestingStatus,
 };
 
 // OTEL span names for this module's handlers.
@@ -24,6 +25,11 @@ const EQUITY_DELETE_EXERCISE: &str = "equity.delete_exercise";
 const EQUITY_GRANT_VESTING: &str = "equity.grant_vesting";
 const EQUITY_ACCOUNT_EQUITY: &str = "equity.account_equity";
 const EQUITY_REVALUE: &str = "equity.revalue";
+const EQUITY_LIST_MARKS: &str = "equity.list_marks";
+const EQUITY_CREATE_MARK: &str = "equity.create_mark";
+const EQUITY_DELETE_MARK: &str = "equity.delete_mark";
+const EQUITY_LIST_EVENTS: &str = "equity.list_events";
+const EQUITY_REBUILD: &str = "equity.rebuild_history";
 
 #[derive(Debug, Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
@@ -227,6 +233,107 @@ pub async fn revalue(
     Ok(Json(st.equity.revalue(id, q.as_of.as_deref()).await?))
 }
 
+/// Every mark on an account, newest first — the price ledger behind its valuations.
+#[utoipa::path(get, path = "/api/accounts/{id}/equity-marks", tag = "equity",
+    params(("id" = i64, Path,)), responses((status = 200, body = [EquityMark])))]
+#[tracing::instrument(
+    name = EQUITY_LIST_MARKS,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn list_marks(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<Vec<EquityMark>>> {
+    Ok(Json(st.equity.list_marks(id).await?))
+}
+
+/// Record what one unit is worth from a date on. A mark already on that date is replaced, so
+/// correcting a figure needs no delete first.
+#[utoipa::path(post, path = "/api/accounts/{id}/equity-marks", tag = "equity",
+    params(("id" = i64, Path,)), request_body = SaveMark,
+    responses((status = 201, body = EquityMark), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = EQUITY_CREATE_MARK,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn create_mark(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<SaveMark>,
+) -> AppResult<(StatusCode, Json<EquityMark>)> {
+    let mark = st.equity.create_mark(id, input).await?;
+    Ok((StatusCode::CREATED, Json(mark)))
+}
+
+#[utoipa::path(delete, path = "/api/equity-marks/{id}", tag = "equity", params(("id" = i64, Path,)),
+    responses((status = 204), (status = 404, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = EQUITY_DELETE_MARK,
+    level = "debug",
+    skip_all,
+    fields(mark_id = %id),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn delete_mark(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
+    st.equity.delete_mark(id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The dated vesting/exercise ledger for an account, newest first — the quantity side of its
+/// value. Vesting rows are computed from each grant's schedule rather than stored.
+#[utoipa::path(get, path = "/api/accounts/{id}/equity-events", tag = "equity",
+    params(("id" = i64, Path,), AsOfQuery), responses((status = 200, body = [EquityEvent])))]
+#[tracing::instrument(
+    name = EQUITY_LIST_EVENTS,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id, query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn list_events(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Query(q): Query<AsOfQuery>,
+) -> AppResult<Json<Vec<EquityEvent>>> {
+    Ok(Json(st.equity.list_events(id, q.as_of.as_deref()).await?))
+}
+
+/// Rebuild the account's whole valuation history from its grant schedule and mark ledger.
+///
+/// One valuation per date the position's value could change — every vesting tranche, every
+/// exercise, every mark. Idempotent: re-running after correcting a mark restates the series
+/// rather than doubling it. `as_of` caps how far forward to go, defaulting to today.
+#[utoipa::path(post, path = "/api/accounts/{id}/equity/rebuild", tag = "equity",
+    params(("id" = i64, Path,), AsOfQuery),
+    responses((status = 200, body = RebuildResult), (status = 422, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = EQUITY_REBUILD,
+    level = "debug",
+    skip_all,
+    fields(account_id = %id, query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn rebuild_history(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Query(q): Query<AsOfQuery>,
+) -> AppResult<Json<RebuildResult>> {
+    Ok(Json(
+        st.equity.rebuild_history(id, q.as_of.as_deref()).await?,
+    ))
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -235,6 +342,13 @@ pub fn router() -> Router<AppState> {
         )
         .route("/accounts/{id}/equity", get(account_equity))
         .route("/accounts/{id}/equity/revalue", post(revalue))
+        .route("/accounts/{id}/equity/rebuild", post(rebuild_history))
+        .route(
+            "/accounts/{id}/equity-marks",
+            get(list_marks).post(create_mark),
+        )
+        .route("/accounts/{id}/equity-events", get(list_events))
+        .route("/equity-marks/{id}", axum::routing::delete(delete_mark))
         .route(
             "/equity-grants/{id}",
             axum::routing::put(update_grant).delete(delete_grant),

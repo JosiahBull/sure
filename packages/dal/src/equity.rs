@@ -2,7 +2,8 @@
 
 use chrono::{Datelike, NaiveDate, Utc};
 pub use sure_core::{
-    AccountEquity, EquityExercise, EquityGrant, SaveExercise, SaveGrant, VestingStatus,
+    AccountEquity, EquityEvent, EquityEventKind, EquityExercise, EquityGrant, EquityMark,
+    RebuildResult, SaveExercise, SaveGrant, SaveMark, VestingStatus,
 };
 use sure_core::{AppError, AppResult, ValuationSource};
 
@@ -93,6 +94,112 @@ impl From<EquityExerciseRow> for EquityExercise {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The price ledger. See `0039_equity_marks.sql` for why price is a series and not a scalar.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct EquityMarkRow {
+    id: i64,
+    account_id: i64,
+    as_of: String,
+    unit_value_minor: i64,
+    currency_code: String,
+    note: Option<String>,
+    created_at: String,
+}
+
+impl From<EquityMarkRow> for EquityMark {
+    fn from(r: EquityMarkRow) -> Self {
+        EquityMark {
+            id: r.id,
+            account_id: r.account_id,
+            as_of: r.as_of,
+            unit_value_minor: r.unit_value_minor,
+            currency_code: r.currency_code,
+            note: r.note,
+            created_at: r.created_at,
+        }
+    }
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn list_marks(db: &Db, account_id: i64) -> AppResult<Vec<EquityMark>> {
+    Ok(sqlx::query_as!(
+        EquityMarkRow,
+        r#"SELECT id AS "id!", account_id, as_of, unit_value_minor, currency_code, note, created_at
+             FROM equity_marks WHERE account_id=?1 ORDER BY as_of DESC, id DESC"#,
+        account_id
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect())
+}
+
+/// Record what a unit is worth from a date on, replacing any mark already on that date.
+///
+/// Upserts rather than erroring on a duplicate date: correcting a figure is the common reason to
+/// set one twice, and there is only ever one price on a given day (`0039`'s unique index).
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn create_mark(db: &Db, account_id: i64, input: SaveMark) -> AppResult<EquityMark> {
+    let account_ccy =
+        sqlx::query_scalar!("SELECT currency_code FROM accounts WHERE id=?1", account_id)
+            .fetch_optional(db)
+            .await?
+            .ok_or(AppError::NotFound("account"))?;
+    validate_mark(input.unit_value_minor)?;
+    let ccy = input
+        .currency_code
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_uppercase())
+        .unwrap_or(account_ccy);
+    let as_of = input.as_of.to_string();
+    Ok(sqlx::query_as!(
+        EquityMarkRow,
+        r#"INSERT INTO equity_marks (account_id, as_of, unit_value_minor, currency_code, note)
+           VALUES (?1,?2,?3,?4,?5)
+           ON CONFLICT(account_id, as_of) DO UPDATE SET
+               unit_value_minor=excluded.unit_value_minor,
+               currency_code=excluded.currency_code, note=excluded.note
+           RETURNING id AS "id!", account_id, as_of, unit_value_minor, currency_code, note,
+                     created_at"#,
+        account_id,
+        as_of,
+        input.unit_value_minor,
+        ccy,
+        input.note
+    )
+    .fetch_one(db)
+    .await?
+    .into())
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn delete_mark(db: &Db, id: i64) -> AppResult<()> {
+    let res = sqlx::query!("DELETE FROM equity_marks WHERE id=?1", id)
+        .execute(db)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound("mark"));
+    }
+    Ok(())
+}
+
+fn validate_mark(unit_value_minor: i64) -> AppResult<()> {
+    if unit_value_minor < 0 {
+        return Err(AppError::validation("unit value cannot be negative"));
+    }
+    if unit_value_minor > MAX_MONEY_MINOR {
+        return Err(AppError::validation(format!(
+            "unit value must be at most {MAX_MONEY_MINOR} minor units"
+        )));
+    }
+    Ok(())
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list_grants(db: &Db, account_id: i64) -> AppResult<Vec<EquityGrant>> {
     Ok(sqlx::query_as!(
@@ -128,7 +235,7 @@ pub async fn create_grant(db: &Db, account_id: i64, input: SaveGrant) -> AppResu
     let grant_date = input.grant_date.to_string();
     let vest_months = input.vest_months.max(1);
     let cliff_months = input.cliff_months.max(0);
-    Ok(sqlx::query_as!(
+    let grant: EquityGrant = sqlx::query_as!(
         EquityGrantRow,
         r#"INSERT INTO equity_grants
               (account_id, company, grant_date, quantity, strike_minor, currency_code,
@@ -142,7 +249,7 @@ pub async fn create_grant(db: &Db, account_id: i64, input: SaveGrant) -> AppResu
         grant_date,
         input.quantity,
         input.strike_minor,
-        ccy,
+        ccy.clone(),
         vest_months,
         cliff_months,
         input.unit_value_minor,
@@ -150,7 +257,26 @@ pub async fn create_grant(db: &Db, account_id: i64, input: SaveGrant) -> AppResu
     )
     .fetch_one(db)
     .await?
-    .into())
+    .into();
+    // `unit_value_minor` is a convenience on the way in, not a field valuation reads: record it
+    // as a mark dated at the grant, which is the earliest it could have applied. Upserting means
+    // adding a second grant with the same price is a no-op rather than a duplicate, and adding
+    // one with a *newer* price does not silently restate the older grant's history — it lands on
+    // its own date and carries forward from there.
+    if let Some(unit_value_minor) = input.unit_value_minor {
+        create_mark(
+            db,
+            account_id,
+            SaveMark {
+                as_of: input.grant_date,
+                unit_value_minor,
+                currency_code: Some(ccy),
+                note: Some("set when the grant was added".to_string()),
+            },
+        )
+        .await?;
+    }
+    Ok(grant)
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -222,7 +348,10 @@ pub async fn create_exercise(
         return Err(AppError::validation("exercise quantity must be positive"));
     }
     let as_of = input.exercise_date.date();
-    let status = compute_status(db, &grant, as_of).await?;
+    // No mark needed: this check is about *units*, and how many are exercisable on a date does
+    // not depend on what one is worth. Passing `None` keeps a grant on an account with no mark
+    // yet fully usable — you can record an exercise before anybody has priced the company.
+    let status = compute_status(db, &grant, as_of, None).await?;
     if input.quantity > status.vested_unexercised {
         return Err(AppError::validation(format!(
             "only {} vested & unexercised units available",
@@ -263,7 +392,8 @@ pub async fn grant_vesting(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<V
     let as_of = as_of
         .and_then(parse_date)
         .unwrap_or_else(|| Utc::now().date_naive());
-    compute_status(db, &grant, as_of).await
+    let mark = mark_at(db, grant.account_id, as_of).await?;
+    compute_status(db, &grant, as_of, mark.map(|m| m.unit_value_minor)).await
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -288,55 +418,374 @@ pub async fn account_equity(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<
     .into_iter()
     .map(Into::into)
     .collect();
+    // One lookup for the whole account: the mark is a property of the company, not of a grant.
+    let mark = mark_at(db, id, as_of).await?;
+    let mark_minor = mark.as_ref().map(|m| m.unit_value_minor);
     let mut statuses = Vec::new();
-    // Each grant's intrinsic value fits an i64 on its own (`compute_status` guarantees it), but
-    // two near-ceiling grants still sum past it — and this total is the number `revalue` writes
-    // into `valuations`. Accumulate wide, then narrow once with a real error.
-    let mut total: i128 = 0;
+    // Each grant's figures fit an i64 on their own (`compute_status` guarantees it), but two
+    // near-ceiling grants still sum past it — and `total_value` is the number `revalue` writes
+    // into `valuations`. Accumulate wide, then narrow once each with a real error.
+    let mut intrinsic: i128 = 0;
+    let mut owned: i128 = 0;
     for g in &grants {
-        let s = compute_status(db, g, as_of).await?;
-        total += s.intrinsic_value_minor as i128;
+        let s = compute_status(db, g, as_of, mark_minor).await?;
+        intrinsic += s.intrinsic_value_minor as i128;
+        owned += s.owned_value_minor as i128;
         statuses.push(s);
     }
-    let total: i64 = total.try_into().map_err(|_| {
-        AppError::validation(format!(
-            "account {id} total equity intrinsic value does not fit across {} grants",
-            grants.len()
-        ))
-    })?;
+    let narrow = |total: i128, what: &str| -> AppResult<i64> {
+        total.try_into().map_err(|_| {
+            AppError::validation(format!(
+                "account {id} total equity {what} does not fit across {} grants",
+                grants.len()
+            ))
+        })
+    };
+    let total_intrinsic = narrow(intrinsic, "intrinsic value")?;
+    let total_owned = narrow(owned, "owned value")?;
+    let total_value = narrow(intrinsic + owned, "value")?;
     Ok(AccountEquity {
         account_id: id,
         as_of: as_of.to_string(),
         currency_code: account_ccy,
         grants: statuses,
-        total_intrinsic_minor: total,
+        total_intrinsic_minor: total_intrinsic,
+        total_owned_minor: total_owned,
+        total_value_minor: total_value,
+        unit_value_minor: mark_minor,
+        unit_value_as_of: mark.map(|m| m.as_of),
     })
 }
 
-/// Snapshot the account's current equity intrinsic value into a valuation.
+/// Snapshot the account's current equity value into a valuation.
+///
+/// That is [`AccountEquity::total_value_minor`] — vested-unexercised intrinsic *plus* shares
+/// already exercised and held. It used to be the intrinsic figure alone, which made every
+/// exercise look like the position had shrunk by the market value of the units exercised: the
+/// options left `vested_unexercised` and the shares they became were counted nowhere, so a
+/// fully-exercised grant valued at zero.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn revalue(db: &Db, id: i64, as_of: Option<&str>) -> AppResult<AccountEquity> {
     let equity = account_equity(db, id, as_of).await?;
+    write_valuation(db, id, &equity).await?;
+    Ok(equity)
+}
+
+/// Upsert one date's equity valuation. Idempotent per (account, date) — see
+/// `0040_equity_valuations_daily.sql`; revaluing the same day twice refreshes the row rather
+/// than stacking another beside it, which is what makes [`rebuild_history`] safe to re-run.
+async fn write_valuation(db: &Db, id: i64, equity: &AccountEquity) -> AppResult<()> {
     let source = ValuationSource::Equity.as_str();
     sqlx::query!(
         "INSERT INTO valuations (account_id, as_of, value_minor, currency_code, source, note)
-         VALUES (?1,?2,?3,?4,?5,'equity revaluation')",
+         VALUES (?1,?2,?3,?4,?5,'equity revaluation')
+         ON CONFLICT(account_id, as_of) WHERE source='equity' DO UPDATE SET
+             value_minor=excluded.value_minor, currency_code=excluded.currency_code",
         id,
         equity.as_of,
-        equity.total_intrinsic_minor,
+        equity.total_value_minor,
         equity.currency_code,
         source
     )
     .execute(db)
     .await?;
-    Ok(equity)
+    Ok(())
 }
 
+/// Every date this account's value can change, oldest first, capped at `today`.
+///
+/// Exactly the vesting tranche dates, the exercise dates and the mark dates — nothing else moves
+/// the figure, and a valuation is a level that carries forward until the next one, so this set is
+/// the *whole* history rather than a sample of it. Sampling monthly regardless would miss a
+/// mid-month exercise; sampling daily would repeat a carried-forward number a thousand times.
+async fn value_change_dates(
+    db: &Db,
+    account_id: i64,
+    today: NaiveDate,
+) -> AppResult<Vec<NaiveDate>> {
+    let grants = list_grants(db, account_id).await?;
+    let mut dates: std::collections::BTreeSet<NaiveDate> = std::collections::BTreeSet::new();
+    for g in &grants {
+        let Some(start) = parse_date(&g.grant_date) else {
+            continue;
+        };
+        // Tranche n vests at start+n months, for n in 0..=vest_months. n=0 is the grant date
+        // itself, which is where the series should start from zero rather than from whatever the
+        // first tranche happens to be.
+        for n in 0..=g.vest_months.max(1) {
+            let Some(d) = add_months(start, n) else { break };
+            if d > today {
+                break;
+            }
+            dates.insert(d);
+        }
+    }
+    for e in sqlx::query_scalar!(
+        // Read out of a join, so SQLite describes it nullable; `!` names what the column
+        // already guarantees.
+        r#"SELECT e.exercise_date AS "exercise_date!" FROM equity_exercises e
+             JOIN equity_grants g ON g.id = e.grant_id
+            WHERE g.account_id = ?1"#,
+        account_id
+    )
+    .fetch_all(db)
+    .await?
+    {
+        if let Some(d) = parse_date(&e).filter(|d| *d <= today) {
+            dates.insert(d);
+        }
+    }
+    for m in list_marks(db, account_id).await? {
+        if let Some(d) = parse_date(&m.as_of).filter(|d| *d <= today) {
+            dates.insert(d);
+        }
+    }
+    if !dates.is_empty() {
+        // The series has to reach the present or the latest valuation is a stale level that
+        // carries forward as today's value.
+        dates.insert(today);
+    }
+    Ok(dates.into_iter().collect())
+}
+
+/// The largest number of valuations one rebuild may write.
+///
+/// A guard against a mistyped grant date, not a real limit: the dates come from vesting
+/// schedules, so a grant accidentally dated 1970 would otherwise write six hundred rows nobody
+/// asked for. Four grants over a decade is well under a hundred.
+const MAX_REBUILD_VALUATIONS: usize = 1_000;
+
+/// Recompute this account's whole valuation history from the grant schedule and the mark ledger.
+///
+/// This is the payoff of separating quantity from price. Quantity on any date was always exact —
+/// derived from the deeds — and now that price is a series too, the value on any past date is
+/// computable rather than something a human has to remember and type. Re-runnable: each date
+/// upserts (see [`write_valuation`]), so correcting a mark and rebuilding restates the history
+/// instead of doubling it.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn rebuild_history(db: &Db, id: i64, today: Option<&str>) -> AppResult<RebuildResult> {
+    let today = today
+        .and_then(parse_date)
+        .unwrap_or_else(|| Utc::now().date_naive());
+    let dates = value_change_dates(db, id, today).await?;
+    if dates.len() > MAX_REBUILD_VALUATIONS {
+        return Err(AppError::validation(format!(
+            "rebuilding would write {} valuations, past the {MAX_REBUILD_VALUATIONS} limit — \
+             check the grant dates",
+            dates.len()
+        )));
+    }
+    let from = dates.first().map(|d| d.to_string());
+    let to = dates.last().map(|d| d.to_string());
+    let mut written = 0;
+    for d in &dates {
+        let equity = account_equity(db, id, Some(&d.to_string())).await?;
+        write_valuation(db, id, &equity).await?;
+        written += 1;
+    }
+    Ok(RebuildResult { written, from, to })
+}
+
+/// What this position will be worth at each month from `from`, for `0..=months`.
+///
+/// The quantity ramp a private holding is projected along. Vesting is contractual — the deed
+/// already says how many units land on the 1st of each month for the next four years — so the
+/// *quantity* side of a future value is known rather than fitted. Price is not: each month is
+/// valued at the mark in force then, which for a future date is the latest one recorded, and the
+/// forecast applies its own growth assumption on top of this ramp.
+///
+/// This is what a fitted trend cannot express. Read as a series of past values, a grant vesting
+/// into a re-marked company looks like an asset compounding at hundreds of percent; projecting
+/// that forward is nonsense, while projecting a flat value ignores four years of contractual
+/// vesting. The ramp is the honest middle.
+///
+/// One `account_equity` call per month rather than a bespoke in-memory computation: the vesting formula
+/// then has exactly one implementation, and these are local prepared queries called once per
+/// forecast, not per simulated path.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn projected_values(
+    db: &Db,
+    id: i64,
+    from: NaiveDate,
+    months: i64,
+) -> AppResult<Vec<i64>> {
+    let mut out = Vec::with_capacity(months.max(0) as usize + 1);
+    for m in 0..=months.max(0) {
+        let Some(d) = add_months(from, m) else { break };
+        out.push(
+            account_equity(db, id, Some(&d.to_string()))
+                .await?
+                .total_value_minor,
+        );
+    }
+    Ok(out)
+}
+
+/// The dated vesting/exercise ledger: what this account holds and when that changed.
+///
+/// Vesting rows are computed, not stored — a tranche is not something anybody records, it is
+/// what the deed already says happens on the 1st of each month — so this is assembled on read.
+/// Exercises are real rows. Together they are the quantity half of the account's value, the
+/// counterpart to a brokerage account's `holdings` lots.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn list_events(
+    db: &Db,
+    account_id: i64,
+    as_of: Option<&str>,
+) -> AppResult<Vec<EquityEvent>> {
+    let as_of = as_of
+        .and_then(parse_date)
+        .unwrap_or_else(|| Utc::now().date_naive());
+    let grants = list_grants(db, account_id).await?;
+    let marks = list_marks(db, account_id).await?;
+    // Ascending, so the running mark can be advanced in step with the events below.
+    let mut marks: Vec<(NaiveDate, i64)> = marks
+        .iter()
+        .filter_map(|m| parse_date(&m.as_of).map(|d| (d, m.unit_value_minor)))
+        .collect();
+    marks.sort();
+    let mark_on = |d: NaiveDate| -> Option<i64> {
+        marks.iter().rev().find(|(md, _)| *md <= d).map(|(_, v)| *v)
+    };
+
+    let mut events = Vec::new();
+    for g in &grants {
+        let Some(start) = parse_date(&g.grant_date) else {
+            continue;
+        };
+        let vest_months = g.vest_months.max(1);
+        let cliff = g.cliff_months.max(0);
+        // Cumulative vested after n months, the same floor() the status computation uses — so
+        // the tranche sizes here always add up to what `grant_vesting` reports, including the
+        // rounding that makes one month in four a unit larger.
+        let vested_after = |n: i64| -> i64 {
+            if n < cliff {
+                0
+            } else {
+                ((g.quantity as i128 * n.min(vest_months) as i128) / vest_months as i128) as i64
+            }
+        };
+        for n in 1..=vest_months {
+            let Some(d) = add_months(start, n) else { break };
+            if d > as_of {
+                break;
+            }
+            let tranche = vested_after(n) - vested_after(n - 1);
+            if tranche == 0 {
+                continue;
+            }
+            events.push(EquityEvent {
+                date: d.to_string(),
+                grant_id: g.id,
+                grant_label: g.note.clone(),
+                // The cliff month is not a bigger tranche, it is the one date where a year of
+                // them lands at once — worth naming so a reader is not left wondering why.
+                kind: if n == cliff {
+                    EquityEventKind::Cliff
+                } else {
+                    EquityEventKind::Vest
+                },
+                quantity: tranche,
+                vested_running: vested_after(n),
+                exercised_running: 0,
+                unit_value_minor: mark_on(d),
+                note: None,
+            });
+        }
+        for ex in list_exercises(db, g.id).await? {
+            let Some(d) = parse_date(&ex.exercise_date).filter(|d| *d <= as_of) else {
+                continue;
+            };
+            events.push(EquityEvent {
+                date: ex.exercise_date.clone(),
+                grant_id: g.id,
+                grant_label: g.note.clone(),
+                kind: EquityEventKind::Exercise,
+                quantity: ex.quantity,
+                vested_running: vested_after(months_between(start, d)),
+                exercised_running: 0,
+                unit_value_minor: mark_on(d),
+                note: ex.note.clone(),
+            });
+        }
+    }
+    // Newest first, matching every other ledger in the app; within a date, vesting before the
+    // exercise it made possible.
+    events.sort_by(|a, b| {
+        b.date
+            .cmp(&a.date)
+            .then_with(|| a.grant_id.cmp(&b.grant_id))
+            .then_with(|| a.kind.as_str().cmp(b.kind.as_str()))
+    });
+    // Running exercised totals, per grant, computed oldest-first then left on the rows.
+    let mut running: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    for e in events.iter_mut().rev() {
+        let acc = running.entry(e.grant_id).or_insert(0);
+        if e.kind == EquityEventKind::Exercise {
+            *acc += e.quantity;
+        }
+        e.exercised_running = *acc;
+    }
+    Ok(events)
+}
+
+/// `date` plus `months` calendar months, clamping the day to the target month's length.
+///
+/// Returns `None` only on a date arithmetic overflow — a year past `NaiveDate`'s range, which a
+/// mistyped grant date can reach. Callers stop their loop rather than treating it as "today".
+fn add_months(date: NaiveDate, months: i64) -> Option<NaiveDate> {
+    let total = date.year() as i64 * 12 + (date.month0() as i64) + months;
+    let year = i32::try_from(total.div_euclid(12)).ok()?;
+    let month = total.rem_euclid(12) as u32 + 1;
+    let last = days_in_month(year, month)?;
+    NaiveDate::from_ymd_opt(year, month, date.day().min(last))
+}
+
+fn days_in_month(year: i32, month: u32) -> Option<u32> {
+    let (ny, nm) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    let first = NaiveDate::from_ymd_opt(year, month, 1)?;
+    let next = NaiveDate::from_ymd_opt(ny, nm, 1)?;
+    Some((next - first).num_days() as u32)
+}
+
+/// The mark in force on a date: the latest one dated on or before it.
+///
+/// A mark is a level that carries forward, exactly like a `valuations` row — so "the price on
+/// 2025-03-14" is the last one set, not one that has to exist on that date. `None` means the
+/// ledger starts later than the date asked about, and the caller values the position at zero
+/// rather than reaching for a price nobody supplied.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn mark_at(db: &Db, account_id: i64, as_of: NaiveDate) -> AppResult<Option<EquityMark>> {
+    let as_of = as_of.to_string();
+    Ok(sqlx::query_as!(
+        EquityMarkRow,
+        r#"SELECT id AS "id!", account_id, as_of, unit_value_minor, currency_code, note,
+                  created_at
+             FROM equity_marks WHERE account_id=?1 AND as_of <= ?2
+            ORDER BY as_of DESC LIMIT 1"#,
+        account_id,
+        as_of
+    )
+    .fetch_optional(db)
+    .await?
+    .map(Into::into))
+}
+
+/// Compute one grant's status against a mark the caller has already resolved.
+///
+/// The mark is passed in rather than looked up here because `account_equity` resolves it once
+/// for the whole account: every grant on an account is equity in the same company, so a
+/// per-grant lookup would be the same query repeated and could not disagree usefully anyway.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn compute_status(
     db: &Db,
     grant: &EquityGrant,
     as_of: NaiveDate,
+    mark_minor: Option<i64>,
 ) -> AppResult<VestingStatus> {
     let grant_date = parse_date(&grant.grant_date).unwrap_or(as_of);
     let elapsed = months_between(grant_date, as_of);
@@ -362,13 +811,12 @@ async fn compute_status(
     .unwrap_or(0);
 
     let vested_unexercised = vested.saturating_sub(exercised).max(0);
-    // `unit_value_minor` and `strike_minor` come straight off the row, so `validate_grant`'s
-    // ceilings only cover grants written through this crate: a row from before they existed,
-    // or one edited by hand, can still hold extremes where the *subtraction* alone overflows
+    // The mark and `strike_minor` come straight off their rows, so `validate_grant`/`validate_mark`
+    // ceilings only cover what was written through this crate: a row from before they existed, or
+    // one edited by hand, can still hold extremes where the *subtraction* alone overflows
     // (`i64::MAX - -1`). Saturating keeps that from panicking before the multiply below has a
     // chance to report anything.
-    let per_unit_gain = grant
-        .unit_value_minor
+    let per_unit_gain = mark_minor
         .map(|v| v.saturating_sub(grant.strike_minor).max(0))
         .unwrap_or(0);
     // `revalue` persists this product into `valuations`, so it must never wrap: with no
@@ -385,6 +833,36 @@ async fn compute_status(
             ))
         })?;
 
+    // Exercised units are shares now, and a share is worth the whole unit value — not the
+    // intrinsic spread, which is what an *option* is worth. Without this the grant's value
+    // falls by the full market price of every unit exercised, so exercising reads as the
+    // position being sold off rather than converted.
+    //
+    // At full price rather than `per_unit_gain` because the strike on these units is already
+    // spent: it left a bank account on the exercise date. Widened for the same reason the
+    // intrinsic product is (`revalue` persists the sum), and negative marks are floored at
+    // zero — a share cannot be worth less than nothing, and an unset `unit_value_minor` means
+    // "no mark", which values at zero exactly as it does above.
+    let owned = exercised;
+    let unit_value = mark_minor.unwrap_or(0).max(0);
+    let owned_value: i64 = (owned as i128 * unit_value as i128)
+        .try_into()
+        .map_err(|_| {
+            AppError::validation(format!(
+                "grant {} owned value does not fit: {} shares x {} unit value",
+                grant.id, owned, unit_value
+            ))
+        })?;
+    // Both halves fit an i64 individually; their sum need not.
+    let total_value: i64 = (intrinsic as i128 + owned_value as i128)
+        .try_into()
+        .map_err(|_| {
+            AppError::validation(format!(
+                "grant {} total value does not fit: {intrinsic} intrinsic + {owned_value} owned",
+                grant.id
+            ))
+        })?;
+
     Ok(VestingStatus {
         grant_id: grant.id,
         company: grant.company.clone(),
@@ -394,10 +872,13 @@ async fn compute_status(
         unvested: grant.quantity - vested,
         exercised,
         vested_unexercised,
+        owned,
         strike_minor: grant.strike_minor,
-        unit_value_minor: grant.unit_value_minor,
+        unit_value_minor: mark_minor,
         currency_code: grant.currency_code.clone(),
         intrinsic_value_minor: intrinsic,
+        owned_value_minor: owned_value,
+        total_value_minor: total_value,
     })
 }
 
@@ -532,7 +1013,7 @@ mod tests {
         strike_minor: i64,
         unit_value_minor: Option<i64>,
     ) -> i64 {
-        sqlx::query_scalar!(
+        let id = sqlx::query_scalar!(
             r#"INSERT INTO equity_grants
                   (account_id, company, grant_date, quantity, strike_minor, currency_code,
                    vest_months, cliff_months, unit_value_minor)
@@ -545,7 +1026,25 @@ mod tests {
         )
         .fetch_one(db)
         .await
-        .unwrap()
+        .unwrap();
+        // The mark ledger is what valuation reads, so an extreme price has to land *there* for
+        // these tests to reach the arithmetic they exist for. Written straight to the table,
+        // like the grant above: `validate_mark` would reject it at the edge, which is the
+        // point — these cover the rows that got in before those ceilings existed, or by hand.
+        if let Some(unit_value_minor) = unit_value_minor {
+            sqlx::query!(
+                "INSERT INTO equity_marks (account_id, as_of, unit_value_minor, currency_code)
+                 VALUES (?1,'2019-01-01',?2,'NZD')
+                 ON CONFLICT(account_id, as_of) DO UPDATE SET
+                     unit_value_minor=excluded.unit_value_minor",
+                account_id,
+                unit_value_minor
+            )
+            .execute(db)
+            .await
+            .unwrap();
+        }
+        id
     }
 
     fn grant(quantity: i64, strike_minor: i64, unit_value_minor: Option<i64>) -> SaveGrant {
@@ -581,6 +1080,334 @@ mod tests {
         let status = grant_vesting(&db, g.id, Some("2024-01-01")).await.unwrap();
         assert_eq!(status.vested, 4_800);
         assert_eq!(status.intrinsic_value_minor, 4_800 * 2_400);
+    }
+
+    async fn mark(db: &Db, account: i64, as_of: &str, unit_value_minor: i64) {
+        create_mark(
+            db,
+            account,
+            SaveMark {
+                as_of: IsoDate::parse(as_of).unwrap(),
+                unit_value_minor,
+                currency_code: None,
+                note: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_past_date_is_priced_at_the_mark_that_applied_then() {
+        let db = test_db().await;
+        let account = test_account(&db).await;
+        // No unit value on the grant: the mark ledger below is the only price.
+        let g = create_grant(&db, account, grant(4_800, 100, None))
+            .await
+            .unwrap();
+        mark(&db, account, "2020-01-01", 1_000).await;
+        mark(&db, account, "2024-01-01", 2_500).await;
+
+        // 2023 is still on the old mark, even though a newer one exists — the whole reason price
+        // is a ledger. Before this, valuing a past date used whatever the grant currently said.
+        let then = grant_vesting(&db, g.id, Some("2023-01-01")).await.unwrap();
+        assert_eq!(then.vested, 3_600); // 36/48
+        assert_eq!(then.unit_value_minor, Some(1_000));
+        assert_eq!(then.intrinsic_value_minor, 3_600 * 900);
+
+        let now = grant_vesting(&db, g.id, Some("2024-01-01")).await.unwrap();
+        assert_eq!(now.unit_value_minor, Some(2_500));
+        assert_eq!(now.intrinsic_value_minor, 4_800 * 2_400);
+    }
+
+    #[tokio::test]
+    async fn a_date_before_the_first_mark_values_at_zero_with_exact_quantities() {
+        let db = test_db().await;
+        let account = test_account(&db).await;
+        let g = create_grant(&db, account, grant(4_800, 100, None))
+            .await
+            .unwrap();
+        mark(&db, account, "2024-01-01", 2_500).await;
+
+        // Quantities are known from the deed regardless of whether anybody has priced the
+        // company; value is not invented in the gap.
+        let s = grant_vesting(&db, g.id, Some("2022-01-01")).await.unwrap();
+        assert_eq!(s.vested, 2_400);
+        assert_eq!(s.unit_value_minor, None);
+        assert_eq!(s.total_value_minor, 0);
+    }
+
+    #[tokio::test]
+    async fn a_mark_replaces_the_one_already_on_its_date() {
+        let db = test_db().await;
+        let account = test_account(&db).await;
+        create_grant(&db, account, grant(4_800, 100, None))
+            .await
+            .unwrap();
+        mark(&db, account, "2024-01-01", 2_500).await;
+        mark(&db, account, "2024-01-01", 2_600).await;
+        let marks = list_marks(&db, account).await.unwrap();
+        assert_eq!(
+            marks.len(),
+            1,
+            "a corrected figure replaces, it does not stack"
+        );
+        assert_eq!(marks[0].unit_value_minor, 2_600);
+    }
+
+    #[tokio::test]
+    async fn a_grant_created_with_a_unit_value_seeds_the_mark_ledger() {
+        let db = test_db().await;
+        let account = test_account(&db).await;
+        // The convenience field still works — it lands as a mark dated at the grant.
+        create_grant(&db, account, grant(4_800, 100, Some(2_500)))
+            .await
+            .unwrap();
+        let marks = list_marks(&db, account).await.unwrap();
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].as_of, "2020-01-01");
+        assert_eq!(marks[0].unit_value_minor, 2_500);
+    }
+
+    #[tokio::test]
+    async fn rebuilding_writes_one_valuation_per_change_and_is_idempotent() {
+        let db = test_db().await;
+        let account = test_account(&db).await;
+        // 48 units over 48 months from 2020-01-01, 12-month cliff, so one unit vests a month.
+        let g = create_grant(&db, account, grant(48, 0, None))
+            .await
+            .unwrap();
+        mark(&db, account, "2020-01-01", 100).await;
+        create_exercise(
+            &db,
+            g.id,
+            SaveExercise {
+                exercise_date: IsoDate::parse("2021-06-15").unwrap(),
+                quantity: 10,
+                price_minor: 0,
+                note: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let first = rebuild_history(&db, account, Some("2022-01-01"))
+            .await
+            .unwrap();
+        // 25 tranche dates (2020-01-01 through 2022-01-01 inclusive) plus the mid-month
+        // exercise. Every one of them is a date the value actually moved.
+        assert_eq!(first.written, 26);
+        assert_eq!(first.from.as_deref(), Some("2020-01-01"));
+        assert_eq!(first.to.as_deref(), Some("2022-01-01"));
+
+        async fn equity_rows(db: &Db) -> i64 {
+            sqlx::query_scalar!(
+                r#"SELECT COUNT(*) AS "n: i64" FROM valuations WHERE source='equity'"#
+            )
+            .fetch_one(db)
+            .await
+            .unwrap()
+        }
+        assert_eq!(equity_rows(&db).await, 26);
+
+        // Re-running restates rather than doubling — what makes correcting a mark safe.
+        let again = rebuild_history(&db, account, Some("2022-01-01"))
+            .await
+            .unwrap();
+        assert_eq!(again.written, 26);
+        assert_eq!(equity_rows(&db).await, 26);
+
+        // A corrected mark flows through the whole series on the next rebuild.
+        mark(&db, account, "2020-01-01", 200).await;
+        rebuild_history(&db, account, Some("2022-01-01"))
+            .await
+            .unwrap();
+        let at_cliff = sqlx::query_scalar!(
+            "SELECT value_minor FROM valuations WHERE source='equity' AND as_of='2021-01-01'"
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(at_cliff, 12 * 200);
+    }
+
+    #[tokio::test]
+    async fn the_event_ledger_names_the_cliff_and_totals_to_the_grant() {
+        let db = test_db().await;
+        let account = test_account(&db).await;
+        let g = create_grant(&db, account, grant(48, 0, Some(100)))
+            .await
+            .unwrap();
+        create_exercise(
+            &db,
+            g.id,
+            SaveExercise {
+                exercise_date: IsoDate::parse("2021-06-15").unwrap(),
+                quantity: 10,
+                price_minor: 0,
+                note: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let events = list_events(&db, account, Some("2024-01-01")).await.unwrap();
+        // Newest first.
+        assert!(events.first().unwrap().date > events.last().unwrap().date);
+
+        let cliffs: Vec<_> = events
+            .iter()
+            .filter(|e| e.kind == EquityEventKind::Cliff)
+            .collect();
+        assert_eq!(cliffs.len(), 1, "exactly one cliff on this grant");
+        assert_eq!(cliffs[0].date, "2021-01-01");
+        assert_eq!(cliffs[0].quantity, 12, "a year's tranches land at once");
+
+        // The tranches must add up to the grant, or the ledger and the status disagree.
+        let vested: i64 = events
+            .iter()
+            .filter(|e| e.kind != EquityEventKind::Exercise)
+            .map(|e| e.quantity)
+            .sum();
+        let status = grant_vesting(&db, g.id, Some("2024-01-01")).await.unwrap();
+        assert_eq!(vested, status.vested);
+        assert_eq!(vested, 48);
+
+        let exercises: Vec<_> = events
+            .iter()
+            .filter(|e| e.kind == EquityEventKind::Exercise)
+            .collect();
+        assert_eq!(exercises.len(), 1);
+        assert_eq!(exercises[0].exercised_running, 10);
+        assert_eq!(exercises[0].unit_value_minor, Some(100));
+    }
+
+    #[tokio::test]
+    async fn exercising_moves_value_across_rather_than_destroying_it() {
+        let db = test_db().await;
+        let account = test_account(&db).await;
+        // 4,800 units, fully vested by 2024-01-01: $25.00 a unit against a $1.00 strike.
+        let g = create_grant(&db, account, grant(4_800, 100, Some(2_500)))
+            .await
+            .unwrap();
+        let before = grant_vesting(&db, g.id, Some("2024-01-01")).await.unwrap();
+        assert_eq!(before.total_value_minor, 4_800 * 2_400);
+        assert_eq!(before.owned, 0);
+
+        create_exercise(
+            &db,
+            g.id,
+            SaveExercise {
+                exercise_date: IsoDate::parse("2024-01-01").unwrap(),
+                quantity: 3_000,
+                price_minor: 100,
+                note: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let after = grant_vesting(&db, g.id, Some("2024-01-01")).await.unwrap();
+        assert_eq!(after.owned, 3_000);
+        assert_eq!(after.vested_unexercised, 1_800);
+        // The 1,800 options still carry only their $24.00 spread...
+        assert_eq!(after.intrinsic_value_minor, 1_800 * 2_400);
+        // ...but the 3,000 exercised units are shares now, worth the whole $25.00: the strike
+        // was paid in cash on the exercise date, so netting it off again would double-count it.
+        assert_eq!(after.owned_value_minor, 3_000 * 2_500);
+        // Exercising is a conversion, not a disposal, so the total may only go *up* here — by
+        // exactly the strike now sunk into the 3,000 shares. Before this was modelled it fell
+        // by $75,000, the full market value of everything exercised.
+        assert_eq!(after.total_value_minor, 1_800 * 2_400 + 3_000 * 2_500);
+        assert!(after.total_value_minor > before.total_value_minor);
+    }
+
+    #[tokio::test]
+    async fn a_fully_exercised_grant_is_still_worth_its_shares() {
+        let db = test_db().await;
+        let account = test_account(&db).await;
+        let g = create_grant(&db, account, grant(4_800, 100, Some(2_500)))
+            .await
+            .unwrap();
+        create_exercise(
+            &db,
+            g.id,
+            SaveExercise {
+                exercise_date: IsoDate::parse("2024-01-01").unwrap(),
+                quantity: 4_800,
+                price_minor: 100,
+                note: None,
+            },
+        )
+        .await
+        .unwrap();
+        let status = grant_vesting(&db, g.id, Some("2024-01-01")).await.unwrap();
+        // Nothing left to exercise, so no intrinsic value — and for as long as that was the
+        // only figure, a grant fully converted into shares valued at zero.
+        assert_eq!(status.intrinsic_value_minor, 0);
+        assert_eq!(status.total_value_minor, 4_800 * 2_500);
+
+        let equity = account_equity(&db, account, Some("2024-01-01"))
+            .await
+            .unwrap();
+        assert_eq!(equity.total_intrinsic_minor, 0);
+        assert_eq!(equity.total_owned_minor, 4_800 * 2_500);
+        assert_eq!(equity.total_value_minor, 4_800 * 2_500);
+    }
+
+    #[tokio::test]
+    async fn a_revaluation_persists_the_whole_position_not_just_the_options() {
+        let db = test_db().await;
+        let account = test_account(&db).await;
+        let g = create_grant(&db, account, grant(4_800, 100, Some(2_500)))
+            .await
+            .unwrap();
+        create_exercise(
+            &db,
+            g.id,
+            SaveExercise {
+                exercise_date: IsoDate::parse("2024-01-01").unwrap(),
+                quantity: 3_000,
+                price_minor: 100,
+                note: None,
+            },
+        )
+        .await
+        .unwrap();
+        let equity = revalue(&db, account, Some("2024-01-01")).await.unwrap();
+        let expected = 1_800 * 2_400 + 3_000 * 2_500;
+        assert_eq!(equity.total_value_minor, expected);
+        // The row written is the whole position: this is the figure net worth reads.
+        let persisted = sqlx::query_scalar!(
+            "SELECT value_minor FROM valuations WHERE account_id=?1 AND source='equity'",
+            account
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(persisted, expected);
+    }
+
+    #[tokio::test]
+    async fn an_owned_value_past_i64_is_an_error_not_a_wrap() {
+        let db = test_db().await;
+        let account = test_account(&db).await;
+        // Written straight to the table: `validate_grant` bounds the pair on the way in, so a
+        // product this size only exists on a row that predates those ceilings or was edited by
+        // hand — which is exactly the case `compute_status` still has to survive.
+        let id = insert_unvalidated(&db, account, 1_000, 0, Some(i64::MAX)).await;
+        sqlx::query!(
+            "INSERT INTO equity_exercises (grant_id, exercise_date, quantity) VALUES (?1,'2024-01-01',1000)",
+            id
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let message = validation_message(grant_vesting(&db, id, Some("2024-01-01")).await);
+        assert!(
+            message.contains("owned value does not fit"),
+            "unexpected message: {message}"
+        );
     }
 
     #[tokio::test]
