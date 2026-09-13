@@ -620,7 +620,7 @@ pub struct ImportRow {
     pub category_group: Option<String>,
     pub category_kind: Option<CategoryKind>,
     /// Excluded from spend/income reports, but still counted towards balances and net worth
-    /// (see `sure_app::reports::load_ledger`, which filters nothing). What an opening-balance
+    /// (see `sure_app::reports::load_ledger_window`, which filters nothing). What an opening-balance
     /// row needs: it moves the account's value without being money earned or spent.
     pub is_one_off: bool,
 }

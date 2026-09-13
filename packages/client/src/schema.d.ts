@@ -2907,6 +2907,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/forecast/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The same projection as `GET /api/forecast`, streamed as it firms up.
+         * @description `text/event-stream`: a `snapshot` event after 10 paths, then 100, then 1 000, then every
+         *     1 000 and once more at the end, with `tick` events roughly every 1% of the run in between.
+         *     The final `snapshot` is byte-for-byte what the JSON route returns for the same query.
+         *
+         *     Why this exists at all: at a 30-year horizon the projection is a few hundred milliseconds of
+         *     arithmetic, and until it finished the page had nothing to draw but the *previous* run's
+         *     numbers. Ten paths is half a percent of that, so the first honest picture of the new query
+         *     arrives in about a millisecond.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /**
+                     * @description How many months forward to project (1-360). Defaults to 12. A value past the ceiling is
+                     *     clamped rather than refused; `ForecastResult::horizon_months` reports what was run.
+                     */
+                    horizon_months?: number;
+                    /**
+                     * @description Monte Carlo path count (100-5000, more = smoother percentiles, slower).
+                     *     Defaults to 2000. Long horizons are additionally capped by a path-month budget, so a
+                     *     30-year projection runs 2000 paths however many were asked for —
+                     *     `ForecastResult::simulations` reports what was run.
+                     */
+                    simulations?: number;
+                    /**
+                     * @description Report currency; defaults to the configured base currency. An unknown code is a 400
+                     *     rather than a projection at parity — see `sure_app::forecast`'s `currency_and_fx`.
+                     */
+                    currency?: string;
+                    /** @description Fixed RNG seed for reproducible output; omit for a fresh random draw each call. */
+                    seed?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description An event stream of `snapshot` and `tick` events, terminated by `done` (or `error`). */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": components["schemas"]["ForecastProgress"];
+                    };
+                };
+                /** @description unknown `currency` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                /** @description every compute slot is busy; retry after `Retry-After` */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -6991,6 +7075,29 @@ export interface components {
             net_worth: components["schemas"]["Band"];
             assets: components["schemas"]["Band"];
             liabilities: components["schemas"]["Band"];
+        };
+        /**
+         * @description One event on the forecast stream.
+         *
+         *     Two shapes on one schema, told apart by the SSE `event:` name rather than by a tag inside the
+         *     body: `snapshot` carries `result`, `tick` carries only the counters. A tick is thirty bytes
+         *     and costs no aggregation, which is the point of having it — a bar wants a hundred of them and
+         *     the chart wants four repaints, and paying for a full projection to move a bar 1% would make
+         *     streaming slower than not streaming.
+         */
+        ForecastProgress: {
+            /**
+             * Format: int64
+             * @description Paths completed so far, rising to `total`.
+             */
+            completed: number;
+            /**
+             * Format: int64
+             * @description The path count this run will finish at — already clamped, so it is what will actually be
+             *     run rather than what was asked for.
+             */
+            total: number;
+            result?: null | components["schemas"]["ForecastResult"];
         };
         ForecastResult: {
             currency: string;

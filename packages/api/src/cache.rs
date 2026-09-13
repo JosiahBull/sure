@@ -147,6 +147,15 @@ const LONG_ROUTES: &[LongRoute] = &[
         method: Method::GET,
         template: "/api/forecast",
     },
+    // The streaming twin. Not for the stream: `timeout` wraps `next.run(request)`, which
+    // resolves once the response *head* is ready, so a `text/event-stream` body is outside
+    // every deadline here (`telemetry.rs` says the same about the request histogram). What
+    // earns it the long allowance is `simulate_inputs`, which runs before the head can be
+    // produced and is the same set of loads the route above is given 300s for.
+    LongRoute {
+        method: Method::GET,
+        template: "/api/forecast/stream",
+    },
     LongRoute {
         method: Method::POST,
         template: "/api/accounts/{id}/brokerage/backfill",
@@ -212,6 +221,12 @@ const API_NO_STORE: &[&str] = &[
     "/api/health",
     "/api/config/export",
     "/api/provider-kinds/{kind}/accounts",
+    // A stream is a sequence of events, not a representation of a resource: there is nothing
+    // for a cache to hold and no `If-None-Match` that could mean anything. Naming it here also
+    // takes it out of the ETag layer at the first check rather than at `declared_len` — where
+    // it would pass through untouched anyway, an SSE body having neither an exact `size_hint`
+    // nor a `Content-Length`.
+    "/api/forecast/stream",
 ];
 
 /// Classify a request.
@@ -422,6 +437,25 @@ mod tests {
                 CachePolicy::NoStore
             );
         }
+    }
+
+    /// The streaming forecast is never stored, and gets the long head allowance. Both halves
+    /// matter and neither is inferable from the other: it shares a prefix with `/api/forecast`,
+    /// which is cached for a minute, and the deadline table is keyed on the full template.
+    #[test]
+    fn the_forecast_stream_is_never_stored_and_gets_the_long_deadline() {
+        let policy = policy_for(
+            &Method::GET,
+            Some("/api/forecast/stream"),
+            "/api/forecast/stream",
+        );
+        assert_eq!(policy.cache, CachePolicy::NoStore);
+        assert_eq!(policy.deadline, Deadline::Long);
+        // ...and it did not accidentally take the JSON route's cache window with it.
+        assert!(matches!(
+            cache_of(Method::GET, Some("/api/forecast"), "/api/forecast"),
+            CachePolicy::PrivateWindow(_)
+        ));
     }
 
     #[test]

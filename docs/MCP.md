@@ -179,9 +179,13 @@ The transport is Streamable HTTP in **stateless JSON-response mode**, mounted at
 router `sure_api::build_app` already assembles (via its `extra: Router` parameter) rather than
 on a listener of its own. So every MCP request gets the panic catching, request id, tracing,
 rate limiting and body cap the API routes get, and one process remains the only writer to
-`data/sure.db`. Stateless is what keeps it compatible with that stack: a held-open SSE stream
-would sit against the 30-second request deadline and would still be open when the shutdown
-drain came for it. In-flight calls take a child cancellation token from `sure-appbase`, so a
+`data/sure.db`. Stateless is what keeps it compatible with that stack: a held-open SSE stream would
+still be open when the shutdown drain came for it. (The deadline used to be the other half of
+this argument, and it was wrong: `cache::timeout` wraps the *head*, so a streamed body is not
+bounded by it at all — `GET /api/forecast/stream` holds one open for as long as its simulation
+runs. The drain is the real reason, and the reason that route is fine: its stream lives for
+milliseconds and stops within a path of the client going away, where an MCP session's would
+live as long as the client cared to keep it.) In-flight calls take a child cancellation token from `sure-appbase`, so a
 tool call is part of the drain rather than something the process walks away from mid-write.
 
 ## Testing

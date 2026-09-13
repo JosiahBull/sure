@@ -4,12 +4,19 @@
 //! wire-facing (`ToSchema`) response, per the same DTO-twin rationale as
 //! `routes::reports`.
 
+use std::convert::Infallible;
+use std::ops::ControlFlow;
+
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use utoipa::{IntoParams, ToSchema};
+
+use sure_app::forecast::{Checkpoints, ForecastService, Parallelism};
 
 use crate::compute;
 use crate::error::{AppError, AppResult};
@@ -25,6 +32,7 @@ use sure_core::{ForecastAssumption, ForecastTargetType, Ownership};
 
 const FORECAST_ASSUMPTIONS: &str = "forecast.assumptions";
 const FORECAST_SIMULATE: &str = "forecast.simulate";
+const FORECAST_STREAM: &str = "forecast.simulate_stream";
 const FORECAST_UPSERT_ASSUMPTION: &str = "forecast.upsert_assumption";
 const FORECAST_CLEAR_ASSUMPTION: &str = "forecast.clear_assumption";
 const FORECAST_LIST_EVENTS: &str = "forecast.list_events";
@@ -577,9 +585,14 @@ pub async fn simulate(
     // Acquired *after* the loads and released when the handler returns, so a slot is only held
     // while a core is actually being used. Shed rather than queued: a client waiting behind a
     // pile of full simulations has given up long before its turn arrives.
-    let Some(_slot) = compute::try_slot() else {
+    //
+    // `try_slots` rather than `try_slot`: it also reports how many slots it managed to reserve,
+    // which is exactly how many threads the paths may run across. The admission rule is
+    // unchanged — one free slot admits the request — and the width is whatever else was idle.
+    let Some(slots) = compute::try_slots() else {
         return Ok(compute::shed(FORECAST_SIMULATE));
     };
+    let parallelism = Parallelism::of(slots.width());
 
     // `spawn_blocking` yields a `JoinHandle`, hence the two nested results: the outer is
     // "did the task complete", the inner is the simulation's own. A `JoinError` means the
@@ -588,11 +601,217 @@ pub async fn simulate(
     // the join). See `crate::compute::joined`.
     let result = st
         .shutdown
-        .spawn_blocking(move || sure_app::forecast::ForecastService::simulate_from(inputs))
+        .spawn_blocking(move || {
+            // Moved in so the slots are held for the whole run rather than for as long as this
+            // handler's frame happens to live.
+            let _slots = slots;
+            let mut out = None;
+            ForecastService::simulate_streamed(
+                inputs,
+                parallelism,
+                // One aggregation, after the last path: byte-for-byte the answer this route has
+                // always given, and `every_way_of_running_a_simulation_agrees` is what says so.
+                Checkpoints::Final,
+                &mut |p| {
+                    out = p.result;
+                    ControlFlow::Continue(())
+                },
+            )?;
+            out.ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!(
+                    "the simulation finished without producing a projection"
+                ))
+            })
+        })
         .await
         .map_err(|e| compute::joined(e, FORECAST_SIMULATE))??;
 
     Ok(Json(ForecastResult::from(result)).into_response())
+}
+
+/// One event on the forecast stream.
+///
+/// Two shapes on one schema, told apart by the SSE `event:` name rather than by a tag inside the
+/// body: `snapshot` carries `result`, `tick` carries only the counters. A tick is thirty bytes
+/// and costs no aggregation, which is the point of having it — a bar wants a hundred of them and
+/// the chart wants four repaints, and paying for a full projection to move a bar 1% would make
+/// streaming slower than not streaming.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ForecastProgress {
+    /// Paths completed so far, rising to `total`.
+    pub completed: i64,
+    /// The path count this run will finish at — already clamped, so it is what will actually be
+    /// run rather than what was asked for.
+    pub total: i64,
+    /// The projection over the paths run so far. Present on `snapshot`, absent on `tick`.
+    ///
+    /// Its `simulations` field equals `completed`, not `total`: a snapshot is a complete
+    /// projection over fewer paths, so its bands are wide and its percentiles coarse, and it
+    /// says which.
+    pub result: Option<ForecastResult>,
+}
+
+/// Send the terminal event, whichever way the run ended.
+///
+/// A drop guard rather than a line at the end of the closure, because it has to fire on the
+/// unwind path too: a panic inside the arithmetic is caught by the blocking pool, and nothing
+/// awaits this task's `JoinHandle`, so without this the client would see a stream that simply
+/// stopped — indistinguishable from a dropped connection. `blocking_send` is legal here; this is
+/// a blocking-pool thread, not an async context, and a closed channel is a no-op `Err`.
+struct Terminal {
+    tx: mpsc::Sender<Result<Event, Infallible>>,
+    ok: bool,
+}
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        let event = if self.ok {
+            Event::default().event("done").data("{}")
+        } else {
+            tracing::error!(
+                endpoint = FORECAST_STREAM,
+                "forecast stream ended abnormally"
+            );
+            Event::default()
+                .event("error")
+                .data(r#"{"error":{"code":"internal","message":"The simulation failed."}}"#)
+        };
+        let _ = self.tx.blocking_send(Ok(event));
+    }
+}
+
+/// The same projection as `GET /api/forecast`, streamed as it firms up.
+///
+/// `text/event-stream`: a `snapshot` event after 10 paths, then 100, then 1 000, then every
+/// 1 000 and once more at the end, with `tick` events roughly every 1% of the run in between.
+/// The final `snapshot` is byte-for-byte what the JSON route returns for the same query.
+///
+/// Why this exists at all: at a 30-year horizon the projection is a few hundred milliseconds of
+/// arithmetic, and until it finished the page had nothing to draw but the *previous* run's
+/// numbers. Ten paths is half a percent of that, so the first honest picture of the new query
+/// arrives in about a millisecond.
+// Kept out of the doc comment, being scheduling detail rather than API:
+//
+//  * The deadline is not the reason this route is in `LONG_ROUTES`. `cache::timeout` wraps
+//    `next.run(request)`, which resolves when the response *head* is ready, so a streamed body
+//    is outside every deadline. What earns the long allowance is `simulate_inputs`, which runs
+//    before the head can be produced and is the same set of loads `/api/forecast` is given 300s
+//    for.
+//  * Nothing awaits the `JoinHandle`, so `compute::joined` cannot apply. `Terminal` covers the
+//    panic case instead.
+//  * Cancellation has two triggers and one mechanism. A browser that aborts its fetch drops the
+//    receiver, so the next `send` fails; a shutdown cancels the token. Either way the callback
+//    returns `Break`, and `simulate_streamed` stops claiming paths — which is what stops an
+//    abandoned 30-year run from holding compute slots for the rest of its natural life.
+#[utoipa::path(get, path = "/api/forecast/stream", tag = "forecast", params(ForecastQuery),
+    responses(
+        (status = 200, description = "An event stream of `snapshot` and `tick` events, \
+            terminated by `done` (or `error`).",
+         content_type = "text/event-stream", body = ForecastProgress),
+        (status = 400, description = "unknown `currency`", body = crate::error::ErrorBody),
+        (status = 503, description = "every compute slot is busy; retry after `Retry-After`",
+         body = crate::error::ErrorBody),
+    ))]
+#[tracing::instrument(
+    name = FORECAST_STREAM,
+    level = "debug",
+    skip_all,
+    fields(query = ?q),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn simulate_stream(
+    State(st): State<AppState>,
+    Query(q): Query<ForecastQuery>,
+) -> AppResult<Response> {
+    let inputs = st.forecast.simulate_inputs(&(&q).into()).await?;
+
+    let Some(slots) = compute::try_slots() else {
+        return Ok(compute::shed(FORECAST_STREAM));
+    };
+    let parallelism = Parallelism::of(slots.width());
+
+    // Two deep: enough that a worker is never stalled waiting for the reactor to pick up the
+    // event before it, shallow enough that a client which has stopped reading applies real
+    // backpressure instead of letting snapshots pile up in memory.
+    let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(2);
+    let cancel = st.shutdown.child_token();
+
+    st.shutdown.spawn_blocking(move || {
+        let _slots = slots;
+        let mut terminal = Terminal {
+            tx: tx.clone(),
+            ok: false,
+        };
+        let run = ForecastService::simulate_streamed(
+            inputs,
+            parallelism,
+            Checkpoints::Progressive,
+            &mut |p| {
+                if cancel.is_cancelled() {
+                    return ControlFlow::Break(());
+                }
+                let snapshot = p.result.is_some();
+                let payload = ForecastProgress {
+                    completed: p.completed,
+                    total: p.total,
+                    result: p.result.map(ForecastResult::from),
+                };
+                let event = match Event::default()
+                    .event(if snapshot { "snapshot" } else { "tick" })
+                    .json_data(&payload)
+                {
+                    Ok(event) => event,
+                    Err(err) => {
+                        // Serialising our own `Serialize` type cannot fail on well-formed data,
+                        // so this is a bug rather than a client problem. Stop, and let
+                        // `Terminal` report it.
+                        tracing::error!(endpoint = FORECAST_STREAM, error = %err,
+                            "could not encode a forecast progress event");
+                        return ControlFlow::Break(());
+                    }
+                };
+                let sent = if snapshot {
+                    // Lossless: a snapshot is the whole point of the stream, so wait for room.
+                    tx.blocking_send(Ok(event)).is_ok()
+                } else {
+                    // Lossy: a full channel means the client is behind, and a dropped tick
+                    // costs a progress bar one frame. `Closed` is the client having gone.
+                    !matches!(
+                        tx.try_send(Ok(event)),
+                        Err(mpsc::error::TrySendError::Closed(_))
+                    )
+                };
+                if sent {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break(())
+                }
+            },
+        );
+        match run {
+            Ok(()) => terminal.ok = true,
+            Err(err) => tracing::warn!(endpoint = FORECAST_STREAM, error = %err,
+                "forecast stream failed"),
+        }
+    });
+
+    // `unfold` rather than `tokio_stream::wrappers::ReceiverStream`, which would be a new
+    // workspace dependency for one adapter.
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|event| (event, rx))
+    });
+    let mut response = Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response();
+    // `Sse::into_response` stamps `Cache-Control: no-cache` itself, and `cache::cache_control`
+    // leaves a header the handler already set alone — so axum's default would win over the
+    // policy table and the route would be *storable*, which under an API with no authentication
+    // is the one thing `API_NO_STORE` exists to prevent. It would also lose the two CDN-targeted
+    // directives, which only that middleware emits. Dropping it hands the decision back.
+    response
+        .headers_mut()
+        .remove(axum::http::header::CACHE_CONTROL);
+    Ok(response)
 }
 
 // ---- assumption overrides ---------------------------------------------------------
@@ -757,6 +976,7 @@ pub fn router() -> Router<AppState> {
             axum::routing::delete(clear_assumption),
         )
         .route("/forecast", get(simulate))
+        .route("/forecast/stream", get(simulate_stream))
         .route("/forecast/events", get(list_events).post(create_event))
         .route(
             "/forecast/events/{id}",
