@@ -263,6 +263,55 @@ test("editing the schedule prunes stray expected rows and never settled ones", a
   expect(settled?.due_on).toBe("2026-05-14");
 });
 
+test("the sankey grows a reconstructed payslip behind a matched deposit", async ({ api }) => {
+  const { personId, accountId } = await seedSalaryStream(api);
+  await createTransaction(api, {
+    account_id: accountId,
+    posted_at: "2026-05-14",
+    amount_minor: SALARY_NET,
+    description: "KAIMAHI COLLECTIVE SALARY",
+  });
+  // An unmatched deposit alongside it, to prove the layer is additive and scoped.
+  await createTransaction(api, {
+    account_id: accountId,
+    posted_at: "2026-05-14",
+    amount_minor: 100_00,
+    description: "TRADE ME REFUND",
+  });
+  await rematch(api);
+
+  const { data } = await api.GET("/api/reports/sankey", { params: { query: {} } });
+  const g = data!;
+  const gross = g.nodes.find((n) => n.id === `gross:${personId}`);
+  expect(gross, "one gross node per earner").toBeDefined();
+  expect(gross!.kind).toBe("gross");
+  expect(g.nodes.filter((n) => n.kind === "deduction").map((n) => n.id).sort()).toEqual([
+    "ded:acc",
+    "ded:kiwisaver",
+    "ded:paye",
+    "ded:sl",
+  ]);
+
+  const from = (source: string) => g.links.filter((l) => l.source === source);
+  const outOfGross = from(`gross:${personId}`).reduce((t, l) => t + l.value_minor, 0);
+  // The whole payslip: net + PAYE + ACC + KiwiSaver + student loan (within reconstruction's
+  // rounding-plateau cents).
+  expect(Math.abs(outOfGross - 4_000_00)).toBeLessThanOrEqual(5);
+  expect(
+    g.links.find((l) => l.source === `gross:${personId}` && l.target === "ded:paye")
+  ).toBeDefined();
+
+  // Additive: the income side still carries BOTH deposits into the hub, and the hub balances.
+  const intoHub = g.links
+    .filter((l) => l.target === "center")
+    .reduce((t, l) => t + l.value_minor, 0);
+  const outOfHub = g.links
+    .filter((l) => l.source === "center")
+    .reduce((t, l) => t + l.value_minor, 0);
+  expect(intoHub).toBe(SALARY_NET + 100_00);
+  expect(outOfHub).toBe(intoHub); // all of it flows on to savings here
+});
+
 test("payment statuses move only along the human-owned edges", async ({ api }) => {
   const { accountId } = await seedSalaryStream(api);
   await createTransaction(api, {

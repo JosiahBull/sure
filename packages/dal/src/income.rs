@@ -823,8 +823,9 @@ pub async fn latest_settled_due_on(db: &Db, stream_id: i64) -> AppResult<Option<
 pub struct MatchedPaymentRow {
     pub income_stream_id: i64,
     pub stream_label: String,
-    /// `None` for a stream the household earns jointly — 0038 made the column nullable.
+    /// `None` for a stream the household earns jointly, which has no person row to join to.
     pub person_id: Option<i64>,
+    pub person_name: Option<String>,
     pub transaction_id: i64,
     pub observed_net_minor: i64,
     pub gross_minor: i64,
@@ -832,6 +833,12 @@ pub struct MatchedPaymentRow {
     pub acc_levy_minor: i64,
     pub kiwisaver_minor: i64,
     pub student_loan_minor: i64,
+    /// The accounts the stream names for its KiwiSaver contributions and student-loan
+    /// repayments, and their names — all four `None`/absent when it names neither.
+    pub kiwisaver_account_id: Option<i64>,
+    pub kiwisaver_account_name: Option<String>,
+    pub student_loan_account_id: Option<i64>,
+    pub student_loan_account_name: Option<String>,
 }
 
 /// Every matched/confirmed payment with a live transaction and a stored decomposition.
@@ -844,12 +851,23 @@ pub async fn matched_payments(db: &Db) -> AppResult<Vec<MatchedPaymentRow>> {
     Ok(sqlx::query_as!(
         MatchedPaymentRow,
         r#"SELECT p.income_stream_id, s.label AS stream_label, s.person_id,
+                  pe.name AS person_name,
                   p.transaction_id AS "transaction_id!", p.observed_net_minor AS "observed_net_minor!",
                   p.gross_minor AS "gross_minor!", p.income_tax_minor AS "income_tax_minor!",
                   p.acc_levy_minor AS "acc_levy_minor!", p.kiwisaver_minor AS "kiwisaver_minor!",
-                  p.student_loan_minor AS "student_loan_minor!"
+                  p.student_loan_minor AS "student_loan_minor!",
+                  ks.id AS "kiwisaver_account_id?", ks.name AS "kiwisaver_account_name?",
+                  sl.id AS "student_loan_account_id?", sl.name AS "student_loan_account_name?"
              FROM income_payments p
              JOIN income_streams s ON s.id = p.income_stream_id
+             -- LEFT, because a joint stream has no `person_id`: an inner join would drop every
+             -- payment the household earns together rather than one of its people.
+             LEFT JOIN people pe ON pe.id = s.person_id
+             -- LEFT for the same reason twice over: most streams name neither account, and the
+             -- column is nullable, so an inner join here would drop every payment that has no
+             -- deduction destination — i.e. nearly all of them.
+             LEFT JOIN accounts ks ON ks.id = s.kiwisaver_account_id
+             LEFT JOIN accounts sl ON sl.id = s.student_loan_account_id
              JOIN transactions t ON t.id = p.transaction_id
             WHERE p.status IN ('matched','confirmed')
               AND p.observed_net_minor IS NOT NULL

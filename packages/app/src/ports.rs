@@ -551,6 +551,8 @@ pub struct ReportCategory {
 /// A transaction with the fields the spend reports (pie + sankey) filter and roll up.
 #[derive(Debug, Clone)]
 pub struct SpendTransaction {
+    /// The row id, so the sankey can recognise a deposit a matched income payment claims.
+    pub id: i64,
     pub posted_at: String,
     pub amount_minor: i64,
     pub currency_code: String,
@@ -1007,6 +1009,12 @@ pub trait ReportRepo: Send + Sync {
     /// `None` means the whole table.
     async fn valuations(&self, from: Option<NaiveDate>) -> AppResult<Vec<LedgerValuation>>;
     async fn categories(&self) -> AppResult<Vec<ReportCategory>>;
+    /// Every matched/confirmed income payment with a live transaction and a stored
+    /// decomposition — unwindowed; the sankey filters by the transaction ids it actually kept,
+    /// so date, attribution and one-off rules apply in exactly one place. On this port rather
+    /// than `IncomeRepo` because the report is its only reader, exactly like the rest of the
+    /// cross-table read queries here.
+    async fn matched_income_payments(&self) -> AppResult<Vec<MatchedIncomePayment>>;
     /// Transactions posted within `from ..= to`. A plain window: the spend reports total the
     /// movements inside the period and never look outside it. Implementations may return a
     /// superset — `sure_app::reports::load_spend` re-checks every parsed date.
@@ -1241,6 +1249,9 @@ pub struct MatchedIncomePayment {
     pub stream_label: String,
     /// `None` for a stream the household earns jointly, which has no person row to join to.
     pub person_id: Option<i64>,
+    /// For the gross node's label — resolved in the same join, so the report needs no second
+    /// lookup. Absent exactly when `person_id` is.
+    pub person_name: Option<String>,
     pub transaction_id: i64,
     /// This stream's slice of the deposit; slices of a shared deposit sum to it.
     pub observed_net_minor: i64,
@@ -1249,6 +1260,19 @@ pub struct MatchedIncomePayment {
     pub acc_levy_minor: i64,
     pub kiwisaver_minor: i64,
     pub student_loan_minor: i64,
+    /// The accounts this stream's KiwiSaver contributions and student-loan repayments land in,
+    /// with the name to label them by — `None` when the stream names no account, which is what
+    /// keeps the deduction a terminal sink instead of routing it somewhere invented. Resolved in
+    /// the same join as the person, so the report needs no second lookup.
+    pub kiwisaver_account: Option<DeductionDestination>,
+    pub student_loan_account: Option<DeductionDestination>,
+}
+
+/// An account a payroll deduction lands in, as the sankey's pre-income layer labels it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeductionDestination {
+    pub account_id: i64,
+    pub name: String,
 }
 
 /// Per-person income: the streams someone earns, the tax scales that price them, and the
@@ -1361,10 +1385,6 @@ pub trait IncomeRepo: Send + Sync {
     async fn claimed_transaction_ids(&self) -> AppResult<Vec<i64>>;
     /// The latest settled (non-`expected`) due date of a stream, where regeneration resumes.
     async fn latest_settled_due_on(&self, stream_id: i64) -> AppResult<Option<String>>;
-    /// Every matched/confirmed payment with a live transaction and a stored decomposition —
-    /// unwindowed; the report filters by the transaction ids it actually kept, so date,
-    /// attribution and one-off rules apply in exactly one place.
-    async fn matched_income_payments(&self) -> AppResult<Vec<MatchedIncomePayment>>;
 }
 
 /// The config export/import blob is treated as opaque JSON at this boundary — its shape

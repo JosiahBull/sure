@@ -1,11 +1,22 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT t.posted_at, t.amount_minor, t.currency_code, t.category_id,\n                  t.is_one_off AS \"is_one_off!: bool\", t.linked_transaction_id,\n                  t.account_id, a.name AS account_name,\n                  a.kind AS account_kind, t.merchant_id,\n                  -- `COALESCE` over two nullable columns describes as having no type at\n                  -- all, so the decode type has to be named; `?` keeps it nullable, which\n                  -- it genuinely is when a row carries neither a merchant nor payee text.\n                  COALESCE(m.name, t.merchant) AS \"merchant?: String\",\n                  t.ownership AS tx_ownership,\n                  t.person_id AS tx_person_id, a.ownership AS account_ownership,\n                  a.person_id AS account_person_id\n             FROM transactions t\n             JOIN accounts a ON a.id = t.account_id\n             LEFT JOIN merchants m ON m.id = t.merchant_id\n            WHERE t.posted_at >= ?1 AND t.posted_at < ?2",
+  "query": "SELECT t.id AS \"id!\", t.posted_at, t.amount_minor, t.currency_code, t.category_id,\n                  t.is_one_off AS \"is_one_off!: bool\", t.linked_transaction_id,\n                  t.account_id, a.name AS account_name,\n                  a.kind AS account_kind, t.merchant_id,\n                  -- `COALESCE` over two nullable columns describes as having no type at\n                  -- all, so the decode type has to be named; `?` keeps it nullable, which\n                  -- it genuinely is when a row carries neither a merchant nor payee text.\n                  COALESCE(m.name, t.merchant) AS \"merchant?: String\",\n                  t.ownership AS tx_ownership,\n                  t.person_id AS tx_person_id, a.ownership AS account_ownership,\n                  a.person_id AS account_person_id\n             FROM transactions t\n             JOIN accounts a ON a.id = t.account_id\n             LEFT JOIN merchants m ON m.id = t.merchant_id\n            WHERE t.posted_at >= ?1 AND t.posted_at < ?2",
   "describe": {
     "columns": [
       {
-        "name": "posted_at",
+        "name": "id!",
         "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "posted_at",
+        "ordinal": 1,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -16,7 +27,7 @@
       },
       {
         "name": "amount_minor",
-        "ordinal": 1,
+        "ordinal": 2,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -27,7 +38,7 @@
       },
       {
         "name": "currency_code",
-        "ordinal": 2,
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -38,7 +49,7 @@
       },
       {
         "name": "category_id",
-        "ordinal": 3,
+        "ordinal": 4,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "is_one_off!: bool",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "linked_transaction_id",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "account_id",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "account_name",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "account_kind",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "merchant_id",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -115,13 +126,13 @@
       },
       {
         "name": "merchant?: String",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": "Expression"
       },
       {
         "name": "tx_ownership",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -132,7 +143,7 @@
       },
       {
         "name": "tx_person_id",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -143,7 +154,7 @@
       },
       {
         "name": "account_ownership",
-        "ordinal": 13,
+        "ordinal": 14,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -154,7 +165,7 @@
       },
       {
         "name": "account_person_id",
-        "ordinal": 14,
+        "ordinal": 15,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -168,6 +179,7 @@
       "Right": 2
     },
     "nullable": [
+      false,
       false,
       false,
       false,
@@ -185,5 +197,5 @@
       true
     ]
   },
-  "hash": "40aebbf8ce7bdb813f751226b101f95b40bfdeeef773e7d17ca4e96792e6748b"
+  "hash": "8d2aee536542373ddf3f9c014f2929af17dec311f344210f7b631a4a82bb8cb4"
 }

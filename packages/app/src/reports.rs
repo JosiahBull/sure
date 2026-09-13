@@ -17,7 +17,9 @@ use sure_core::{
 };
 
 use crate::fx::Fx;
-use crate::ports::{AccountCurrency, Clock, FxRatesRepo, ReportRepo, SpendTransaction};
+use crate::ports::{
+    AccountCurrency, Clock, FxRatesRepo, MatchedIncomePayment, ReportRepo, SpendTransaction,
+};
 
 // ---- query params --------------------------------------------------------
 
@@ -139,6 +141,21 @@ pub enum SankeyNodeKind {
     Center,
     Expense,
     Savings,
+    /// A person's reconstructed gross pay — the pre-income layer's source, one node per
+    /// earner, feeding the deduction sinks and the income categories their take-home lands in.
+    Gross,
+    /// A statutory deduction sink (PAYE, ACC, KiwiSaver, student loan): money that left the
+    /// payslip before the bank ever saw it, which is why it can only come from reconstruction
+    /// and never from a transaction.
+    Deduction,
+    /// The balance-sheet account a deduction lands in, when the stream names one: a student
+    /// loan being repaid ([`sure_core::IncomeStream::student_loan_account_id`]) or a KiwiSaver
+    /// fund being added to ([`sure_core::IncomeStream::kiwisaver_account_id`]). It is a
+    /// *destination*, not a second flow — the money is already counted once, in the deduction
+    /// sink it comes from, and the account's own ledger is a separate record the graph never
+    /// reads. PAYE and the ACC levy have no such node: that money genuinely leaves the
+    /// household.
+    Destination,
 }
 
 impl SankeyNodeKind {
@@ -148,6 +165,9 @@ impl SankeyNodeKind {
             SankeyNodeKind::Center => "center",
             SankeyNodeKind::Expense => "expense",
             SankeyNodeKind::Savings => "savings",
+            SankeyNodeKind::Gross => "gross",
+            SankeyNodeKind::Deduction => "deduction",
+            SankeyNodeKind::Destination => "destination",
         }
     }
 }
@@ -1015,6 +1035,266 @@ fn emit_flow_node(
     value_minor
 }
 
+/// The pre-income layer: the reconstructed payslips behind the deposits the matcher claimed.
+///
+/// **Additive.** The income forest still carries every deposit — category totals and the hub
+/// balance are exactly what they were — and this layer draws where each matched deposit's money
+/// was *before* the bank saw it: a gross node per earner fanning into the four statutory
+/// deduction sinks, with the take-home flowing into the category node the deposit already
+/// occupies (which also hands d3 a real upstream edge, extending the longest path — a
+/// deduction sink alone would not). Replacing the observed flow instead would force this
+/// modelled layer to balance the ledger, and the two only agree to the cent because the
+/// reconstruction is *defined* per slice; across FX conversion and independent rounding they
+/// would not.
+///
+/// Keyed by the spend rows that survived [`load_spend`] and the FX gate, so the window,
+/// attribution and one-off rules apply in exactly one place. A payment whose deposit fell to
+/// any of those filters contributes nothing here — including its gross.
+#[allow(clippy::too_many_arguments)] // the sankey emission helpers all share this shape
+fn emit_pre_income(
+    spend: &[SpendTransaction],
+    payments: &[MatchedIncomePayment],
+    cats: &Categories,
+    fx: &Fx,
+    nodes: &mut Vec<SankeyNode>,
+    links: &mut Vec<SankeyLink>,
+) {
+    if payments.is_empty() {
+        return;
+    }
+    let mut by_tx: HashMap<i64, Vec<&MatchedIncomePayment>> = HashMap::new();
+    for p in payments {
+        by_tx.entry(p.transaction_id).or_default().push(p);
+    }
+
+    /// One earner's accumulated flows, in base-currency major units — minor once, at emission,
+    /// like the forest.
+    ///
+    /// KiwiSaver and the student loan are kept *by destination* rather than as one figure
+    /// each, because the account is a property of the stream: someone with two jobs paying
+    /// into two funds is two flows, and rolling them up would have to pick one to name. The
+    /// `None` key is a stream that names no account, whose deduction stays a terminal sink.
+    #[derive(Default)]
+    struct PersonFlows {
+        label: String,
+        income_tax: f64,
+        acc: f64,
+        kiwisaver: BTreeMap<Option<i64>, f64>,
+        student_loan: BTreeMap<Option<i64>, f64>,
+        /// Take-home by the category node it lands in (the deposit's own, depth-capped).
+        take_home: BTreeMap<i64, f64>,
+    }
+    let mut people: BTreeMap<i64, PersonFlows> = BTreeMap::new();
+    // Every destination account seen, so each gets exactly one node however many streams and
+    // earners feed it — a household repaying two loans gets two nodes, a couple paying into
+    // one joint fund gets one.
+    let mut destinations: BTreeMap<i64, String> = BTreeMap::new();
+
+    for t in spend {
+        if t.amount_minor < 0 {
+            continue;
+        }
+        let Some(claims) = by_tx.get(&t.id) else {
+            continue;
+        };
+        // The same gate the forest applies: a row with no rate is outside the graph, so its
+        // whole payslip stays out too — anything else would draw gross above a deposit the
+        // chart is not counting.
+        if fx
+            .try_to_base_major(t.amount_minor, &t.currency_code)
+            .is_none()
+        {
+            continue;
+        }
+        let leaf = match t.category_id {
+            Some(cid) => cats
+                .chain_to_depth(cid, SANKEY_MAX_DEPTH)
+                .last()
+                .copied()
+                .unwrap_or(UNCATEGORISED),
+            None => UNCATEGORISED,
+        };
+        for p in claims {
+            // A joint stream has no earner to build a "— gross pay" node for, and being net it
+            // has no deductions to itemise either: every component below would be zero. It stays
+            // in the income column as the ordinary deposit it is, which is what rent from a
+            // flatmate should look like.
+            let (Some(person_id), Some(person_name)) = (p.person_id, p.person_name.as_ref()) else {
+                continue;
+            };
+            // Infallible after the gate above: every component is in the deposit's currency.
+            let conv = |minor: i64| fx.try_to_base_major(minor, &t.currency_code).unwrap_or(0.0);
+            let flows = people.entry(person_id).or_default();
+            if flows.label.is_empty() {
+                flows.label.clone_from(person_name);
+            }
+            flows.income_tax += conv(p.income_tax_minor);
+            flows.acc += conv(p.acc_levy_minor);
+            for (dest, minor, bucket) in [
+                (
+                    &p.kiwisaver_account,
+                    p.kiwisaver_minor,
+                    &mut flows.kiwisaver,
+                ),
+                (
+                    &p.student_loan_account,
+                    p.student_loan_minor,
+                    &mut flows.student_loan,
+                ),
+            ] {
+                let key = dest.as_ref().map(|d| d.account_id);
+                if let Some(d) = dest {
+                    destinations.insert(d.account_id, d.name.clone());
+                }
+                *bucket.entry(key).or_default() += conv(minor);
+            }
+            *flows.take_home.entry(leaf).or_default() += conv(p.observed_net_minor);
+        }
+    }
+
+    // The category nodes the forest actually emitted — a take-home link must not point at a
+    // node that rounded to nothing and was skipped.
+    let emitted: std::collections::HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+
+    // (id, label, household total) for the four sinks, filled while walking the earners so the
+    // nodes can be pushed once, after every link into them exists.
+    let mut sinks = [
+        ("ded:paye", "PAYE", 0i64),
+        ("ded:acc", "ACC levy", 0i64),
+        ("ded:sl", "Student loan", 0i64),
+        ("ded:kiwisaver", "KiwiSaver", 0i64),
+    ];
+    // The second hop: `(sink slot, destination account) -> total`. Keyed by the sink as well as
+    // the account so a household that happens to point a KiwiSaver stream and a student-loan
+    // stream at one account still draws two ribbons rather than one that means neither.
+    let mut routed: BTreeMap<(usize, i64), i64> = BTreeMap::new();
+
+    for (person_id, flows) in &people {
+        let node_id = format!("gross:{person_id}");
+        // Each link is rounded independently, exactly like the forest's emission; the gross
+        // node's width is d3's max(in, out), so there is no second figure to reconcile.
+        let mut out_minor = 0i64;
+        let mut person_links = Vec::new();
+        // Held until the `out_minor` guard below has confirmed this payslip is drawn at all: a
+        // sink carrying a figure no link accounts for would lay out taller than its inflows.
+        let mut person_sinks = [0i64; 4];
+        let mut person_routed: Vec<((usize, i64), i64)> = Vec::new();
+        // Every deduction this earner had, as (sink slot, destination account, amount). PAYE and
+        // the ACC levy never name an account; the other two arrive already split by the account
+        // their stream pointed at, `None` for a stream that pointed at none.
+        let mut deductions: Vec<(usize, Option<i64>, f64)> =
+            vec![(0, None, flows.income_tax), (1, None, flows.acc)];
+        deductions.extend(flows.student_loan.iter().map(|(d, major)| (2, *d, *major)));
+        deductions.extend(flows.kiwisaver.iter().map(|(d, major)| (3, *d, *major)));
+        for (slot, dest, major) in deductions {
+            let minor = fx.base_minor(major);
+            if minor <= 0 {
+                continue;
+            }
+            person_sinks[slot] += minor;
+            out_minor += minor;
+            person_links.push(SankeyLink {
+                source: node_id.clone(),
+                target: sinks[slot].0.to_string(),
+                value_minor: minor,
+            });
+            // The second hop carries *this* rounded figure onward, so the sink's inflow and its
+            // outflow agree to the cent and d3's max(in, out) is not a third number.
+            if let Some(account_id) = dest {
+                person_routed.push(((slot, account_id), minor));
+            }
+        }
+        for (leaf, major) in &flows.take_home {
+            let minor = fx.base_minor(*major);
+            if minor <= 0 {
+                continue;
+            }
+            let leaf_id = format!("in:{leaf}");
+            out_minor += minor;
+            person_links.push(SankeyLink {
+                source: node_id.clone(),
+                // A leaf that rounded to nothing was never emitted; the take-home then flows
+                // straight to the hub rather than into a node that doesn't exist (drill-down
+                // is lost for that sliver, the money is not).
+                target: if emitted.contains(&leaf_id) {
+                    leaf_id
+                } else {
+                    CENTER.to_string()
+                },
+                value_minor: minor,
+            });
+        }
+        if out_minor <= 0 {
+            continue; // everything rounded to nothing at this currency's precision
+        }
+        for (slot, minor) in person_sinks.into_iter().enumerate() {
+            sinks[slot].2 += minor;
+        }
+        for (key, minor) in person_routed {
+            *routed.entry(key).or_default() += minor;
+        }
+        nodes.push(SankeyNode {
+            id: node_id,
+            label: format!("{} — gross pay", flows.label),
+            kind: SankeyNodeKind::Gross,
+            category_id: None,
+            depth: None,
+            root_id: None,
+            root_color: None,
+        });
+        links.extend(person_links);
+    }
+
+    for (id, label, total) in sinks {
+        if total > 0 {
+            nodes.push(SankeyNode {
+                id: id.to_string(),
+                label: label.to_string(),
+                kind: SankeyNodeKind::Deduction,
+                category_id: None,
+                depth: None,
+                root_id: None,
+                root_color: None,
+            });
+        }
+    }
+
+    // The second hop, once every sink it can leave from exists. A sink's total is the sum of
+    // the per-earner figures these were taken from, so `routed` can never exceed it and a
+    // destination can never appear above a sink that was skipped.
+    let mut received: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for ((slot, account_id), minor) in &routed {
+        if *minor <= 0 {
+            continue;
+        }
+        received.insert(*account_id);
+        links.push(SankeyLink {
+            source: sinks[*slot].0.to_string(),
+            target: format!("{DESTINATION_PREFIX}{account_id}"),
+            value_minor: *minor,
+        });
+    }
+    for (account_id, name) in destinations {
+        if received.contains(&account_id) {
+            nodes.push(SankeyNode {
+                id: format!("{DESTINATION_PREFIX}{account_id}"),
+                // The account's own name, which is also how the balance sheet lists it. Two
+                // accounts sharing a name draw two nodes reading the same, exactly as they
+                // already read the same there.
+                label: name,
+                kind: SankeyNodeKind::Destination,
+                category_id: None,
+                depth: None,
+                root_id: None,
+                root_color: None,
+            });
+        }
+    }
+}
+
+/// Node-id prefix for a [`SankeyNodeKind::Destination`], the account a deduction landed in.
+const DESTINATION_PREFIX: &str = "dest:";
+
 // ---- loaded inputs: the boundary between awaiting and computing -------------
 
 /// Everything [`ReportService::net_worth_from`] needs, loaded and owned.
@@ -1078,6 +1358,10 @@ pub struct SankeyInputs {
     fx: Fx,
     cats: Categories,
     spend: Vec<SpendTransaction>,
+    /// Matched income payments, unwindowed — [`Self::sankey_from`] keeps only the ones whose
+    /// transaction is in `spend`, so the window, attribution and one-off rules apply in
+    /// exactly one place (`load_spend`) instead of two that could disagree.
+    payments: Vec<MatchedIncomePayment>,
 }
 
 // ---- service ---------------------------------------------------------------
@@ -1566,12 +1850,14 @@ impl ReportService {
             q.attributed_to,
         )
         .await?;
+        let payments = self.reports.matched_income_payments().await?;
 
         Ok(SankeyInputs {
             base,
             fx,
             cats,
             spend,
+            payments,
         })
     }
 
@@ -1591,6 +1877,7 @@ impl ReportService {
             fx,
             cats,
             spend,
+            payments,
         } = inputs;
 
         let mut income = FlowForest::default();
@@ -1646,6 +1933,8 @@ impl ReportService {
         };
         let income_minor = emit_side(&income, FlowSide::Income, &mut nodes, &mut links);
         let expense_minor = emit_side(&expense, FlowSide::Expense, &mut nodes, &mut links);
+
+        emit_pre_income(&spend, &payments, &cats, &fx, &mut nodes, &mut links);
 
         // Surplus flows to savings. Taken from the emitted root links rather than from a
         // separately-rounded `total_income - total_expense`, so the hub's inflow and
@@ -2258,6 +2547,14 @@ mod tests {
             async fn account_currencies(&self) -> AppResult<Vec<AccountCurrency>> {
                 Ok(Vec::new())
             }
+
+            // No matched income payments in these fixtures — the pre-income layer has its own
+            // pure-compute tests over `sankey_from`.
+            async fn matched_income_payments(
+                &self,
+            ) -> AppResult<Vec<crate::ports::MatchedIncomePayment>> {
+                Ok(Vec::new())
+            }
             async fn transactions(&self, _from: Option<NaiveDate>) -> AppResult<Vec<LedgerTx>> {
                 Ok(Vec::new())
             }
@@ -2478,6 +2775,7 @@ mod tests {
 
         fn spend_rows() -> Vec<SpendTransaction> {
             let row = |posted_at: &str, amount_minor, category_id| SpendTransaction {
+                id: 0, // no test here reads the row id
                 posted_at: posted_at.to_string(),
                 amount_minor,
                 currency_code: "NZD".to_string(),
@@ -2594,6 +2892,14 @@ mod tests {
                         excluded_from_net_worth: self.excluded.contains(&id),
                     })
                     .collect())
+            }
+
+            // No matched income payments in these fixtures — the pre-income layer has its own
+            // pure-compute tests over `sankey_from`.
+            async fn matched_income_payments(
+                &self,
+            ) -> AppResult<Vec<crate::ports::MatchedIncomePayment>> {
+                Ok(Vec::new())
             }
             async fn transactions(&self, from: Option<NaiveDate>) -> AppResult<Vec<LedgerTx>> {
                 Ok(match (self.mode, from) {
@@ -3100,6 +3406,7 @@ mod tests {
             currency_code: &str,
         ) -> SpendTransaction {
             SpendTransaction {
+                id: 0, // no test here reads the row id
                 posted_at: posted_at.to_string(),
                 amount_minor,
                 currency_code: currency_code.to_string(),
@@ -3348,6 +3655,289 @@ mod tests {
                 );
                 assert_eq!(pairs(&r.expense), vec![("Alpha", 40_00), ("Bravo", 40_00)]);
             }
+        }
+    }
+
+    /// The sankey's pre-income layer, on the pure compute path — invented figures throughout.
+    mod pre_income {
+        use super::*;
+        use crate::ports::{DeductionDestination, MatchedIncomePayment};
+
+        fn cats() -> Categories {
+            let mut c = Categories::default_for_test();
+            c.insert_for_test(20, None, "Salary", CategoryKind::Income);
+            c.insert_for_test(30, None, "Food", CategoryKind::Expense);
+            c
+        }
+
+        fn deposit(id: i64, amount_minor: i64, category_id: Option<i64>) -> SpendTransaction {
+            SpendTransaction {
+                id,
+                posted_at: "2026-06-14".to_string(),
+                amount_minor,
+                currency_code: "NZD".to_string(),
+                category_id,
+                is_one_off: false,
+                linked_transaction_id: None,
+                account_id: 1,
+                account_name: "Bank".to_string(),
+                account_kind: AccountKind::Bank,
+                merchant_id: None,
+                merchant: None,
+                attribution: Ownership::Joint,
+            }
+        }
+
+        /// A payslip whose lines reconcile: 4,000 gross − 898.23 − 70.00 − 140.00 − 359.36
+        /// = 2,532.41 net (the sure-core worked example).
+        fn payment(transaction_id: i64) -> MatchedIncomePayment {
+            MatchedIncomePayment {
+                income_stream_id: 1,
+                stream_label: "Salary".to_string(),
+                person_id: Some(5),
+                person_name: Some("Rua".to_string()),
+                transaction_id,
+                observed_net_minor: 2_532_41,
+                gross_minor: 4_000_00,
+                income_tax_minor: 898_23,
+                acc_levy_minor: 70_00,
+                kiwisaver_minor: 140_00,
+                student_loan_minor: 359_36,
+                // Named per-test by `into`, because whether a deduction has somewhere to go is
+                // the property these tests are about.
+                kiwisaver_account: None,
+                student_loan_account: None,
+            }
+        }
+
+        /// The same payslip, with its two deduction destinations named.
+        fn into(
+            mut p: MatchedIncomePayment,
+            kiwisaver: Option<(i64, &str)>,
+            student_loan: Option<(i64, &str)>,
+        ) -> MatchedIncomePayment {
+            let dest = |(account_id, name): (i64, &str)| DeductionDestination {
+                account_id,
+                name: name.to_string(),
+            };
+            p.kiwisaver_account = kiwisaver.map(dest);
+            p.student_loan_account = student_loan.map(dest);
+            p
+        }
+
+        fn graph(spend: Vec<SpendTransaction>, payments: Vec<MatchedIncomePayment>) -> SankeyGraph {
+            ReportService::sankey_from(SankeyInputs {
+                base: "NZD".to_string(),
+                fx: Fx::parity("NZD"),
+                cats: cats(),
+                spend,
+                payments,
+            })
+        }
+
+        fn link<'g>(g: &'g SankeyGraph, source: &str, target: &str) -> Option<&'g SankeyLink> {
+            g.links
+                .iter()
+                .find(|l| l.source == source && l.target == target)
+        }
+
+        /// The layer is additive: the income category still carries the full deposit into the
+        /// hub, and the gross node fans into the four sinks plus the category the take-home
+        /// landed in.
+        #[test]
+        fn a_matched_deposit_grows_a_payslip_upstream_of_its_category() {
+            let g = graph(
+                vec![
+                    deposit(7, 2_532_41, Some(20)),
+                    deposit(8, -1_000_00, Some(30)),
+                ],
+                vec![payment(7)],
+            );
+            // The observed flow is untouched…
+            assert_eq!(link(&g, "in:20", "center").unwrap().value_minor, 2_532_41);
+            // …and the reconstructed one sits upstream of it.
+            assert_eq!(link(&g, "gross:5", "in:20").unwrap().value_minor, 2_532_41);
+            assert_eq!(link(&g, "gross:5", "ded:paye").unwrap().value_minor, 898_23);
+            assert_eq!(link(&g, "gross:5", "ded:acc").unwrap().value_minor, 70_00);
+            assert_eq!(link(&g, "gross:5", "ded:sl").unwrap().value_minor, 359_36);
+            assert_eq!(
+                link(&g, "gross:5", "ded:kiwisaver").unwrap().value_minor,
+                140_00
+            );
+            // The gross node's outflow is the whole payslip.
+            let out: i64 = g
+                .links
+                .iter()
+                .filter(|l| l.source == "gross:5")
+                .map(|l| l.value_minor)
+                .sum();
+            assert_eq!(out, 4_000_00);
+
+            let gross_node = g.nodes.iter().find(|n| n.id == "gross:5").unwrap();
+            assert_eq!(gross_node.kind, SankeyNodeKind::Gross);
+            assert_eq!(gross_node.label, "Rua — gross pay");
+            assert!(
+                g.nodes
+                    .iter()
+                    .filter(|n| n.kind == SankeyNodeKind::Deduction)
+                    .count()
+                    == 4
+            );
+
+            // The hub still balances: income in == expense + savings out.
+            let into_hub: i64 = g
+                .links
+                .iter()
+                .filter(|l| l.target == "center")
+                .map(|l| l.value_minor)
+                .sum();
+            let out_of_hub: i64 = g
+                .links
+                .iter()
+                .filter(|l| l.source == "center")
+                .map(|l| l.value_minor)
+                .sum();
+            assert_eq!(into_hub, 2_532_41);
+            assert_eq!(out_of_hub, 2_532_41); // 1,000 food + 1,532.41 savings
+        }
+
+        /// An unmatched deposit — or one whose match points at a transaction outside the
+        /// window's spend — grows nothing.
+        #[test]
+        fn an_unclaimed_deposit_has_no_payslip() {
+            let g = graph(vec![deposit(7, 2_532_41, Some(20))], vec![payment(99)]);
+            assert!(g.nodes.iter().all(|n| n.kind != SankeyNodeKind::Gross));
+            assert!(g.nodes.iter().all(|n| n.kind != SankeyNodeKind::Deduction));
+        }
+
+        /// Two slices of one deposit (salary + bonus, one earner) accumulate into one gross
+        /// node whose take-home into the category equals the whole deposit.
+        #[test]
+        fn shared_deposits_accumulate_per_person() {
+            let mut bonus = payment(7);
+            bonus.income_stream_id = 2;
+            bonus.stream_label = "Bonus".to_string();
+            bonus.observed_net_minor = 1_243_75;
+            bonus.gross_minor = 2_500_00;
+            bonus.income_tax_minor = 825_00;
+            bonus.acc_levy_minor = 43_75;
+            bonus.kiwisaver_minor = 87_50;
+            bonus.student_loan_minor = 300_00;
+            let g = graph(
+                vec![deposit(7, 2_532_41 + 1_243_75, Some(20))],
+                vec![payment(7), bonus],
+            );
+            assert_eq!(
+                link(&g, "gross:5", "in:20").unwrap().value_minor,
+                2_532_41 + 1_243_75
+            );
+            assert_eq!(
+                link(&g, "gross:5", "ded:sl").unwrap().value_minor,
+                359_36 + 300_00
+            );
+            assert_eq!(
+                g.nodes
+                    .iter()
+                    .filter(|n| n.kind == SankeyNodeKind::Gross)
+                    .count(),
+                1
+            );
+        }
+
+        /// A stream that names no account leaves both deductions terminal: the sinks are drawn,
+        /// and nothing leaves them.
+        #[test]
+        fn an_unnamed_destination_keeps_the_deduction_a_sink() {
+            let g = graph(vec![deposit(7, 2_532_41, Some(20))], vec![payment(7)]);
+            assert!(
+                g.nodes
+                    .iter()
+                    .all(|n| n.kind != SankeyNodeKind::Destination)
+            );
+            assert!(
+                g.links
+                    .iter()
+                    .all(|l| !l.source.starts_with("ded:") && !l.target.starts_with("dest:"))
+            );
+        }
+
+        /// Naming an account routes that deduction onward at exactly the figure the sink
+        /// received, so the sink's inflow and outflow agree and d3's max(in, out) is not a
+        /// third number. PAYE and ACC stay terminal — that money leaves the household.
+        #[test]
+        fn a_named_destination_carries_the_deduction_onward() {
+            let g = graph(
+                vec![deposit(7, 2_532_41, Some(20))],
+                vec![into(
+                    payment(7),
+                    Some((41, "KiwiSaver")),
+                    Some((42, "Student loan")),
+                )],
+            );
+
+            assert_eq!(
+                link(&g, "ded:kiwisaver", "dest:41").unwrap().value_minor,
+                140_00
+            );
+            assert_eq!(link(&g, "ded:sl", "dest:42").unwrap().value_minor, 359_36);
+            assert!(link(&g, "ded:paye", "dest:41").is_none());
+            assert!(
+                g.links
+                    .iter()
+                    .all(|l| l.source != "ded:paye" && l.source != "ded:acc")
+            );
+
+            let dests: Vec<_> = g
+                .nodes
+                .iter()
+                .filter(|n| n.kind == SankeyNodeKind::Destination)
+                .collect();
+            assert_eq!(dests.len(), 2);
+            assert_eq!(
+                dests.iter().find(|n| n.id == "dest:41").unwrap().label,
+                "KiwiSaver"
+            );
+            assert_eq!(
+                dests.iter().find(|n| n.id == "dest:42").unwrap().label,
+                "Student loan"
+            );
+            // The gross node still fans into the four sinks and nothing else changed upstream.
+            let out: i64 = g
+                .links
+                .iter()
+                .filter(|l| l.source == "gross:5")
+                .map(|l| l.value_minor)
+                .sum();
+            assert_eq!(out, 4_000_00);
+        }
+
+        /// Two earners paying into one fund draw one destination node fed by one ribbon
+        /// carrying both — the account is the node, not the payslip.
+        #[test]
+        fn one_fund_two_earners_is_one_node() {
+            let mut other = into(payment(8), Some((41, "KiwiSaver")), None);
+            other.income_stream_id = 2;
+            other.person_id = Some(6);
+            other.person_name = Some("Tama".to_string());
+            other.kiwisaver_minor = 60_00;
+            let g = graph(
+                vec![
+                    deposit(7, 2_532_41, Some(20)),
+                    deposit(8, 2_532_41, Some(20)),
+                ],
+                vec![into(payment(7), Some((41, "KiwiSaver")), None), other],
+            );
+            assert_eq!(
+                g.nodes
+                    .iter()
+                    .filter(|n| n.kind == SankeyNodeKind::Destination)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                link(&g, "ded:kiwisaver", "dest:41").unwrap().value_minor,
+                140_00 + 60_00
+            );
         }
     }
 }
