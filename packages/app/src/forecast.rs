@@ -21,7 +21,7 @@
 //! snapshot of current state; see `docs/architecture-refactor.md` for why this can't just
 //! extend `crons`, which persists real rows when it runs.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate};
@@ -293,6 +293,7 @@ pub struct SimulationInputs {
     warnings: Vec<String>,
     reconciliations: Vec<StreamReconciliation>,
     unmodelled_streams: Vec<String>,
+    pay_steps: Vec<PayStep>,
 }
 
 /// A percentile band across every simulated path, in the report currency's minor units.
@@ -347,6 +348,12 @@ pub struct ForecastResult {
     /// window — relations move timing, so the two genuinely differ.
     pub events: Vec<EventOutcome>,
     pub reconciliations: Vec<StreamReconciliation>,
+    /// Debts the projection expects to clear, and when — "the mortgage is gone in 2038". Derived
+    /// from the paths, so it moves with them; see [`Milestone`]. Ordered soonest first.
+    pub milestones: Vec<Milestone>,
+    /// Dated pay rises inside the horizon, soonest first. See [`PayStep`] for why these are not
+    /// milestones.
+    pub pay_steps: Vec<PayStep>,
     /// Things that changed meaning, or figures the projection is standing in for. Prose, because
     /// each one needs to say what to do about it and there is nothing for a caller to branch on.
     pub warnings: Vec<String>,
@@ -363,6 +370,60 @@ pub struct ForecastResult {
     pub negative_cash_rate_bps: Vec<i64>,
 }
 
+/// A dated pay rise already on an income stream's schedule.
+///
+/// The sibling of [`Milestone`], and deliberately not the same type. A milestone is an *outcome*
+/// the simulation discovered — the month a debt happened to clear, which differs across paths and
+/// so is reported as a band. A pay step is the opposite: a certainty the household typed in, on a
+/// date it already knows, applied identically on every path. It has one month, not a spread, and
+/// pretending otherwise by filling in a P10 and a P90 that equal the P50 would suggest a
+/// distribution nobody computed.
+///
+/// Only emitted for streams the projection actually modelled: a stream left out for want of an
+/// exchange rate is named in [`ForecastResult::unmodelled_streams`], and drawing its raises on the
+/// chart would put money on the picture that the bands underneath do not contain.
+#[derive(Debug, Clone)]
+pub struct PayStep {
+    pub stream_id: i64,
+    /// The stream this belongs to, e.g. "Teaching salary".
+    pub stream_label: String,
+    /// `None` for a stream the household earns jointly.
+    pub person_id: Option<i64>,
+    /// The step's own label if it was given one, e.g. "Step 5 + 1 unit".
+    pub label: Option<String>,
+    /// Month offset from today, always within the projected horizon.
+    pub month: i64,
+    /// The new annual level from this month, in the stream's own currency's minor units.
+    pub annual_amount_minor: i64,
+}
+
+/// A debt the projection expects to be cleared, and when.
+///
+/// Derived from the simulation rather than configured: a `forecast_events` row is a certainty
+/// the household is asserting, and this is the opposite — an *outcome*, which moves whenever a
+/// rate, a repayment or a salary does. Typing one in by hand would be a figure that stopped
+/// being true the moment anything else changed.
+///
+/// A distribution, not a date, for the same reason every other figure here is a band: the month
+/// a mortgage clears differs across paths, and a single number would hide that a P10 of four
+/// years and a P90 of eleven are the same projection.
+#[derive(Debug, Clone)]
+pub struct Milestone {
+    pub account_id: i64,
+    /// The account's own name. Paired with `person_id` by the caller, because a household with
+    /// two student loans has two accounts of the same name and only the owner tells them apart.
+    pub label: String,
+    pub person_id: Option<i64>,
+    /// Month offsets from today, across the paths that cleared it. P50 is the one to show.
+    pub month_p10: i64,
+    pub month_p50: i64,
+    pub month_p90: i64,
+    /// How many paths cleared it at all, in basis points. Below 10 000 the P90 is a lower bound:
+    /// the remaining paths did not finish inside the horizon, so the true spread is wider than
+    /// the one reported here.
+    pub cleared_rate_bps: i64,
+}
+
 /// What the income streams linked to one category claim, beside what that category's own history
 /// actually recorded.
 ///
@@ -371,8 +432,10 @@ pub struct ForecastResult {
 /// a net-worth band and obvious here.
 #[derive(Debug, Clone)]
 pub struct StreamReconciliation {
-    /// `None` when the streams covering this category are the household's rather than one
-    /// person's — rent from a flatmate has no individual to attribute the coverage to.
+    /// `None` when the coverage is not one person's to claim: because the streams are the
+    /// household's (rent from a flatmate has no individual to attribute it to), or because two
+    /// people are paid into the same category and `observed_net_minor` — one recorded total for
+    /// the whole category — cannot be split between them.
     pub person_id: Option<i64>,
     pub category_id: i64,
     pub category_label: String,
@@ -804,6 +867,17 @@ impl ForecastService {
         // whether their fitted rate may be used at all — and that has to be settled before the
         // account projections are built from it.
         let streams = self.income.list_income_streams().await?;
+        // A student loan's own interest rate, off the account. This is the one contribution
+        // target that already knows what its balance does between repayments, and it is a fact
+        // about the loan rather than a market expectation: an NZ-resident borrower's loan is
+        // interest-free, so `Some(0)` is an answer and not a missing input. Loaded here, next to
+        // the streams, because the loop below has to decide between using it and asking for one.
+        let mut student_loan_rate_bps: HashMap<i64, Option<i64>> = HashMap::new();
+        for a in self.accounts.list(false).await? {
+            if let AccountMetadata::StudentLoan(m) = &a.metadata {
+                student_loan_rate_bps.insert(a.id, m.interest_rate_bps);
+            }
+        }
         let mut warnings: Vec<String> = Vec::new();
         let mut contribution_targets: HashMap<i64, &'static str> = HashMap::new();
         for st in streams.iter().filter(|s| s.enabled) {
@@ -828,16 +902,44 @@ impl ForecastService {
             }
             let asserted = a.source == AssumptionSource::Override;
             if !asserted {
-                // The fitted rate contains the contributions. Drop it rather than double count.
-                a.annual_growth_bps = a.long_run_growth_bps;
+                // The fitted rate contains the contributions either way, so it goes. What replaces
+                // it is the difference between a loan and a fund.
                 a.source = AssumptionSource::ContributionDriven;
-                if a.long_run_growth_bps == 0 {
-                    warnings.push(format!(
-                        "{} now receives {what}, so its own measured growth rate was discarded — a \
-                         balance that rose while money was flowing in cannot tell the two apart. It \
-                         is projected flat until you set an expected return on it.",
-                        a.label
-                    ));
+                match student_loan_rate_bps.get(&a.target_id) {
+                    // A student loan being repaid. Its rate is recorded on the account, so there
+                    // is nothing to ask and nothing to warn about — the balance moves by that rate
+                    // and by the repayments, which is the whole of what a student loan does. The
+                    // usual value is 0, and a projection that holds an interest-free debt flat
+                    // while repayments eat it is correct rather than degraded.
+                    Some(&Some(bps)) => a.annual_growth_bps = bps,
+                    // A student loan with no rate recorded. Still not an "expected return"
+                    // question — asking one about a debt is what made this confusing — so the
+                    // warning names the field that is actually missing, and its usual answer.
+                    Some(&None) => {
+                        a.annual_growth_bps = a.long_run_growth_bps;
+                        warnings.push(format!(
+                            "{} now receives {what}, so the rate fitted from its balance was \
+                             discarded — a balance that moved while money was flowing in cannot \
+                             tell borrowing from interest. Set the loan's interest rate on the \
+                             account: for an NZ-based borrower a student loan is interest-free, \
+                             so 0 is usually the answer.",
+                            a.label
+                        ));
+                    }
+                    // A KiwiSaver fund, or any other account taking contributions. Here an
+                    // expected return really is the missing input.
+                    None => {
+                        a.annual_growth_bps = a.long_run_growth_bps;
+                        if a.long_run_growth_bps == 0 {
+                            warnings.push(format!(
+                                "{} now receives {what}, so its own measured growth rate was \
+                                 discarded — a balance that rose while money was flowing in cannot \
+                                 tell the two apart. It is projected flat until you set an expected \
+                                 return on it.",
+                                a.label
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -969,6 +1071,11 @@ impl ForecastService {
                 // the intent where the reader is looking.
                 repayment_debits_cash: reports::is_excluded_from_spend(a.kind)
                     && a.kind != AccountKind::StudentLoan,
+                // Strictly negative: a liability recorded at exactly zero is already paid off,
+                // and reporting that as a milestone in month one would bury the real ones.
+                payoff_watched: class == AccountClass::Liability && current < 0.0,
+                label: a.name.clone(),
+                person_id: a.ownership.person_id(),
                 monthly_fixed_fee: by_target
                     .get(&(ForecastTargetType::Account, a.id))
                     .and_then(|r| r.annual_fixed_fee_minor)
@@ -988,8 +1095,12 @@ impl ForecastService {
         let tax_scales = crate::income::TaxScales::new(&self.income.list_tax_scales().await?);
         let mut stream_sims: Vec<StreamSim> = Vec::new();
         let mut unmodelled_streams: Vec<String> = Vec::new();
-        // Modelled monthly net per linked category, base-currency major units.
-        let mut modelled_by_category: HashMap<i64, (Option<i64>, f64)> = HashMap::new();
+        let mut pay_steps: Vec<PayStep> = Vec::new();
+        // Modelled monthly net per linked category, base-currency major units, beside the distinct
+        // owners whose streams built it. The owner *set* rather than one owner: one "Salary"
+        // category for a two-earner household is the ordinary arrangement, not a corner case, and
+        // keeping only the first stream's person put one person's salary on the other's card.
+        let mut modelled_by_category: HashMap<i64, (BTreeSet<Option<i64>>, f64)> = HashMap::new();
 
         // A person's brackets are progressive over their *total* gross, so the level every gross
         // stream is taxed against is the sum of them — pricing each alone would tax each as if the
@@ -1030,6 +1141,40 @@ impl ForecastService {
             };
             let (start_level, steps, residual_from_month, monthly_increase) =
                 crate::income::level_schedule(st, today, horizon);
+            // The same filter `level_schedule` applies, over the same dates: a step already in
+            // force is the starting level rather than a future event, and one past the horizon is
+            // not this projection's business. Read off the stream rather than off `steps` above,
+            // because only the stream still has each step's label.
+            //
+            // Employment income only. Every stream can carry dated steps, but on a net stream they
+            // are usually indexation rather than news — two flatmates on a $25-a-year rent ladder
+            // put nineteen markers on a thirty-year chart and bury the six that are somebody's
+            // career. `basis` is already the line between "someone is paid this" and "this arrives",
+            // so it is the one to draw on rather than a count or a percentage cutoff, both of which
+            // would separate these two cases only by luck.
+            for step in st
+                .basis
+                .is_gross()
+                .then_some(&st.steps)
+                .into_iter()
+                .flatten()
+            {
+                let Some(on) = reports::parse_date(&step.effective_on) else {
+                    continue;
+                };
+                let month = months_between(today, on);
+                if month < active_from || month > active_to {
+                    continue;
+                }
+                pay_steps.push(PayStep {
+                    stream_id: st.id,
+                    stream_label: st.label.clone(),
+                    person_id: st.ownership.person_id(),
+                    label: step.label.clone(),
+                    month,
+                    annual_amount_minor: step.annual_amount_minor,
+                });
+            }
             // Zero for a joint stream, which is always net — `take_home` returns all of it
             // without consulting a scale, so there is no bracket to get wrong.
             let gross_total = st
@@ -1069,10 +1214,25 @@ impl ForecastService {
             // that is the like-for-like comparison.
             let annual_net = take_home.net_annual(start_level, start_level);
             let monthly_net_base = annual_net / 12.0 * base_scale;
-            if let Some(cat) = st.linked_category_id {
-                let entry = modelled_by_category
-                    .entry(cat)
-                    .or_insert((st.ownership.person_id(), 0.0));
+            // Only a stream paid from the projection's first month. Netting is a whole-horizon
+            // substitution — the category's baseline is *replaced* by the residual for every
+            // month — so only a stream that covers every one of those months can stand in for
+            // it. A stream starting seven months out contributes nothing to the six before it,
+            // and counting it nets a baseline it never contributed to and reports a coverage gap
+            // the size of a job nobody has begun.
+            //
+            // The test is `active_from`, not `starts_on` against today, because `starts_on` is
+            // when the *projection* starts paying a stream rather than when the job began:
+            // recording an existing salary with its next payday as the start date is the
+            // ordinary way to enter one, and that stream is exactly what the category has been
+            // recording all year. `active_window` clamps to 1, so month 1 is "immediately".
+            // A stream that has already *ended* never reaches here at all — `active_window`
+            // returned `None` above and skipped it.
+            if active_from <= 1
+                && let Some(cat) = st.linked_category_id
+            {
+                let entry = modelled_by_category.entry(cat).or_default();
+                entry.0.insert(st.ownership.person_id());
                 entry.1 += monthly_net_base;
             }
 
@@ -1107,7 +1267,18 @@ impl ForecastService {
             // — not zero — is what the fitted trend still projects: excluding the category outright
             // would silently drop the income the streams do not explain (interest, a gift, a second
             // job nobody modelled).
-            if let Some(&(person_id, modelled)) = modelled_by_category.get(&a.target_id) {
+            if let Some((owners, modelled)) = modelled_by_category.get(&a.target_id) {
+                let modelled = *modelled;
+                // Whose pay this is — `Some` only when every stream landing here belongs to the
+                // same person. `observed` is the whole category's recorded total and there is
+                // nothing here that could honestly split it between two earners, so a shared
+                // category is reported as the household's rather than filed under whichever
+                // stream happened to be iterated first.
+                let person_id = if owners.len() == 1 {
+                    owners.iter().next().copied().flatten()
+                } else {
+                    None
+                };
                 let observed = a
                     .baseline_minor
                     .and_then(|m| fx.try_to_base_major(m, &base))
@@ -1179,6 +1350,7 @@ impl ForecastService {
             warnings,
             reconciliations,
             unmodelled_streams,
+            pay_steps,
         })
     }
 
@@ -1224,6 +1396,7 @@ impl ForecastService {
             warnings,
             reconciliations,
             unmodelled_streams,
+            mut pay_steps,
         } = inputs;
 
         let cash_start: f64 = accounts
@@ -1271,6 +1444,9 @@ impl ForecastService {
         // Paths whose cash pool was negative, per month. A count rather than samples: the answer
         // is a single fraction, so there is nothing to take percentiles of.
         let mut negative_cash: Vec<u32> = vec![0; horizon as usize];
+        // Per watched debt, the month each path cleared it in. Ragged on purpose: a path that
+        // never cleared contributes nothing, so the length against `n_paths` *is* the clear rate.
+        let mut payoff_months: Vec<Vec<i64>> = vec![Vec::new(); account_sims.len()];
 
         // Sampled before the path loop, from RNGs seeded independently of `rng`. That independence
         // is the acceptance criterion for this whole feature: with no events configured, not one
@@ -1285,6 +1461,10 @@ impl ForecastService {
 
         for outcomes in &event_outcomes {
             let mut acc_values: Vec<f64> = account_sims.iter().map(|s| s.current).collect();
+            // First month this path cleared each watched debt, `None` until it does. Per path,
+            // because the month differs across them — that spread is the whole point of
+            // reporting a band rather than a date.
+            let mut cleared_at: Vec<Option<i64>> = vec![None; account_sims.len()];
             let mut cat_baselines: Vec<f64> = category_sims.iter().map(|s| s.baseline).collect();
             let mut cash = cash_start;
 
@@ -1645,6 +1825,16 @@ impl ForecastService {
                 cash += net_flow + stream_net - repayments;
                 income_samples[(m - 1) as usize].push(stream_net);
 
+                // Cleared the first month the balance is no longer a debt. `>= 0.0` rather than
+                // a tolerance: every arm that pays one down already clamps at zero (the
+                // `LinearPaydown` and student-loan branches both do), so a cleared debt lands on
+                // exactly 0.0 rather than creeping past it by a fraction of a cent.
+                for (i, sim) in account_sims.iter().enumerate() {
+                    if sim.payoff_watched && cleared_at[i].is_none() && acc_values[i] >= 0.0 {
+                        cleared_at[i] = Some(m);
+                    }
+                }
+
                 let mut assets = 0.0;
                 let mut liabilities = 0.0;
                 for (i, sim) in account_sims.iter().enumerate() {
@@ -1672,6 +1862,15 @@ impl ForecastService {
                 month_samples[idx].liabilities.push(liabilities);
                 month_samples[idx].net_worth.push(assets + liabilities);
             }
+
+            // Only the paths that actually cleared contribute a month. A path that ran out of
+            // horizon still owing is counted by its absence, which is what `cleared_rate_bps`
+            // reports — averaging in a sentinel would invent a payoff date.
+            for (i, at) in cleared_at.iter().enumerate() {
+                if let Some(m) = at {
+                    payoff_months[i].push(*m);
+                }
+            }
         }
 
         let mut months = Vec::with_capacity(horizon as usize);
@@ -1685,9 +1884,39 @@ impl ForecastService {
             });
         }
 
+        // Debts the paths cleared, soonest first. A percentile over the months that actually
+        // happened, so a debt cleared on only some paths reports the spread of those — with
+        // `cleared_rate_bps` saying how much of the picture that is.
+        let mut milestones: Vec<Milestone> = Vec::new();
+        for (i, sim) in account_sims.iter().enumerate() {
+            let mut months_cleared = payoff_months[i].clone();
+            if !sim.payoff_watched || months_cleared.is_empty() {
+                continue;
+            }
+            months_cleared.sort_unstable();
+            let at = |q: f64| -> i64 {
+                let idx = ((months_cleared.len() as f64 - 1.0) * q).round() as usize;
+                months_cleared[idx]
+            };
+            milestones.push(Milestone {
+                account_id: sim.account_id,
+                label: sim.label.clone(),
+                person_id: sim.person_id,
+                month_p10: at(0.10),
+                month_p50: at(0.50),
+                month_p90: at(0.90),
+                cleared_rate_bps: ((months_cleared.len() as f64 / n_paths.max(1) as f64) * 10_000.0)
+                    .round() as i64,
+            });
+        }
+        milestones.sort_by_key(|m| (m.month_p50, m.account_id));
+        pay_steps.sort_by_key(|p| (p.month, p.stream_id));
+
         Ok(ForecastResult {
             currency: base,
             months,
+            milestones,
+            pay_steps,
             assumptions,
             unconverted: fx.unconverted(),
             rates_as_of: fx.rates_as_of().map(str::to_string),
@@ -1782,6 +2011,16 @@ struct AccountSim {
     account_id: i64,
     /// Whether event effects apply here at all.
     takes_events: bool,
+    /// A debt that starts out owing something, and so has a payoff month worth reporting.
+    /// `false` for every asset, and for a liability already at zero — "paid off in month 1" is
+    /// noise, not news. See [`Milestone`].
+    payoff_watched: bool,
+    /// The account's own name, for the milestone's label. Not the owner's name: this layer has
+    /// no people repo, and two accounts here really are both called "Student loan", so the
+    /// caller pairs this with `person_id` to tell them apart.
+    label: String,
+    /// Whose debt it is, so the chart can name and colour it. `None` for a joint one.
+    person_id: Option<i64>,
 }
 
 struct CategorySim {
@@ -4191,6 +4430,10 @@ mod tests {
             /// than whole `ForecastAssumption`s because that type isn't `Clone` and this port
             /// hands out owned values.
             overrides: Vec<(i64, Option<i64>, Option<i64>)>,
+            /// What `IncomeRepo::list_income_streams` hands back. Empty for almost every test
+            /// here — see the impl below — and set only by the ones about what a contribution
+            /// target does to the account it points at.
+            streams: Vec<sure_core::IncomeStream>,
         }
         #[async_trait]
         impl ForecastRepo for FakeForecast {
@@ -4260,10 +4503,10 @@ mod tests {
         impl crate::ports::IncomeRepo for FakeForecast {
             // These sim tests are about assumption resolution and the Monte Carlo loop, so the
             // fake household earns nothing modelled — income streams have their own DAL tests
-            // and their own e2e coverage. An empty list is also what makes these tests keep
-            // asserting the pre-income behaviour they were written for.
+            // and their own e2e coverage. `streams` is empty by default, which is what makes
+            // these tests keep asserting the pre-income behaviour they were written for.
             async fn list_income_streams(&self) -> AppResult<Vec<sure_core::IncomeStream>> {
-                Ok(Vec::new())
+                Ok(self.streams.clone())
             }
             async fn get_income_stream(&self, _id: i64) -> AppResult<sure_core::IncomeStream> {
                 unreachable!()
@@ -5033,6 +5276,529 @@ mod tests {
             assert_eq!(result.months[5].assets.median_minor, 0);
         }
 
+        /// A stream whose student loan deductions pay down `loan_account_id`. Everything else
+        /// is the smallest thing that models: gross PAYE, monthly, already started.
+        fn repaying_stream(loan_account_id: i64, today: NaiveDate) -> sure_core::IncomeStream {
+            sure_core::IncomeStream {
+                id: 1,
+                ownership: sure_core::Ownership::Person { person_id: 1 },
+                label: "Salary".into(),
+                employer: None,
+                currency_code: "NZD".into(),
+                annual_amount_minor: 80_000_00,
+                basis: sure_core::IncomeBasis::GrossNzPaye,
+                pay_frequency: sure_core::PayFrequency::Monthly,
+                first_payment_on: today.to_string(),
+                starts_on: today.to_string(),
+                ends_on: None,
+                annual_increase_bps: 0,
+                kiwisaver_bps: 300,
+                employer_kiwisaver_bps: 300,
+                student_loan: true,
+                take_home_bps: None,
+                linked_category_id: None,
+                kiwisaver_account_id: None,
+                student_loan_account_id: Some(loan_account_id),
+                match_account_id: None,
+                match_pattern: None,
+                pay_treatment: sure_core::PayTreatment::Regular,
+                enabled: true,
+                sort_order: 0,
+                notes: None,
+                steps: Vec::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            }
+        }
+
+        /// `accounts` + one repaying income stream, which is the pairing the warnings below
+        /// are about: a contribution target is only ever created by a stream pointing at it.
+        fn service_with_repayments(
+            accounts: Vec<Account>,
+            valuations: Vec<LedgerValuation>,
+            loan_account_id: i64,
+            today: NaiveDate,
+        ) -> ForecastService {
+            let fake_forecast = Arc::new(FakeForecast {
+                events: Vec::new(),
+                overrides: Vec::new(),
+                streams: vec![repaying_stream(loan_account_id, today)],
+            });
+            ForecastService::new(
+                fake_forecast.clone(),
+                fake_forecast,
+                Arc::new(FakeReports {
+                    base_currency: "NZD".into(),
+                    account_currencies: accounts
+                        .iter()
+                        .map(|a| AccountCurrency {
+                            id: a.id,
+                            currency_code: a.currency_code.clone(),
+                            ownership: sure_core::Ownership::Joint,
+                            excluded_from_net_worth: a.excluded_from_net_worth,
+                        })
+                        .collect(),
+                    valuations,
+                    ..Default::default()
+                }),
+                Arc::new(FakeFx),
+                Arc::new(FakeAccounts(accounts)),
+                Arc::new(FakeCrons),
+                Arc::new(crate::test_clock::FixedClock(today)),
+            )
+        }
+
+        /// A student loan two years of valuations deep, so there is a fitted rate to discard.
+        fn drawn_down_loan(
+            interest_rate_bps: Option<i64>,
+            today: NaiveDate,
+        ) -> (Account, Vec<LedgerValuation>) {
+            let loan = Account {
+                kind: AK::StudentLoan,
+                class: AK::StudentLoan.class(),
+                metadata: AM::StudentLoan(StudentLoanMeta {
+                    lender: Some("Inland Revenue".into()),
+                    interest_rate_bps,
+                    ..Default::default()
+                }),
+                ..account(1, AK::StudentLoan, "NZD")
+            };
+            let mut valuations = Vec::new();
+            for i in 0..24 {
+                let date = add_months(today, i - 24);
+                valuations.push(valued(1, date, -40_000_00 - (i * 300_00)));
+            }
+            (loan, valuations)
+        }
+
+        /// An interest-free student loan being repaid out of pay must not ask the household
+        /// for an "expected return". It is a debt: the only two things that move it are the
+        /// repayments, which the projection already applies, and the loan's own interest
+        /// rate, which is recorded on the account and is `0` for an NZ-based borrower.
+        ///
+        /// The warning this replaces was the visible half of the confusion. Its advice —
+        /// "projected flat until you set an expected return on it" — described a fund, named
+        /// a control that means nothing on a liability, and appeared precisely when the
+        /// household had finished wiring income to the loan correctly.
+        #[test]
+        fn an_interest_free_student_loan_being_repaid_asks_for_nothing() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let (loan, valuations) = drawn_down_loan(Some(0), today);
+            let result = rt
+                .block_on(
+                    service_with_repayments(vec![loan], valuations, 1, today).simulate(
+                        &SimulationParams {
+                            horizon_months: 12,
+                            simulations: 100,
+                            currency: None,
+                            seed: Some(11),
+                        },
+                    ),
+                )
+                .unwrap();
+
+            assert!(
+                result.warnings.is_empty(),
+                "an interest-free loan has nothing left to ask about, got {:?}",
+                result.warnings
+            );
+            // The fitted drawdown rate is gone — the point of discarding it — and what
+            // replaced it is the loan's own 0%, not a guess.
+            let a = result
+                .assumptions
+                .iter()
+                .find(|a| a.target_type == ForecastTargetType::Account && a.target_id == 1)
+                .expect("the loan is projected");
+            assert_eq!(a.annual_growth_bps, 0);
+            assert_eq!(a.source, AssumptionSource::ContributionDriven);
+        }
+
+        /// The same loan with no rate recorded still warns — something *is* missing — but it
+        /// names the field that is missing and the answer it usually takes, rather than
+        /// asking for a return on a debt.
+        #[test]
+        fn a_student_loan_with_no_rate_recorded_asks_for_the_rate() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let (loan, valuations) = drawn_down_loan(None, today);
+            let result = rt
+                .block_on(
+                    service_with_repayments(vec![loan], valuations, 1, today).simulate(
+                        &SimulationParams {
+                            horizon_months: 12,
+                            simulations: 100,
+                            currency: None,
+                            seed: Some(11),
+                        },
+                    ),
+                )
+                .unwrap();
+
+            let warning = result
+                .warnings
+                .iter()
+                .find(|w| w.contains("student loan repayments"))
+                .expect("a loan with no rate on it should say so");
+            assert!(
+                warning.contains("interest rate"),
+                "should name the missing field: {warning}"
+            );
+            assert!(
+                !warning.contains("expected return"),
+                "an expected return is not a thing a debt has: {warning}"
+            );
+        }
+
+        /// …while an ordinary contribution target that is *not* a loan keeps the original
+        /// wording, because for a KiwiSaver fund an expected return is exactly the input the
+        /// projection is missing. The two branches exist to be different.
+        #[test]
+        fn a_fund_receiving_contributions_still_asks_for_a_return() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let fund = account(1, AK::Brokerage, "NZD");
+            let valuations = vec![valued(1, today - chrono::Duration::days(1), 50_000_00)];
+            let result = rt
+                .block_on(
+                    service_with_repayments(vec![fund], valuations, 1, today).simulate(
+                        &SimulationParams {
+                            horizon_months: 12,
+                            simulations: 100,
+                            currency: None,
+                            seed: Some(11),
+                        },
+                    ),
+                )
+                .unwrap();
+
+            assert!(
+                result
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("expected return")),
+                "got {:?}",
+                result.warnings
+            );
+        }
+
+        /// A dated raise on a salary is reported so the chart can mark it, and a dated rise on
+        /// net income is not.
+        ///
+        /// Both are steps on a stream and the projection applies both. The difference is what a
+        /// reader gets from a marker: a pay scale is somebody's career, while two flatmates on a
+        /// $25-a-year rent ladder are nineteen markers of indexation that bury it.
+        #[test]
+        fn only_employment_income_reports_its_dated_raises() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let account = account(1, AK::Brokerage, "NZD");
+            let valuations = vec![valued(1, today - chrono::Duration::days(1), 10_000_00)];
+
+            let mut salary = repaying_stream(1, today);
+            salary.id = 1;
+            salary.label = "Teaching salary".into();
+            salary.steps = vec![sure_core::IncomeStreamStep {
+                id: 1,
+                income_stream_id: 1,
+                effective_on: "2027-03-01".into(),
+                annual_amount_minor: 84_268_00,
+                label: Some("Step 5".into()),
+            }];
+
+            let mut rent = repaying_stream(1, today);
+            rent.id = 2;
+            rent.label = "Rent".into();
+            rent.basis = sure_core::IncomeBasis::Net;
+            rent.student_loan = false;
+            rent.student_loan_account_id = None;
+            rent.ownership = sure_core::Ownership::Joint;
+            rent.steps = vec![sure_core::IncomeStreamStep {
+                id: 2,
+                income_stream_id: 2,
+                effective_on: "2027-04-01".into(),
+                annual_amount_minor: 16_900_00,
+                label: Some("+$25/wk".into()),
+            }];
+
+            let fake = Arc::new(FakeForecast {
+                events: Vec::new(),
+                overrides: Vec::new(),
+                streams: vec![salary, rent],
+            });
+            let svc = ForecastService::new(
+                fake.clone(),
+                fake,
+                Arc::new(FakeReports {
+                    base_currency: "NZD".into(),
+                    account_currencies: vec![AccountCurrency {
+                        id: 1,
+                        currency_code: "NZD".into(),
+                        ownership: sure_core::Ownership::Joint,
+                        excluded_from_net_worth: false,
+                    }],
+                    valuations,
+                    ..Default::default()
+                }),
+                Arc::new(FakeFx),
+                Arc::new(FakeAccounts(vec![account])),
+                Arc::new(FakeCrons),
+                Arc::new(crate::test_clock::FixedClock(today)),
+            );
+            let result = rt
+                .block_on(svc.simulate(&SimulationParams {
+                    horizon_months: 36,
+                    simulations: 20,
+                    currency: None,
+                    seed: Some(31),
+                }))
+                .unwrap();
+
+            let labels: Vec<_> = result
+                .pay_steps
+                .iter()
+                .map(|p| (p.stream_label.as_str(), p.label.as_deref(), p.month))
+                .collect();
+            assert_eq!(labels, vec![("Teaching salary", Some("Step 5"), 7)]);
+        }
+
+        /// One salary category, one stream paid into it, and twelve months of deposits — the
+        /// shape every reconciliation panel is read off.
+        ///
+        /// Net-basis streams throughout: take-home is then the recorded figure by definition,
+        /// so the assertions below are about *whose* pay is counted and *when*, which is what
+        /// these tests are for, rather than re-deriving PAYE (`crate::income`'s own tests).
+        fn reconciliation_service(
+            streams: Vec<sure_core::IncomeStream>,
+            today: NaiveDate,
+        ) -> ForecastService {
+            // A deposit a month for the year before `today` — $5 000/mo, flat, so the fitted
+            // baseline is exactly $5 000. The current month is deliberately absent:
+            // `category_monthly_totals` skips it (it is incomplete), and a row there would
+            // only be dropped again.
+            let spend: Vec<SpendTransaction> = (1..=12)
+                .map(|back| SpendTransaction {
+                    id: back,
+                    posted_at: add_months(today, -back).to_string(),
+                    amount_minor: 5_000_00,
+                    currency_code: "NZD".into(),
+                    category_id: Some(1),
+                    is_one_off: false,
+                    linked_transaction_id: None,
+                    account_id: 1,
+                    account_name: "Bank".into(),
+                    account_kind: AK::Bank,
+                    merchant_id: None,
+                    merchant: None,
+                    attribution: Ownership::Joint,
+                })
+                .collect();
+
+            let fake = Arc::new(FakeForecast {
+                events: Vec::new(),
+                overrides: Vec::new(),
+                streams,
+            });
+            ForecastService::new(
+                fake.clone(),
+                fake,
+                Arc::new(FakeReports {
+                    base_currency: "NZD".into(),
+                    account_currencies: vec![AccountCurrency {
+                        id: 1,
+                        currency_code: "NZD".into(),
+                        ownership: Ownership::Joint,
+                        excluded_from_net_worth: false,
+                    }],
+                    valuations: vec![valued(1, today - chrono::Duration::days(1), 10_000_00)],
+                    categories: vec![ReportCategory {
+                        id: 1,
+                        parent_id: None,
+                        name: "Salary".into(),
+                        color: None,
+                        kind: CategoryKind::Income,
+                    }],
+                    spend_transactions: spend,
+                    ..Default::default()
+                }),
+                Arc::new(FakeFx),
+                Arc::new(FakeAccounts(vec![account(1, AK::Brokerage, "NZD")])),
+                Arc::new(FakeCrons),
+                Arc::new(crate::test_clock::FixedClock(today)),
+            )
+        }
+
+        /// A net stream linked to category 1, owned by `person_id`, starting on `starts_on`.
+        fn linked_stream(
+            id: i64,
+            person_id: i64,
+            annual_minor: i64,
+            starts_on: NaiveDate,
+        ) -> sure_core::IncomeStream {
+            sure_core::IncomeStream {
+                id,
+                ownership: Ownership::Person { person_id },
+                annual_amount_minor: annual_minor,
+                basis: sure_core::IncomeBasis::Net,
+                student_loan: false,
+                student_loan_account_id: None,
+                kiwisaver_bps: 0,
+                employer_kiwisaver_bps: 0,
+                first_payment_on: starts_on.to_string(),
+                starts_on: starts_on.to_string(),
+                linked_category_id: Some(1),
+                ..repaying_stream(1, starts_on)
+            }
+        }
+
+        fn reconcile(streams: Vec<sure_core::IncomeStream>, today: NaiveDate) -> ForecastResult {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(
+                    reconciliation_service(streams, today).simulate(&SimulationParams {
+                        horizon_months: 24,
+                        simulations: 20,
+                        currency: None,
+                        seed: Some(7),
+                    }),
+                )
+                .unwrap()
+        }
+
+        /// Every stream paid from the projection's first month is reconciled; a stream that
+        /// starts later is projected but not reconciled.
+        ///
+        /// Both sides of one boundary, and the boundary is `active_from` rather than `starts_on`
+        /// against today. `starts_on` is when the *projection* starts paying a stream, not when
+        /// the job began — recording an existing salary with its next payday as the start date
+        /// is the ordinary way to enter one, and that stream is exactly what the category has
+        /// been recording all year, so it must be netted out or the income is counted twice
+        /// (`specs/income.spec.ts`, which is what caught the first attempt at this).
+        ///
+        /// A stream seven months out is the other case: counting it put a second earner's whole
+        /// salary into one person's coverage figure — 166% covered, with the panel advising that
+        /// a figure was too high or linked to the wrong category, when every figure was right.
+        #[test]
+        fn only_a_stream_paid_from_the_first_month_is_reconciled() {
+            let today = d("2026-08-01");
+            // Already running, and one whose first payday is next month: both are income the
+            // category is already recording, so both are netted.
+            let running = linked_stream(1, 1, 48_000_00, add_months(today, -6));
+            let starting = linked_stream(2, 1, 12_000_00, add_months(today, 1));
+            // A job that begins next March, which the trailing twelve months know nothing of.
+            let later = linked_stream(3, 2, 84_000_00, add_months(today, 7));
+            let result = reconcile(vec![running, starting, later], today);
+
+            let recon = match result.reconciliations.as_slice() {
+                [only] => only,
+                other => panic!("expected exactly one reconciliation, got {other:?}"),
+            };
+            assert_eq!(
+                recon.person_id,
+                Some(1),
+                "the only earner being paid in month one"
+            );
+            // $4 000 + $1 000, and nothing of the $7 000/mo that starts in month seven.
+            assert_eq!(recon.modelled_net_minor, 5_000_00);
+            assert_eq!(recon.observed_net_minor, 5_000_00);
+            assert_eq!(recon.coverage_bps, 10_000);
+            // …and the later stream is still projected: it just isn't netted out of a baseline
+            // it has never contributed to.
+            assert_eq!(recon.residual_minor, 0);
+        }
+
+        /// Two people paid into one category is reported as the household's, not as either
+        /// person's.
+        ///
+        /// `observed_net_minor` is one recorded total for the whole category and nothing here
+        /// could honestly split it between two earners. Filing the row under whichever stream
+        /// was iterated first is what put a teaching salary on somebody else's card.
+        #[test]
+        fn a_category_two_people_are_paid_into_reconciles_as_the_household() {
+            let today = d("2026-08-01");
+            let mine = linked_stream(1, 1, 60_000_00, add_months(today, -6));
+            let theirs = linked_stream(2, 2, 84_000_00, add_months(today, -6));
+            let result = reconcile(vec![mine, theirs], today);
+
+            let recon = match result.reconciliations.as_slice() {
+                [only] => only,
+                other => panic!("expected exactly one reconciliation, got {other:?}"),
+            };
+            assert_eq!(recon.person_id, None, "neither earner's alone to claim");
+            assert_eq!(recon.modelled_net_minor, 12_000_00);
+            assert_eq!(recon.observed_net_minor, 5_000_00);
+            assert_eq!(recon.coverage_bps, 24_000);
+        }
+
+        /// A debt being repaid reports the month it clears, derived rather than configured.
+        ///
+        /// The figure a household actually wants off a thirty-year projection is "when is it
+        /// gone", and reading that off a shrinking band by eye is exactly the sort of thing a
+        /// chart should do for you.
+        #[test]
+        fn a_debt_being_repaid_reports_when_it_clears() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let (loan, valuations) = drawn_down_loan(Some(0), today);
+            let result = rt
+                .block_on(
+                    service_with_repayments(vec![loan], valuations, 1, today).simulate(
+                        &SimulationParams {
+                            horizon_months: 360,
+                            simulations: 100,
+                            currency: None,
+                            seed: Some(21),
+                        },
+                    ),
+                )
+                .unwrap();
+
+            let m = result
+                .milestones
+                .iter()
+                .find(|m| m.account_id == 1)
+                .expect("a loan being repaid should report a payoff month");
+            // The fixture account is jointly owned, which is the mortgage case: no person to
+            // name, so the caller labels it from the account alone.
+            assert_eq!(m.person_id, None);
+            assert_eq!(m.label, "Account 1");
+            // It clears inside the horizon, on every path, and not in month one.
+            assert_eq!(m.cleared_rate_bps, 10_000);
+            assert!(m.month_p50 > 1, "cleared immediately? {}", m.month_p50);
+            assert!(m.month_p50 <= 360, "never cleared: {}", m.month_p50);
+            assert!(m.month_p10 <= m.month_p50 && m.month_p50 <= m.month_p90);
+            // The balance really is gone by then, so the milestone agrees with the band it sits on.
+            let at = &result.months[(m.month_p50 - 1) as usize];
+            assert!(
+                at.liabilities.median_minor >= -1_00,
+                "still owing {} at the reported payoff month",
+                at.liabilities.median_minor
+            );
+        }
+
+        /// An asset never produces one, and neither does a debt already at zero — "paid off in
+        /// month one" would bury the milestones that mean something.
+        #[test]
+        fn only_a_real_debt_gets_a_payoff_milestone() {
+            let today = d("2026-08-01");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let fund = account(1, AK::Brokerage, "NZD");
+            let valuations = vec![valued(1, today - chrono::Duration::days(1), 50_000_00)];
+            let result = rt
+                .block_on(
+                    service_with_repayments(vec![fund], valuations, 1, today).simulate(
+                        &SimulationParams {
+                            horizon_months: 60,
+                            simulations: 50,
+                            currency: None,
+                            seed: Some(21),
+                        },
+                    ),
+                )
+                .unwrap();
+            assert!(result.milestones.is_empty(), "got {:?}", result.milestones);
+        }
+
         /// The structural half of the above, stated on its own so a regression names itself:
         /// a student loan cannot be projected as an amortisation schedule, however complete
         /// its metadata is, because its profile has nowhere to put a principal or a term.
@@ -5324,6 +6090,7 @@ mod tests {
             let fake_forecast = Arc::new(FakeForecast {
                 events: Vec::new(),
                 overrides: vec![(1, Some(700), annual_volatility_bps)],
+                streams: Vec::new(),
             });
             ForecastService::new(
                 fake_forecast.clone(),

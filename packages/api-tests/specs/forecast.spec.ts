@@ -1,6 +1,6 @@
 import { test, expect } from "../fixtures";
 import type { Schemas } from "../../client/src/index";
-import { createAccount, createCategory, createTransaction } from "../helpers";
+import { createAccount, createCategory, createPerson, createTransaction } from "../helpers";
 
 function findAssumption(
   assumptions: Schemas["ResolvedAssumption"][],
@@ -427,4 +427,28 @@ test("the share of paths that go cash-negative is reported per month", async ({ 
   expect(data!.negative_cash_rate_bps[0]).toBe(0);
   // …and rent with no income drains it, so by five years out every path is under water.
   expect(data!.negative_cash_rate_bps.at(-1)).toBeGreaterThan(9_000);
+});
+
+test("an account assumption names its owner; a category assumption names nobody", async ({
+  api,
+}) => {
+  // Two people's student loans are both called "Student loan", so the label alone cannot tell
+  // the assumptions list which rate belongs to whom. A category is the household's, not
+  // anyone's, and says so by carrying no owner at all.
+  const person = await createPerson(api, "Alex Doe");
+  const shares = await createAccount(api, "Shares", "shares_nz", "NZD", {
+    ownership: { kind: "person", person_id: person.id },
+  });
+  const joint = await createAccount(api, "Family home", "real_estate", "NZD", {
+    ownership: { kind: "joint" },
+  });
+  const groceries = await createCategory(api, "Groceries", "expense");
+
+  const { data } = await api.GET("/api/forecast/assumptions", {});
+  expect(findAssumption(data!, "account", shares.id)?.ownership).toEqual({
+    kind: "person",
+    person_id: person.id,
+  });
+  expect(findAssumption(data!, "account", joint.id)?.ownership).toEqual({ kind: "joint" });
+  expect(findAssumption(data!, "category", groceries.id)?.ownership).toBeNull();
 });

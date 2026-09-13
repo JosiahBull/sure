@@ -6728,6 +6728,10 @@ export interface components {
              */
             events: components["schemas"]["EventOutcome"][];
             reconciliations: components["schemas"]["StreamReconciliation"][];
+            /** @description Debts this projection expects to clear, soonest first — "the mortgage is gone in 2038". */
+            milestones: components["schemas"]["Milestone"][];
+            /** @description Dated pay rises inside the horizon, soonest first. */
+            pay_steps: components["schemas"]["PayStep"][];
             /**
              * @description Figures the projection is standing in for, and places where linking something changed what an
              *     account's numbers mean. Prose, because each needs to say what to do about it.
@@ -7388,6 +7392,40 @@ export interface components {
          * @enum {string}
          */
         MileageUnit: "mi" | "km";
+        /**
+         * @description A debt the projection expects to be cleared, and when.
+         *
+         *     Derived from the simulated paths rather than configured: unlike a `forecast_event`, which is
+         *     a certainty the household is asserting, this is an outcome that moves whenever a rate, a
+         *     repayment or a salary does. A band rather than a date for the same reason every other figure
+         *     here is one.
+         */
+        Milestone: {
+            /** Format: int64 */
+            account_id: number;
+            /**
+             * @description The account's own name. A household with two student loans has two accounts of this name;
+             *     `person_id` is what tells them apart, and the client pairs the two for a label.
+             */
+            label: string;
+            /** Format: int64 */
+            person_id?: number | null;
+            /**
+             * Format: int64
+             * @description Month offsets from today across the paths that cleared it. P50 is the one to show.
+             */
+            month_p10: number;
+            /** Format: int64 */
+            month_p50: number;
+            /** Format: int64 */
+            month_p90: number;
+            /**
+             * Format: int64
+             * @description Share of paths that cleared it inside the horizon. Below 10 000 the P90 is a lower bound —
+             *     the rest had not finished, so the real spread is wider than the one reported.
+             */
+            cleared_rate_bps: number;
+        };
         /** @description A mortgage secured against a property (link it with `secured_by_account_id`). */
         MortgageMeta: {
             lender?: string | null;
@@ -7569,6 +7607,29 @@ export interface components {
          * @enum {string}
          */
         PayFrequency: "weekly" | "fortnightly" | "four_weekly" | "semi_monthly" | "monthly" | "quarterly" | "annual";
+        /**
+         * @description A dated pay rise already on an income stream's schedule.
+         *
+         *     Not a [`Milestone`], deliberately. A milestone is an outcome the simulation found, and differs
+         *     across paths, so it carries a band. This is a certainty the household typed in on a date it
+         *     already knows — one month, no spread. Only streams the projection actually modelled appear.
+         */
+        PayStep: {
+            /** Format: int64 */
+            stream_id: number;
+            stream_label: string;
+            /** Format: int64 */
+            person_id?: number | null;
+            /** @description The step's own label if it was given one, e.g. "Step 5 + 1 unit". */
+            label?: string | null;
+            /**
+             * Format: int64
+             * @description Month offset from today, always inside the horizon.
+             */
+            month: number;
+            /** Format: int64 */
+            annual_amount_minor: number;
+        };
         /**
          * @description How one arrival of this income is taxed: as an ordinary payslip, or as an IRD "extra pay".
          *

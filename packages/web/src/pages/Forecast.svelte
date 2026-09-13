@@ -41,16 +41,15 @@
   });
   const horizon = $derived.by(() => {
     const h = Number(queryParams().get("h"));
-    return HORIZONS.some((x) => x.months === h) ? h : 12;
+    return HORIZONS.some((x) => x.months === h) ? h : HORIZONS[0].months;
   });
 
   let history = $state<{ x: string; y: number }[]>([]);
   let result = $state<Schemas["ForecastResult"] | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let hoverPoint = $state<{ as_of: string; median: number; p10?: number; p90?: number } | null>(
-    null
-  );
+  type Readout = { as_of: string; median: number; p10?: number; p90?: number };
+  let hoverPoint = $state<Readout | null>(null);
 
   async function load() {
     loading = true;
@@ -84,6 +83,12 @@
   });
 
   const currency = $derived(result?.currency ?? "NZD");
+  /** The hovered point, or — with the pointer off the chart — the last actual. */
+  const readout = $derived.by<Readout | null>(() => {
+    if (hoverPoint) return hoverPoint;
+    const last = history.at(-1);
+    return last ? { as_of: last.x, median: last.y } : null;
+  });
   // Derived from the horizon and passed to the chart as well, so the tiles and the marks on the
   // chart cannot disagree about which months they describe.
   const checkpoints = $derived(checkpointsFor(horizon));
@@ -113,6 +118,74 @@
           truncated: e.truncated,
         };
       })
+  );
+
+  /**
+   * Debts the projection expects to clear, drawn through the same marker machinery as events —
+   * both answer "this lands around here, give or take", and a second visual language for the
+   * same question would be one to learn for no reason.
+   *
+   * Two differences it does carry. The id is negated so it cannot collide with a real event's
+   * (the chart keys and selects on it), and `kind` makes the marker inert, because a milestone
+   * has no row to open. `cleared_rate_bps` stands in for probability: it is not a chance of
+   * happening but the share of paths that got there inside the horizon, which is the same
+   * "how much of this is committed" signal the opacity and dash already encode.
+   */
+  const chartMilestones = $derived(
+    (result?.milestones ?? [])
+      // Only when the median path actually gets there. Below half, "the P50 month" is the median
+      // of a minority — at a 12-month horizon Josiah's loan clears on one path in a thousand, and
+      // drawing that as a milestone puts a payoff date on the chart for something that, in this
+      // window, does not happen. It reappears on its own once the horizon is long enough to hold
+      // it, which is the honest behaviour: the marker tracks the question being asked.
+      .filter((m) => m.cleared_rate_bps >= 5_000)
+      .map((m) => {
+      const who = m.person_id != null ? people.list.find((p) => p.id === m.person_id) : null;
+      // Two accounts really are both called "Student loan"; the owner is what tells them apart.
+      const name = who ? `${who.name} ${m.label.toLowerCase()} paid off` : `${m.label} paid off`;
+      return {
+        id: -m.account_id,
+        name,
+        color: who ? personColor(who) : "var(--text-muted)",
+        probabilityBps: m.cleared_rate_bps,
+        p10: m.month_p10,
+        median: m.month_p50,
+        p90: m.month_p90,
+        truncated: m.cleared_rate_bps < 10_000,
+        kind: "milestone" as const,
+      };
+    })
+  );
+
+  /**
+   * Ansam's teaching scale, and any other dated raise, drawn on the chart.
+   *
+   * These come back already filtered to the streams the projection modelled and to steps inside
+   * the horizon, so there is nothing to guard here. `probabilityBps` is a flat 10 000 because a
+   * step *is* certain — that is the difference from a milestone, and it shows up as a solid rule
+   * rather than a dashed one. p10 and p90 equal the median for the same reason: one date, no band.
+   *
+   * The id is offset past the milestones' negative range so the three marker sources cannot
+   * collide on the key the chart selects by.
+   */
+  const chartPaySteps = $derived(
+    (result?.pay_steps ?? []).map((s, i) => {
+      const who = s.person_id != null ? people.list.find((p) => p.id === s.person_id) : null;
+      // The step's own label is the useful half ("Step 5 + 1 unit"); the stream name is the
+      // fallback for a step that was never named.
+      const what = s.label?.trim() || `${s.stream_label} rises`;
+      return {
+        id: -100_000 - i,
+        name: who ? `${who.name} — ${what}` : what,
+        color: who ? personColor(who) : "var(--text-muted)",
+        probabilityBps: 10_000,
+        p10: s.month,
+        median: s.month,
+        p90: s.month,
+        truncated: false,
+        kind: "milestone" as const,
+      };
+    })
   );
 
   /** Set when a chart marker is clicked, so the Life events tab opens that row. */
@@ -155,26 +228,32 @@
       shaded band = P10–P90 across {result ? `${result.simulations.toLocaleString()} paths` : "…"}
     </span>
   </div>
-  {#if hoverPoint}
-    <div class="stat" style="margin-bottom:10px">
-      <div class="value tabular">{formatMoney(hoverPoint.median, currency)}</div>
-      <div class="label">
-        {formatDate(hoverPoint.as_of)}
-        {#if hoverPoint.p10 != null && hoverPoint.p90 != null}
-          · range {formatMoney(hoverPoint.p10, currency)} – {formatMoney(
-            hoverPoint.p90,
-            currency
-          )}
+  <!-- Always rendered, never `{#if hoverPoint}`. Mounting this on hover pushed the chart down by
+       its own height, which moved the line out from under the pointer and immediately unhovered
+       it — the chart flickered up and down as long as the cursor sat near the top of the plot.
+       At rest it reads the latest actual, so the space is occupied by something useful rather
+       than reserved by an empty box. -->
+  <div class="stat readout" style="margin-bottom:10px">
+    <div class="value tabular">{readout ? formatMoney(readout.median, currency) : "—"}</div>
+    <div class="label">
+      {#if readout}
+        {formatDate(readout.as_of)}
+        {#if readout.p10 != null && readout.p90 != null}
+          · range {formatMoney(readout.p10, currency)} – {formatMoney(readout.p90, currency)}
+        {:else if !hoverPoint}
+          · latest actual
         {/if}
-      </div>
+      {:else}
+        &nbsp;
+      {/if}
     </div>
-  {/if}
+  </div>
   <ForecastChart
     {history}
     months={result?.months ?? []}
     {currency}
     {checkpoints}
-    events={chartEvents}
+    events={[...chartEvents, ...chartMilestones, ...chartPaySteps]}
     onselectevent={selectEvent}
     onhover={(p) => (hoverPoint = p)}
   />
@@ -211,6 +290,13 @@
 {/if}
 
 <style>
+  /* One line, always: the range only appears on a projected point, and letting it wrap would
+     reintroduce the very height change this readout was made permanent to avoid. */
+  .readout .label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   /* Lifted from Transactions.svelte rather than promoted to app.css: two copies is not yet a
      pattern, and the repo's precedent (.chip-row, .swatches, .confirm) is that page-local styles
      stay page-local until a third caller turns up. */
