@@ -572,10 +572,7 @@ pub(crate) fn sample_dates(from: NaiveDate, to: NaiveDate, interval: Interval) -
 /// [`account_value_at`] depends on. Both the myIR import and the balance-delta task feed
 /// this account kind, so the exclusion has to live here rather than in either of them.
 /// A plain `loan` is the same shape as a mortgage — a drawdown, then repayments that are
-/// positive on the liability — so it belongs here for the same reason. It also has to be
-/// here for the forecast to be correct: `sure_app::forecast` debits a projected loan
-/// repayment from the cash pool, which is only free of double-counting because the loan's
-/// own legs never reach a category baseline.
+/// positive on the liability — so it belongs here for the same reason.
 pub(crate) fn is_excluded_from_spend(kind: AccountKind) -> bool {
     matches!(
         kind,
@@ -685,24 +682,8 @@ impl Categories {
     /// * the Assumptions tab shuffled its rows on each load.
     ///
     /// Id order rather than name order because it is the one ordering available here that
-    /// cannot change when a category is renamed.
-    pub(crate) fn top_level_kinds(&self) -> Vec<(i64, CategoryKind)> {
-        let mut out: Vec<(i64, CategoryKind)> = self
-            .parents
-            .iter()
-            .filter(|(_, parent)| parent.is_none())
-            .filter_map(|(id, _)| self.kinds.get(id).map(|k| (*id, *k)))
-            .collect();
-        out.sort_unstable_by_key(|&(id, _)| id);
-        out
-    }
-
     pub(crate) fn name_of(&self, id: i64) -> String {
         self.names.get(&id).cloned().unwrap_or_else(|| "?".into())
-    }
-
-    pub(crate) fn kind_of(&self, id: i64) -> Option<CategoryKind> {
-        self.kinds.get(&id).copied()
     }
 
     /// A category's ancestry rendered root-first (`Food > Groceries`), for a reader with no
@@ -1384,7 +1365,7 @@ pub struct SankeyInputs {
 /// A [`AppError::BadRequest`] (400), matching how `sure-api`'s `routes::reports` already
 /// treats an unrecognised `interval` or `attributed_to`: an unusable query param is the
 /// request's fault, and naming the offending code is the only way the caller can tell a typo
-/// from an empty ledger. Shared with [`crate::forecast`], which takes the same param.
+/// from an empty ledger.
 pub(crate) fn unknown_currency(code: &str) -> AppError {
     AppError::bad_request(format!(
         "unknown currency '{code}': not in the currencies table, so it has neither a \

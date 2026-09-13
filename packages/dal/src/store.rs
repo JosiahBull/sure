@@ -12,25 +12,24 @@ use chrono::NaiveDate;
 use sure_app::ports::{
     AccountCurrency, AccountRepo, ActiveAccount, Activity30dRow, AssetAccount, BrokerageRepo,
     CategoryRepo, CostLotRow, CronRepo, CurrencyDecimals, CurrencyRepo, DeductionDestination,
-    DividendImport, EquityRepo, ExchangeRateRepo, ExchangeRateRow, ForecastRepo, FxRatesRepo,
-    HoldingImport, HoldingRow, HousePricerSubscription, ImportCounts, ImportHistoryRepo, ImportRow,
-    IncomeRepo, LedgerTx, LedgerValuation, MatchedIncomePayment, MerchantRepo, PersonRepo,
-    PlannedApplication, ProviderRepo, ReportCategory, ReportRepo, RuleRepo,
-    SecuredLiabilityAccount, SettingsRepo, SharesTicker, SnapshotRepo, StockPriceCacheRepo,
-    TransactionRepo, TransferRepo, TxCtx, ValuationRepo, WalletRow,
+    DividendImport, EquityRepo, ExchangeRateRepo, ExchangeRateRow, FxRatesRepo, HoldingImport,
+    HoldingRow, HousePricerSubscription, ImportCounts, ImportHistoryRepo, ImportRow, IncomeRepo,
+    LedgerTx, LedgerValuation, MatchedIncomePayment, MerchantRepo, PersonRepo, PlannedApplication,
+    ProviderRepo, ReportCategory, ReportRepo, RuleRepo, SecuredLiabilityAccount, SettingsRepo,
+    SharesTicker, SnapshotRepo, StockPriceCacheRepo, TransactionRepo, TransferRepo, TxCtx,
+    ValuationRepo, WalletRow,
 };
 use sure_core::{
     Account, AccountEquity, AppError, AppResult, BulkUpdate, Category, CategoryNode, Cron, CronRun,
     CronRunResult, Currency, DividendDetail, EquityEvent, EquityExercise, EquityGrant, EquityMark,
-    ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot, HousePricerLink,
-    ImportRecord, IncomePayment, IncomePaymentStatus, IncomeStream, LinkProviderAccount,
-    LinkProviderGroup, LinkRequest, MatchedBy, Merchant, NewCurrency, NewValuation, Ownership,
-    PayeBreakdown, Person, Provider, ProviderSync, RebuildResult, Rule, RuleApplicationDetail,
-    RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise,
-    SaveForecastAssumption, SaveForecastEvent, SaveGrant, SaveHoldingLot, SaveIncomeStream,
-    SaveMark, SaveMerchant, SavePerson, SaveProvider, SaveRule, SaveTaxScale, SaveTransaction,
-    Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId, Transaction, TransferRequest,
-    TxQuery, UpdateSettings, Valuation, ValuationQuery, VestingStatus,
+    HoldingLot, HousePricerLink, ImportRecord, IncomePayment, IncomePaymentStatus, IncomeStream,
+    LinkProviderAccount, LinkProviderGroup, LinkRequest, MatchedBy, Merchant, NewCurrency,
+    NewValuation, Ownership, PayeBreakdown, Person, Provider, ProviderSync, RebuildResult, Rule,
+    RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
+    SaveExercise, SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMark, SaveMerchant, SavePerson,
+    SaveProvider, SaveRule, SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale,
+    SyncOutcome, TaxScaleId, Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation,
+    ValuationQuery, VestingStatus,
 };
 
 use crate::Db;
@@ -1121,52 +1120,6 @@ impl CronRepo for SqliteStore {
 
     async fn undo_run(&self, run_id: i64) -> AppResult<()> {
         crate::crons::undo_run(&self.db, run_id).await
-    }
-}
-
-#[async_trait]
-impl ForecastRepo for SqliteStore {
-    async fn list_assumptions(&self) -> AppResult<Vec<ForecastAssumption>> {
-        crate::forecast::list_assumptions(&self.db).await
-    }
-
-    async fn upsert_assumption(
-        &self,
-        input: SaveForecastAssumption,
-    ) -> AppResult<ForecastAssumption> {
-        crate::forecast::upsert_assumption(&self.db, input).await
-    }
-
-    async fn clear_assumption(
-        &self,
-        target_type: ForecastTargetType,
-        target_id: i64,
-    ) -> AppResult<()> {
-        crate::forecast::clear_assumption(&self.db, target_type, target_id).await
-    }
-
-    async fn trailing_dividends_minor(&self, account_id: i64, since: &str) -> AppResult<i64> {
-        crate::forecast::trailing_dividends_minor(&self.db, account_id, since).await
-    }
-
-    async fn list_events(&self) -> AppResult<Vec<ForecastEvent>> {
-        crate::forecast::list_events(&self.db).await
-    }
-
-    async fn create_event(&self, input: SaveForecastEvent) -> AppResult<ForecastEvent> {
-        crate::forecast::create_event(&self.db, input).await
-    }
-
-    async fn get_event(&self, id: i64) -> AppResult<ForecastEvent> {
-        crate::forecast::get_event(&self.db, id).await
-    }
-
-    async fn update_event(&self, id: i64, input: SaveForecastEvent) -> AppResult<ForecastEvent> {
-        crate::forecast::update_event(&self.db, id, input).await
-    }
-
-    async fn delete_event(&self, id: i64) -> AppResult<()> {
-        crate::forecast::delete_event(&self.db, id).await
     }
 }
 

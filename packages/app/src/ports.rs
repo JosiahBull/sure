@@ -19,13 +19,12 @@ use serde_json::Value;
 use sure_core::{
     Account, AccountEquity, AccountKind, AppResult, BulkUpdate, Category, CategoryKind,
     CategoryNode, Cron, CronRun, CronRunResult, Currency, DividendDetail, EquityExercise,
-    EquityGrant, ForecastAssumption, ForecastEvent, ForecastTargetType, HoldingLot,
-    HousePricerLink, ImportRecord, ImportSource, IncomePayment, IncomePaymentStatus, IncomeStream,
-    LinkProviderAccount, LinkProviderGroup, LinkRequest, LotKind, MatchedBy, McpMode, Merchant,
-    NewCurrency, NewValuation, Ownership, PayeBreakdown, Person, Provider, ProviderAccount,
-    ProviderKind, ProviderSync, Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult,
-    SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveForecastAssumption, SaveForecastEvent,
-    SaveGrant, SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
+    EquityGrant, HoldingLot, HousePricerLink, ImportRecord, ImportSource, IncomePayment,
+    IncomePaymentStatus, IncomeStream, LinkProviderAccount, LinkProviderGroup, LinkRequest,
+    LotKind, MatchedBy, McpMode, Merchant, NewCurrency, NewValuation, Ownership, PayeBreakdown,
+    Person, Provider, ProviderAccount, ProviderKind, ProviderSync, Rule, RuleApplicationDetail,
+    RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveGrant,
+    SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
     SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
     Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
     VestingStatus,
@@ -1220,37 +1219,6 @@ pub trait CronRepo: Send + Sync {
     async fn run_one(&self, id: i64, to: Option<&str>) -> AppResult<CronRunResult>;
     async fn run_all(&self, to: Option<&str>) -> AppResult<CronRunResult>;
     async fn undo_run(&self, run_id: i64) -> AppResult<()>;
-}
-
-/// Forecast assumption overrides, plus the one read query nothing else exposes
-/// (`trailing_dividends_minor`, for the dividend-yield default). The resolution logic —
-/// which knob wins between an override, an existing cron's rate, and a historical
-/// default — lives in `crate::forecast::ForecastService`, which also depends on
-/// `ReportRepo`, `AccountRepo`, `CronRepo`, and `FxRatesRepo` for the read side.
-#[async_trait]
-pub trait ForecastRepo: Send + Sync {
-    async fn list_assumptions(&self) -> AppResult<Vec<ForecastAssumption>>;
-    async fn upsert_assumption(
-        &self,
-        input: SaveForecastAssumption,
-    ) -> AppResult<ForecastAssumption>;
-    async fn clear_assumption(
-        &self,
-        target_type: ForecastTargetType,
-        target_id: i64,
-    ) -> AppResult<()>;
-    /// Sum of dividend cash paid to `account_id` on or after `since` (ISO-8601 date).
-    async fn trailing_dividends_minor(&self, account_id: i64, since: &str) -> AppResult<i64>;
-    /// Every event with its effects and relations attached, soonest first.
-    async fn list_events(&self) -> AppResult<Vec<ForecastEvent>>;
-    async fn get_event(&self, id: i64) -> AppResult<ForecastEvent>;
-    /// Create the event, its effects and its relations in one transaction, refusing a relation set
-    /// that would close a cycle.
-    async fn create_event(&self, input: SaveForecastEvent) -> AppResult<ForecastEvent>;
-    /// Full replace, effects and relations included.
-    async fn update_event(&self, id: i64, input: SaveForecastEvent) -> AppResult<ForecastEvent>;
-    /// Refused with a conflict when something only happens *if* this does.
-    async fn delete_event(&self, id: i64) -> AppResult<()>;
 }
 
 /// One matched income payment as a report consumes it: the reconstructed decomposition plus who

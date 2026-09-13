@@ -191,9 +191,8 @@ impl Fx {
     }
 
     /// The single multiplier taking `ccy`'s **minor** units to base-currency **major**
-    /// units, or `None` if either half is unknown. Resolve it once per currency and reuse it
-    /// in a hot loop (see `crate::forecast`'s per-path simulation) rather than re-deriving
-    /// the rate per amount.
+    /// units, or `None` if either half is unknown. Resolve it once per currency and reuse it in
+    /// a hot loop rather than re-deriving the rate per amount.
     pub fn try_base_scale(&self, ccy: &str) -> Option<f64> {
         let Some(dp) = self.try_dp(ccy) else {
             // Not in `currencies`, so it has no scale — and, being the FK target a rate row

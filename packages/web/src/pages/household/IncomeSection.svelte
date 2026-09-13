@@ -6,7 +6,7 @@
   import { onMount } from "svelte";
   import { api, formatMoney, type Schemas } from "../../lib/api";
   import { people, personColor, initials } from "../../lib/people.svelte";
-  import IncomeStreamEditor from "../forecast/IncomeStreamEditor.svelte";
+  import IncomeStreamEditor from "./IncomeStreamEditor.svelte";
 
   type IncomeStream = Schemas["IncomeStream"];
 

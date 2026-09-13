@@ -39,20 +39,6 @@ pub struct Snapshot {
     pub dividends: Vec<DividendRow>,
     #[serde(default)]
     pub dividend_withholdings: Vec<DividendWithholdingRow>,
-    // Forecast assumption overrides + known future events — `#[serde(default)]` so
-    // snapshots taken before these tables existed still import (as empty).
-    #[serde(default)]
-    pub forecast_assumptions: Vec<ForecastAssumptionRow>,
-    #[serde(default)]
-    pub forecast_events: Vec<ForecastEventRow>,
-    /// An event's effects and its ordering/conditional links. Restored with the events rather
-    /// than left behind: the simulation branches on an event's *effects*, never on its kind
-    /// (see `0022_forecast_events_unified.sql`), so an event restored without them is a row the
-    /// UI shows and the projection ignores — which reads as a successful restore and is not one.
-    #[serde(default)]
-    pub forecast_event_effects: Vec<ForecastEventEffectRow>,
-    #[serde(default)]
-    pub forecast_event_relations: Vec<ForecastEventRelationRow>,
     // Per-person income streams and their dated pay-scale steps — `#[serde(default)]` so a
     // snapshot taken before 0021 still imports, as a household with no modelled income.
     #[serde(default)]
@@ -335,29 +321,6 @@ pub struct DividendWithholdingRow {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ForecastAssumptionRow {
-    pub id: i64,
-    pub target_type: String,
-    pub target_id: i64,
-    pub annual_growth_bps: Option<i64>,
-    pub annual_volatility_bps: Option<i64>,
-    pub dividend_yield_bps: Option<i64>,
-    /// `#[serde(default)]` so a snapshot taken before 0020 added the column still imports,
-    /// as `NULL` — which is exactly the value that migration gives every existing row.
-    #[serde(default)]
-    pub long_run_growth_bps: Option<i64>,
-    /// Added by 0024 — `#[serde(default)]` so an older snapshot imports as "fees not modelled",
-    /// which is what it meant.
-    #[serde(default)]
-    pub annual_fee_bps: Option<i64>,
-    #[serde(default)]
-    pub annual_fixed_fee_minor: Option<i64>,
-    pub notes: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct IncomeStreamRow {
     pub id: i64,
     /// Added by 0038 — `#[serde(default)]` reads as `'person'`, which is what every row in a
@@ -464,48 +427,6 @@ pub struct TaxScaleRow {
     pub source_note: Option<String>,
     pub created_at: String,
     pub updated_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ForecastEventRow {
-    pub id: i64,
-    pub label: String,
-    pub kind: String,
-    pub person_id: Option<i64>,
-    pub expected_on: String,
-    pub timing_spread_months: i64,
-    pub probability_bps: i64,
-    pub notes: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ForecastEventEffectRow {
-    pub id: i64,
-    pub event_id: i64,
-    pub kind: String,
-    pub sort_order: i64,
-    pub income_stream_id: Option<i64>,
-    pub person_id: Option<i64>,
-    pub category_id: Option<i64>,
-    pub account_id: Option<i64>,
-    pub amount_minor: Option<i64>,
-    pub rate_bps: Option<i64>,
-    pub delay_months: Option<i64>,
-    pub ramp_months: Option<i64>,
-    pub duration_months: Option<i64>,
-    pub created_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ForecastEventRelationRow {
-    pub id: i64,
-    pub event_id: i64,
-    pub depends_on_event_id: i64,
-    pub kind: String,
-    pub min_gap_months: i64,
-    pub created_at: String,
 }
 
 /// Serialising the snapshot cannot fail on the data (every field is a plain scalar), so an
@@ -679,14 +600,6 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
              FROM dividend_withholdings ORDER BY id"#
     );
     table!(
-        "forecast_assumptions",
-        ForecastAssumptionRow,
-        r#"SELECT id AS "id!", target_type, target_id, annual_growth_bps, annual_volatility_bps,
-                  dividend_yield_bps, long_run_growth_bps, annual_fee_bps,
-                  annual_fixed_fee_minor, notes, created_at, updated_at
-             FROM forecast_assumptions ORDER BY id"#
-    );
-    table!(
         "income_streams",
         IncomeStreamRow,
         r#"SELECT id AS "id!", ownership, person_id, label, employer, currency_code,
@@ -723,27 +636,6 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
                   kiwisaver_govt_income_cap_minor, kiwisaver_employer_min_bps, source_note,
                   created_at, updated_at
              FROM tax_scales ORDER BY id"#
-    );
-    table!(
-        "forecast_events",
-        ForecastEventRow,
-        r#"SELECT id AS "id!", label, kind, person_id, expected_on, timing_spread_months,
-                  probability_bps, notes, created_at, updated_at
-             FROM forecast_events ORDER BY id"#
-    );
-    table!(
-        "forecast_event_effects",
-        ForecastEventEffectRow,
-        r#"SELECT id AS "id!", event_id, kind, sort_order, income_stream_id, person_id,
-                  category_id, account_id, amount_minor, rate_bps, delay_months, ramp_months,
-                  duration_months, created_at
-             FROM forecast_event_effects ORDER BY id"#
-    );
-    table!(
-        "forecast_event_relations",
-        ForecastEventRelationRow,
-        r#"SELECT id AS "id!", event_id, depends_on_event_id, kind, min_gap_months, created_at
-             FROM forecast_event_relations ORDER BY id"#
     );
 
     map.end().map_err(ser_failed)?;
@@ -945,39 +837,6 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         )
         .fetch_all(db)
         .await?,
-        forecast_assumptions: sqlx::query_as!(
-            ForecastAssumptionRow,
-            r#"SELECT id AS "id!", target_type, target_id, annual_growth_bps,
-                      annual_volatility_bps, dividend_yield_bps, long_run_growth_bps,
-                      annual_fee_bps, annual_fixed_fee_minor, notes, created_at, updated_at
-                 FROM forecast_assumptions ORDER BY id"#
-        )
-        .fetch_all(db)
-        .await?,
-        forecast_events: sqlx::query_as!(
-            ForecastEventRow,
-            r#"SELECT id AS "id!", label, kind, person_id, expected_on, timing_spread_months,
-                      probability_bps, notes, created_at, updated_at
-                 FROM forecast_events ORDER BY id"#
-        )
-        .fetch_all(db)
-        .await?,
-        forecast_event_effects: sqlx::query_as!(
-            ForecastEventEffectRow,
-            r#"SELECT id AS "id!", event_id, kind, sort_order, income_stream_id, person_id,
-                      category_id, account_id, amount_minor, rate_bps, delay_months, ramp_months,
-                      duration_months, created_at
-                 FROM forecast_event_effects ORDER BY id"#
-        )
-        .fetch_all(db)
-        .await?,
-        forecast_event_relations: sqlx::query_as!(
-            ForecastEventRelationRow,
-            r#"SELECT id AS "id!", event_id, depends_on_event_id, kind, min_gap_months, created_at
-                 FROM forecast_event_relations ORDER BY id"#
-        )
-        .fetch_all(db)
-        .await?,
     })
 }
 
@@ -1008,9 +867,13 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         // Audit, like the four above: a log of actions taken against *this* database, so it is
         // cleared and not restored. Re-inserting another database's log would be a false history.
         "DELETE FROM imports",
-        // `forecast_event_effects` and `forecast_event_relations` are not listed: both are
-        // `ON DELETE CASCADE` on `event_id`, so clearing the events clears them too. They are
-        // re-inserted below with the events, not dropped.
+        // The forecast feature is gone and these tables are no longer read, written or exported
+        // — but they are still *cleared*, and must stay ahead of `income_streams` below.
+        // `forecast_event_effects.income_stream_id` is `ON DELETE RESTRICT`, so a database that
+        // still holds pre-removal rows would refuse the `DELETE FROM income_streams` and fail the
+        // whole restore. Clearing the events first cascades the effects away (`ON DELETE CASCADE`
+        // on `event_id`) and takes the restriction with them. Nothing re-inserts them, which is
+        // the point: a restore now leaves these empty.
         "DELETE FROM forecast_events",
         "DELETE FROM forecast_assumptions",
         // Before both tables it references (income_streams, transactions).
@@ -1512,89 +1375,6 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             .await?;
         }
     }
-    for f in &snap.forecast_assumptions {
-        sqlx::query!(
-            "INSERT INTO forecast_assumptions
-                (id, target_type, target_id, annual_growth_bps, annual_volatility_bps,
-                 dividend_yield_bps, long_run_growth_bps, notes, created_at, updated_at,
-                 annual_fee_bps, annual_fixed_fee_minor)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-            f.id,
-            f.target_type,
-            f.target_id,
-            f.annual_growth_bps,
-            f.annual_volatility_bps,
-            f.dividend_yield_bps,
-            f.long_run_growth_bps,
-            f.notes,
-            f.created_at,
-            f.updated_at,
-            f.annual_fee_bps,
-            f.annual_fixed_fee_minor
-        )
-        .execute(&mut *txn)
-        .await?;
-    }
-    for e in &snap.forecast_events {
-        sqlx::query!(
-            "INSERT INTO forecast_events
-                (id, label, kind, person_id, expected_on, timing_spread_months, probability_bps,
-                 notes, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            e.id,
-            e.label,
-            e.kind,
-            e.person_id,
-            e.expected_on,
-            e.timing_spread_months,
-            e.probability_bps,
-            e.notes,
-            e.created_at,
-            e.updated_at
-        )
-        .execute(&mut *txn)
-        .await?;
-    }
-    for f in &snap.forecast_event_effects {
-        sqlx::query!(
-            "INSERT INTO forecast_event_effects
-                (id, event_id, kind, sort_order, income_stream_id, person_id, category_id,
-                 account_id, amount_minor, rate_bps, delay_months, ramp_months, duration_months,
-                 created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-            f.id,
-            f.event_id,
-            f.kind,
-            f.sort_order,
-            f.income_stream_id,
-            f.person_id,
-            f.category_id,
-            f.account_id,
-            f.amount_minor,
-            f.rate_bps,
-            f.delay_months,
-            f.ramp_months,
-            f.duration_months,
-            f.created_at
-        )
-        .execute(&mut *txn)
-        .await?;
-    }
-    for r in &snap.forecast_event_relations {
-        sqlx::query!(
-            "INSERT INTO forecast_event_relations
-                (id, event_id, depends_on_event_id, kind, min_gap_months, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6)",
-            r.id,
-            r.event_id,
-            r.depends_on_event_id,
-            r.kind,
-            r.min_gap_months,
-            r.created_at
-        )
-        .execute(&mut *txn)
-        .await?;
-    }
     for r in &snap.exchange_rates {
         sqlx::query!(
             "INSERT INTO exchange_rates (base_code, quote_code, as_of, rate) VALUES (?1,?2,?3,?4)",
@@ -1627,14 +1407,10 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             "holdings": snap.holdings.len(),
             "dividends": snap.dividends.len(),
             "dividend_withholdings": snap.dividend_withholdings.len(),
-            "forecast_assumptions": snap.forecast_assumptions.len(),
             "income_streams": snap.income_streams.len(),
             "income_stream_steps": snap.income_stream_steps.len(),
             "income_payments": snap.income_payments.len(),
             "tax_scales": snap.tax_scales.len(),
-            "forecast_events": snap.forecast_events.len(),
-            "forecast_event_effects": snap.forecast_event_effects.len(),
-            "forecast_event_relations": snap.forecast_event_relations.len(),
         }
     }))
 }
@@ -1685,55 +1461,6 @@ mod tests {
             person
         )
         .fetch_one(&db)
-        .await
-        .unwrap();
-        // Two forecast events, so the round trip covers `forecast_events` and both its child
-        // tables. Without any event at all, every export read an empty table and never decoded a
-        // row — which is how the export came to reference four columns migration 0022 had
-        // removed and still passed its tests. Written through `create_event` rather than raw
-        // SQL so the effect and the relation are built the way the app builds them.
-        let child = crate::forecast::create_event(
-            &db,
-            sure_core::SaveForecastEvent {
-                label: "Child".into(),
-                kind: sure_core::LifeEventKind::Child,
-                person_id: Some(person),
-                expected_on: sure_core::IsoDate::parse("2027-04-01").unwrap(),
-                timing_spread_months: 6,
-                probability_bps: 5000,
-                notes: Some("daycare from six months".into()),
-                effects: vec![sure_core::LifeEffectSpec::RecurringDelta {
-                    category_id: category,
-                    amount_minor: -450_00,
-                    delay_months: 6,
-                    ramp_months: 3,
-                    duration_months: Some(60),
-                }],
-                relations: Vec::new(),
-            },
-        )
-        .await
-        .unwrap();
-        crate::forecast::create_event(
-            &db,
-            sure_core::SaveForecastEvent {
-                label: "Somewhere bigger".into(),
-                kind: sure_core::LifeEventKind::Custom,
-                person_id: None,
-                expected_on: sure_core::IsoDate::parse("2028-01-01").unwrap(),
-                timing_spread_months: 0,
-                probability_bps: 10_000,
-                notes: None,
-                effects: Vec::new(),
-                // Only on the paths where the child happens — the relation kind whose loss
-                // changes what the projection means rather than merely reordering it.
-                relations: vec![sure_core::SaveForecastEventRelation {
-                    depends_on_event_id: child.id,
-                    kind: sure_core::RelationKind::OnlyIf,
-                    min_gap_months: 0,
-                }],
-            },
-        )
         .await
         .unwrap();
         for (posted_at, amount) in [("2026-01-05", 5_000_00i64), ("2026-01-20", -1_200_00)] {
@@ -1799,12 +1526,6 @@ mod tests {
         let summary = import(&restored, snap).await.unwrap();
         assert_eq!(summary["counts"]["transactions"], 2);
         assert_eq!(summary["counts"]["accounts"], 1);
-        // The table whose export was broken for its whole life, and the two child tables that
-        // were never in the snapshot at all: restored, not silently dropped.
-        assert_eq!(summary["counts"]["forecast_events"], 2);
-        assert_eq!(summary["counts"]["forecast_event_effects"], 1);
-        assert_eq!(summary["counts"]["forecast_event_relations"], 1);
-
         let round_tripped = export_bytes(&restored).await.unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&round_tripped).unwrap(),
@@ -1813,68 +1534,6 @@ mod tests {
         );
     }
 
-    /// The regression test for the gap this snapshot had until the tables above were added: an
-    /// event used to come back from a restore as a bare row, because `forecast_event_effects` and
-    /// `forecast_event_relations` were in neither half of the format.
-    ///
-    /// It asserts through `forecast::list_events` — the read path the projection itself uses —
-    /// rather than on row counts, because counts were never the problem. `import` reported the
-    /// events restored and they were; what was missing is the only part of an event the
-    /// simulation actually reads. `forecast_events.kind` is presentation and a form template
-    /// (see `0022_forecast_events_unified.sql`), so an event whose effects did not survive is a
-    /// row the UI draws and every projection ignores — a restore that looks clean and is not.
-    ///
-    /// Restoring *into a populated database* rather than an empty one is deliberate: that is the
-    /// path where the wipe has to clear existing events whose relations point at each other
-    /// before the incoming ones land.
-    #[tokio::test]
-    async fn a_restored_forecast_event_keeps_the_effects_the_simulation_reads() {
-        let source = populated_db().await;
-        let before = crate::forecast::list_events(&source).await.unwrap();
-
-        let bytes = export_bytes(&source).await.unwrap();
-        let restored = populated_db().await;
-        import(&restored, serde_json::from_slice(&bytes).unwrap())
-            .await
-            .unwrap();
-
-        let after = crate::forecast::list_events(&restored).await.unwrap();
-        assert_eq!(after.len(), before.len(), "one event per event, not more");
-
-        let named = |set: &[sure_core::ForecastEvent], label: &str| {
-            set.iter()
-                .find(|e| e.label == label)
-                .unwrap_or_else(|| panic!("{label} came back"))
-                .clone()
-        };
-        let (was, child) = (named(&before, "Child"), named(&after, "Child"));
-        assert_eq!(
-            child.effects.len(),
-            1,
-            "the effect is what the projection reads — an event without it is inert"
-        );
-        // Against what the source actually held rather than a restated literal: the category id
-        // is whatever the fixture was handed, and an assertion that rebuilds the expected value
-        // out of the actual one proves nothing.
-        assert_eq!(
-            child.effects[0].spec, was.effects[0].spec,
-            "and it came back with the same numbers, not merely present"
-        );
-
-        let bigger = after
-            .iter()
-            .find(|e| e.label == "Somewhere bigger")
-            .expect("the second event came back");
-        assert_eq!(bigger.relations.len(), 1, "its dependency survived");
-        assert_eq!(bigger.relations[0].kind, sure_core::RelationKind::OnlyIf);
-        assert_eq!(
-            bigger.relations[0].depends_on_event_id, child.id,
-            "and still points at the event it is conditional on"
-        );
-    }
-
-    /// An empty database still exports every key, so a client (and the importer) can rely on the
-    /// shape rather than on which tables happened to have rows.
     #[tokio::test]
     async fn an_empty_database_exports_the_whole_shape() {
         let db = empty_db().await;

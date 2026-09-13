@@ -78,7 +78,6 @@ pub mod crons;
 pub mod currencies;
 pub mod equity;
 pub mod exchange_rates;
-pub mod forecast;
 pub mod imports;
 pub mod income;
 pub mod merchants;

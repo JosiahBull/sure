@@ -37,7 +37,7 @@ derived row is cosmetic, never a wrong net worth.
 
 A student loan that genuinely *does* amortise — a private or overseas one with a principal, a
 rate and a term — is a `loan` account with `subtype = "student"`, and gets the full schedule
-treatment (and forecast) that implies.
+treatment that implies.
 
 ## Backfilling from myIR
 
@@ -168,12 +168,12 @@ Unlink a wrong pair with `DELETE /api/transactions/{id}/link`.
   worth knowing about because the shape of the bug recurs. A student loan used to share the
   `loan` metadata profile, which meant it was *required* to state an
   `original_amount_minor` — a figure that does not exist for a loan drawn down over years of
-  study — and was two optional fields (`term_months`, `start_date`) away from the forecast
+  study — and was two optional fields (`term_months`, `start_date`) away from the app
   switching it to a deterministic amortisation schedule, discarding the real balance for a
   fabricated straight line. It now has its own profile (`StudentLoanMeta`: a lender and a
   rate, nothing else), so there is nowhere to put either field and `loan_terms` returns
   `None` for the profile outright. Pinned by
-  `a_student_loan_is_never_projected_as_a_schedule` in `packages/app/src/forecast.rs`.
+  the student-loan profile's own metadata tests in `packages/core/src/types.rs`.
 - **Don't model this with the `crons` feature.** It is monthly-only, never runs in the
   background, and writes transactions with `provider`/`external_id` left NULL — so they
   can't be deduped, can't be told apart from manual rows, and are orphaned untraceably if

@@ -402,7 +402,9 @@ Lints considered and **not** included, with the measured reason:
 `wildcard_enum_match_arm`'s original 9 raw hits, and how each was resolved:
 
 - `packages/app/src/forecast.rs`'s `amortization_terms` — `_ => return None` over
-  `AccountMetadata` — rewritten to name every non-Mortgage/Loan variant explicitly.
+  `AccountMetadata` — rewritten to name every non-Mortgage/Loan variant explicitly. (That file
+  is gone with the forecast engine; the entry stays because this list is the audit trail for
+  why the lint was adopted, not an index of live code.)
 - `packages/dal/src/accounts.rs`'s `set_original_amount` — `_ => return Ok(())` over
   `AccountMetadata` — same treatment, every non-Mortgage/Loan variant named.
 - `packages/dal/src/accounts.rs`'s `metadata_from_stored` — a `match value { Value::Object(..) => .., _ => .. }`

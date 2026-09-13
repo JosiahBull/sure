@@ -182,7 +182,7 @@ rate limiting and body cap the API routes get, and one process remains the only 
 `data/sure.db`. Stateless is what keeps it compatible with that stack: a held-open SSE stream would
 still be open when the shutdown drain came for it. (The deadline used to be the other half of
 this argument, and it was wrong: `cache::timeout` wraps the *head*, so a streamed body is not
-bounded by it at all — `GET /api/forecast/stream` holds one open for as long as its simulation
+bounded by it at all — a streaming response holds one open for as long as its producer
 runs. The drain is the real reason, and the reason that route is fine: its stream lives for
 milliseconds and stops within a path of the client going away, where an MCP session's would
 live as long as the client cared to keep it.) In-flight calls take a child cancellation token from `sure-appbase`, so a

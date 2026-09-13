@@ -252,7 +252,7 @@ pub async fn detect(
     axum::extract::Query(q): axum::extract::Query<DetectQuery>,
 ) -> AppResult<Json<Vec<DetectedStream>>> {
     Ok(Json(
-        st.forecast
+        st.income_match
             .detect_income(q.account_id)
             .await?
             .into_iter()

@@ -146,7 +146,6 @@ appears as `outcome=ok` with no rows rather than an error.
 | `sure.rules.run.duration` / `.rows` | histogram / counter | `kind`, `disposition` |
 | `sure.import.commit.duration` / `sure.import.rows` | histogram / counter | `source`, `disposition` |
 | `sure.report.duration` | histogram | `report`, `phase` = `load`\|`compute` |
-| `sure.forecast.simulate.duration` | histogram | — |
 | `sure.brokerage.backfill.duration` | histogram | — |
 
 `report.duration`'s `phase` split is free because `sure_app::reports` already separates reading

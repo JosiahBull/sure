@@ -313,9 +313,8 @@ fn transactions_path() -> String {
 /// `sure_dal::accounts::set_credit_limit` writes only into `AccountMetadata::Depository`, so
 /// "remaining borrowing" stays empty through every sync (which is what the adapter's own comment
 /// records having confirmed against a real facility). Get it wrong towards `revolving_credit` and
-/// a term loan lands on the depository profile instead, where `sure_app::forecast`'s `loan_terms`
-/// finds no schedule and `set_original_amount` is a no-op: the account is projected as a trend
-/// line rather than amortised. Neither is a correction anybody makes twice — the account is
+/// a term loan lands on the depository profile instead, where `set_original_amount` is a no-op
+/// and the account carries no schedule at all. Neither is a correction anybody makes twice — the account is
 /// already linked, and it looks fine.
 #[tokio::test]
 async fn discovery_maps_a_listing_and_tells_akahus_four_kinds_of_loan_apart() {

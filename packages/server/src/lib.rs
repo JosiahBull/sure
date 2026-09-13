@@ -14,7 +14,6 @@ use std::time::Duration;
 
 use sure_app::SystemClock;
 use sure_app::brokerage::BrokerageService;
-use sure_app::forecast::ForecastService;
 use sure_app::import::ImportService;
 use sure_app::ports::{
     ImportRegistry, PropertyEstimateProvider, ProviderRegistry, StockPriceProvider,
@@ -140,16 +139,6 @@ fn build_state(
         rules.clone(),
         sync_cooldown,
     ));
-    let forecast = Arc::new(ForecastService::new(
-        store.clone(),
-        store.clone(),
-        store.clone(),
-        store.clone(),
-        store.clone(),
-        store.clone(),
-        store.clone(),
-        clock,
-    ));
     // Takes `reports` rather than the balances repo: an import reconciles an export's stated
     // closing balance against the figure the account page shows, and that figure is a
     // derivation (newest valuation, else the running transaction sum) rather than a column.
@@ -186,7 +175,6 @@ fn build_state(
         brokerage,
         import,
         reports,
-        forecast,
         rules,
         sync,
         stock_prices: store.clone(),

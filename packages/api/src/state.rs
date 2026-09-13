@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use sure_app::brokerage::BrokerageService;
-use sure_app::forecast::ForecastService;
 use sure_app::import::ImportService;
 use sure_app::income_match::IncomeMatchService;
 use sure_app::ports::{
@@ -28,7 +27,6 @@ pub struct AppState {
     /// is why `sure-api` no longer names a parser.
     pub import: Arc<ImportService>,
     pub reports: Arc<ReportService>,
-    pub forecast: Arc<ForecastService>,
     pub rules: Arc<RuleService>,
     pub sync: Arc<SyncService>,
     pub stock_prices: Arc<dyn StockPriceCacheRepo>,

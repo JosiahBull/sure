@@ -26,8 +26,6 @@ the private, revalidating policy, never a public one.
 | Any mutation, and every error | `no-store` | `no-store` |
 | `/api/health`, `/api/config/export`, `/api/provider-kinds/{kind}/accounts` | `no-store` | `no-store` |
 | **Every other `/api` read** | `private, no-cache` | `no-store` |
-| `/api/forecast` | `private, max-age=60, stale-while-revalidate=300` | `no-store` |
-| `/api/forecast/stream` | `no-store` | `no-store` |
 | `/api/accounts/{id}/stock-price` | `private, max-age=300, stale-while-revalidate=1500` | `no-store` |
 | `/assets/**`, `/workbox-*.js` | `public, max-age=31536000, immutable` | same |
 | `index.html`, `sw.js`, `registerSW.js`, `manifest.webmanifest`, SPA fallback | `public, max-age=0, must-revalidate` | `no-cache` |
@@ -198,7 +196,7 @@ protection — undo lives at its own template, `/api/import/{account_id}/{source
 mechanism stays for the next route that pairs the two.
 
 **A deadline bounds the head, not the body.** `cache::timeout` wraps `next.run(request)`, which
-resolves as soon as the response head is ready — so `GET /api/forecast/stream` holds a
+resolves as soon as the response head is ready — so a streaming response holds a
 `text/event-stream` open for as long as its simulation takes and no deadline here applies to it.
 (The same is true of the request histogram; see `telemetry.rs`.) It is in `LONG_ROUTES` anyway,
 for the head: `simulate_inputs` runs before a byte can be sent and is the same set of loads the
@@ -207,9 +205,9 @@ JSON route is given 300s for. What *does* bound a stream is `SHUTDOWN_APP_GRACE_
 disconnecting, because the send fails.
 
 The in-flight ceiling is the one that matters in practice: the realistic failure is a
-handful of concurrent `/api/forecast` or `/api/reports/*` calls saturating the CPU, not a
+handful of concurrent `/api/reports/*` calls saturating the CPU, not a
 botnet. Note that an in-flight permit is released once the head is produced, so a streaming
-response does not hold one; what bounds concurrent forecasts is `api/src/compute.rs`'s
+response does not hold one; what bounds concurrent CPU-bound work is `api/src/compute.rs`'s
 semaphore, which now hands out *threads* as well as admissions — one wide run therefore admits
 fewer concurrent ones, which is the honest accounting since the pool is sized to cores. It **sheds** rather than queues — a caller that gets a fast `503` with
 `Retry-After` can back off, whereas a queue turns a burst into a pile of requests that all

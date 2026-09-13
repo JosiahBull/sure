@@ -6,7 +6,6 @@
   import AccountPanel from "./lib/AccountPanel.svelte";
   import SettingsNav from "./lib/SettingsNav.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
-  import Forecast from "./pages/Forecast.svelte";
   import Transactions from "./pages/Transactions.svelte";
   import Accounts from "./pages/Accounts.svelte";
   import Import from "./pages/Import.svelte";
@@ -26,7 +25,6 @@
   const NAV = [
     { path: "/", label: "Dashboard", icon: "pie-chart" as const },
     { path: "/transactions", label: "Transactions", icon: "credit-card" as const },
-    { path: "/forecast", label: "Forecast", icon: "trending-up" as const },
     { path: "/settings/accounts", label: "Settings", icon: "settings" as const },
   ];
 
@@ -58,8 +56,6 @@
     switch (activePath) {
       case "/transactions":
         return Transactions;
-      case "/forecast":
-        return Forecast;
       case "/settings/accounts":
         return Accounts;
       case "/settings/import":

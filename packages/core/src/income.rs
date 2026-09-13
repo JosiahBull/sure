@@ -314,8 +314,7 @@ pub struct IncomePayment {
 
 /// Where a stream's gross→net map came from.
 ///
-/// The same precedence shape as `sure_app::forecast::AssumptionSource`: an override wins, else it
-/// is computed.
+/// An override wins, else it is computed.
 ///
 /// There is deliberately **no** `Reconciled` variant. The reconciliation — this person's modelled
 /// gross against the net actually observed in the linked income category — is reported *beside*

@@ -509,10 +509,7 @@ pub struct LoanMeta {
 /// through PAYE until it is gone, which is a function of a salary this app does not model,
 /// not of a table. Asking for those numbers gets placeholders, and every figure derived
 /// from a placeholder looks exactly as trustworthy as one derived from an answer — a
-/// paid-down percentage against an invented principal, or worse, `sure_app::forecast`
-/// projecting a fabricated amortisation line over the real balance. So the fields do not
-/// exist here, and the forecast falls back to fitting the balance's own trend the way it
-/// does for any other liability it has no schedule for.
+/// paid-down percentage against an invented principal. So the fields do not exist here.
 ///
 /// A student loan that genuinely *does* amortise — a private or overseas one with a
 /// principal, a rate and a term — is a `loan` account with `subtype = "student"`, which is
@@ -872,9 +869,8 @@ const PROFILE_REQUIRED: &[(&str, &[Required])] = &[
         ],
     ),
     // `term_months` + `start_date` are what turn a mortgage from a balance into a
-    // schedule: together with the principal and the rate they let the forecast project
-    // the exact payoff instead of extrapolating a trend from a few months of history
-    // (`sure_app::forecast`). Without them the projection is meaningless for a debt.
+    // schedule: together with the principal and the rate they describe the exact payoff
+    // rather than leaving a reader to infer it from a few months of history.
     (
         "mortgage",
         &[
