@@ -1,0 +1,218 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", income_stream_id, due_on, status, transaction_id, matched_by,\n                  expected_net_minor, observed_net_minor, gross_minor, income_tax_minor,\n                  acc_levy_minor, kiwisaver_minor, student_loan_minor, employer_kiwisaver_minor,\n                  esct_minor, created_at, updated_at\n             FROM income_payments WHERE id=?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "income_stream_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "income_stream_id"
+          }
+        }
+      },
+      {
+        "name": "due_on",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "due_on"
+          }
+        }
+      },
+      {
+        "name": "status",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "transaction_id",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "transaction_id"
+          }
+        }
+      },
+      {
+        "name": "matched_by",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "matched_by"
+          }
+        }
+      },
+      {
+        "name": "expected_net_minor",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "expected_net_minor"
+          }
+        }
+      },
+      {
+        "name": "observed_net_minor",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "observed_net_minor"
+          }
+        }
+      },
+      {
+        "name": "gross_minor",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "gross_minor"
+          }
+        }
+      },
+      {
+        "name": "income_tax_minor",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "income_tax_minor"
+          }
+        }
+      },
+      {
+        "name": "acc_levy_minor",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "acc_levy_minor"
+          }
+        }
+      },
+      {
+        "name": "kiwisaver_minor",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "kiwisaver_minor"
+          }
+        }
+      },
+      {
+        "name": "student_loan_minor",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "student_loan_minor"
+          }
+        }
+      },
+      {
+        "name": "employer_kiwisaver_minor",
+        "ordinal": 13,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "employer_kiwisaver_minor"
+          }
+        }
+      },
+      {
+        "name": "esct_minor",
+        "ordinal": 14,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "esct_minor"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 16,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_payments",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "96533c54c480cc1559a2ad02d55d601eedb5c13013649aeac6e375e7c462ef8d"
+}

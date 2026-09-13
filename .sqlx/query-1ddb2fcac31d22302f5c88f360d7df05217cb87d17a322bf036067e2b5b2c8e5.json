@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM income_payments\n          WHERE income_stream_id=?1 AND due_on=?2 AND status='expected'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "1ddb2fcac31d22302f5c88f360d7df05217cb87d17a322bf036067e2b5b2c8e5"
+}

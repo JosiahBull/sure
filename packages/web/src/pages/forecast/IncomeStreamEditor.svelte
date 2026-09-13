@@ -13,7 +13,9 @@
     ondelete,
   }: {
     stream?: IncomeStream | null;
-    personId: number;
+    /// Whose income a *new* stream is. `null` means the household's — rent from a flatmate,
+    /// which belongs to no one person and so posts to the un-nested create route.
+    personId: number | null;
     onsaved: () => void;
     oncancel: () => void;
     ondelete?: () => void;
@@ -47,6 +49,9 @@
     linked_category_id: initial?.linked_category_id ?? null,
     currency_code: initial?.currency_code ?? "NZD",
     enabled: initial?.enabled ?? true,
+    pay_treatment: initial?.pay_treatment ?? ("regular" as Schemas["PayTreatment"]),
+    match_account_id: initial?.match_account_id ?? null,
+    match_pattern: initial?.match_pattern ?? "",
   });
   let steps = $state<{ effective_on: string; amount: string; label: string }[]>(
     (initial?.steps ?? []).map((s) => ({
@@ -129,6 +134,11 @@
     f.starts_on = d.next_payment_on;
     f.currency_code = d.currency_code;
     if (d.category_id != null) f.linked_category_id = d.category_id;
+    // The detector's grouping token is the memo's stable prefix — exactly what the matcher
+    // should look for, in exactly the account it was seen in. Never `d.label`: that is one
+    // whole memo, usually with a per-run suffix that would match a single deposit.
+    f.match_account_id = d.account_id;
+    f.match_pattern = d.match_pattern;
     dismissed = true;
   }
 
@@ -209,6 +219,9 @@
       take_home_bps: f.take_home ? Math.round(parseFloat(f.take_home) * 100) : null,
       linked_category_id: f.linked_category_id,
       enabled: f.enabled,
+      pay_treatment: f.pay_treatment,
+      match_account_id: f.match_account_id,
+      match_pattern: f.match_pattern.trim() || null,
       steps: steps
         .filter((s) => s.effective_on && parseFloat(s.amount))
         .map((s) => ({
@@ -222,10 +235,16 @@
           params: { path: { id: initial.id } },
           body,
         })
-      : await api.POST("/api/people/{person_id}/income-streams", {
-          params: { path: { person_id: personId } },
-          body,
-        });
+      : personId != null
+        ? await api.POST("/api/people/{person_id}/income-streams", {
+            params: { path: { person_id: personId } },
+            body,
+          })
+        : // The household's own income. `ownership` is required here because there is no path
+          // segment to take an owner from, and joint income is always net (see the 0038 header).
+          await api.POST("/api/income-streams", {
+            body: { ...body, ownership: { kind: "joint" }, basis: "net" },
+          });
     saving = false;
     if (res.error) {
       // Every problem arrives in one message, so it is shown whole rather than split per field.
@@ -352,6 +371,26 @@
 
   {#if f.basis === "gross_nz_paye"}
     <div class="grid-fields">
+      <div class="field">
+        <!-- A bonus paid inside the regular pay run is an IRD "extra pay": taxed as a lump on
+             top of the salary, student loan with no threshold. It changes every reconstructed
+             payslip, so it is a visible control rather than a details row. -->
+        <span class="lbl">Paid as</span>
+        <div class="seg" role="group" aria-label="Regular pay or bonus">
+          <button
+            type="button"
+            class="seg-btn"
+            class:on={f.pay_treatment === "regular"}
+            onclick={() => (f.pay_treatment = "regular")}>Regular pay</button
+          >
+          <button
+            type="button"
+            class="seg-btn"
+            class:on={f.pay_treatment === "extra_pay"}
+            onclick={() => (f.pay_treatment = "extra_pay")}>Bonus / extra pay</button
+          >
+        </div>
+      </div>
       <label class="field">
         <span class="lbl">KiwiSaver, you %</span>
         <input class="input tabular" bind:value={f.kiwisaver} />
@@ -405,6 +444,38 @@
       </p>
     {/if}
   {/if}
+
+  <!-- Always visible, never folded into a details row: matching is what turns a configured
+       stream into checked-off paydays and the payslip layer on the cash-flow chart, and a
+       collapsed section proved invisible in practice — a household set everything else up and
+       could not see why nothing matched. Both halves or neither: an account to look in and a
+       memo token to look for. -->
+  <div class="match-block">
+    <div class="row spread" style="margin-bottom:6px">
+      <strong class="small">Match deposits automatically</strong>
+      {#if f.match_account_id === null}
+        <span class="badge">off</span>
+      {/if}
+    </div>
+    <div class="grid-fields">
+      <label class="field">
+        <span class="lbl">Lands in account</span>
+        <select class="select" bind:value={f.match_account_id}>
+          <option value={null}>Not matched</option>
+          {#each accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+        </select>
+      </label>
+      <label class="field">
+        <span class="lbl">Deposit memo contains</span>
+        <input class="input" placeholder="e.g. the employer's name" bind:value={f.match_pattern} />
+      </label>
+    </div>
+    <p class="small faint" style="margin:0">
+      With these set, each payday is checked off against the deposit that satisfied it and the
+      cash-flow chart draws the payslip behind it. A bonus paid inside the salary run should use
+      the same account and memo as the salary — the two are matched against the one deposit.
+    </p>
+  </div>
 
   <details class="more" open={steps.length > 0}>
     <summary>Pay scale, start and end</summary>
@@ -525,6 +596,13 @@
     cursor: pointer;
     font-size: 12px;
     color: var(--text-muted);
+  }
+  .match-block {
+    margin-bottom: 10px;
+    padding: 10px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
   }
   .steps {
     display: flex;

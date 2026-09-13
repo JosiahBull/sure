@@ -3,10 +3,11 @@ use std::sync::Arc;
 use sure_app::brokerage::BrokerageService;
 use sure_app::forecast::ForecastService;
 use sure_app::import::ImportService;
+use sure_app::income_match::IncomeMatchService;
 use sure_app::ports::{
-    AccountRepo, CategoryRepo, CronRepo, CurrencyRepo, EquityRepo, MerchantRepo, PersonRepo,
-    PropertyEstimateProvider, ProviderRegistry, ProviderRepo, SettingsRepo, SnapshotRepo,
-    StockPriceCacheRepo, StockPriceProvider, TransactionRepo, ValuationRepo,
+    AccountRepo, CategoryRepo, CronRepo, CurrencyRepo, EquityRepo, IncomeRepo, MerchantRepo,
+    PersonRepo, PropertyEstimateProvider, ProviderRegistry, ProviderRepo, SettingsRepo,
+    SnapshotRepo, StockPriceCacheRepo, StockPriceProvider, TransactionRepo, ValuationRepo,
 };
 use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
@@ -40,6 +41,12 @@ pub struct AppState {
     pub settings: Arc<dyn SettingsRepo>,
     pub valuations: Arc<dyn ValuationRepo>,
     pub equity: Arc<dyn EquityRepo>,
+    /// Income streams, tax scales and matched payments — thin CRUD plus the matcher's storage,
+    /// so it is the repo directly.
+    pub income: Arc<dyn IncomeRepo>,
+    /// The matching/reconstruction logic behind the manual-link and rematch endpoints — the
+    /// same pass the scheduled `income_match` task runs on its timer.
+    pub income_match: Arc<IncomeMatchService>,
     pub crons: Arc<dyn CronRepo>,
     pub snapshot: Arc<dyn SnapshotRepo>,
     pub providers: Arc<dyn ProviderRepo>,

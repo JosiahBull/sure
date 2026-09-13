@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", person_id, label, employer, currency_code, annual_amount_minor,\n                  basis, pay_frequency, first_payment_on, starts_on, ends_on,\n                  annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,\n                  student_loan AS \"student_loan!: bool\", take_home_bps, linked_category_id,\n                  kiwisaver_account_id, student_loan_account_id, enabled AS \"enabled!: bool\",\n                  sort_order, notes, created_at, updated_at\n             FROM income_streams WHERE id=?1",
+  "query": "SELECT id AS \"id!\", ownership, person_id, label, employer, currency_code,\n                      annual_amount_minor, basis, pay_frequency, first_payment_on, starts_on,\n                      ends_on, annual_increase_bps, kiwisaver_bps,\n                      student_loan AS \"student_loan!: bool\", take_home_bps, linked_category_id,\n                      enabled AS \"enabled!: bool\", sort_order, notes, employer_kiwisaver_bps,\n                      kiwisaver_account_id, student_loan_account_id, match_account_id,\n                      match_pattern, pay_treatment, created_at, updated_at\n                 FROM income_streams ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -15,8 +15,19 @@
         }
       },
       {
-        "name": "person_id",
+        "name": "ownership",
         "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "ownership"
+          }
+        }
+      },
+      {
+        "name": "person_id",
+        "ordinal": 2,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -27,7 +38,7 @@
       },
       {
         "name": "label",
-        "ordinal": 2,
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -38,7 +49,7 @@
       },
       {
         "name": "employer",
-        "ordinal": 3,
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "currency_code",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "annual_amount_minor",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "basis",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "pay_frequency",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "first_payment_on",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "starts_on",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,7 +126,7 @@
       },
       {
         "name": "ends_on",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -126,7 +137,7 @@
       },
       {
         "name": "annual_increase_bps",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -137,23 +148,12 @@
       },
       {
         "name": "kiwisaver_bps",
-        "ordinal": 12,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "income_streams",
-            "name": "kiwisaver_bps"
-          }
-        }
-      },
-      {
-        "name": "employer_kiwisaver_bps",
         "ordinal": 13,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "income_streams",
-            "name": "employer_kiwisaver_bps"
+            "name": "kiwisaver_bps"
           }
         }
       },
@@ -191,30 +191,8 @@
         }
       },
       {
-        "name": "kiwisaver_account_id",
-        "ordinal": 17,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "income_streams",
-            "name": "kiwisaver_account_id"
-          }
-        }
-      },
-      {
-        "name": "student_loan_account_id",
-        "ordinal": 18,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "income_streams",
-            "name": "student_loan_account_id"
-          }
-        }
-      },
-      {
         "name": "enabled!: bool",
-        "ordinal": 19,
+        "ordinal": 17,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -225,7 +203,7 @@
       },
       {
         "name": "sort_order",
-        "ordinal": 20,
+        "ordinal": 18,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -236,7 +214,7 @@
       },
       {
         "name": "notes",
-        "ordinal": 21,
+        "ordinal": 19,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -246,8 +224,74 @@
         }
       },
       {
-        "name": "created_at",
+        "name": "employer_kiwisaver_bps",
+        "ordinal": 20,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "employer_kiwisaver_bps"
+          }
+        }
+      },
+      {
+        "name": "kiwisaver_account_id",
+        "ordinal": 21,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "kiwisaver_account_id"
+          }
+        }
+      },
+      {
+        "name": "student_loan_account_id",
         "ordinal": 22,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "student_loan_account_id"
+          }
+        }
+      },
+      {
+        "name": "match_account_id",
+        "ordinal": 23,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "match_account_id"
+          }
+        }
+      },
+      {
+        "name": "match_pattern",
+        "ordinal": 24,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "match_pattern"
+          }
+        }
+      },
+      {
+        "name": "pay_treatment",
+        "ordinal": 25,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "pay_treatment"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 26,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -258,7 +302,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 23,
+        "ordinal": 27,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -269,11 +313,12 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 0
     },
     "nullable": [
       false,
       false,
+      true,
       false,
       true,
       false,
@@ -286,17 +331,20 @@
       false,
       false,
       false,
+      true,
+      true,
+      false,
+      false,
+      true,
       false,
       true,
       true,
       true,
       true,
       false,
-      false,
-      true,
       false,
       false
     ]
   },
-  "hash": "898a59762da02330a35af51e3ebe32c1ad15a627695138d62eb427ba60cf4942"
+  "hash": "8719116d20690908a16ea7999d6d7c87c46b1db335dc7c33396e04698e827a71"
 }

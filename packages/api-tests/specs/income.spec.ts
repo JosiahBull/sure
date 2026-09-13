@@ -23,7 +23,70 @@ test("a stream is created under its person and listed with the rest of the house
 
   const { data } = await api.GET("/api/income-streams", {});
   expect(data!.map((s) => s.label).sort()).toEqual(["Teaching", "Workshop"]);
-  expect(data!.find((s) => s.label === "Teaching")!.person_id).toBe(a.id);
+  expect(data!.find((s) => s.label === "Teaching")!.ownership).toEqual({
+    kind: "person",
+    person_id: a.id,
+  });
+});
+
+test("income the household earns is recorded jointly, and listed beside everyone else's", async ({
+  api,
+}) => {
+  const a = await createPerson(api, "Rua");
+  await createIncomeStream(api, a.id, { label: "Teaching" });
+
+  // No person in the path: the household is the owner, so it can only come from the body.
+  const created = await api.POST("/api/income-streams", {
+    body: {
+      ownership: { kind: "joint" },
+      label: "Rent from the flat",
+      currency_code: "NZD",
+      annual_amount_minor: 15_600_00,
+      basis: "net",
+      pay_frequency: "weekly",
+      first_payment_on: "2026-01-07",
+      starts_on: "2026-01-01",
+    },
+  });
+  expect(created.response.status).toBe(201);
+  expect(created.data!.ownership).toEqual({ kind: "joint" });
+
+  const { data } = await api.GET("/api/income-streams", {});
+  expect(data!.map((s) => s.label).sort()).toEqual(["Rent from the flat", "Teaching"]);
+});
+
+test("a joint stream may not be gross, because no one person's rate prices it", async ({ api }) => {
+  const res = await api.POST("/api/income-streams", {
+    body: {
+      ownership: { kind: "joint" },
+      label: "Rent",
+      currency_code: "NZD",
+      annual_amount_minor: 15_600_00,
+      basis: "gross_nz_paye",
+      pay_frequency: "weekly",
+      first_payment_on: "2026-01-07",
+      starts_on: "2026-01-01",
+    },
+  });
+  expect(res.response.status).toBe(422);
+  // The message has to say what to do instead, not just name the rule.
+  expect(JSON.stringify(res.error)).toContain("must be recorded as net");
+});
+
+test("the un-nested create route insists on an owner rather than guessing one", async ({ api }) => {
+  const res = await api.POST("/api/income-streams", {
+    body: {
+      label: "Rent",
+      currency_code: "NZD",
+      annual_amount_minor: 15_600_00,
+      basis: "net",
+      pay_frequency: "weekly",
+      first_payment_on: "2026-01-07",
+      starts_on: "2026-01-01",
+    },
+  });
+  expect(res.response.status).toBe(422);
+  expect(JSON.stringify(res.error)).toContain("ownership is required");
 });
 
 test("creating a stream for a person who doesn't exist is refused, not left dangling", async ({

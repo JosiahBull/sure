@@ -21,7 +21,7 @@ pub use sure_core::{
     LifeEffectSpec, LifeEventKind, RelationKind, SaveForecastAssumption, SaveForecastEvent,
     SaveForecastEventRelation, StepAmount,
 };
-use sure_core::{ForecastAssumption, ForecastTargetType};
+use sure_core::{ForecastAssumption, ForecastTargetType, Ownership};
 
 const FORECAST_ASSUMPTIONS: &str = "forecast.assumptions";
 const FORECAST_SIMULATE: &str = "forecast.simulate";
@@ -128,6 +128,9 @@ pub struct ResolvedAssumption {
     pub schedule: Option<LoanScheduleSummary>,
     /// The account's own currency, for formatting `schedule`. Absent for a category.
     pub currency_code: Option<String>,
+    /// Whose account this is. Absent for a category, which belongs to the household rather
+    /// than to anyone in it.
+    pub ownership: Option<Ownership>,
     pub source: AssumptionSource,
 }
 
@@ -146,6 +149,7 @@ impl From<sure_app::forecast::ResolvedAssumption> for ResolvedAssumption {
             baseline_minor: r.baseline_minor,
             schedule: r.schedule.map(Into::into),
             currency_code: r.currency_code,
+            ownership: r.ownership,
             source: r.source.into(),
         }
     }
@@ -230,7 +234,9 @@ impl From<sure_app::forecast::ForecastMonth> for ForecastMonth {
 /// modelled as take-home.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct StreamReconciliation {
-    pub person_id: i64,
+    /// `None` when the covering streams are the household's rather than one person's — rent
+    /// from a flatmate has nobody to attribute the coverage to.
+    pub person_id: Option<i64>,
     pub category_id: i64,
     pub category_label: String,
     /// Monthly net the streams model as of today.
