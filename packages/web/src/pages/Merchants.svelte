@@ -151,6 +151,7 @@
     {#if merchants.length === 0}
       <div class="empty">No merchants yet — add one to categorise transactions automatically.</div>
     {:else}
+      <div class="scroll-x">
       <table class="table">
         <thead>
           <tr>
@@ -166,7 +167,7 @@
                 <div class="row" style="gap:10px;min-width:0">
                   <span class="avatar" style="background:{colorFor(m.id)}">{m.name.charAt(0).toUpperCase()}</span>
                   <div class="col" style="min-width:0;gap:2px">
-                    <div class="row" style="gap:6px;min-width:0">
+                    <div class="row name-row" style="gap:6px;min-width:0">
                       <span class="ell">{m.name}</span>
                       {#if cat}<span class="badge">{qualifiedName(categories, cat.id) || cat.name}</span>{/if}
                     </div>
@@ -226,6 +227,7 @@
           {/each}
         </tbody>
       </table>
+      </div>
     {/if}
   </section>
 {/if}
@@ -263,5 +265,20 @@
     border: 1px solid var(--border);
     border-radius: var(--r);
     background: var(--surface-2);
+  }
+  /* The merchant's name and its category chip share a line, and the chip does not shrink —
+     "Lifestyle > Entertainment > Streaming" is one unbreakable run — so on a narrow card the
+     name was the side that gave, ellipsising to "Ne\u2026" while the chip wrapped to three
+     lines. The name is the row's identity; below the width that fits both, the chip goes under
+     it instead. */
+  @container main (max-width: 520px) {
+    .name-row {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 3px !important;
+    }
+    .name-row .badge {
+      max-width: 100%;
+    }
   }
 </style>

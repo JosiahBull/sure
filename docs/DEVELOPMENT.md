@@ -212,6 +212,7 @@ Measure before optimising the arithmetic.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The hexagonal refactor: where the seams are and why |
 | [HTTP.md](HTTP.md) | Caching, compression, h2c, rate limiting, and every env var that tunes them |
 | [TESTING.md](TESTING.md) | The three tiers, fixtures, and the record/replay proxy |
+| [LAYOUT.md](LAYOUT.md) | How the SPA lays out from a 320px phone to a desktop, and why it is container queries |
 | [CI.md](CI.md) | The workflows, and how a release is cut |
 | [SANDBOX.md](SANDBOX.md) | The Landlock policy and its two deliberate compromises |
 | [MCP.md](MCP.md) | The MCP server: tools, resources, and the two opt-in gates |

@@ -1,6 +1,6 @@
 import { type Page } from "@playwright/test";
 
-import { DEMO_WHEN } from "./demo-date";
+import { DEMO_WHEN, MTD_START } from "./demo-date";
 import { test, expect } from "./fixtures";
 
 async function goto(page: Page, route: string) {
@@ -23,6 +23,37 @@ test("overview shows net worth, category breakdown and the money-flow sankey", a
   await expect(page.getByRole("heading", { name: "Money flow" })).toBeVisible();
   await expect(page.locator("svg path")).not.toHaveCount(0);
   await expect(page).toHaveScreenshot("overview.png", { fullPage: true });
+});
+
+test("the time-range dropdown offers month-to-date, and it means the 1st to today", async ({
+  page,
+}) => {
+  await goto(page, "/");
+
+  // Ordered shortest window first, so MTD leads. Asserted as a whole list rather than by
+  // presence alone: the order is the reason someone can find the one they want.
+  await expect(
+    page.locator('select[aria-label="Time range"] option').evaluateAll((os) =>
+      os.map((o) => o.textContent!.trim()),
+    ),
+  ).resolves.toEqual([
+    "Month to date (MTD)",
+    "Last 30 days",
+    "Last month",
+    "Last 90 days",
+    "Year to date",
+    "Last 12 months",
+    "All time",
+  ]);
+
+  await page.selectOption('select[aria-label="Time range"]', "mtd");
+
+  // The net-worth chart captions its own axis with the window it drew, which is the app
+  // stating what it asked for. DEMO_TODAY is the 15th of a month, so a correct month-to-date
+  // is the 1st of that same month through that day — and a naive `setMonth` would be wrong
+  // here in a way a mid-month date cannot show, which is what MTD_AXIS pins.
+  await expect(page.locator(".chart-wrap + .row span").first()).toHaveText(MTD_START);
+  await expect(page.locator(".chart-wrap + .row span").last()).toHaveText(DEMO_WHEN);
 });
 
 test("rules lists the seeded rule and its audit run", async ({ page }) => {
