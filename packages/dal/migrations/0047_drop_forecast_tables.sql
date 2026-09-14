@@ -1,5 +1,12 @@
 -- Drop the forecast tables. The engine that read them is gone; these are the rows it left.
 --
+-- Numbered 0047, not 0041, even though 0041-0046 are absent from this tree. Those six numbers
+-- were used by the forecast-modelling PRs that were closed unmerged (#40, #41), and a database
+-- that ran either branch has them recorded in `_sqlx_migrations` — reusing 0041 gives that
+-- database two different migrations under one version, which is a checksum conflict on top of
+-- the "previously applied but missing" error those rows already cause. Starting above the
+-- highest number those branches reached costs nothing and keeps the two histories disjoint.
+--
 -- This destroys data, and there is no way back: the assumptions somebody typed, the life events
 -- they dated, and the effects and orderings hung off those events. Nothing exports them any more
 -- either, so a config snapshot taken after the engine was removed does not carry them and cannot
@@ -22,3 +29,11 @@ DROP TABLE IF EXISTS forecast_event_relations;
 DROP TABLE IF EXISTS forecast_event_effects;
 DROP TABLE IF EXISTS forecast_events;
 DROP TABLE IF EXISTS forecast_assumptions;
+
+-- And the two the abandoned branches added, which no migration in this tree ever created and so
+-- no migration in this tree would otherwise remove. `IF EXISTS` is doing real work here: on any
+-- database that never ran #40/#41 these are no-ops, and on one that did they are the last of the
+-- forecast schema. Both are forecast features — stated spending commitments, and what the
+-- simulation did with money it did not spend — so they go for the same reason as the four above.
+DROP TABLE IF EXISTS expense_commitments;
+DROP TABLE IF EXISTS investment_strategies;
