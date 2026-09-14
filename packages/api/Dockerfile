@@ -30,10 +30,15 @@ WORKDIR /build
 # Only the Cargo workspace members are needed here (web/client are not Cargo crates).
 COPY Cargo.toml Cargo.lock ./
 # `appbase` and `testproxy` are workspace members, so cargo needs their manifests to load the
-# workspace at all — even though `-p sure-server` never builds testproxy.
+# workspace at all — even though `-p sure-server` never builds testproxy. The same is true of the
+# three upstream wire-format clients below: cargo refuses to load the workspace when a declared
+# member's manifest is absent, whether or not this build would compile it.
 COPY packages/appbase ./packages/appbase
 COPY packages/telemetry ./packages/telemetry
 COPY packages/testproxy ./packages/testproxy
+COPY packages/frankfurter-client ./packages/frankfurter-client
+COPY packages/house-pricer-client ./packages/house-pricer-client
+COPY packages/yahoo-finance-client ./packages/yahoo-finance-client
 COPY packages/core ./packages/core
 COPY packages/scheduler ./packages/scheduler
 COPY packages/dal ./packages/dal
@@ -91,10 +96,15 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 # `appbase` and `testproxy` are workspace members, so cargo needs their manifests to load the
-# workspace at all — even though `-p sure-server` never builds testproxy.
+# workspace at all — even though `-p sure-server` never builds testproxy. The same is true of the
+# three upstream wire-format clients below: cargo refuses to load the workspace when a declared
+# member's manifest is absent, whether or not this build would compile it.
 COPY packages/appbase ./packages/appbase
 COPY packages/telemetry ./packages/telemetry
 COPY packages/testproxy ./packages/testproxy
+COPY packages/frankfurter-client ./packages/frankfurter-client
+COPY packages/house-pricer-client ./packages/house-pricer-client
+COPY packages/yahoo-finance-client ./packages/yahoo-finance-client
 COPY packages/core ./packages/core
 COPY packages/scheduler ./packages/scheduler
 COPY packages/dal ./packages/dal
