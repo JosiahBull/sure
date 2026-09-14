@@ -165,6 +165,7 @@
     {#if people.list.length === 0}
       <div class="empty">Nobody yet — add the two of you to start attributing accounts.</div>
     {:else}
+      <div class="scroll-x">
       <table class="table">
         <thead>
           <tr>
@@ -264,6 +265,7 @@
           {/each}
         </tbody>
       </table>
+      </div>
     {/if}
   </section>
 

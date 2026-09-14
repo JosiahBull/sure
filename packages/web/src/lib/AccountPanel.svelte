@@ -162,6 +162,18 @@
     cursor: pointer;
     transition: background 0.15s, color 0.15s;
   }
+  /* Three tabs sharing a 288px drawer is 96px each, which is wide enough; it is the height
+     that falls short of a thumb. */
+  @media (pointer: coarse) {
+    .seg-btn {
+      padding: 11px 0;
+    }
+    .kind-row,
+    .acct-row,
+    .new-asset {
+      min-height: 44px;
+    }
+  }
   .seg-btn:hover:not(.active) {
     color: var(--text);
   }

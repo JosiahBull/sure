@@ -37,3 +37,17 @@ export const DEMO_WHEN = new Intl.DateTimeFormat("en-NZ", {
   year: "numeric",
   timeZone: "Pacific/Auckland",
 }).format(DEMO_NOW);
+
+/**
+ * The first of `DEMO_TODAY`'s month, rendered the way the app's `formatDate` renders it — the
+ * start of the "Month to date" window, and what its chart captions its axis with.
+ *
+ * Derived from `DEMO_TODAY` rather than written out, so moving the pinned day to another month
+ * moves this with it. Built from the date *string* and read back as local midnight, exactly as
+ * `formatDate` does, because a `Date` arithmetic round-trip through UTC would land on the last
+ * day of the previous month for half of every NZ day.
+ */
+export const MTD_START = new Date(`${DEMO_TODAY.slice(0, 7)}-01T00:00:00`).toLocaleDateString(
+  "en-NZ",
+  { day: "numeric", month: "short", year: "numeric" },
+);

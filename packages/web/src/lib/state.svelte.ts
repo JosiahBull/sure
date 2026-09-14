@@ -1,8 +1,20 @@
 // Global, reactive report filters shared across pages (time range + one-off toggle).
 
-export type RangeKey = "last_30" | "last_month" | "last_90" | "ytd" | "last_12m" | "all";
+export type RangeKey =
+  | "mtd"
+  | "last_30"
+  | "last_month"
+  | "last_90"
+  | "ytd"
+  | "last_12m"
+  | "all";
 
+// Ordered by how much time each one covers, shortest first — "Month to date" is one to
+// thirty-one days, so it leads. It is also the pair to "Year to date" below: both are
+// open-ended windows running from the start of a calendar period up to today, as against the
+// closed "Last month" and the rolling "Last 30 days".
 export const RANGES: { key: RangeKey; label: string }[] = [
+  { key: "mtd", label: "Month to date (MTD)" },
   { key: "last_30", label: "Last 30 days" },
   { key: "last_month", label: "Last month" },
   { key: "last_90", label: "Last 90 days" },
@@ -63,6 +75,12 @@ export function rangeDates(range: RangeKey = filters.range): { from?: string; to
       end.setDate(0);
       return { from: iso(start), to: iso(end) };
     }
+    // The current calendar month so far: the 1st through today. Open-ended like "ytd" below,
+    // and unlike "last_month" above, which is the closed window before this one. No month
+    // arithmetic, so none of the overflow traps that go with it — only the day is changed.
+    case "mtd":
+      d.setDate(1);
+      return { from: iso(d), to };
     case "last_30":
       d.setDate(d.getDate() - 30);
       return { from: iso(d), to };

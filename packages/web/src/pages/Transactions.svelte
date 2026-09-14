@@ -1057,7 +1057,7 @@
          Fixed-width pieces (avatar, category pill, amount, delete) can add up to more than a
          narrow phone screen, so this scrolls horizontally rather than crushing the
          description to zero width. -->
-    <div style="overflow-x:auto">
+    <div class="tx-scroll scroll-x">
     <div class="tx-head">
       <div class="th-tx">
         <span class="tx-check">
@@ -1387,13 +1387,24 @@
     font-weight: 500;
     letter-spacing: normal;
   }
-  @media (max-width: 560px) {
+  /* Against the content column: with the panel docked, a 1024px window leaves 638px here and
+     three money figures at 20px do not fit in 212px each. */
+  @container main (max-width: 620px) {
     .statbar {
       grid-template-columns: 1fr;
     }
     .statbar .stat:not(:last-child) {
       border-right: none;
       border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+    }
+    .statbar .stat {
+      /* Label and figure side by side once each has a whole row to itself — three stacked
+         two-line cells is 180px of a phone screen spent before the first transaction. */
+      flex-direction: row;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
     }
   }
 
@@ -1476,11 +1487,21 @@
     flex-direction: column;
     gap: 10px;
     width: 220px;
+    /* The button it hangs off sits at the right edge of a card that can be 300px wide, so a
+       fixed 220px panel had nowhere to go but off the screen. */
+    max-width: calc(100vw - 28px);
     padding: 14px;
     border-radius: var(--r);
     border: 1px solid var(--border-strong);
     background: var(--bg-elev);
     box-shadow: var(--shadow);
+  }
+  /* Wide enough for its four labelled selects once it has the room; on a phone it takes the
+     card's width rather than a fraction of it. */
+  @container main (max-width: 480px) {
+    .filter-panel {
+      width: min(280px, calc(100vw - 28px));
+    }
   }
 
   /* ---- Pagination --------------------------------------------------------------- */
@@ -1818,6 +1839,108 @@
     font-size: 14px;
   }
 
+  /* ---- Narrow: the row stops being a table and becomes a card ------------------------------
+     Three columns needing 560px cannot be squeezed into a phone, and scrolling them sideways
+     put the *amount* — the one number anyone opens this page for — permanently off-screen
+     behind a gesture nothing advertised. So below the width where the columns fit, the same
+     three cells re-flow into two lines:
+
+         [✓] (A)  Countdown              -NZ$82.40
+                  Everyday · 12 Jun
+                  [ Groceries ]
+
+     Every cell keeps its markup, its handlers and its accessible name; only the grid changes —
+     no `display: contents` anywhere, so the checkbox, avatar and sub-line stay exactly where
+     their own component put them. 560px is the same number .tx-head and .tx-row pin their
+     min-width to, so the layout switches precisely when the columns stop fitting rather than
+     at a guessed phone width. */
+  @container main (max-width: 560px) {
+    .tx-scroll {
+      /* Nothing to scroll sideways any more, and a scroll container here would swallow the
+         horizontal component of a vertical flick. */
+      overflow-x: visible;
+    }
+    .tx-head,
+    .tx-row {
+      min-width: 0;
+    }
+    .tx-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas:
+        "name amount"
+        "category category";
+      align-items: start;
+      gap: 8px 10px;
+      padding: 12px;
+    }
+    .tx-name-cell {
+      grid-area: name;
+      grid-column: auto;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .amt-cell {
+      grid-area: amount;
+      grid-column: auto;
+      align-self: start;
+      /* It is the number this page exists to show; give it the weight to match now that it is
+         no longer competing with three other columns. */
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .cat-cell {
+      grid-area: category;
+      grid-column: auto;
+      /* Indented to the name's text, not the row's edge: 18px checkbox + 10px gap + 30px
+         avatar + 10px gap. Lines the pill up under the description it belongs to. */
+      padding-left: 68px;
+    }
+    .tx-name-row {
+      flex-wrap: wrap;
+      row-gap: 2px;
+    }
+    .avatar {
+      width: 30px;
+      height: 30px;
+      font-size: 13px;
+    }
+    .cat-pill {
+      max-width: 100%;
+    }
+    /* The valuation row has no checkbox — it has a spacer of the same name — so the same
+       indent lines its pill-less second row up with everything else. */
+    .val-icon {
+      width: 30px;
+      height: 30px;
+    }
+
+    /* The header stops being a set of column labels — there are no columns left to label — and
+       becomes what it still needs to be: the four sort controls, plus select-all, wrapping on
+       one line. Keeping it (rather than hiding it, which is the easy answer) is what stops
+       "sort by amount" being a desktop-only feature. */
+    .tx-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 14px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+    }
+    .th-tx {
+      grid-column: auto;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+    }
+    .th-cat,
+    .th-amt {
+      grid-column: auto;
+      justify-self: auto;
+    }
+    .th-date {
+      margin-left: 0;
+    }
+  }
+
   .tx-check {
     flex: 0 0 auto;
     display: inline-flex;
@@ -1954,6 +2077,42 @@
     background: var(--bg-elev);
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
   }
+  /* On a phone the tab bar owns the bottom of the screen, so the bar sits above it rather than
+     under it, and spans the width instead of centring a pill that would wrap to four lines.
+     A viewport query, not a container one: it is dodging the fixed tab bar, which is a fact
+     about the screen. */
+  @media (max-width: 720px) {
+    .bulkbar {
+      left: 8px;
+      right: 8px;
+      /* In viewport units, like every other fixed element on a phone — `right: 8px` measures
+         from the layout viewport's edge, which is off the side of the screen. */
+      width: calc(100dvw - 16px);
+      /* Anchored the same way the tab bar is, and for the same reason — `bottom` resolves
+         against the layout viewport, which is taller than the visible one while a phone
+         browser's toolbars are up. `top` + `translateY(-100%)` rather than a computed `top`
+         because this bar's height depends on how many of its controls have wrapped: growing
+         downward from the line and then lifting it by its own height puts its *bottom* edge on
+         that line whatever it turns out to be. */
+      top: calc(100dvh - var(--tabbar-h) - 8px - env(safe-area-inset-bottom));
+      bottom: auto;
+      transform: translateY(-100%);
+      max-width: none;
+      gap: 6px;
+    }
+    .bulkbar :global(.select) {
+      flex: 1 1 128px;
+      min-width: 0;
+    }
+    /* The vertical rule between "clear" and the editing controls reads as clutter once the bar
+       is a block of wrapped rows rather than one line. */
+    .bulkbar .sep {
+      display: none;
+    }
+    .bulkbar .count {
+      flex: 1 0 100%;
+    }
+  }
   .bulkbar .count {
     font-weight: 600;
     white-space: nowrap;
@@ -1968,6 +2127,53 @@
   @keyframes tx-flash {
     from {
       background: color-mix(in srgb, var(--accent) 34%, transparent);
+    }
+  }
+  /* The controls that stayed pointer-sized: a 20px sort label, a 21px search field and a 30px
+     page number are each fine under a mouse and each a miss under a thumb. Only the box grows;
+     nothing is redrawn. */
+  @media (pointer: coarse) {
+    .search-box {
+      min-height: 44px;
+    }
+    .search-input {
+      /* 16px, or iOS Safari zooms the viewport to the field on focus and never zooms back. */
+      font-size: 16px;
+      align-self: stretch;
+    }
+    .tab-btn {
+      padding: 11px 24px;
+    }
+    .sort-btn {
+      /* 14px either side of a 16px line box is 44px, and the matching negative margin keeps
+         the labels lined up with the rows below exactly where they were. */
+      padding: 14px 6px;
+      margin: -14px -6px;
+    }
+    .pager-nav,
+    .pager-num {
+      min-width: 44px;
+      min-height: 44px;
+      justify-content: center;
+    }
+    .pager-num {
+      display: inline-flex;
+      align-items: center;
+    }
+    .only-mine {
+      min-height: 44px;
+    }
+    /* The row's checkbox is drawn at 18px and is the target for selecting a transaction — the
+       first step of every bulk edit. Padding plus an equal negative margin grows the label to
+       44x44 around the same 18px box, so the row's layout is untouched. */
+    .tx-check {
+      padding: 13px;
+      margin: -13px;
+    }
+    .search-input {
+      /* `align-self: stretch` does not survive the `all: unset` this input carries, so state
+         the height the box now has. */
+      min-height: 40px;
     }
   }
 </style>
