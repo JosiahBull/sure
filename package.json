@@ -1,6 +1,6 @@
 {
   "name": "sure",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Sure — a fast, local financial tracker (Rust + Axum + SQLite backend, Svelte SPA frontend).",
   "packageManager": "pnpm@11.21.0",

@@ -34,7 +34,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 # The rustc floor edition 2024 needs (1.85) is far below the one `sqlx` 0.9 already imposes
 # (1.94), so this costs no toolchain support — see the Rust note in the README. rustfmt's
 # style edition is pinned separately in rustfmt.toml, so this line moves the language only.
