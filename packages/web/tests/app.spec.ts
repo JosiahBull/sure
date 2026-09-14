@@ -56,6 +56,54 @@ test("the time-range dropdown offers month-to-date, and it means the 1st to toda
   await expect(page.locator(".chart-wrap + .row span").last()).toHaveText(DEMO_WHEN);
 });
 
+test("the toggle's knob rests centred, in both states", async ({ page }) => {
+  await goto(page, "/");
+  const track = page.locator(".subbar-switch .track");
+
+  // The knob is a pseudo-element positioned inside the track, and an absolutely positioned
+  // child's offsets resolve against the *padding* box — which the track's 1px border insets.
+  // A bare `3px` therefore drew a 4px gap on the near side and left 2px at the far one, so the
+  // knob sat a pixel low and a pixel off-centre in both states. On a 22px control that shows.
+  const gaps = () =>
+    track.evaluate((el) => {
+      const t = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      const knob = getComputedStyle(el, "::after");
+      const border = parseFloat(cs.borderTopWidth);
+      const top = border + parseFloat(knob.top);
+      const left = border + parseFloat(knob.left) + new DOMMatrix(knob.transform).m41;
+      const size = parseFloat(knob.width);
+      return {
+        above: top,
+        below: t.height - (top + size),
+        left,
+        right: t.width - (left + size),
+        square: size === parseFloat(knob.height),
+      };
+    });
+
+  const off = await gaps();
+  expect(off.square, "the knob is not round").toBe(true);
+  expect(off.above, "the knob is not vertically centred when off").toBeCloseTo(off.below, 1);
+  // Resting at the near end, so the gap there is the one that must equal the vertical gaps.
+  expect(off.left, "the knob's resting gap differs from its vertical gap").toBeCloseTo(off.above, 1);
+
+  await page.locator(".subbar-switch").click();
+  await expect(page.locator(".subbar-switch input")).toBeChecked();
+  // Polled, not read once: the knob slides over 0.15s, and a mid-transition matrix is a real
+  // position — just not the resting one this test is about. The assertion is the whole point of
+  // deriving the travel distance rather than hard-coding it: it has to leave the same gap at
+  // the far end as the resting state leaves at the near one.
+  await expect
+    .poll(async () => (await gaps()).right, {
+      message: "the knob stops short of, or past, its far resting place",
+    })
+    .toBeCloseTo(off.left, 1);
+
+  const on = await gaps();
+  expect(on.above, "the knob is not vertically centred when on").toBeCloseTo(on.below, 1);
+});
+
 test("rules lists the seeded rule and its audit run", async ({ page }) => {
   await goto(page, "/settings/rules");
   // The rule name now appears both in the Active rules card and the audit log, so scope.

@@ -410,27 +410,43 @@ label.field {
   opacity: 0;
 }
 .switch .track {
-  /* The knob (`.track::after`) is absolutely positioned at top/left 3px, so it lands relative to
-     whichever ancestor is positioned. That has to be the track itself: `.switch` is also
-     positioned (for the visually-hidden input), and while the two boxes were the same height
-     the difference did not show — until the touch rule gave `.switch` a 44px minimum and the
-     knob floated 11px above the track it belongs to. */
+  /* The knob (`.track::after`) is absolutely positioned, so it lands relative to whichever
+     ancestor is positioned. That has to be the track itself: `.switch` is also positioned (for
+     the visually-hidden input), and while the two boxes were the same height the difference did
+     not show — until the touch rule gave `.switch` a 44px minimum and the knob floated 11px
+     above the track it belongs to.
+
+     The geometry is stated once, here, because four numbers have to agree and three of them
+     used to be written out by hand in two places. --knob-travel in particular is not a free
+     choice: it is whatever distance leaves the same gap at the far end as at the near one. */
+  --track-w: 38px;
+  --track-h: 22px;
+  --track-border: 1px;
+  --knob-size: 16px;
+  /* The gap between the knob and the edge you can see, on whichever side it is resting. */
+  --knob-gap: 3px;
+  --knob-travel: calc(var(--track-w) - var(--knob-size) - 2 * var(--knob-gap));
+
   position: relative;
-  width: 38px;
-  height: 22px;
+  width: var(--track-w);
+  height: var(--track-h);
   border-radius: 999px;
   background: var(--surface-2);
-  border: 1px solid var(--border-strong);
+  border: var(--track-border) solid var(--border-strong);
   transition: background 0.15s;
   flex: none;
 }
 .switch .track::after {
   content: "";
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 16px;
-  height: 16px;
+  /* Minus the border, because an absolutely positioned child's offsets resolve against the
+     *padding* box and the border insets that by 1px — so a bare `3px` drew a 4px gap on the
+     near side and left 2px at the far one. The knob was a pixel low and a pixel off-centre in
+     both states, which on a 22px control is visible. */
+  top: calc(var(--knob-gap) - var(--track-border));
+  left: calc(var(--knob-gap) - var(--track-border));
+  width: var(--knob-size);
+  height: var(--knob-size);
   border-radius: 50%;
   background: var(--knob);
   transition: transform 0.15s;
@@ -439,7 +455,7 @@ label.field {
   background: var(--accent);
 }
 .switch input:checked + .track::after {
-  transform: translateX(16px);
+  transform: translateX(var(--knob-travel));
   background: var(--knob-on);
 }
 
