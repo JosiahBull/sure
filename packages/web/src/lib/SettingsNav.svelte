@@ -88,6 +88,18 @@
     font-weight: 550;
     color: var(--text-muted);
   }
+  /* This nav is the phone's only route to nine of the eleven settings pages, so its rows are
+     the last place in the app that should be hard to hit. */
+  @media (pointer: coarse) {
+    .nav-item {
+      padding: 12px 10px;
+      font-size: 15px;
+    }
+    .back-link {
+      min-height: 44px;
+      font-size: 15px;
+    }
+  }
   .nav-item:hover {
     background: var(--hover);
     color: var(--text);

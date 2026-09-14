@@ -51,9 +51,17 @@
   });
 
   const hoveredSlice = $derived(active != null ? slices[active] : null);
+
+  // The centre caption has to fit through the hole, which is `size - 2 * thickness` across —
+  // so it cannot be a fixed 18px once the donut is allowed to shrink. The ratio is the one the
+  // 150px donut already had; the floor is where the figure stops being worth reading.
+  const centerFont = $derived(Math.max(13, Math.round(size * 0.12)));
 </script>
 
-<div class="pie" style="width:{size}px;height:{size}px">
+<div
+  class="pie"
+  style="width:{size}px;height:{size}px;--pie-center-font:{centerFont}px"
+>
   <svg width={size} height={size} viewBox="0 0 {size} {size}">
     <g transform="rotate(-90 {c} {c})">
       <circle cx={c} cy={c} {r} fill="none" stroke="var(--surface-2)" stroke-width={thickness} />
@@ -120,11 +128,11 @@
     padding: 0 6px;
   }
   .cv {
-    font-size: 18px;
+    font-size: var(--pie-center-font, 18px);
     font-weight: 680;
   }
   .cl {
-    font-size: 11px;
+    font-size: max(10px, calc(var(--pie-center-font, 18px) * 0.62));
     color: var(--text-faint);
     text-transform: uppercase;
     letter-spacing: 0.05em;

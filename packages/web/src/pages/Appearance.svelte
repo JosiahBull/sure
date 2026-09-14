@@ -63,4 +63,10 @@
     color: var(--accent-ink);
     font-weight: 650;
   }
+  @media (pointer: coarse) {
+    .seg {
+      min-height: 44px;
+      padding: 7px 14px;
+    }
+  }
 </style>
