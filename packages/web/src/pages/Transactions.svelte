@@ -1845,7 +1845,7 @@
      behind a gesture nothing advertised. So below the width where the columns fit, the same
      three cells re-flow into two lines:
 
-         [✓] (A)  Countdown              -NZ$82.40
+         [✓] (A)  Countdown                -$82.40
                   Everyday · 12 Jun
                   [ Groceries ]
 

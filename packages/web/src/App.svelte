@@ -4,6 +4,7 @@
   import { router } from "./lib/router.svelte";
   import { filters, RANGES } from "./lib/state.svelte";
   import { people, ensureLoaded as ensurePeopleLoaded, ownershipOptions } from "./lib/people.svelte";
+  import { ensureSettingsLoaded } from "./lib/settings.svelte";
   import Icon from "./lib/Icon.svelte";
   import AccountPanel from "./lib/AccountPanel.svelte";
   import SettingsNav from "./lib/SettingsNav.svelte";
@@ -172,6 +173,9 @@
 
   // The household drives the "whose money" filter; loaded once for the whole shell.
   ensurePeopleLoaded();
+  // And the base currency decides whether a figure reads "$12.00" or "USD 12.00", which every
+  // page needs before it draws one.
+  ensureSettingsLoaded();
 </script>
 
 <svelte:window onkeydown={onKeydown} />
