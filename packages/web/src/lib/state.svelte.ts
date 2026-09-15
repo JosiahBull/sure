@@ -1,4 +1,7 @@
 // Global, reactive report filters shared across pages (time range + one-off toggle).
+import { untrack } from "svelte";
+
+import { queryParams, router, setQueryParams } from "./router.svelte";
 
 export type RangeKey =
   | "mtd"
@@ -23,8 +26,17 @@ export const RANGES: { key: RangeKey; label: string }[] = [
   { key: "all", label: "All time" },
 ];
 
+/**
+ * The period a visit starts on when nothing says otherwise.
+ *
+ * The month just gone: a closed window, the one most questions about spending are actually
+ * about, and small enough that the charts say something specific rather than averaging a year
+ * into a flat line.
+ */
+export const DEFAULT_RANGE: RangeKey = "last_month";
+
 export const filters = $state({
-  range: "last_12m" as RangeKey,
+  range: DEFAULT_RANGE as RangeKey,
   includeOneOff: false,
   /** Brush-selected window (Grafana-style zoom) that overrides `range` while set. */
   custom: null as { from: string; to: string } | null,
@@ -101,4 +113,93 @@ export function rangeDates(range: RangeKey = filters.range): { from?: string; to
 export function activeRange(): { from?: string; to?: string } {
   if (filters.custom) return { from: filters.custom.from, to: filters.custom.to };
   return rangeDates(filters.range);
+}
+
+// ---- the period, in the URL --------------------------------------------------------------
+
+/** Whether a string is one of the preset keys. */
+const isRangeKey = (v: string | null): v is RangeKey => !!v && RANGES.some((r) => r.key === v);
+const isDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+/**
+ * The period the URL is asking for, or `null` when it does not ask for one.
+ *
+ * `?start=&end=` is a brushed window and outranks `?range=`, the same precedence the
+ * transactions page has always applied to the two — a shared link to a zoomed chart means that
+ * window, not the preset it was zoomed out of.
+ */
+export function periodFromUrl(
+  params: URLSearchParams = queryParams(),
+): { range: RangeKey; custom: { from: string; to: string } | null } | null {
+  const start = params.get("start");
+  const end = params.get("end");
+  if (isDate(start) && isDate(end)) {
+    const range = params.get("range");
+    return { range: isRangeKey(range) ? range : filters.range, custom: { from: start, to: end } };
+  }
+  const range = params.get("range");
+  return isRangeKey(range) ? { range, custom: null } : null;
+}
+
+/**
+ * How the current period should appear in the query string.
+ *
+ * The default appears as nothing at all. A URL says what is unusual about a view, and
+ * `#/?range=last_month` on a fresh visit is a parameter that carries no information — it is the
+ * answer you would have got by saying nothing, so saying it makes every plain link longer and
+ * every shared one look like a deliberate choice that was not made.
+ */
+function periodParams(): Record<string, string | null> {
+  const isDefault = filters.range === DEFAULT_RANGE && !filters.custom;
+  return {
+    range: isDefault ? null : filters.range,
+    start: filters.custom?.from ?? null,
+    end: filters.custom?.to ?? null,
+  };
+}
+
+/**
+ * Keep the selected period and the address bar saying the same thing.
+ *
+ * Called once from the shell. Two effects rather than one because the two directions have
+ * different triggers, and each only writes when the two disagree — which is what stops them
+ * chasing each other.
+ *
+ * The reader deliberately does *nothing* when the URL names no period. A link that carries its
+ * own opinion (`?tx=`, `?account=`) is a request to see everything relevant to that row, and the
+ * transactions page widens the range to "all" for exactly that reason; resetting to the default
+ * here because the URL happened to be silent would undo it on arrival. Silence means "leave it
+ * alone", and the writer then puts the resulting period into the URL anyway, so what you end up
+ * looking at is still what the address bar says.
+ */
+export function syncPeriodWithUrl(): void {
+  // URL → filters, on arrival and on every navigation.
+  //
+  // `untrack` around the body is load-bearing, not tidiness: comparing against `filters` *reads*
+  // it, so without it this effect re-runs whenever the period changes — reads the URL as it
+  // stood before the writer below had a chance to update it, finds a disagreement, and puts the
+  // old period back. Two-way sync where each side also watches the other is a fight, and the
+  // symptom is a select that snaps back the instant you change it.
+  $effect(() => {
+    const query = router.path.split("?")[1] ?? "";
+    untrack(() => {
+      const asked = periodFromUrl(new URLSearchParams(query));
+      if (!asked) return;
+      if (asked.range !== filters.range) filters.range = asked.range;
+      const now = filters.custom;
+      const next = asked.custom;
+      if (next?.from !== now?.from || next?.to !== now?.to) filters.custom = next;
+    });
+  });
+
+  // filters → URL. Replace rather than push: picking four ranges in a row should leave one
+  // entry to go back from, not four.
+  $effect(() => {
+    const wanted = periodParams();
+    untrack(() => {
+      const have = new URLSearchParams(router.path.split("?")[1] ?? "");
+      const differs = Object.entries(wanted).some(([k, v]) => (have.get(k) ?? null) !== v);
+      if (differs) setQueryParams(wanted, { replace: true });
+    });
+  });
 }

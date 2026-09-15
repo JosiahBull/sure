@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
 
   import { router } from "./lib/router.svelte";
-  import { filters, RANGES } from "./lib/state.svelte";
+  import { filters, RANGES, syncPeriodWithUrl } from "./lib/state.svelte";
   import { people, ensureLoaded as ensurePeopleLoaded, ownershipOptions } from "./lib/people.svelte";
   import { ensureSettingsLoaded } from "./lib/settings.svelte";
   import Icon from "./lib/Icon.svelte";
@@ -176,6 +176,9 @@
   // And the base currency decides whether a figure reads "$12.00" or "USD 12.00", which every
   // page needs before it draws one.
   ensureSettingsLoaded();
+  // The selected period lives in the address bar, so a view can be linked to and survives a
+  // reload. Set up here because the shell outlives every page that reads it.
+  syncPeriodWithUrl();
 </script>
 
 <svelte:window onkeydown={onKeydown} />
