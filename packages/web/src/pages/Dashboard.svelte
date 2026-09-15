@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, colorFor, type Schemas } from "../lib/api";
-  import { filters, activeRange, attributionParam } from "../lib/state.svelte";
+  import { DEFAULT_RANGE, filters, activeRange, attributionParam } from "../lib/state.svelte";
   import { navigate } from "../lib/router.svelte";
   import { Tween } from "svelte/motion";
   import { cubicOut } from "svelte/easing";
@@ -162,7 +162,7 @@
   function goToAccount(accountId: number) {
     const p = new URLSearchParams();
     p.set("account", String(accountId));
-    p.set("range", filters.range);
+    if (filters.range !== DEFAULT_RANGE) p.set("range", filters.range);
     navigate(`/transactions?${p.toString()}`);
   }
 
@@ -397,7 +397,9 @@
     const p = new URLSearchParams();
     p.set("category", categoryId == null ? "none" : String(categoryId));
     if (kind) p.set("type", kind);
-    p.set("range", filters.range);
+    // Only when it is not the default — see `periodParams`. A link is shorter and reads as a
+    // deliberate choice when the one parameter on it is one somebody actually made.
+    if (filters.range !== DEFAULT_RANGE) p.set("range", filters.range);
     navigate(`/transactions?${p.toString()}`);
   }
 </script>

@@ -54,7 +54,12 @@ test("clicking an account jumps to its filtered transactions", async ({ page }) 
     .getByRole("button", { name: "View transactions for Everyday" })
     .click();
 
-  await expect(page).toHaveURL(/#\/transactions\?account=\d+$/);
+  // Not anchored at the account: the period is written into the URL too, and an account
+  // deep-link is exactly the case that widens it — "show me this account" means all of it, not
+  // whatever slice happened to be selected. The URL recording that is the point of the feature,
+  // so assert it rather than tolerate it.
+  await expect(page).toHaveURL(/#\/transactions\?account=\d+/);
+  await expect(page).toHaveURL(/range=all/);
   await expect(page.getByRole("heading", { name: "Transactions" })).toBeVisible();
 
   // The account/category/type selects now live in a dropdown behind the Filter button,
