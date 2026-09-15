@@ -384,6 +384,11 @@
        between two same-specificity classes for this would be fragile. */
     display: flex;
     flex-direction: column;
+    /* Stated rather than left to `unset`'s initial `normal`, because in a column flex box
+       `align-items` is the *horizontal* axis: anything that sets it to `center` here centres
+       the account's name and institution line inside the button rather than doing what it
+       looks like it does. */
+    align-items: flex-start;
     cursor: pointer;
     min-width: 0;
     gap: 2px;
@@ -428,5 +433,15 @@
     border: 1px solid color-mix(in srgb, var(--negative) 32%, var(--border));
     border-radius: var(--r);
     background: color-mix(in srgb, var(--negative) 6%, transparent);
+  }
+  /* The account name is a link into that account's transactions, and the row's own buttons
+     sit beside it — a 46px row whose link only occupies the text is a miss waiting to happen.
+     `justify-content`, not `align-items`: this is a column flex box, so the main axis is the
+     vertical one and `align-items` would centre the name horizontally instead. */
+  @media (pointer: coarse) {
+    .acct-link {
+      min-height: 44px;
+      justify-content: center;
+    }
   }
 </style>
