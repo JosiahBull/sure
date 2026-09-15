@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, colorFor, type Schemas } from "../lib/api";
-  import { DEFAULT_RANGE, filters, activeRange, attributionParam } from "../lib/state.svelte";
+  import { DEFAULT_RANGE, filters, activeRange } from "../lib/state.svelte";
   import { navigate } from "../lib/router.svelte";
   import { Tween } from "svelte/motion";
   import { cubicOut } from "svelte/easing";
@@ -41,23 +41,19 @@
     hoverIndex = null;
     const { from, to } = activeRange();
     const interval = intervalFor(from, to);
-    // Whose money these charts describe. Net worth filters *accounts* by owner; the
-    // category/flow reports filter *transactions* by effective attribution — see the
-    // domain query types for why those differ.
-    const attributed_to = attributionParam();
     try {
       const [a, b, s] = await Promise.all([
         api.GET("/api/reports/net-worth", {
-          params: { query: { from, to, interval, attributed_to } },
+          params: { query: { from, to, interval } },
         }),
         api.GET("/api/reports/category-breakdown", {
           params: {
-            query: { from, to, include_one_off: filters.includeOneOff, attributed_to },
+            query: { from, to, include_one_off: filters.includeOneOff },
           },
         }),
         api.GET("/api/reports/sankey", {
           params: {
-            query: { from, to, include_one_off: filters.includeOneOff, attributed_to },
+            query: { from, to, include_one_off: filters.includeOneOff },
           },
         }),
       ]);
@@ -77,7 +73,6 @@
     filters.range;
     filters.includeOneOff;
     filters.custom;
-    filters.attributedTo;
     load();
   });
 

@@ -5,7 +5,7 @@
   import { categoryOptions, depthOf, qualifiedName, rootIdOf, subtreeIds } from "../lib/categories";
   import { resolvedTheme } from "../lib/theme.svelte";
   import { ICONS } from "../lib/icons";
-  import { RANGES, activeRange, attributionParam, filters, type RangeKey } from "../lib/state.svelte";
+  import { RANGES, activeRange, filters, type RangeKey } from "../lib/state.svelte";
   import ValuationPanel from "../lib/ValuationPanel.svelte";
   import BrokeragePanel from "../lib/BrokeragePanel.svelte";
   import EquityPanel from "../lib/EquityPanel.svelte";
@@ -84,13 +84,6 @@
   type CategoryFilter = number | "" | "none";
   let categoryId = $state<CategoryFilter>(paramCategory ?? "");
   let typeFilter = $state<TypeFilter>(isTypeFilter(paramType) ? paramType : "");
-  // Whose transactions to show — an `ownershipKey` ("person:3" / "joint"), or "" for the
-  // whole household. Filtered on the server, since "effective attribution" needs the
-  // account join. Shared with the header control (and so with the dashboard), the same way
-  // the time range is: switching to one person should not silently mean something different
-  // one page over. A deep link still wins on arrival.
-  const paramOwner = params.get("owner");
-  if (paramOwner !== null) filters.attributedTo = paramOwner;
   let search = $state(paramSearch);
 
   // Every column label in the header bar is a sort control. The default — date, newest first —
@@ -398,7 +391,6 @@
     if (categoryId !== "") p.set("category", String(categoryId));
     if (accountId !== "") p.set("account", String(accountId));
     if (typeFilter) p.set("type", typeFilter);
-    if (filters.attributedTo !== "") p.set("owner", filters.attributedTo);
     if (filters.custom) {
       p.set("start", filters.custom.from);
       p.set("end", filters.custom.to);
@@ -467,7 +459,7 @@
   $effect(() => {
     // Depend on the full filter/paging surface so the shareable URL tracks every change.
     page;
-    void [categoryId, accountId, typeFilter, filters.attributedTo, filters.custom?.from, filters.custom?.to, search, activeTab, pageSize, sortKey, sortDir];
+    void [categoryId, accountId, typeFilter, filters.custom?.from, filters.custom?.to, search, activeTab, pageSize, sortKey, sortDir];
     if (didInitPage) syncUrl();
   });
 
@@ -476,7 +468,7 @@
   // change here, so the current page survives it.)
   let prevFilterSig: string | null = null;
   $effect(() => {
-    const sig = `${accountId}|${categoryId}|${typeFilter}|${filters.attributedTo}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}|${pageSize}`;
+    const sig = `${accountId}|${categoryId}|${typeFilter}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}|${pageSize}`;
     if (prevFilterSig != null && sig !== prevFilterSig) {
       // The visible set changed, so a lingering selection could act on rows the user can
       // no longer see — clear it. (A same-filter reload, e.g. after a save, isn't a change.)
@@ -515,12 +507,6 @@
       chips.push({ key: "account", label: accountName.get(accountId) ?? "Account", clear: () => (accountId = "") });
     if (typeFilter)
       chips.push({ key: "type", label: typeFilter === "income" ? "Income" : "Expense", clear: () => (typeFilter = "") });
-    if (filters.attributedTo !== "")
-      chips.push({
-        key: "owner",
-        label: ownershipLabel(ownershipFromKey(filters.attributedTo)),
-        clear: () => (filters.attributedTo = ""),
-      });
     if (search.trim())
       chips.push({ key: "q", icon: "search", label: `"${search.trim()}"`, clear: () => (search = "") });
     return chips;
@@ -607,8 +593,6 @@
     const { from, to } = activeRange();
     const query: Record<string, unknown> = { from, to, include_one_off: filters.includeOneOff, limit: 2000 };
     if (accountId !== "") query.account_id = accountId;
-    const attributed_to = attributionParam();
-    if (attributed_to) query.attributed_to = attributed_to;
     // Category is filtered client-side (subtree-aware) in `sortedFiltered`, not on the server.
     const { data, error: e } = await api.GET("/api/transactions", { params: { query } });
     txns = data ?? [];
@@ -622,7 +606,6 @@
   $effect(() => {
     // Category is filtered client-side, so it isn't a reload trigger.
     accountId;
-    filters.attributedTo;
     filters.includeOneOff;
     filters.range;
     filters.custom;
@@ -1005,14 +988,6 @@
               <option value="expense">Outgoings</option>
             </select>
           </label>
-          {#if people.list.length > 0}
-            <label class="field">Attributed to
-              <select class="select" aria-label="Filter by who it belongs to" bind:value={filters.attributedTo}>
-                <option value="">Whole household</option>
-                {#each ownershipOptions() as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
-              </select>
-            </label>
-          {/if}
         </div>
       {/if}
     </div>
