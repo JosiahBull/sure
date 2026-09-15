@@ -1,4 +1,8 @@
 // Global, reactive report filters shared across pages (time range + one-off toggle).
+//
+// Deliberately *not* here: whose money a report describes. Accounts and transactions still
+// carry an owner, and the app still labels and groups by it — but every view is the whole
+// household's, because that is what the household is.
 import { untrack } from "svelte";
 
 import { queryParams, router, setQueryParams } from "./router.svelte";
@@ -40,23 +44,7 @@ export const filters = $state({
   includeOneOff: false,
   /** Brush-selected window (Grafana-style zoom) that overrides `range` while set. */
   custom: null as { from: string; to: string } | null,
-  /**
-   * Whose money the reports describe: an `ownershipKey` ("person:3" / "joint"), or "" for
-   * the whole household — which stays the default, because the household total is still the
-   * number you usually want.
-   */
-  attributedTo: "",
 });
-
-/**
- * The `attributed_to` query param for the reports, or undefined for the whole household.
- * The wire form is a bare id or "joint"; the UI's key form carries a "person:" prefix.
- */
-export function attributionParam(): string | undefined {
-  const key = filters.attributedTo;
-  if (key === "") return undefined;
-  return key.startsWith("person:") ? key.slice("person:".length) : key;
-}
 
 /**
  * A date as the calendar day it is *here*, not in UTC. `toISOString()` would answer for
