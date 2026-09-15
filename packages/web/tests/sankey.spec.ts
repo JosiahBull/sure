@@ -120,32 +120,20 @@ async function cleanUp(request: APIRequestContext, made: Created) {
  * inverted" test cannot see a link that spans more than one column — and until this fix the
  * worst ribbon in the chart was exactly that.
  *
- * `spanning` picks which pairs count. `"single"` is the planarity `outwardOrder` actually
- * guarantees: it argues one gap at a time, so it promises nothing about a ribbon that crosses a
- * whole column on its way past. One such ribbon exists — a take-home flowing to an income leaf
- * that is not at the deepest level, whose gross node is pinned to column 0 regardless — and
- * excluding those pairs is what keeps this test strict about the guarantee instead of vague
- * about a number. `"all"` counts everything, for measuring rather than asserting.
+ * Every pair counts. It did not always: a ribbon reaching across a whole column used to be
+ * outside what the ordering could promise, so those pairs were excluded to keep the assertion
+ * honest. Routing every such link through a waypoint removed the category — `sankey-layout.spec`
+ * asserts no link reaches more than one column — so the exclusion would now exclude nothing, and
+ * counting everything is simply the stronger statement.
  */
-async function crossings(page: Page, selector: string, spanning: "single" | "all" = "single"): Promise<number> {
-  return page.evaluate(({ sel, spanning }) => {
+async function crossings(page: Page, selector: string): Promise<number> {
+  return page.evaluate((sel) => {
     const svg = document.querySelector(`${sel} svg`);
     if (!svg) throw new Error(`no sankey rendered at ${sel}`);
-    // Column x-positions, so a link's span can be counted in columns rather than pixels.
-    const xs = [
-      ...new Set(
-        [...svg.querySelectorAll("g.node path")].map((p) => Math.round((p as SVGPathElement).getBBox().x)),
-      ),
-    ].sort((a, b) => a - b);
-    const nearest = (x: number) =>
-      xs.reduce((best, c, i) => (Math.abs(c - x) < Math.abs(xs[best] - x) ? i : best), 0);
     const links = [...svg.querySelectorAll("path.link")].map((el) => {
       const len = (el as SVGPathElement).getTotalLength();
       const pts = Array.from({ length: 41 }, (_, i) => (el as SVGPathElement).getPointAtLength((len * i) / 40));
-      const x0 = pts[0].x;
-      const x1 = pts[pts.length - 1].x;
-      // The start sits at a column's right edge, so measure it from the column it leaves.
-      return { pts, x0, x1, span: Math.abs(nearest(x1) - nearest(x0 - 12)) };
+      return { pts, x0: pts[0].x, x1: pts[pts.length - 1].x };
     });
     type L = (typeof links)[number];
     const yAt = (l: L, x: number): number | null => {
@@ -164,7 +152,6 @@ async function crossings(page: Page, selector: string, spanning: "single" | "all
       for (let j = i + 1; j < links.length; j++) {
         const A = links[i];
         const B = links[j];
-        if (spanning === "single" && (A.span > 1 || B.span > 1)) continue;
         const lo = Math.max(Math.min(A.x0, A.x1), Math.min(B.x0, B.x1));
         const hi = Math.min(Math.max(A.x0, A.x1), Math.max(B.x0, B.x1));
         if (hi - lo < 2) continue;
@@ -181,7 +168,7 @@ async function crossings(page: Page, selector: string, spanning: "single" | "all
       }
     }
     return found;
-  }, { sel: selector, spanning });
+  }, selector);
 }
 
 /** Node id → its drawn box, so placement can be asserted rather than eyeballed. */
@@ -276,7 +263,10 @@ test.describe("money flow", () => {
         .map((g) => {
           const t = g.querySelector("text");
           const r = t?.getBoundingClientRect();
-          return t && r && r.width > 0
+          // A label the chart has already suppressed for crowding still has a box; it is just
+          // invisible, and an invisible label cannot collide with anything a reader sees.
+          const shown = t ? parseFloat(getComputedStyle(t).opacity) > 0.01 : false;
+          return t && r && r.width > 0 && shown
             ? { id: (g as HTMLElement).dataset.nodeId, left: r.left, right: r.right, top: r.top, bottom: r.bottom }
             : null;
         })
