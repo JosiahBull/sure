@@ -361,15 +361,17 @@
    * How wide the donut-and-legend row actually is, and the donut size that leaves the legend
    * enough of it.
    *
-   * The donut is drawn at a pixel size and the legend's rows are "● Name  NZ$16,744.00" — a
+   * The donut is drawn at a pixel size and the legend's rows are "● Name  $16,744.00" — a
    * fixed-width amount plus a name that ellipsises. Held at 150px, the legend got whatever was
    * left, which on a phone was 64px of name: "Housing" rendered as "Housi…", and the category
    * a slice belongs to is the one thing its legend row exists to say. So the donut yields
    * instead, down to a floor where it is still a readable chart.
    *
-   * LEGEND_FLOOR is measured from the widest seeded row: a 10px dot, two 8px gaps, ~70px of
-   * name and an 88px amount. Above roughly a 360px row the donut is back at its full size, so
-   * the desktop two-column layout is unaffected.
+   * LEGEND_FLOOR was measured from the widest seeded row while the base currency still printed
+   * a "NZ$" prefix: a 10px dot, two 8px gaps, ~70px of name and an 88px amount. The prefix is
+   * gone now, so the amount is ~20px narrower and the floor is that much more generous than it
+   * needs to be — which costs the donut a few pixels and nothing else. Above roughly a 360px row
+   * the donut is back at full size, so the desktop two-column layout is unaffected either way.
    */
   const LEGEND_FLOOR = 190;
   const PIE_MAX = 150;
@@ -1039,7 +1041,7 @@
     flex-direction: column;
     gap: 2px;
   }
-  /* Three money figures across a 374px card is ~115px each, and "NZ$32,401.82" needs more. */
+  /* Three money figures across a 374px card is ~115px each, and "$32,401.82" needs more. */
   @container main (max-width: 520px) {
     .activity-stats {
       grid-template-columns: 1fr 1fr;

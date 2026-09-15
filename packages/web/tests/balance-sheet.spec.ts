@@ -42,7 +42,8 @@ test("the weight bar has a segment per kind, and hovering one says what it is", 
   // and its money.
   await expect(tip).toContainText(rows[0]);
   await expect(tip).toContainText("%");
-  await expect(tip).toContainText("NZ$");
+  // A bare "$": the base currency needs no prefix — see tests/currency.spec.ts.
+  await expect(tip).toContainText("$");
 
   // A slice a few pixels wide is the one a title attribute made unhittable; the target is the
   // full row height even though the bar is 8px.

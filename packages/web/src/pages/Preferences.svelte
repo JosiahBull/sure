@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, type Schemas } from "../lib/api";
+  import { refreshSettings } from "../lib/settings.svelte";
 
   type McpMode = Schemas["McpMode"];
 
@@ -20,6 +21,9 @@
   async function setBase(code: string) {
     await api.PUT("/api/settings", { body: { base_currency_code: code } });
     notice = "Base currency updated.";
+    // Republish it, or every figure elsewhere in the app keeps labelling itself against the old
+    // base until the next page load — the new base reading "USD 12.00" on its own screens.
+    await refreshSettings();
     load();
   }
 
