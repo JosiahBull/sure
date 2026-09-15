@@ -31,7 +31,10 @@ test("the income pie is interactive too", async ({ page }) => {
 });
 
 test("clicking a pie segment opens transactions filtered to that category and range", async ({ page }) => {
-  await goto(page, "/");
+  // Deliberately not the default range: the default is left out of the URL entirely, so a link
+  // built while it is selected carries no `range` at all and this could not tell "carried the
+  // selection" from "carried nothing".
+  await goto(page, "/?range=last_12m");
   const pie = page.locator(".card", { hasText: "Where money went" });
   await pie.locator('svg .seg[aria-label="Housing"]').dispatchEvent("click");
 
@@ -99,7 +102,8 @@ test("hovering a sankey link shows the flow and its value", async ({ page }) => 
 });
 
 test("clicking a sankey category node opens its filtered transactions", async ({ page }) => {
-  await goto(page, "/");
+  // A non-default range, for the reason the pie's own deep-link test gives.
+  await goto(page, "/?range=last_12m");
   await node(page, await nodeId(page, "Housing", "out")).dispatchEvent("click");
 
   // Same deep-link shape as the pie: the node's kind rides along as `type`.
@@ -182,7 +186,9 @@ test.describe("money flow at desktop width", () => {
         },
       });
     }
-    await goto(page, "/");
+    // The fixture above is dated months back, so it needs a window that reaches it — the
+    // default is the month just gone and would show none of this.
+    await goto(page, "/?range=last_12m");
     const flow = page.locator(".card", { hasText: "Money flow" });
 
     const other = flow.locator('g.node[data-node-id^="other:"]');
@@ -263,21 +269,23 @@ test("the uncategorised slice and node open the transactions that have no catego
   const txId = ((await created.json()) as { id: number }).id;
 
   try {
-    await goto(page, "/");
+    // The probe is dated today and the default range is the month just *gone*, which ends
+    // before it — so this asks for a window that includes today.
+    await goto(page, "/?range=last_30");
     const pie = page.locator(".card", { hasText: "Where money went" });
     await pie.locator('svg .seg[aria-label="Uncategorised"]').dispatchEvent("click");
     // `category=none`, not an omitted param: the slice stands for the rows whose category is
     // null, which no id can name — omitting it lands on every expense instead of these.
-    await expect(page).toHaveURL(/#\/transactions\?category=none&type=expense&range=last_12m/);
+    await expect(page).toHaveURL(/#\/transactions\?category=none&type=expense&range=last_30/);
     await expect(page.locator(".tx-row").first()).toBeVisible();
     for (const c of await page.locator(".tx-row .cat-pill > .ell").allInnerTexts())
       expect(c.trim()).toBe("Uncategorised");
 
     // The sankey's node goes through the same builder, so it lands in the same place. Its
     // `data-node-id` carries the report's raw sentinel key rather than a category id.
-    await goto(page, "/");
+    await goto(page, "/?range=last_30");
     await node(page, "out:0").dispatchEvent("click");
-    await expect(page).toHaveURL(/#\/transactions\?category=none&type=expense&range=last_12m/);
+    await expect(page).toHaveURL(/#\/transactions\?category=none&type=expense&range=last_30/);
     await expect(page.locator(".tx-row").first()).toBeVisible();
   } finally {
     expect((await page.request.delete(`/api/transactions/${txId}`)).ok(), "cleaned up").toBe(true);
