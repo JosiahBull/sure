@@ -12,6 +12,17 @@ export interface KindGroup {
   label: string;
   totalMinor: number;
   weightPct: number;
+  /**
+   * Change in the group's value over the active period (current − period-start), signed.
+   *
+   * Signed on the *raw* value, which is what makes one rule work for both sides: a liability is
+   * held as a negative number, so paying a mortgage down moves it toward zero and comes out
+   * positive, exactly as an asset gaining value does. Green is "better off" on either panel
+   * without either one needing to know which it is.
+   */
+  changeMinor: number;
+  /** `changeMinor` as a % of the period-start value; null when there is no baseline to divide by. */
+  changePct: number | null;
   accounts: Schemas["AccountBalance"][];
 }
 
@@ -25,7 +36,9 @@ function inTab(a: Schemas["AccountBalance"], tab: PanelTab): boolean {
 
 export function groupByKind(
   accounts: Schemas["AccountBalance"][],
-  tab: PanelTab
+  tab: PanelTab,
+  /** Per-account value as at the start of the active period; empty means "no change to show". */
+  baseline: Map<number, number> = new Map(),
 ): { groups: KindGroup[]; totalMinor: number } {
   const rows = accounts.filter((a) => inTab(a, tab));
   const totalMinor = rows.reduce((sum, a) => sum + a.value_minor, 0);
@@ -51,11 +64,20 @@ export function groupByKind(
     const kindTotal = kindAccounts.reduce((sum, a) => sum + a.value_minor, 0);
     const isLiability = kindAccounts[0].class === "liability";
     const denominator = isLiability ? liabilitiesTotal : assetsTotal;
+    // An account the baseline does not mention did not exist at the period start, and reads as
+    // zero — which is right: its whole value is the change.
+    const base = kindAccounts.reduce((sum, a) => sum + (baseline.get(a.account_id) ?? 0), 0);
+    const changeMinor = kindTotal - base;
     return {
       kind,
       label: kindLabel(kind),
       totalMinor: kindTotal,
       weightPct: denominator === 0 ? 0 : (kindTotal / denominator) * 100,
+      changeMinor,
+      // Against the magnitude of the starting value, so a liability's percentage is a share of
+      // the debt rather than a sign flip. No baseline at all (a brand-new account, or a range
+      // starting before any history) has no percentage to state.
+      changePct: baseline.size > 0 && base !== 0 ? (changeMinor / Math.abs(base)) * 100 : null,
       accounts: kindAccounts,
     };
   });
