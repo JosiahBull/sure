@@ -141,6 +141,15 @@
         return 0;
       case "deduction":
         return Math.min(1, c.center);
+      // The account a deduction was routed into — a terminal sink, one hop past its sink.
+      // Immediately right of the deductions, *not* on the spine: falling through to the hub's
+      // column (which is what `default` used to do for it) made the ribbon span every income
+      // column in between, so it cut across the whole income fan to reach a node the width of
+      // a hairline. Clamped to the hub because a graph with no income categories has nothing
+      // between the two, and a column past the hub would put a payslip sink among the
+      // expenses.
+      case "destination":
+        return Math.min(Math.min(1, c.center) + 1, c.center);
       // `kind` is a plain string on the wire, so the hub — and anything a newer backend
       // adds — sits on the spine rather than breaking the layout.
       default:
@@ -169,6 +178,15 @@
    * Why zero falls out: for two links p1→c1 and p2→c2 in one gap, either p1 and p2 are the same
    * node (siblings, consistently ordered) or they are not, in which case every child of the
    * earlier parent precedes every child of the later one. Neither case can invert.
+   *
+   * **That argument covers one gap at a time, so it says nothing about a link that spans two.**
+   * One shape does: a take-home flowing to an income leaf that is not at the deepest level —
+   * an uncategorised one sits at level 0, beside the hub, while the gross node it comes from is
+   * pinned to column 0. Its ribbon crosses whatever lies in the column it passes through, and no
+   * ordering of the columns at either end can help. Measured on the payslip graph below, that is
+   * one crossing at the two widths where `fitToWidth` leaves exactly two income levels, and none
+   * at the widths either side of them. Removing it means giving that link a node to land on
+   * halfway, which is a question for whatever builds the graph rather than for this ordering.
    *
    * What is given up is *global* size order in the outer columns — a big grandchild of a small
    * root sits below a small grandchild of a big root. That is not a tuning choice: any
@@ -222,6 +240,30 @@
       inColumn.set(c, [...(inColumn.get(c) ?? []), n.id]);
     }
 
+    /**
+     * The deductions' own top-to-bottom order, decided here rather than inside `layColumn`.
+     *
+     * A destination has to be ordered by the deduction it came from, and the two sit in
+     * different columns — laid on the *same* leftward sweep, with the destination's column
+     * reached first, so by the time the deductions are ordered it is already too late to ask.
+     * Both columns read this instead, which is also what keeps the two bands in step: the
+     * deduction that is second from the top has its account second from the top.
+     */
+    const deductionRank = new Map<string, number>();
+    live
+      .filter((n) => n.kind === "deduction")
+      .map((n) => n.id)
+      .sort(bigFirst)
+      .forEach((id, i) => deductionRank.set(id, i));
+
+    /** `dest:<account>` → the rank of the `ded:*` it hangs off, for the ordering above. */
+    const destParentRank = new Map<string, number>();
+    for (const l of links) {
+      if (byId.get(l.source)?.kind === "deduction" && byId.get(l.target)?.kind === "destination") {
+        destParentRank.set(l.target, deductionRank.get(l.source) ?? 0);
+      }
+    }
+
     const rank = new Map<string, number>();
     function layColumn(c: number, prevIds: string[]): string[] {
       const here = inColumn.get(c) ?? [];
@@ -239,7 +281,23 @@
       // The deductions ride above the income they are taken out of, wherever that column lands —
       // `columnOf` puts them in the deepest income column normally, but in the hub's own column
       // when there are no income categories at all.
-      take(here.filter((id) => byId.get(id)!.kind === "deduction").sort(bigFirst));
+      take(
+        here
+          .filter((id) => byId.get(id)!.kind === "deduction")
+          .sort((a, b) => deductionRank.get(a)! - deductionRank.get(b)!),
+      );
+      // And their destination accounts ride directly above the income in the *next* column, in
+      // the same order, so the payslip reads as one band across the top rather than a ribbon
+      // dropped through the middle of the income fan to reach a sink at the bottom.
+      take(
+        here
+          .filter((id) => byId.get(id)!.kind === "destination")
+          .sort(
+            (a, b) =>
+              (destParentRank.get(a) ?? Infinity) - (destParentRank.get(b) ?? Infinity) ||
+              (a < b ? -1 : 1),
+          ),
+      );
       // The tree: each parent's children, in the parents' own order.
       for (const p of prevIds) take(kids.get(p) ?? []);
       // The hub, the gross nodes, and anything with no hub-ward edge. `foldHairlines` takes a
@@ -483,7 +541,16 @@
     if (n.kind === "center") return { x: (n.x0 + n.x1) / 2, y: n.y0 - 18, anchor: "middle" };
     // The pre-income nodes label rightwards like income: gross sits in the leftmost column
     // with only MARGIN_X to its left, and the deduction sinks share the income side's gaps.
-    if (n.kind === "income" || n.kind === "gross" || n.kind === "deduction")
+    // A destination joins them, and must: it sits one column right of the deduction it came
+    // from, so labelling it leftwards drew its name back across the gap and straight over its
+    // own deduction's — two nodes that, being a sink and the account it feeds, carry the same
+    // name and the same figure ("Student Stadent loan").
+    if (
+      n.kind === "income" ||
+      n.kind === "gross" ||
+      n.kind === "deduction" ||
+      n.kind === "destination"
+    )
       return { x: n.x1 + LABEL_PAD, y: (n.y0 + n.y1) / 2, anchor: "start" };
     return { x: n.x0 - LABEL_PAD, y: (n.y0 + n.y1) / 2, anchor: "end" };
   }
