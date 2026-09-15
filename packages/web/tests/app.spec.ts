@@ -259,7 +259,10 @@ test("preferences settings page exposes config backup", async ({ page }) => {
 });
 
 test("can add a transaction and see it in the list", async ({ page }) => {
-  await goto(page, "/transactions");
+  // A window that includes today. The default range is the month just *gone* — a closed window
+  // that ends before today — so a transaction dated now is genuinely outside it, and asserting
+  // against the default would be asserting the range is wrong rather than that the row saved.
+  await goto(page, "/transactions?range=last_30");
   await page.getByRole("button", { name: "New transaction" }).click();
   await page.getByPlaceholder("-12.50").fill("-42.50");
   await page.getByLabel("Description").fill("Playwright test coffee");

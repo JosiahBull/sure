@@ -11,8 +11,22 @@ window.addEventListener("hashchange", () => {
   router.path = currentPath();
 });
 
-export function navigate(path: string): void {
+/**
+ * Go to a path.
+ *
+ * `replace` swaps the current history entry instead of pushing a new one — which is what a
+ * *filter* change wants: picking four time ranges in a row should leave one entry to go back
+ * from, not four. Assigning to `location.hash` always pushes, so the replace path goes through
+ * `history.replaceState`, which does not fire `hashchange` and therefore has to update `router`
+ * itself.
+ */
+export function navigate(path: string, opts: { replace?: boolean } = {}): void {
   if (currentPath() === path) return;
+  if (opts.replace) {
+    history.replaceState(history.state, "", `#${path}`);
+    router.path = path;
+    return;
+  }
   window.location.hash = path;
 }
 
@@ -34,10 +48,27 @@ export function queryParams(): URLSearchParams {
 
 /** Set one hash query param — or drop it, with `null` — leaving the path and the others alone. */
 export function setQueryParam(key: string, value: string | null): void {
+  setQueryParams({ [key]: value });
+}
+
+/**
+ * Set several hash query params at once, leaving the path and any others alone.
+ *
+ * One call rather than several because they would otherwise be several history entries — and
+ * because a period is two params that have to move together: writing `range` before clearing
+ * `start`/`end` would leave a moment where the URL says both, and whoever read it in between
+ * would believe the wrong one.
+ */
+export function setQueryParams(
+  values: Record<string, string | null>,
+  opts: { replace?: boolean } = {},
+): void {
   const [path, qs] = router.path.split("?");
   const params = new URLSearchParams(qs ?? "");
-  if (value === null) params.delete(key);
-  else params.set(key, value);
+  for (const [key, value] of Object.entries(values)) {
+    if (value === null) params.delete(key);
+    else params.set(key, value);
+  }
   const next = params.toString();
-  navigate(next ? `${path}?${next}` : path);
+  navigate(next ? `${path}?${next}` : path, opts);
 }

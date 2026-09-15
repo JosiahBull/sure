@@ -182,7 +182,10 @@ test("each kind shows how it moved over the period, signed and coloured", async 
 });
 
 test("the change figures follow the selected period", async ({ page }) => {
-  await goto(page, "/");
+  // Started on an explicit twelve months rather than the default, because the two ranges
+  // compared below have to be far enough apart that the figures cannot coincide — the default
+  // is one month, and a month of property growth against thirty days of it is the same number.
+  await goto(page, "/?range=last_12m");
   const row = assetsCard(page).locator("li", { hasText: "Real estate" }).locator(".bs-change");
   const twelveMonths = await row.innerText();
 
