@@ -1,22 +1,40 @@
 import { createSureClient, type Schemas } from "@sure/client";
 
+import { baseCurrency, isBaseCurrency } from "./money.svelte";
+
 /** Same-origin typed API client (dev proxies /api to the backend). */
 export const api = createSureClient("/");
 
 export type { Schemas };
 
-/** Format signed minor units as a full currency string. */
-export function formatMoney(minor: number, currency = "NZD", decimals = 2): string {
+/**
+ * Format signed minor units as a currency string.
+ *
+ * The base currency gets a bare symbol — `$1,652.59` — because it is the one the reader is
+ * already thinking in, and a prefix on every figure is noise on the overwhelming majority of a
+ * page. Everything else gets its ISO code — `USD 1,652.59` — which is the only form that
+ * *always* disambiguates: the narrow symbol for USD, NZD and AUD is the same "$", so a symbol
+ * would silently read as the base currency whenever the base is another dollar.
+ *
+ * Both halves come from `Intl`, so grouping, the decimal mark and the placement of a minus sign
+ * stay whatever the currency and locale say they are.
+ */
+export function formatMoney(
+  minor: number,
+  currency = baseCurrency(),
+  decimals = 2,
+): string {
   const major = minor / 10 ** decimals;
   try {
-    // en-US so a non-USD currency keeps its disambiguating prefix (NZ$1,652.59, A$…) the way
-    // the reference app formats money — en-NZ would collapse NZD to a bare "$".
     return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency,
+      // The whole rule, in one option.
+      currencyDisplay: isBaseCurrency(currency) ? "narrowSymbol" : "code",
       maximumFractionDigits: decimals,
     }).format(major);
   } catch {
+    // An unknown or malformed code — `Intl` throws on those rather than guessing.
     return `${currency} ${major.toFixed(decimals)}`;
   }
 }
