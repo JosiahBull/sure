@@ -114,8 +114,95 @@
     else next.add(kind);
     expandedBSKinds = next;
   }
-  const assetsGrouped = $derived(groupByKind(balances.data?.accounts ?? [], "assets"));
-  const liabilitiesGrouped = $derived(groupByKind(balances.data?.accounts ?? [], "debts"));
+
+  /**
+   * Per-account balances as at the start of the active period, so the balance-sheet rows can
+   * say what moved rather than only what is there.
+   *
+   * A separate request from the balances the card is built on: those are *today's*, shared with
+   * the account panel and loaded once, while this one changes with the range. The same pair the
+   * sidebar already fetches — see AccountPanel — and the same `to: from` trick, which asks the
+   * balances report for the state of the world on the period's first day.
+   */
+  let bsBaseline = $state<Map<number, number>>(new Map());
+  $effect(() => {
+    const { from } = activeRange();
+    if (!from) {
+      // "All time" starts before any history, so every account began at nothing and the change
+      // would restate the balance. Nothing to compare against; the rows show no percentage.
+      bsBaseline = new Map();
+      return;
+    }
+    let cancelled = false;
+    api.GET("/api/reports/balances", { params: { query: { to: from } } }).then(({ data }) => {
+      if (cancelled) return;
+      bsBaseline = new Map((data?.accounts ?? []).map((a) => [a.account_id, a.value_minor]));
+    });
+    return () => (cancelled = true);
+  });
+
+  const assetsGrouped = $derived(groupByKind(balances.data?.accounts ?? [], "assets", bsBaseline));
+  const liabilitiesGrouped = $derived(groupByKind(balances.data?.accounts ?? [], "debts", bsBaseline));
+
+  /**
+   * What clicking a slice of the weight bar does.
+   *
+   * A kind holding one account has an unambiguous answer — that account's transactions, the same
+   * place the sidebar's account rows go. A kind holding several has no single filter to offer:
+   * the transactions list takes one `account_id`, not a set, so the honest move is to open the
+   * group and let the accounts underneath be the links. Both end at a filtered list; one takes a
+   * second click.
+   */
+  function drillIntoKind(kind: string) {
+    const group = [...assetsGrouped.groups, ...liabilitiesGrouped.groups].find((g) => g.kind === kind);
+    if (!group) return;
+    if (group.accounts.length === 1) goToAccount(group.accounts[0].account_id);
+    else if (!expandedBSKinds.has(kind)) toggleBSKind(kind);
+  }
+  function goToAccount(accountId: number) {
+    const p = new URLSearchParams();
+    p.set("account", String(accountId));
+    p.set("range", filters.range);
+    navigate(`/transactions?${p.toString()}`);
+  }
+
+  /** The date the change figures are measured from, for their title text. */
+  const periodStartLabel = $derived.by(() => {
+    const { from } = activeRange();
+    return from ? formatDate(from) : "the start of the period";
+  });
+
+  /** A signed, one-decimal percentage, or null when there is nothing to compare against. */
+  function changeLabel(pct: number | null): string | null {
+    if (pct === null || !Number.isFinite(pct)) return null;
+    // Rounds to "0.0%" either way, so a sign on it would claim a direction the figure does not
+    // have. Anything that does round away from zero keeps its sign.
+    const rounded = Math.abs(pct) < 0.05 ? 0 : pct;
+    // A plain hyphen, matching every other negative figure in the app (the sidebar's own change
+    // column, and `formatMoney`), rather than a typographic minus that would be the one place
+    // the character differs.
+    return `${rounded > 0 ? "+" : rounded < 0 ? "-" : ""}${Math.abs(rounded).toFixed(1)}%`;
+  }
+
+  /** Segments for one panel's weight bar, carrying everything its tooltip shows. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function barSegments(grouped: { groups: any[] }) {
+    return grouped.groups.map((g) => {
+      const change = changeLabel(g.changePct);
+      return {
+        key: g.kind,
+        label: g.label,
+        color: colorFor(g.kind),
+        weightPct: g.weightPct,
+        value: formatMoney(g.totalMinor, balances.data?.currency),
+        change: change && g.changeMinor !== 0 ? { text: change, positive: g.changeMinor > 0 } : null,
+        action:
+          g.accounts.length === 1
+            ? `Click for ${g.accounts[0].name}'s transactions`
+            : `Click to list ${g.accounts.length} accounts`,
+      };
+    });
+  }
 
   /**
    * Net worth split by owner. Account-level, so it comes off the same balances response the
@@ -510,15 +597,10 @@
           {#if panel.grouped.groups.length === 0}
             <div class="empty">Nothing here yet.</div>
           {:else}
-            <WeightBar
-              segments={panel.grouped.groups.map((g) => ({
-                label: g.label,
-                color: colorFor(g.kind),
-                weightPct: g.weightPct,
-              }))}
-            />
+            <WeightBar segments={barSegments(panel.grouped)} onselect={drillIntoKind} />
             <ul class="legend" style="margin-top:12px">
               {#each panel.grouped.groups as g (g.kind)}
+                {@const change = changeLabel(g.changePct)}
                 <li>
                   <button type="button" class="legend-row" onclick={() => toggleBSKind(g.kind)}>
                     <span class="row" style="gap:6px;min-width:0">
@@ -527,6 +609,18 @@
                       <span class="ell">{g.label}</span>
                     </span>
                     <span class="row" style="gap:8px">
+                      <!-- Movement over the selected period, beside the share of the panel it is
+                           a share of. Green is "better off" on both panels: a liability is held
+                           negative, so paying one down moves it toward zero and reads positive,
+                           exactly as an asset gaining value does. -->
+                      {#if change}
+                        <span
+                          class="small tabular bs-change"
+                          class:pos={g.changeMinor > 0}
+                          class:neg={g.changeMinor < 0}
+                          title="Change since {periodStartLabel}"
+                        >{change}</span>
+                      {/if}
                       <span class="small faint tabular">{g.weightPct.toFixed(1)}%</span>
                       <span class="tabular">{formatMoney(g.totalMinor, balances.data?.currency)}</span>
                     </span>
@@ -534,9 +628,18 @@
                   {#if expandedBSKinds.has(g.kind)}
                     <ul class="sub-list">
                       {#each g.accounts as a (a.account_id)}
-                        <li class="row spread small" style="padding:4px 8px 4px 30px">
-                          <span class="ell muted">{a.name}</span>
-                          <span class="tabular">{formatMoney(a.value_minor, a.currency_code)}</span>
+                        <li>
+                          <!-- The accounts are the drill-down a multi-account kind cannot offer
+                               from the bar itself, so each one is its own link. -->
+                          <button
+                            type="button"
+                            class="sub-row"
+                            onclick={() => goToAccount(a.account_id)}
+                            title="View {a.name}'s transactions"
+                          >
+                            <span class="ell muted">{a.name}</span>
+                            <span class="tabular">{formatMoney(a.value_minor, a.currency_code)}</span>
+                          </button>
                         </li>
                       {/each}
                     </ul>
@@ -787,6 +890,37 @@
     flex-direction: column;
     gap: 2px;
     font-size: 13px;
+  }
+  .sub-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 4px 8px 4px 30px;
+    border: none;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .sub-row:hover,
+  .sub-row:focus-visible {
+    background: var(--hover);
+  }
+  /* Grey for a standstill — a row that rounded to 0.0% has no direction to colour. A row with no
+     baseline at all shows nothing instead, since "did not exist yet" is not a change of zero. */
+  .bs-change {
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .bs-change.pos {
+    color: var(--positive);
+  }
+  .bs-change.neg {
+    color: var(--negative);
   }
   .legend-row {
     width: 100%;
