@@ -202,10 +202,12 @@
     if (e) return fail(e, "Couldn't save that price.");
     markForm = blankMark();
     await load();
-    // Deliberately not rebuilt for you: a new mark changes every valuation from its date
-    // forward, and silently rewriting net-worth history on a keystroke is not something to do
-    // unasked. This is the ask.
-    notice = "Price saved. Rebuild history to apply it to past valuations.";
+    // The server nudges the equity-rebuild task on this write, so every valuation from this
+    // date forward is restated within a second or two. Said in the future tense rather than the
+    // past because the rebuild is asynchronous: claiming it is already done would be a lie on a
+    // slow machine, and asking the person to press a button — which is what this notice used to
+    // do — was the bug.
+    notice = "Price saved. Past valuations are being restated to match.";
   }
 
   async function deleteMark(id: number) {
@@ -215,24 +217,7 @@
     busy = false;
     if (e) return fail(e, "Couldn't delete that price.");
     await load();
-    notice = "Price removed. Rebuild history to apply it.";
-  }
-
-  async function rebuild() {
-    busy = true;
-    error = null;
-    const { data, error: e } = await api.POST("/api/accounts/{id}/equity/rebuild", {
-      params: { path: { id: accountId } },
-    });
-    busy = false;
-    if (e) return fail(e, "Couldn't rebuild the history.");
-    notice = data
-      ? `Rebuilt ${data.written} valuation${data.written === 1 ? "" : "s"}${
-          data.from && data.to ? `, ${formatDate(data.from)} to ${formatDate(data.to)}` : ""
-        }.`
-      : null;
-    await load();
-    onchange?.();
+    notice = "Price removed. Past valuations are being restated to match.";
   }
 
   async function revalue() {
@@ -366,15 +351,11 @@
             title="Write one valuation dated today, from the units held now at the current price."
             >Record today</button
           >
-          <button
-            class="btn btn-sm"
-            onclick={rebuild}
-            disabled={busy}
-            title="Rewrite every valuation from the vesting schedules and the price ledger."
-            >Rebuild history</button
-          >
         </div>
-        <span class="small faint">Today only, or every date your prices cover.</span>
+        <span class="small faint">
+          History is rebuilt for you whenever a grant, exercise or price changes — this is only
+          for pinning today's value between those.
+        </span>
       </div>
     </header>
 
@@ -703,8 +684,8 @@
       <section class="vsec">
         <div class="vsec-head"><h3>Recorded values</h3></div>
         <p class="small muted vsec-lede">
-          What went into net-worth history. Rebuild history writes one of these per price above,
-          and they start hidden — tick <em>Show synced &amp; scheduled</em> to see them. A value
+          What went into net-worth history. One per date the value changed, written for you from
+          the grants and prices above, and they start hidden — tick <em>Show synced &amp; scheduled</em> to see them. A value
           you set by hand overrides the computed one from its date until the next, which is the way
           to record something the grants and prices can't know: a tender offer, or a mark you'd
           rather not restate the whole history with.

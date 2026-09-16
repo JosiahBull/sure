@@ -317,11 +317,17 @@ pub async fn sync(
     Json(req): Json<SyncRequest>,
 ) -> AppResult<Json<SyncReport>> {
     let provider = st.providers.get(id).await?;
-    Ok(Json(
-        st.sync
-            .sync_provider(provider, req.payload.as_deref())
-            .await?,
-    ))
+    let report = st
+        .sync
+        .sync_provider(provider, req.payload.as_deref())
+        .await?;
+    // Same reasoning as an import: a sweep that brought in transactions has just changed what
+    // three local tasks derive. A replayed report (`fresh: false`) brought in nothing, so there
+    // is nothing to re-derive and the nudge is skipped.
+    if report.fresh {
+        st.nudge.wake_all(sure_app::tasks::LEDGER_CHANGED);
+    }
+    Ok(Json(report))
 }
 
 #[utoipa::path(get, path = "/api/providers/{id}/syncs", tag = "providers", params(("id" = i64, Path,)),

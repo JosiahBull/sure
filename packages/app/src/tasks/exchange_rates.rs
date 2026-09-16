@@ -25,7 +25,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// import has to clear this task's last-run row (an import can wipe the rates, and the
 /// scheduler would otherwise wait out `POLL_INTERVAL` before refilling them) — and a
 /// hand-copied string there would drift the day this task is renamed.
-pub const TASK_NAME: &str = "exchange_rate_poll";
+pub const TASK_NAME: &str = super::BackgroundTask::ExchangeRatePoll.as_str();
 
 pub struct ExchangeRateTask {
     rates: Arc<dyn ExchangeRateRepo>,

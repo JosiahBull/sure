@@ -3,8 +3,8 @@
 
 use sure_core::{
     AppError, AppResult, IncomeBasis, IncomePayment, IncomePaymentStatus, IncomeStream,
-    IncomeStreamStep, MatchedBy, Ownership, PayFrequency, PayTreatment, PayeBreakdown,
-    SaveIncomeStream,
+    IncomeStreamMatchTarget, IncomeStreamStep, MatchedBy, Ownership, PayFrequency, PayTreatment,
+    PayeBreakdown, SaveIncomeStream,
 };
 
 use crate::Db;
@@ -31,8 +31,6 @@ struct IncomeStreamRow {
     linked_category_id: Option<i64>,
     kiwisaver_account_id: Option<i64>,
     student_loan_account_id: Option<i64>,
-    match_account_id: Option<i64>,
-    match_pattern: Option<String>,
     pay_treatment: String,
     enabled: bool,
     sort_order: i64,
@@ -42,9 +40,13 @@ struct IncomeStreamRow {
 }
 
 impl IncomeStreamRow {
-    /// Steps are attached separately, so this takes them rather than querying — one query for
-    /// every stream's steps beats one per stream.
-    fn into_stream(self, steps: Vec<IncomeStreamStep>) -> AppResult<IncomeStream> {
+    /// Steps and match targets are attached separately, so this takes them rather than querying —
+    /// one query for every stream's children beats one per stream.
+    fn into_stream(
+        self,
+        steps: Vec<IncomeStreamStep>,
+        match_targets: Vec<IncomeStreamMatchTarget>,
+    ) -> AppResult<IncomeStream> {
         // Every writer goes through `as_str`, so a value that doesn't parse means the row was
         // written by something else entirely — surface it rather than coercing it into whichever
         // variant looks closest, which would silently reprice someone's salary.
@@ -75,8 +77,7 @@ impl IncomeStreamRow {
             linked_category_id: self.linked_category_id,
             kiwisaver_account_id: self.kiwisaver_account_id,
             student_loan_account_id: self.student_loan_account_id,
-            match_account_id: self.match_account_id,
-            match_pattern: self.match_pattern,
+            match_targets,
             pay_treatment,
             enabled: self.enabled,
             sort_order: self.sort_order,
@@ -95,6 +96,8 @@ struct IncomeStreamStepRow {
     effective_on: String,
     annual_amount_minor: i64,
     label: Option<String>,
+    kiwisaver_bps: Option<i64>,
+    employer_kiwisaver_bps: Option<i64>,
 }
 
 impl From<IncomeStreamStepRow> for IncomeStreamStep {
@@ -105,6 +108,27 @@ impl From<IncomeStreamStepRow> for IncomeStreamStep {
             effective_on: r.effective_on,
             annual_amount_minor: r.annual_amount_minor,
             label: r.label,
+            kiwisaver_bps: r.kiwisaver_bps,
+            employer_kiwisaver_bps: r.employer_kiwisaver_bps,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct IncomeStreamMatchTargetRow {
+    id: i64,
+    income_stream_id: i64,
+    account_id: i64,
+    pattern: String,
+}
+
+impl From<IncomeStreamMatchTargetRow> for IncomeStreamMatchTarget {
+    fn from(r: IncomeStreamMatchTargetRow) -> Self {
+        IncomeStreamMatchTarget {
+            id: r.id,
+            income_stream_id: r.income_stream_id,
+            account_id: r.account_id,
+            pattern: r.pattern,
         }
     }
 }
@@ -119,7 +143,7 @@ pub async fn list(db: &Db) -> AppResult<Vec<IncomeStream>> {
                   basis, pay_frequency, first_payment_on, starts_on, ends_on,
                   annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,
                   student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
-                  kiwisaver_account_id, student_loan_account_id, match_account_id, match_pattern,
+                  kiwisaver_account_id, student_loan_account_id,
                   pay_treatment, enabled AS "enabled!: bool",
                   sort_order, notes, created_at, updated_at
              FROM income_streams ORDER BY person_id, sort_order, label, id"#
@@ -127,11 +151,19 @@ pub async fn list(db: &Db) -> AppResult<Vec<IncomeStream>> {
     .fetch_all(db)
     .await?;
     // One query for every step, grouped in memory: a per-stream query would be N+1 on a page that
-    // always wants all of them.
+    // always wants all of them. Same for the match targets below.
     let steps = sqlx::query_as!(
         IncomeStreamStepRow,
-        r#"SELECT id AS "id!", income_stream_id, effective_on, annual_amount_minor, label
+        r#"SELECT id AS "id!", income_stream_id, effective_on, annual_amount_minor, label,
+                  kiwisaver_bps, employer_kiwisaver_bps
              FROM income_stream_steps ORDER BY income_stream_id, effective_on"#
+    )
+    .fetch_all(db)
+    .await?;
+    let targets = sqlx::query_as!(
+        IncomeStreamMatchTargetRow,
+        r#"SELECT id AS "id!", income_stream_id, account_id, pattern
+             FROM income_stream_match_targets ORDER BY income_stream_id, account_id, pattern"#
     )
     .fetch_all(db)
     .await?;
@@ -143,10 +175,19 @@ pub async fn list(db: &Db) -> AppResult<Vec<IncomeStream>> {
             .or_default()
             .push(s.into());
     }
+    let mut targets_by_stream: std::collections::HashMap<i64, Vec<IncomeStreamMatchTarget>> =
+        std::collections::HashMap::new();
+    for t in targets {
+        targets_by_stream
+            .entry(t.income_stream_id)
+            .or_default()
+            .push(t.into());
+    }
     rows.into_iter()
         .map(|r| {
             let mine = by_stream.remove(&r.id).unwrap_or_default();
-            r.into_stream(mine)
+            let my_targets = targets_by_stream.remove(&r.id).unwrap_or_default();
+            r.into_stream(mine, my_targets)
         })
         .collect()
 }
@@ -160,7 +201,7 @@ pub async fn get(db: &Db, id: i64) -> AppResult<IncomeStream> {
                   basis, pay_frequency, first_payment_on, starts_on, ends_on,
                   annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,
                   student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
-                  kiwisaver_account_id, student_loan_account_id, match_account_id, match_pattern,
+                  kiwisaver_account_id, student_loan_account_id,
                   pay_treatment, enabled AS "enabled!: bool",
                   sort_order, notes, created_at, updated_at
              FROM income_streams WHERE id=?1"#,
@@ -171,13 +212,26 @@ pub async fn get(db: &Db, id: i64) -> AppResult<IncomeStream> {
     .ok_or(AppError::NotFound("income stream"))?;
     let steps = sqlx::query_as!(
         IncomeStreamStepRow,
-        r#"SELECT id AS "id!", income_stream_id, effective_on, annual_amount_minor, label
+        r#"SELECT id AS "id!", income_stream_id, effective_on, annual_amount_minor, label,
+                  kiwisaver_bps, employer_kiwisaver_bps
              FROM income_stream_steps WHERE income_stream_id=?1 ORDER BY effective_on"#,
         id
     )
     .fetch_all(db)
     .await?;
-    row.into_stream(steps.into_iter().map(Into::into).collect())
+    let targets = sqlx::query_as!(
+        IncomeStreamMatchTargetRow,
+        r#"SELECT id AS "id!", income_stream_id, account_id, pattern
+             FROM income_stream_match_targets WHERE income_stream_id=?1
+            ORDER BY account_id, pattern"#,
+        id
+    )
+    .fetch_all(db)
+    .await?;
+    row.into_stream(
+        steps.into_iter().map(Into::into).collect(),
+        targets.into_iter().map(Into::into).collect(),
+    )
 }
 
 /// Shared validation for both writes. Collects **every** problem rather than failing on the first,
@@ -226,23 +280,45 @@ fn validate(input: &SaveIncomeStream) -> AppResult<()> {
     {
         problems.push("ends_on must be after starts_on".into());
     }
-    // Matching needs both halves: an account to look in and a token to look for. One without the
-    // other is a matcher that silently never runs, which reads as a bug rather than a setting.
-    let pattern_set = input
-        .match_pattern
-        .as_deref()
-        .is_some_and(|p| !p.trim().is_empty());
-    if input.match_account_id.is_some() && !pattern_set {
-        problems.push(
-            "match_account_id is set but match_pattern is empty — both are needed for matching"
-                .into(),
-        );
+    // A target needs both halves: an account to look in and a token to look for. A blank pattern
+    // is a substring of every description, so it would claim the first deposit in range rather
+    // than doing nothing — named here so the caller gets a reason instead of the table's CHECK.
+    for t in &input.match_targets {
+        if t.pattern.trim().is_empty() {
+            problems.push(format!(
+                "a match target on account {} has an empty memo pattern — a blank pattern matches \
+                 every deposit. Remove the target to turn matching off.",
+                t.account_id
+            ));
+        }
     }
-    if input.match_account_id.is_none() && pattern_set {
-        problems.push(
-            "match_pattern is set but match_account_id is empty — both are needed for matching"
-                .into(),
-        );
+    // Two identical targets put the same stream in one candidate group twice; the unique index
+    // would report it as an opaque constraint failure.
+    let mut seen: Vec<(i64, String)> = input
+        .match_targets
+        .iter()
+        .map(|t| (t.account_id, t.pattern.trim().to_lowercase()))
+        .collect();
+    seen.sort();
+    if let Some(dup) = seen.windows(2).find(|w| w[0] == w[1]) {
+        problems.push(format!(
+            "two match targets are the same: account {} and memo {:?}",
+            dup[0].0, dup[0].1
+        ));
+    }
+    for (field, value) in input.steps.iter().flat_map(|s| {
+        [
+            ("kiwisaver_bps", s.kiwisaver_bps),
+            ("employer_kiwisaver_bps", s.employer_kiwisaver_bps),
+        ]
+    }) {
+        if let Some(v) = value
+            && !(0..=10_000).contains(&v)
+        {
+            problems.push(format!(
+                "a step's {field} must be between 0 and 10000, got {v}"
+            ));
+        }
     }
     // A schedule with two figures on the same date is a typo, and the unique index would report it
     // as an opaque constraint failure. Name it instead.
@@ -288,15 +364,49 @@ async fn replace_steps(
         let label = s.label.as_deref();
         sqlx::query!(
             "INSERT INTO income_stream_steps
-                (income_stream_id, effective_on, annual_amount_minor, label)
-             VALUES (?1,?2,?3,?4)",
+                (income_stream_id, effective_on, annual_amount_minor, label, kiwisaver_bps,
+                 employer_kiwisaver_bps)
+             VALUES (?1,?2,?3,?4,?5,?6)",
             stream_id,
             effective_on,
             annual_amount_minor,
-            label
+            label,
+            s.kiwisaver_bps,
+            s.employer_kiwisaver_bps
         )
         .execute(&mut **txn)
         .await?;
+    }
+    Ok(())
+}
+
+/// Full replace, the same contract as [`replace_steps`]: the targets in `input` are the stream's
+/// targets after the write.
+async fn replace_match_targets(
+    txn: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    stream_id: i64,
+    input: &SaveIncomeStream,
+) -> AppResult<()> {
+    sqlx::query!(
+        "DELETE FROM income_stream_match_targets WHERE income_stream_id=?1",
+        stream_id
+    )
+    .execute(&mut **txn)
+    .await?;
+    for t in &input.match_targets {
+        // Stored trimmed — the matcher compares case-insensitively but not with surrounding
+        // whitespace stripped, so a pasted pattern with a trailing space would match nothing.
+        let pattern = t.pattern.trim();
+        sqlx::query!(
+            "INSERT INTO income_stream_match_targets (income_stream_id, account_id, pattern)
+             VALUES (?1,?2,?3)",
+            stream_id,
+            t.account_id,
+            pattern
+        )
+        .execute(&mut **txn)
+        .await
+        .map_err(fk_error)?;
     }
     Ok(())
 }
@@ -328,13 +438,6 @@ pub async fn create(db: &Db, owner: Ownership, input: SaveIncomeStream) -> AppRe
     let starts_on = input.starts_on.to_string();
     let ends_on = input.ends_on.as_ref().map(|d| d.to_string());
     let notes = input.notes.as_deref();
-    // Stored trimmed, empty as NULL — matching is on iff both halves are set, and a
-    // whitespace-only pattern must not read as "on".
-    let match_pattern = input
-        .match_pattern
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty());
     let pay_treatment = input.pay_treatment.as_str();
     // Only the new id is wanted — the steps go in below and `get` re-reads the whole stream —
     // so this returns that rather than restating all two dozen columns.
@@ -344,9 +447,9 @@ pub async fn create(db: &Db, owner: Ownership, input: SaveIncomeStream) -> AppRe
                pay_frequency, first_payment_on, starts_on, ends_on, annual_increase_bps,
                kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled,
                sort_order, notes, employer_kiwisaver_bps, kiwisaver_account_id,
-               student_loan_account_id, match_account_id, match_pattern, pay_treatment)
-           VALUES (?25,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
-                   ?22,?23,?24)
+               student_loan_account_id, pay_treatment)
+           VALUES (?23,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
+                   ?22)
            RETURNING id AS "id!""#,
         person_id,
         label,
@@ -369,8 +472,6 @@ pub async fn create(db: &Db, owner: Ownership, input: SaveIncomeStream) -> AppRe
         input.employer_kiwisaver_bps,
         input.kiwisaver_account_id,
         input.student_loan_account_id,
-        input.match_account_id,
-        match_pattern,
         pay_treatment,
         ownership
     )
@@ -378,6 +479,7 @@ pub async fn create(db: &Db, owner: Ownership, input: SaveIncomeStream) -> AppRe
     .await
     .map_err(fk_error)?;
     replace_steps(&mut txn, id, &input).await?;
+    replace_match_targets(&mut txn, id, &input).await?;
     txn.commit().await?;
     get(db, id).await
 }
@@ -397,11 +499,6 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
     let starts_on = input.starts_on.to_string();
     let ends_on = input.ends_on.as_ref().map(|d| d.to_string());
     let notes = input.notes.as_deref();
-    let match_pattern = input
-        .match_pattern
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty());
     let pay_treatment = input.pay_treatment.as_str();
     // `None` leaves the owner alone, which is what every caller that only edits the figures
     // sends. `COALESCE` on the pair rather than two statements: moving a stream between owners
@@ -415,14 +512,14 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
     };
     let updated = sqlx::query!(
         "UPDATE income_streams SET
-            ownership=COALESCE(?25, ownership),
-            person_id=CASE WHEN ?25 IS NULL THEN person_id ELSE ?26 END,
+            ownership=COALESCE(?23, ownership),
+            person_id=CASE WHEN ?23 IS NULL THEN person_id ELSE ?24 END,
             label=?2, employer=?3, currency_code=?4, annual_amount_minor=?5, basis=?6,
             pay_frequency=?7, first_payment_on=?8, starts_on=?9, ends_on=?10,
             annual_increase_bps=?11, kiwisaver_bps=?12, student_loan=?13, take_home_bps=?14,
             linked_category_id=?15, enabled=?16, sort_order=?17, notes=?18,
             employer_kiwisaver_bps=?19, kiwisaver_account_id=?20, student_loan_account_id=?21,
-            match_account_id=?22, match_pattern=?23, pay_treatment=?24,
+            pay_treatment=?22,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id=?1",
         id,
@@ -446,8 +543,6 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
         input.employer_kiwisaver_bps,
         input.kiwisaver_account_id,
         input.student_loan_account_id,
-        input.match_account_id,
-        match_pattern,
         pay_treatment,
         ownership,
         owner_person_id
@@ -459,6 +554,7 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
         return Err(AppError::NotFound("income stream"));
     }
     replace_steps(&mut txn, id, &input).await?;
+    replace_match_targets(&mut txn, id, &input).await?;
     txn.commit().await?;
     get(db, id).await
 }
@@ -846,7 +942,7 @@ pub async fn matched_payments(db: &Db) -> AppResult<Vec<MatchedPaymentRow>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sure_core::{IsoDate, Money, SaveIncomeStreamStep};
+    use sure_core::{IsoDate, Money, SaveIncomeStreamMatchTarget, SaveIncomeStreamStep};
 
     async fn test_db() -> Db {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -892,8 +988,7 @@ mod tests {
             linked_category_id: None,
             kiwisaver_account_id: None,
             student_loan_account_id: None,
-            match_account_id: None,
-            match_pattern: None,
+            match_targets: Vec::new(),
             pay_treatment: PayTreatment::Regular,
             enabled: true,
             sort_order: 0,
@@ -914,11 +1009,15 @@ mod tests {
                 effective_on: IsoDate::parse("2028-04-01").unwrap(),
                 annual_amount_minor: Money::new(96_000_00).unwrap(),
                 label: Some("Step 6".into()),
+                kiwisaver_bps: None,
+                employer_kiwisaver_bps: None,
             },
             SaveIncomeStreamStep {
                 effective_on: IsoDate::parse("2027-04-01").unwrap(),
                 annual_amount_minor: Money::new(92_000_00).unwrap(),
                 label: Some("Step 5".into()),
+                kiwisaver_bps: None,
+                employer_kiwisaver_bps: None,
             },
         ];
         let created = create(&db, Ownership::Person { person_id: person }, input)
@@ -947,6 +1046,8 @@ mod tests {
             effective_on: IsoDate::parse("2027-04-01").unwrap(),
             annual_amount_minor: Money::new(92_000_00).unwrap(),
             label: None,
+            kiwisaver_bps: None,
+            employer_kiwisaver_bps: None,
         }];
         let created = create(&db, Ownership::Person { person_id: person }, input)
             .await
@@ -967,6 +1068,8 @@ mod tests {
             effective_on: IsoDate::parse("2027-04-01").unwrap(),
             annual_amount_minor: Money::new(92_000_00).unwrap(),
             label: None,
+            kiwisaver_bps: None,
+            employer_kiwisaver_bps: None,
         };
         input.steps = vec![dup.clone(), dup];
         let err = create(&db, Ownership::Person { person_id: person }, input)
@@ -1011,18 +1114,132 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn half_a_match_config_is_refused_with_both_halves_named() {
+    async fn a_blank_match_pattern_is_refused_rather_than_matching_everything() {
         let db = test_db().await;
         let person = a_person(&db).await;
+        let account = an_account(&db).await;
         let mut input = stream("Teaching");
-        input.match_pattern = Some("KAIMAHI".into());
+        input.match_targets = vec![SaveIncomeStreamMatchTarget {
+            account_id: account,
+            pattern: "   ".into(),
+        }];
         let err = create(&db, Ownership::Person { person_id: person }, input)
             .await
             .unwrap_err();
         assert!(
-            format!("{err:?}").contains("match_account_id"),
-            "should name the missing half, got {err:?}"
+            format!("{err:?}").contains("blank pattern matches"),
+            "should say why a blank pattern is worse than none, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn two_identical_match_targets_are_refused() {
+        let db = test_db().await;
+        let person = a_person(&db).await;
+        let account = an_account(&db).await;
+        let mut input = stream("Teaching");
+        input.match_targets = vec![
+            SaveIncomeStreamMatchTarget {
+                account_id: account,
+                pattern: "KAIMAHI".into(),
+            },
+            // Same target, differently cased — the matcher lower-cases before grouping, so these
+            // are one target and would put the stream in its group twice.
+            SaveIncomeStreamMatchTarget {
+                account_id: account,
+                pattern: " kaimahi ".into(),
+            },
+        ];
+        let err = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:?}").contains("the same"),
+            "should name the duplicate, got {err:?}"
+        );
+    }
+
+    /// A job that changes bank accounts keeps one stream and gains a target. Both survive the
+    /// write and come back attached to the stream.
+    #[tokio::test]
+    async fn a_stream_can_be_matched_in_several_accounts() {
+        let db = test_db().await;
+        let person = a_person(&db).await;
+        let old_bank = an_account(&db).await;
+        let new_bank = an_account(&db).await;
+        let mut input = stream("Salary");
+        input.match_targets = vec![
+            SaveIncomeStreamMatchTarget {
+                account_id: old_bank,
+                pattern: "ACME LTD SALARY/WAGES PAY".into(),
+            },
+            SaveIncomeStreamMatchTarget {
+                account_id: new_bank,
+                pattern: "ACME LIM SALARY/WAGESPAY".into(),
+            },
+        ];
+        let created = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap();
+        assert_eq!(created.match_targets.len(), 2);
+
+        // Full replace, like steps: dropping one from the body drops it from the stream.
+        let mut edit = stream("Salary");
+        edit.match_targets = vec![SaveIncomeStreamMatchTarget {
+            account_id: new_bank,
+            pattern: "ACME LIM SALARY/WAGESPAY".into(),
+        }];
+        let updated = update(&db, created.id, edit).await.unwrap();
+        assert_eq!(updated.match_targets.len(), 1);
+        assert_eq!(updated.match_targets[0].account_id, new_bank);
+    }
+
+    /// A step may carry a new contribution election as well as a new salary, and `None` on either
+    /// means the stream's own rate still applies.
+    #[tokio::test]
+    async fn a_step_can_carry_a_kiwisaver_election() {
+        let db = test_db().await;
+        let person = a_person(&db).await;
+        let mut input = stream("Salary");
+        input.steps = vec![
+            SaveIncomeStreamStep {
+                effective_on: IsoDate::parse("2026-04-01").unwrap(),
+                annual_amount_minor: Money::new(125_000_00).unwrap(),
+                label: None,
+                kiwisaver_bps: Some(350),
+                employer_kiwisaver_bps: Some(350),
+            },
+            SaveIncomeStreamStep {
+                effective_on: IsoDate::parse("2027-04-01").unwrap(),
+                annual_amount_minor: Money::new(130_000_00).unwrap(),
+                label: None,
+                kiwisaver_bps: None,
+                employer_kiwisaver_bps: None,
+            },
+        ];
+        let created = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap();
+        assert_eq!(created.steps[0].kiwisaver_bps, Some(350));
+        assert_eq!(created.steps[1].kiwisaver_bps, None);
+    }
+
+    #[tokio::test]
+    async fn an_out_of_range_step_kiwisaver_rate_is_refused() {
+        let db = test_db().await;
+        let person = a_person(&db).await;
+        let mut input = stream("Salary");
+        input.steps = vec![SaveIncomeStreamStep {
+            effective_on: IsoDate::parse("2026-04-01").unwrap(),
+            annual_amount_minor: Money::new(125_000_00).unwrap(),
+            label: None,
+            kiwisaver_bps: Some(10_001),
+            employer_kiwisaver_bps: None,
+        }];
+        let err = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("kiwisaver_bps"), "got {err:?}");
     }
 
     // ---- payments ----------------------------------------------------------------
@@ -1093,8 +1310,10 @@ mod tests {
         let person = a_person(&db).await;
         let account = an_account(&db).await;
         let mut input = stream("Salary");
-        input.match_account_id = Some(account);
-        input.match_pattern = Some("KAIMAHI".into());
+        input.match_targets = vec![SaveIncomeStreamMatchTarget {
+            account_id: account,
+            pattern: "KAIMAHI".into(),
+        }];
         let s = create(&db, Ownership::Person { person_id: person }, input)
             .await
             .unwrap();
@@ -1164,8 +1383,10 @@ mod tests {
         let person = a_person(&db).await;
         let account = an_account(&db).await;
         let mut input = stream("Salary");
-        input.match_account_id = Some(account);
-        input.match_pattern = Some("KAIMAHI".into());
+        input.match_targets = vec![SaveIncomeStreamMatchTarget {
+            account_id: account,
+            pattern: "KAIMAHI".into(),
+        }];
         let s = create(&db, Ownership::Person { person_id: person }, input)
             .await
             .unwrap();
@@ -1238,16 +1459,20 @@ mod tests {
         let person = a_person(&db).await;
         let account = an_account(&db).await;
         let mut base = stream("Salary");
-        base.match_account_id = Some(account);
-        base.match_pattern = Some("KAIMAHI".into());
+        base.match_targets = vec![SaveIncomeStreamMatchTarget {
+            account_id: account,
+            pattern: "KAIMAHI".into(),
+        }];
         let base = create(&db, Ownership::Person { person_id: person }, base)
             .await
             .unwrap();
         let mut bonus = stream("Bonus");
         bonus.pay_frequency = PayFrequency::Quarterly;
         bonus.pay_treatment = PayTreatment::ExtraPay;
-        bonus.match_account_id = Some(account);
-        bonus.match_pattern = Some("KAIMAHI".into());
+        bonus.match_targets = vec![SaveIncomeStreamMatchTarget {
+            account_id: account,
+            pattern: "KAIMAHI".into(),
+        }];
         let bonus = create(&db, Ownership::Person { person_id: person }, bonus)
             .await
             .unwrap();

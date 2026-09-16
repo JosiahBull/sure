@@ -8,6 +8,7 @@ use utoipa::IntoParams;
 use crate::error::AppResult;
 use crate::extract::Json;
 use crate::state::AppState;
+use sure_app::tasks::BackgroundTask;
 
 pub use sure_core::{
     AccountEquity, EquityEvent, EquityEventKind, EquityExercise, EquityGrant, EquityMark,
@@ -70,10 +71,11 @@ pub async fn create_grant(
     Path(id): Path<i64>,
     Json(input): Json<SaveGrant>,
 ) -> AppResult<(StatusCode, Json<EquityGrant>)> {
-    Ok((
-        StatusCode::CREATED,
-        Json(st.equity.create_grant(id, input).await?),
-    ))
+    let grant = st.equity.create_grant(id, input).await?;
+    // Every valuation from this date forward is derived from what just changed, so the
+    // rebuild is asked for now. This is what the "Rebuild history" button used to be.
+    st.nudge.wake(BackgroundTask::EquityRebuild);
+    Ok((StatusCode::CREATED, Json(grant)))
 }
 
 #[utoipa::path(put, path = "/api/equity-grants/{id}", tag = "equity", params(("id" = i64, Path,)),
@@ -92,7 +94,11 @@ pub async fn update_grant(
     Path(id): Path<i64>,
     Json(input): Json<SaveGrant>,
 ) -> AppResult<Json<EquityGrant>> {
-    Ok(Json(st.equity.update_grant(id, input).await?))
+    let grant = st.equity.update_grant(id, input).await?;
+    // Every valuation from this date forward is derived from what just changed, so the
+    // rebuild is asked for now. This is what the "Rebuild history" button used to be.
+    st.nudge.wake(BackgroundTask::EquityRebuild);
+    Ok(Json(grant))
 }
 
 #[utoipa::path(delete, path = "/api/equity-grants/{id}", tag = "equity", params(("id" = i64, Path,)),
@@ -110,6 +116,9 @@ pub async fn delete_grant(
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
     st.equity.delete_grant(id).await?;
+    // Every valuation from this date forward is derived from what just changed, so the
+    // rebuild is asked for now. This is what the "Rebuild history" button used to be.
+    st.nudge.wake(BackgroundTask::EquityRebuild);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -147,10 +156,11 @@ pub async fn create_exercise(
     Path(id): Path<i64>,
     Json(input): Json<SaveExercise>,
 ) -> AppResult<(StatusCode, Json<EquityExercise>)> {
-    Ok((
-        StatusCode::CREATED,
-        Json(st.equity.create_exercise(id, input).await?),
-    ))
+    let exercise = st.equity.create_exercise(id, input).await?;
+    // Every valuation from this date forward is derived from what just changed, so the
+    // rebuild is asked for now. This is what the "Rebuild history" button used to be.
+    st.nudge.wake(BackgroundTask::EquityRebuild);
+    Ok((StatusCode::CREATED, Json(exercise)))
 }
 
 #[utoipa::path(delete, path = "/api/equity-exercises/{id}", tag = "equity", params(("id" = i64, Path,)),
@@ -168,6 +178,9 @@ pub async fn delete_exercise(
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
     st.equity.delete_exercise(id).await?;
+    // Every valuation from this date forward is derived from what just changed, so the
+    // rebuild is asked for now. This is what the "Rebuild history" button used to be.
+    st.nudge.wake(BackgroundTask::EquityRebuild);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -270,6 +283,9 @@ pub async fn create_mark(
     Json(input): Json<SaveMark>,
 ) -> AppResult<(StatusCode, Json<EquityMark>)> {
     let mark = st.equity.create_mark(id, input).await?;
+    // Every valuation from this date forward is derived from what just changed, so the
+    // rebuild is asked for now. This is what the "Rebuild history" button used to be.
+    st.nudge.wake(BackgroundTask::EquityRebuild);
     Ok((StatusCode::CREATED, Json(mark)))
 }
 
@@ -285,6 +301,9 @@ pub async fn create_mark(
 )]
 pub async fn delete_mark(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     st.equity.delete_mark(id).await?;
+    // Every valuation from this date forward is derived from what just changed, so the
+    // rebuild is asked for now. This is what the "Rebuild history" button used to be.
+    st.nudge.wake(BackgroundTask::EquityRebuild);
     Ok(StatusCode::NO_CONTENT)
 }
 

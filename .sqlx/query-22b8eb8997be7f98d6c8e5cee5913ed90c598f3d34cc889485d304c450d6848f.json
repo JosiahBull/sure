@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", income_stream_id, effective_on, annual_amount_minor, label,\n                  created_at\n             FROM income_stream_steps ORDER BY id",
+  "query": "SELECT id AS \"id!\", income_stream_id, account_id, pattern, created_at\n             FROM income_stream_match_targets ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Integer",
         "origin": {
           "Table": {
-            "table": "income_stream_steps",
+            "table": "income_stream_match_targets",
             "name": "id"
           }
         }
@@ -20,51 +20,40 @@
         "type_info": "Integer",
         "origin": {
           "Table": {
-            "table": "income_stream_steps",
+            "table": "income_stream_match_targets",
             "name": "income_stream_id"
           }
         }
       },
       {
-        "name": "effective_on",
+        "name": "account_id",
         "ordinal": 2,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "income_stream_steps",
-            "name": "effective_on"
-          }
-        }
-      },
-      {
-        "name": "annual_amount_minor",
-        "ordinal": 3,
         "type_info": "Integer",
         "origin": {
           "Table": {
-            "table": "income_stream_steps",
-            "name": "annual_amount_minor"
+            "table": "income_stream_match_targets",
+            "name": "account_id"
           }
         }
       },
       {
-        "name": "label",
-        "ordinal": 4,
+        "name": "pattern",
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "income_stream_steps",
-            "name": "label"
+            "table": "income_stream_match_targets",
+            "name": "pattern"
           }
         }
       },
       {
         "name": "created_at",
-        "ordinal": 5,
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "income_stream_steps",
+            "table": "income_stream_match_targets",
             "name": "created_at"
           }
         }
@@ -78,9 +67,8 @@
       false,
       false,
       false,
-      true,
       false
     ]
   },
-  "hash": "c53cf9eca642fe7eb8b295dc002fb236bd324628477338583bd7e98092e418c1"
+  "hash": "22b8eb8997be7f98d6c8e5cee5913ed90c598f3d34cc889485d304c450d6848f"
 }

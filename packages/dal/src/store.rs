@@ -1081,6 +1081,10 @@ impl EquityRepo for SqliteStore {
         crate::equity::rebuild_history(&self.db, id, today).await
     }
 
+    async fn accounts_with_equity(&self) -> AppResult<Vec<i64>> {
+        crate::equity::accounts_with_equity(&self.db).await
+    }
+
     async fn projected_values(&self, id: i64, from: &str, months: i64) -> AppResult<Vec<i64>> {
         let from = chrono::NaiveDate::parse_from_str(from, "%Y-%m-%d")
             .map_err(|e| AppError::validation(format!("projection start date: {e}")))?;
@@ -1182,15 +1186,7 @@ impl IncomeRepo for SqliteStore {
         from: &str,
         account_id: Option<i64>,
     ) -> AppResult<Vec<Transaction>> {
-        crate::transactions::list(
-            &self.db,
-            TxQuery {
-                from: Some(from.to_string()),
-                account_id,
-                ..Default::default()
-            },
-        )
-        .await
+        crate::transactions::credits_since(&self.db, from, account_id).await
     }
 
     async fn list_income_payments(

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO income_streams\n              (ownership, person_id, label, employer, currency_code, annual_amount_minor, basis,\n               pay_frequency, first_payment_on, starts_on, ends_on, annual_increase_bps,\n               kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled,\n               sort_order, notes, employer_kiwisaver_bps, kiwisaver_account_id,\n               student_loan_account_id, pay_treatment)\n           VALUES (?23,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,\n                   ?22)\n           RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 23
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "bde20a5369f122858a7ebd518d0c3cdc61cad374be52951ecd83faf21a01b0d0"
+}

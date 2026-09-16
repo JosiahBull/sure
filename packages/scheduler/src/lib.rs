@@ -12,13 +12,15 @@
 //! being waited out — or, past the drain deadline, abandoned mid-write.
 
 use std::any::Any;
+use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::FutureExt;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 /// How much of its work a run got done. Decides whether the run is recorded, so it is a
@@ -36,6 +38,64 @@ pub enum TaskRun {
     Interrupted,
 }
 
+/// How long the loop waits after a nudge before sweeping, so a burst becomes one run.
+///
+/// An import writes hundreds of rows and finishes with a single nudge, but several *different*
+/// things routinely finish together — a provider sync ends, the transfer linker pairs what it
+/// brought in, a valuation lands — and each wants the same derived tasks re-run. Without a
+/// settle window that is three sweeps in as many milliseconds, all doing the same work.
+const NUDGE_SETTLE: Duration = Duration::from_millis(250);
+
+/// A handle for telling the scheduler that a task's inputs have changed and it should run now
+/// rather than at its next interval.
+///
+/// The interval is a floor on *staleness*, not a statement that nothing can happen sooner. A
+/// person who has just edited an income stream, finished an import, or recorded a share price is
+/// watching the screen, and waiting out five minutes for a derived figure to catch up reads as
+/// the app being broken — which is exactly how the manual "Rebuild history" button came to
+/// exist. The point of nudging is that the button should never have been the answer.
+///
+/// Cheap and idempotent: nudges for one task coalesce into one pending entry, and a nudge for a
+/// task nobody registered is silently dropped rather than an error, so a caller never has to
+/// know which tasks this process happens to run.
+#[derive(Clone, Default)]
+pub struct Nudge(Arc<NudgeInner>);
+
+#[derive(Default)]
+struct NudgeInner {
+    pending: Mutex<HashSet<&'static str>>,
+    notify: Notify,
+}
+
+impl Nudge {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ask for `task` to run at the next opportunity. Never blocks; safe from any thread.
+    pub fn wake(&self, task: &'static str) {
+        // Poisoning is ignored: the only thing behind this lock is a set of static strings, so a
+        // panic elsewhere cannot have left it meaningfully inconsistent.
+        self.0
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(task);
+        // `notify_one` rather than `notify_waiters`: it stores a permit when the loop is busy
+        // sweeping, so a nudge that lands mid-sweep is picked up on the next pass instead of
+        // being dropped on the floor.
+        self.0.notify.notify_one();
+    }
+
+    async fn notified(&self) {
+        self.0.notify.notified().await;
+    }
+
+    fn take(&self) -> HashSet<&'static str> {
+        std::mem::take(&mut *self.0.pending.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
 /// A recurring background job.
 #[async_trait]
 pub trait ScheduledTask: Send + Sync {
@@ -44,6 +104,21 @@ pub trait ScheduledTask: Send + Sync {
     fn name(&self) -> &'static str;
     /// How often this task needs to run.
     fn interval(&self) -> Duration;
+    /// Whether to run once on startup even when the interval has not elapsed.
+    ///
+    /// Default `false`, and that default is the safe one: the tasks that talk to a third party
+    /// must **not** opt in. A restart re-runs them, and a process that restarts in a loop — a
+    /// crash loop, or a developer saving a file under a reloading dev server — would turn that
+    /// into a burst against someone else's rate limit, which is charged to the household rather
+    /// than to this app (see `docs/HTTP.md`).
+    ///
+    /// The tasks that *should* opt in are the purely local, derived ones: they read this
+    /// database and write this database, so the only cost is a few queries, and the benefit is
+    /// that whatever changed while the process was down — or whatever the last release computes
+    /// differently — is reconciled at boot instead of up to a full interval later.
+    fn run_on_startup(&self) -> bool {
+        false
+    }
     /// Do the work.
     ///
     /// `cancel` is the process-wide shutdown token, handed down so a task that loops over
@@ -75,6 +150,7 @@ pub struct Scheduler {
     store: Arc<dyn TaskStateStore>,
     tasks: Vec<Box<dyn ScheduledTask>>,
     check_interval: Duration,
+    nudge: Nudge,
 }
 
 impl Scheduler {
@@ -83,7 +159,26 @@ impl Scheduler {
             store,
             tasks: Vec::new(),
             check_interval,
+            nudge: Nudge::new(),
         }
+    }
+
+    /// A handle for waking this scheduler between ticks. Clone it to whoever writes the inputs
+    /// a task derives from; see [`Nudge`].
+    pub fn nudge(&self) -> Nudge {
+        self.nudge.clone()
+    }
+
+    /// Listen on a handle that already exists, instead of this scheduler's own.
+    ///
+    /// For a composition root that has to hand the handle to the HTTP state before it builds the
+    /// scheduler — the alternative is constructing the scheduler first purely to borrow its
+    /// handle, which orders the wiring around this detail rather than around what depends on
+    /// what.
+    #[must_use]
+    pub fn with_nudge(mut self, nudge: Nudge) -> Self {
+        self.nudge = nudge;
+        self
     }
 
     pub fn register(&mut self, task: Box<dyn ScheduledTask>) {
@@ -113,21 +208,42 @@ impl Scheduler {
     /// single in-flight upstream request is bounded by its own timeout rather than by us.
     pub async fn run(self, cancel: CancellationToken) {
         let mut interval = tokio::time::interval(self.check_interval);
+        // The first sweep is the startup one, and the only sweep on which `run_on_startup`
+        // overrides the interval. Set false after it however it went, so a task that failed at
+        // boot waits for its interval like any other rather than re-running every pass.
+        let mut startup = true;
         loop {
-            tokio::select! {
+            // Which tasks were explicitly asked for this pass, as opposed to merely being due.
+            let nudged = tokio::select! {
                 // Biased so a cancellation delivered in the same moment as a tick wins:
                 // there is no reason to start another sweep on the way out.
                 biased;
                 () = cancel.cancelled() => break,
-                _ = interval.tick() => {}
-            }
+                _ = interval.tick() => HashSet::new(),
+                () = self.nudge.notified() => {
+                    // Let a burst settle before sweeping, and let a cancellation through it —
+                    // an unconditional sleep here would add `NUDGE_SETTLE` to every shutdown
+                    // that happens to land just after a change.
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => break,
+                        () = tokio::time::sleep(NUDGE_SETTLE) => {}
+                    }
+                    self.nudge.take()
+                }
+            };
 
             for task in &self.tasks {
                 if cancel.is_cancelled() {
                     break;
                 }
-                self.run_if_due(task.as_ref(), &cancel).await;
+                // Two ways to jump the interval, and both are deliberate rather than merely
+                // early: something changed under this task, or the process just started and its
+                // inputs may have moved while it was down.
+                let forced = nudged.contains(task.name()) || (startup && task.run_on_startup());
+                self.run_if_due(task.as_ref(), &cancel, forced).await;
             }
+            startup = false;
         }
         tracing::debug!("scheduler stopped");
     }
@@ -153,7 +269,7 @@ impl Scheduler {
     /// records — lives behind `store`, whose SQLite transactions do their own recovery. The
     /// worst case is the same one a returned `Err` already has: a job that panicked
     /// half-way through its writes is re-run from the top.
-    async fn run_if_due(&self, task: &dyn ScheduledTask, cancel: &CancellationToken) {
+    async fn run_if_due(&self, task: &dyn ScheduledTask, cancel: &CancellationToken, forced: bool) {
         let last_run_at = match self.store.last_run_at(task.name()).await {
             Ok(v) => v,
             Err(err) => {
@@ -165,7 +281,7 @@ impl Scheduler {
                 return;
             }
         };
-        if !is_due(last_run_at, Utc::now(), task.interval()) {
+        if !forced && !is_due(last_run_at, Utc::now(), task.interval()) {
             return;
         }
         // Only the runs that actually happen are timed — `is_due` returning false is not a
@@ -308,6 +424,45 @@ mod tests {
         async fn record_run(&self, task_name: &str, _at: DateTime<Utc>) -> anyhow::Result<()> {
             self.recorded.lock().unwrap().push(task_name.to_string());
             Ok(())
+        }
+    }
+
+    /// A store where nothing is ever due: every task has just run. The only thing that can make
+    /// a task run against it is an override — a nudge, or the startup pass.
+    struct JustRanStore;
+
+    #[async_trait]
+    impl TaskStateStore for JustRanStore {
+        async fn last_run_at(&self, _task_name: &str) -> anyhow::Result<Option<DateTime<Utc>>> {
+            Ok(Some(Utc::now()))
+        }
+        async fn record_run(&self, _task_name: &str, _at: DateTime<Utc>) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A task with a long interval that counts its runs, and says whether it wants the startup
+    /// pass. Everything below turns on "did this run when it was not due".
+    struct IdleTask {
+        name: &'static str,
+        runs: Arc<AtomicUsize>,
+        on_startup: bool,
+    }
+
+    #[async_trait]
+    impl ScheduledTask for IdleTask {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(3600)
+        }
+        fn run_on_startup(&self) -> bool {
+            self.on_startup
+        }
+        async fn run(&self, _cancel: &CancellationToken) -> anyhow::Result<TaskRun> {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            Ok(TaskRun::Completed)
         }
     }
 
@@ -495,7 +650,7 @@ mod tests {
 
         let healthy = CountingTask(Arc::new(AtomicUsize::new(0)));
         scheduler
-            .run_if_due(&healthy, &CancellationToken::new())
+            .run_if_due(&healthy, &CancellationToken::new(), false)
             .await;
         assert_eq!(store.recorded.lock().unwrap().as_slice(), [HEALTHY]);
 
@@ -507,7 +662,7 @@ mod tests {
         };
         let cancelled = CancellationToken::new();
         cancelled.cancel();
-        scheduler.run_if_due(&cooperative, &cancelled).await;
+        scheduler.run_if_due(&cooperative, &cancelled, false).await;
         assert_eq!(
             store.recorded.lock().unwrap().as_slice(),
             [HEALTHY],
@@ -571,5 +726,134 @@ mod tests {
         let now = Utc::now();
         let last = now + chrono::Duration::seconds(30);
         assert!(!is_due(Some(last), now, Duration::from_secs(60)));
+    }
+
+    /// A task that opted in runs at boot even though its interval says it is not due; one that
+    /// did not, does not. The second half is the one that matters — it is what keeps a restart
+    /// loop from turning every boot into a third-party request.
+    #[tokio::test]
+    async fn startup_runs_only_the_tasks_that_opted_in() {
+        let eager = Arc::new(AtomicUsize::new(0));
+        let lazy = Arc::new(AtomicUsize::new(0));
+        let mut scheduler = Scheduler::new(Arc::new(JustRanStore), Duration::from_millis(50));
+        scheduler.register(Box::new(IdleTask {
+            name: "eager",
+            runs: eager.clone(),
+            on_startup: true,
+        }));
+        scheduler.register(Box::new(IdleTask {
+            name: "lazy",
+            runs: lazy.clone(),
+            on_startup: false,
+        }));
+
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(scheduler.run(cancel.clone()));
+        // Long enough for several ticks, so a second startup run would show up as a count of 2.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        cancel.cancel();
+        handle.await.unwrap();
+
+        assert_eq!(
+            eager.load(Ordering::SeqCst),
+            1,
+            "opted in: runs once, at boot"
+        );
+        assert_eq!(
+            lazy.load(Ordering::SeqCst),
+            0,
+            "not opted in: waits for its interval"
+        );
+    }
+
+    /// A nudge runs a task that is not due. The task it did not name stays put, which is what
+    /// makes a nudge a request about one task rather than a general "sweep now".
+    #[tokio::test]
+    async fn a_nudge_runs_only_the_task_it_names() {
+        let wanted = Arc::new(AtomicUsize::new(0));
+        let other = Arc::new(AtomicUsize::new(0));
+        let mut scheduler = Scheduler::new(Arc::new(JustRanStore), Duration::from_secs(3600));
+        scheduler.register(Box::new(IdleTask {
+            name: "wanted",
+            runs: wanted.clone(),
+            on_startup: false,
+        }));
+        scheduler.register(Box::new(IdleTask {
+            name: "other",
+            runs: other.clone(),
+            on_startup: false,
+        }));
+        let nudge = scheduler.nudge();
+
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(scheduler.run(cancel.clone()));
+        // After the immediate first tick, so this is a wake rather than the startup sweep.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        nudge.wake("wanted");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        cancel.cancel();
+        handle.await.unwrap();
+
+        assert_eq!(wanted.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            other.load(Ordering::SeqCst),
+            0,
+            "a nudge is not a general sweep"
+        );
+    }
+
+    /// A burst of nudges for one task is one run, not one per nudge — an import that finishes
+    /// beside a sync beside a valuation must not sweep three times.
+    #[tokio::test]
+    async fn a_burst_of_nudges_coalesces_into_one_run() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let mut scheduler = Scheduler::new(Arc::new(JustRanStore), Duration::from_secs(3600));
+        scheduler.register(Box::new(IdleTask {
+            name: "wanted",
+            runs: runs.clone(),
+            on_startup: false,
+        }));
+        let nudge = scheduler.nudge();
+
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(scheduler.run(cancel.clone()));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        for _ in 0..25 {
+            nudge.wake("wanted");
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        cancel.cancel();
+        handle.await.unwrap();
+
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "25 nudges inside the settle window are one sweep"
+        );
+    }
+
+    /// A nudge naming a task nobody registered is dropped rather than doing anything: the
+    /// scheduler cannot tell a typo from a task this deployment does not run, and a caller
+    /// should not have to know which it is.
+    #[tokio::test]
+    async fn a_nudge_for_an_unregistered_task_is_harmless() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let mut scheduler = Scheduler::new(Arc::new(JustRanStore), Duration::from_secs(3600));
+        scheduler.register(Box::new(IdleTask {
+            name: "registered",
+            runs: runs.clone(),
+            on_startup: false,
+        }));
+        let nudge = scheduler.nudge();
+
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(scheduler.run(cancel.clone()));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        nudge.wake("no_such_task");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        cancel.cancel();
+        handle.await.unwrap();
+
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
     }
 }

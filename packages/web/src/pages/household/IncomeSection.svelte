@@ -12,6 +12,26 @@
 
   let { onchanged }: { onchanged?: () => void } = $props();
 
+  const today = new Date().toISOString().slice(0, 10);
+
+  /**
+   * What the stream pays *now* — the last dated step at or before today, else the base figure.
+   *
+   * `annual_amount_minor` is the level the schedule starts from, not the level in force: a
+   * stream whose steps carry a career's worth of history would otherwise be listed at its first
+   * salary, and one that has stepped down (a flatmate's rent, after the rate dropped) at the
+   * higher figure it no longer earns. Mirrors `terms_on` in `sure_app::income_match`, which is
+   * what the matcher predicts against.
+   */
+  function levelNow(s: IncomeStream): number {
+    return (
+      s.steps
+        .filter((step) => step.effective_on <= today)
+        .reduce<number | null>((_, step) => step.annual_amount_minor, null) ??
+      s.annual_amount_minor
+    );
+  }
+
   let streams = $state<IncomeStream[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -162,7 +182,7 @@
                     <span class="ell" style="font-weight:560">{s.label}</span>
                     <span class="badge">{basisLabel(s.basis)}</span>
                     {#if s.pay_treatment === "extra_pay"}<span class="badge">bonus</span>{/if}
-                    {#if s.match_account_id != null}
+                    {#if s.match_targets.length > 0}
                       <span class="badge matched-badge">auto-matched</span>
                     {:else if s.enabled}
                       <!-- The absence of a badge proved too quiet a signal that matching is off. -->
@@ -172,7 +192,7 @@
                   </span>
                   <div class="row" style="gap:12px">
                     <span class="tabular small"
-                      >{formatMoney(s.annual_amount_minor, s.currency_code)}/yr</span
+                      >{formatMoney(levelNow(s), s.currency_code)}/yr</span
                     >
                     <span class="faint small">{freqLabel(s.pay_frequency)}</span>
                     <button

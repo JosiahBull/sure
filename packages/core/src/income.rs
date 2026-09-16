@@ -410,12 +410,11 @@ pub struct IncomeStream {
     pub kiwisaver_account_id: Option<i64>,
     /// The student loan these deductions pay down. Same consequence for that account.
     pub student_loan_account_id: Option<i64>,
-    /// Where this stream's deposits land, for the matcher. Matching is on iff this and
-    /// `match_pattern` are both set.
-    pub match_account_id: Option<i64>,
-    /// A case-insensitive substring the deposit's description carries — the payroll memo's
-    /// stable token, not the run number after it.
-    pub match_pattern: Option<String>,
+    /// Where this stream's deposits land and what their memo says, for the matcher. A list
+    /// because **a job outlives a bank account**: change banks and the same salary arrives in a
+    /// new account, change payroll providers and the same account sees a new memo, and neither
+    /// is a new income stream. Empty means matching is off.
+    pub match_targets: Vec<IncomeStreamMatchTarget>,
     pub pay_treatment: PayTreatment,
     pub enabled: bool,
     pub sort_order: i64,
@@ -427,6 +426,19 @@ pub struct IncomeStream {
     pub updated_at: String,
 }
 
+/// One place the matcher looks for this stream's deposits: an account, and a case-insensitive
+/// substring its description carries.
+///
+/// The pattern is the payroll memo's *stable* token — "ACME PAYROLL", not the whole memo with its
+/// per-run date suffix, which would match a single deposit and nothing else.
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct IncomeStreamMatchTarget {
+    pub id: i64,
+    pub income_stream_id: i64,
+    pub account_id: i64,
+    pub pattern: String,
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct IncomeStreamStep {
     pub id: i64,
@@ -434,6 +446,18 @@ pub struct IncomeStreamStep {
     pub effective_on: String,
     pub annual_amount_minor: i64,
     pub label: Option<String>,
+    /// The employee KiwiSaver election from this date, in basis points of gross. `None` — the
+    /// usual case — means the stream's own rate still applies.
+    ///
+    /// Dated for the same reason the level is: an election changes, and the statutory default
+    /// moved 3% -> 3.5% on 1 April 2026, taking everyone who had never made one with it. A single
+    /// rate on the stream reconstructs every historical deposit at today's figure, which shows up
+    /// as a KiwiSaver ribbon that is too fat and a PAYE line that silently absorbs the difference.
+    pub kiwisaver_bps: Option<i64>,
+    /// The employer contribution from this date, same units and same `None` meaning. It moves on
+    /// its own dates (the compulsory minimum stepped on 1 April 2026 too) and never touches
+    /// take-home — only what reaches the fund, and the ESCT taken off it.
+    pub employer_kiwisaver_bps: Option<i64>,
 }
 
 /// Write body. `steps` is a **full replace**, like `SaveForecastAssumption` is a full-replace
@@ -477,10 +501,10 @@ pub struct SaveIncomeStream {
     pub kiwisaver_account_id: Option<i64>,
     #[serde(default)]
     pub student_loan_account_id: Option<i64>,
+    /// Full replace, like `steps`: the targets sent here *are* the stream's targets after the
+    /// write, so removing one is omitting it and an empty list turns matching off.
     #[serde(default)]
-    pub match_account_id: Option<i64>,
-    #[serde(default)]
-    pub match_pattern: Option<String>,
+    pub match_targets: Vec<SaveIncomeStreamMatchTarget>,
     #[serde(default)]
     pub pay_treatment: PayTreatment,
     #[serde(default = "default_true")]
@@ -505,6 +529,16 @@ pub struct SaveIncomeStreamStep {
     pub annual_amount_minor: Money,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
+    pub kiwisaver_bps: Option<i64>,
+    #[serde(default)]
+    pub employer_kiwisaver_bps: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, ToSchema, Clone)]
+pub struct SaveIncomeStreamMatchTarget {
+    pub account_id: i64,
+    pub pattern: String,
 }
 
 #[cfg(test)]

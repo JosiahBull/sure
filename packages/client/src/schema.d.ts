@@ -6749,16 +6749,12 @@ export interface components {
              */
             student_loan_account_id?: number | null;
             /**
-             * Format: int64
-             * @description Where this stream's deposits land, for the matcher. Matching is on iff this and
-             *     `match_pattern` are both set.
+             * @description Where this stream's deposits land and what their memo says, for the matcher. A list
+             *     because **a job outlives a bank account**: change banks and the same salary arrives in a
+             *     new account, change payroll providers and the same account sees a new memo, and neither
+             *     is a new income stream. Empty means matching is off.
              */
-            match_account_id?: number | null;
-            /**
-             * @description A case-insensitive substring the deposit's description carries — the payroll memo's
-             *     stable token, not the run number after it.
-             */
-            match_pattern?: string | null;
+            match_targets: components["schemas"]["IncomeStreamMatchTarget"][];
             pay_treatment: components["schemas"]["PayTreatment"];
             enabled: boolean;
             /** Format: int64 */
@@ -6772,6 +6768,22 @@ export interface components {
             created_at: string;
             updated_at: string;
         };
+        /**
+         * @description One place the matcher looks for this stream's deposits: an account, and a case-insensitive
+         *     substring its description carries.
+         *
+         *     The pattern is the payroll memo's *stable* token — "ACME PAYROLL", not the whole memo with its
+         *     per-run date suffix, which would match a single deposit and nothing else.
+         */
+        IncomeStreamMatchTarget: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            income_stream_id: number;
+            /** Format: int64 */
+            account_id: number;
+            pattern: string;
+        };
         IncomeStreamStep: {
             /** Format: int64 */
             id: number;
@@ -6781,6 +6793,24 @@ export interface components {
             /** Format: int64 */
             annual_amount_minor: number;
             label?: string | null;
+            /**
+             * Format: int64
+             * @description The employee KiwiSaver election from this date, in basis points of gross. `None` — the
+             *     usual case — means the stream's own rate still applies.
+             *
+             *     Dated for the same reason the level is: an election changes, and the statutory default
+             *     moved 3% -> 3.5% on 1 April 2026, taking everyone who had never made one with it. A single
+             *     rate on the stream reconstructs every historical deposit at today's figure, which shows up
+             *     as a KiwiSaver ribbon that is too fat and a PAYE line that silently absorbs the difference.
+             */
+            kiwisaver_bps?: number | null;
+            /**
+             * Format: int64
+             * @description The employer contribution from this date, same units and same `None` meaning. It moves on
+             *     its own dates (the compulsory minimum stepped on 1 April 2026 too) and never touches
+             *     take-home — only what reaches the fund, and the ESCT taken off it.
+             */
+            employer_kiwisaver_bps?: number | null;
         };
         LinkGroupMember: {
             /** @description The upstream's stable identifier (`ProviderAccount::external_id`). */
@@ -7460,6 +7490,11 @@ export interface components {
             pruned: number;
             /** @description Payments newly matched to a deposit. */
             matched: number;
+            /**
+             * @description Already-settled payments whose stored payslip was re-derived because the stream's terms
+             *     moved under it — a backdated pay scale, or a changed contribution rate.
+             */
+            redecomposed: number;
         };
         /**
          * @description How often a loan's contractual repayment is actually made. Weekly and fortnightly are
@@ -7748,9 +7783,11 @@ export interface components {
             kiwisaver_account_id?: number | null;
             /** Format: int64 */
             student_loan_account_id?: number | null;
-            /** Format: int64 */
-            match_account_id?: number | null;
-            match_pattern?: string | null;
+            /**
+             * @description Full replace, like `steps`: the targets sent here *are* the stream's targets after the
+             *     write, so removing one is omitting it and an empty list turns matching off.
+             */
+            match_targets?: components["schemas"]["SaveIncomeStreamMatchTarget"][];
             pay_treatment?: components["schemas"]["PayTreatment"];
             enabled?: boolean;
             /** Format: int64 */
@@ -7758,11 +7795,20 @@ export interface components {
             notes?: string | null;
             steps?: components["schemas"]["SaveIncomeStreamStep"][];
         };
+        SaveIncomeStreamMatchTarget: {
+            /** Format: int64 */
+            account_id: number;
+            pattern: string;
+        };
         SaveIncomeStreamStep: {
             effective_on: string;
             /** Format: int64 */
             annual_amount_minor: number;
             label?: string | null;
+            /** Format: int64 */
+            kiwisaver_bps?: number | null;
+            /** Format: int64 */
+            employer_kiwisaver_bps?: number | null;
         };
         SaveMark: {
             as_of: string;

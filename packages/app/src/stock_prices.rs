@@ -153,7 +153,7 @@ impl StockPriceTask {
 #[async_trait]
 impl ScheduledTask for StockPriceTask {
     fn name(&self) -> &'static str {
-        "stock_price_poll"
+        crate::tasks::BackgroundTask::StockPricePoll.as_str()
     }
 
     fn interval(&self) -> Duration {

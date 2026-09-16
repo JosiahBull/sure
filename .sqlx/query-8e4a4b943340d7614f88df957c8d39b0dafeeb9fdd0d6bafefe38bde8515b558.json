@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", income_stream_id, effective_on, annual_amount_minor, label,\n                  kiwisaver_bps, employer_kiwisaver_bps\n             FROM income_stream_steps ORDER BY income_stream_id, effective_on",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_steps",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "income_stream_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_steps",
+            "name": "income_stream_id"
+          }
+        }
+      },
+      {
+        "name": "effective_on",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_stream_steps",
+            "name": "effective_on"
+          }
+        }
+      },
+      {
+        "name": "annual_amount_minor",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_steps",
+            "name": "annual_amount_minor"
+          }
+        }
+      },
+      {
+        "name": "label",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_stream_steps",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "name": "kiwisaver_bps",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_steps",
+            "name": "kiwisaver_bps"
+          }
+        }
+      },
+      {
+        "name": "employer_kiwisaver_bps",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_steps",
+            "name": "employer_kiwisaver_bps"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "8e4a4b943340d7614f88df957c8d39b0dafeeb9fdd0d6bafefe38bde8515b558"
+}

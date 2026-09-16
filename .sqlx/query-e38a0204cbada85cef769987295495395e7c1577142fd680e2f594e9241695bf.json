@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO income_stream_steps\n                (income_stream_id, effective_on, annual_amount_minor, label, kiwisaver_bps,\n                 employer_kiwisaver_bps)\n             VALUES (?1,?2,?3,?4,?5,?6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "e38a0204cbada85cef769987295495395e7c1577142fd680e2f594e9241695bf"
+}
