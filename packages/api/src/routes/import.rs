@@ -145,6 +145,10 @@ pub async fn run(
     if let Some(follow_up) = imported.follow_up {
         spawn_follow_up(&st, follow_up);
     }
+    // An import is the single largest change the ledger ever sees, and three tasks derive from
+    // it: transfer pairing, balance-delta and the income matcher. Waiting out their interval is
+    // what made a fresh import look half-processed for minutes.
+    st.nudge.wake_all(sure_app::tasks::LEDGER_CHANGED);
     Ok(Json(imported.result))
 }
 
@@ -199,7 +203,11 @@ pub async fn undo(
     Path((account_id, source)): Path<(i64, String)>,
 ) -> AppResult<Json<ImportUndoResult>> {
     let source = parse_source(&source)?;
-    Ok(Json(st.import.undo(account_id, source).await?))
+    let undone = st.import.undo(account_id, source).await?;
+    // Rows leaving matters as much as rows arriving: a matched pay whose deposit was just undone
+    // has to go back to expected, which `reset_orphaned_payments` does on the matcher's pass.
+    st.nudge.wake_all(sure_app::tasks::LEDGER_CHANGED);
+    Ok(Json(undone))
 }
 
 /// Start whatever an import left behind, on the process's own tracker.

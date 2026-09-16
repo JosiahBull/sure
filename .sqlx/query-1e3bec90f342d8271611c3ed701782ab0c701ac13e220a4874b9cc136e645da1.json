@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", ownership, person_id, label, employer, currency_code,\n                  annual_amount_minor,\n                  basis, pay_frequency, first_payment_on, starts_on, ends_on,\n                  annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,\n                  student_loan AS \"student_loan!: bool\", take_home_bps, linked_category_id,\n                  kiwisaver_account_id, student_loan_account_id, match_account_id, match_pattern,\n                  pay_treatment, enabled AS \"enabled!: bool\",\n                  sort_order, notes, created_at, updated_at\n             FROM income_streams ORDER BY person_id, sort_order, label, id",
+  "query": "SELECT id AS \"id!\", ownership, person_id, label, employer, currency_code,\n                  annual_amount_minor,\n                  basis, pay_frequency, first_payment_on, starts_on, ends_on,\n                  annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,\n                  student_loan AS \"student_loan!: bool\", take_home_bps, linked_category_id,\n                  kiwisaver_account_id, student_loan_account_id,\n                  pay_treatment, enabled AS \"enabled!: bool\",\n                  sort_order, notes, created_at, updated_at\n             FROM income_streams ORDER BY person_id, sort_order, label, id",
   "describe": {
     "columns": [
       {
@@ -224,30 +224,8 @@
         }
       },
       {
-        "name": "match_account_id",
-        "ordinal": 20,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "income_streams",
-            "name": "match_account_id"
-          }
-        }
-      },
-      {
-        "name": "match_pattern",
-        "ordinal": 21,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "income_streams",
-            "name": "match_pattern"
-          }
-        }
-      },
-      {
         "name": "pay_treatment",
-        "ordinal": 22,
+        "ordinal": 20,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -258,7 +236,7 @@
       },
       {
         "name": "enabled!: bool",
-        "ordinal": 23,
+        "ordinal": 21,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -269,7 +247,7 @@
       },
       {
         "name": "sort_order",
-        "ordinal": 24,
+        "ordinal": 22,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -280,7 +258,7 @@
       },
       {
         "name": "notes",
-        "ordinal": 25,
+        "ordinal": 23,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -291,7 +269,7 @@
       },
       {
         "name": "created_at",
-        "ordinal": 26,
+        "ordinal": 24,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -302,7 +280,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 27,
+        "ordinal": 25,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -336,8 +314,6 @@
       true,
       true,
       true,
-      true,
-      true,
       false,
       false,
       false,
@@ -346,5 +322,5 @@
       false
     ]
   },
-  "hash": "6140ce47e88d41321c9f9822b2bed2baad4aa11be0e277533c3788a427cf1ced"
+  "hash": "1e3bec90f342d8271611c3ed701782ab0c701ac13e220a4874b9cc136e645da1"
 }

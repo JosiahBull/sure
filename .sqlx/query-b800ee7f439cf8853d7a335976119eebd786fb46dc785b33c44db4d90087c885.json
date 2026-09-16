@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM income_stream_match_targets",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "b800ee7f439cf8853d7a335976119eebd786fb46dc785b33c44db4d90087c885"
+}

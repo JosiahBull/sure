@@ -130,10 +130,11 @@ pub async fn create(
     State(st): State<AppState>,
     Json(input): Json<SaveTransaction>,
 ) -> AppResult<(StatusCode, Json<Transaction>)> {
-    Ok((
-        StatusCode::CREATED,
-        Json(st.transactions.create(input).await?),
-    ))
+    let created = st.transactions.create(input).await?;
+    // The ledger moved, so whatever is derived from it should catch up now rather than on
+    // the next tick — a hand-entered salary deposit is the obvious case.
+    st.nudge.wake_all(sure_app::tasks::LEDGER_CHANGED);
+    Ok((StatusCode::CREATED, Json(created)))
 }
 
 /// Replace a transaction. Manually setting the category clears the "categorised by
@@ -172,6 +173,9 @@ pub async fn update(
 )]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     st.transactions.delete(id).await?;
+    // The ledger moved, so whatever is derived from it should catch up now rather than on
+    // the next tick — a hand-entered salary deposit is the obvious case.
+    st.nudge.wake_all(sure_app::tasks::LEDGER_CHANGED);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -192,6 +196,9 @@ pub async fn bulk_update(
     Json(input): Json<BulkUpdate>,
 ) -> AppResult<Json<BulkResult>> {
     let affected = st.transactions.bulk_update(input).await?;
+    // The ledger moved, so whatever is derived from it should catch up now rather than on
+    // the next tick — a hand-entered salary deposit is the obvious case.
+    st.nudge.wake_all(sure_app::tasks::LEDGER_CHANGED);
     Ok(Json(BulkResult { affected }))
 }
 
@@ -211,6 +218,9 @@ pub async fn bulk_delete(
     Json(input): Json<BulkDelete>,
 ) -> AppResult<Json<BulkResult>> {
     let affected = st.transactions.bulk_delete(&input.ids).await?;
+    // The ledger moved, so whatever is derived from it should catch up now rather than on
+    // the next tick — a hand-entered salary deposit is the obvious case.
+    st.nudge.wake_all(sure_app::tasks::LEDGER_CHANGED);
     Ok(Json(BulkResult { affected }))
 }
 

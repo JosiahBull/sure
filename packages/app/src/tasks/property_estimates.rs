@@ -43,7 +43,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// import can wipe the valuations this task writes, and clearing its last-run row is what makes
 /// the next check refill them instead of waiting out a month. A hand-copied string there would
 /// drift the day this task is renamed.
-pub const TASK_NAME: &str = "property_estimate_poll";
+pub const TASK_NAME: &str = super::BackgroundTask::PropertyEstimatePoll.as_str();
 
 /// Prefix on the note every estimate valuation carries, so where a figure came from is legible
 /// in the account's valuation list without cross-referencing the provider by name.

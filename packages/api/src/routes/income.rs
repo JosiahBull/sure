@@ -6,6 +6,7 @@ use axum::routing::{get, post};
 use crate::error::AppResult;
 use crate::extract::Json;
 use crate::state::AppState;
+use sure_app::tasks::BackgroundTask;
 
 // The domain types live in sure-core; re-export so the OpenAPI registration
 // (`crate::routes::income::IncomeStream`, ...) and the handler annotations resolve.
@@ -148,14 +149,15 @@ pub async fn create(
     Path(person_id): Path<i64>,
     Json(input): Json<SaveIncomeStream>,
 ) -> AppResult<(StatusCode, Json<IncomeStream>)> {
-    Ok((
-        StatusCode::CREATED,
-        Json(
-            st.income
-                .create_income_stream(Ownership::Person { person_id }, input)
-                .await?,
-        ),
-    ))
+    let stream = st
+        .income
+        .create_income_stream(Ownership::Person { person_id }, input)
+        .await?;
+    // The schedule this stream implies does not exist until the matcher builds it, and somebody
+    // who has just described their salary is looking at a page that should fill in — not one
+    // that stays empty for up to five minutes.
+    st.nudge.wake(BackgroundTask::IncomeMatch);
+    Ok((StatusCode::CREATED, Json(stream)))
 }
 
 /// Record income the household earns rather than one of its people — rent from a flatmate, a
@@ -185,10 +187,9 @@ pub async fn create_owned(
              earns, or POST to /api/people/{person_id}/income-streams for one person's",
         ));
     };
-    Ok((
-        StatusCode::CREATED,
-        Json(st.income.create_income_stream(owner, input).await?),
-    ))
+    let stream = st.income.create_income_stream(owner, input).await?;
+    st.nudge.wake(BackgroundTask::IncomeMatch);
+    Ok((StatusCode::CREATED, Json(stream)))
 }
 
 /// Replace an income stream, its pay-scale schedule included.
@@ -211,7 +212,12 @@ pub async fn update(
     Path(id): Path<i64>,
     Json(input): Json<SaveIncomeStream>,
 ) -> AppResult<Json<IncomeStream>> {
-    Ok(Json(st.income.update_income_stream(id, input).await?))
+    let stream = st.income.update_income_stream(id, input).await?;
+    // An edit can move every expected date and every predicted figure — a backdated pay scale,
+    // a new match target, a corrected frequency — so the schedule is regenerated now rather than
+    // on the next tick.
+    st.nudge.wake(BackgroundTask::IncomeMatch);
+    Ok(Json(stream))
 }
 
 /// Remove an income stream. Refused with 409 while a forecast change still points at it — repoint
@@ -229,6 +235,9 @@ pub async fn update(
 )]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     st.income.delete_income_stream(id).await?;
+    // Its payments went with it (ON DELETE CASCADE); the nudge is for the other streams, whose
+    // bracket context is the sum of the person's regular gross and has just changed.
+    st.nudge.wake(BackgroundTask::IncomeMatch);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -478,6 +487,9 @@ pub struct RematchSummary {
     pub pruned: usize,
     /// Payments newly matched to a deposit.
     pub matched: usize,
+    /// Already-settled payments whose stored payslip was re-derived because the stream's terms
+    /// moved under it — a backdated pay scale, or a changed contribution rate.
+    pub redecomposed: usize,
 }
 
 /// Run the matcher now — the same idempotent pass the background task runs every few minutes,
@@ -497,6 +509,7 @@ pub async fn rematch(State(st): State<AppState>) -> AppResult<Json<RematchSummar
         generated: s.generated,
         pruned: s.pruned,
         matched: s.matched,
+        redecomposed: s.redecomposed,
     }))
 }
 

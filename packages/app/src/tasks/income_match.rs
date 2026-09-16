@@ -30,22 +30,33 @@ impl IncomeMatchTask {
 #[async_trait]
 impl ScheduledTask for IncomeMatchTask {
     fn name(&self) -> &'static str {
-        "income_match"
+        super::BackgroundTask::IncomeMatch.as_str()
     }
 
     fn interval(&self) -> Duration {
         POLL_INTERVAL
     }
 
+    /// Local — reads and writes only this database — so it runs at boot as well as on its
+    /// interval. See `ScheduledTask::run_on_startup`.
+    fn run_on_startup(&self) -> bool {
+        super::BackgroundTask::IncomeMatch.is_local()
+    }
+
     /// `cancel` unused for the same reason as `transfer_link`: the pass is a bounded set of
     /// SQLite queries with no upstream to wait on, so the drain just waits one run out.
     async fn run(&self, _cancel: &CancellationToken) -> anyhow::Result<TaskRun> {
         let summary = self.service.run().await?;
-        if summary.matched > 0 || summary.repaired > 0 || summary.pruned > 0 {
+        if summary.matched > 0
+            || summary.repaired > 0
+            || summary.pruned > 0
+            || summary.redecomposed > 0
+        {
             tracing::info!(
                 matched = summary.matched,
                 repaired = summary.repaired,
                 pruned = summary.pruned,
+                redecomposed = summary.redecomposed,
                 "income match pass"
             );
         }

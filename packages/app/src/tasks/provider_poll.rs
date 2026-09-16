@@ -43,7 +43,7 @@ impl ProviderPollTask {
 #[async_trait]
 impl ScheduledTask for ProviderPollTask {
     fn name(&self) -> &'static str {
-        "provider_poll"
+        super::BackgroundTask::ProviderPoll.as_str()
     }
 
     fn interval(&self) -> Duration {

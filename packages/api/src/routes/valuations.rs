@@ -6,6 +6,7 @@ use axum::routing::get;
 use crate::error::{AppError, AppResult};
 use crate::extract::Json;
 use crate::state::AppState;
+use sure_app::tasks::BackgroundTask;
 
 use sure_core::ValuationQuery;
 pub use sure_core::{NewValuation, Valuation, ValuationSource};
@@ -89,10 +90,11 @@ pub async fn create(
     Path(id): Path<i64>,
     Json(input): Json<NewValuation>,
 ) -> AppResult<(StatusCode, Json<Valuation>)> {
-    Ok((
-        StatusCode::CREATED,
-        Json(st.valuations.create(id, input).await?),
-    ))
+    let valuation = st.valuations.create(id, input).await?;
+    // A balance-only account's transactions are the gap between two valuations, so writing
+    // one changes what `balance_delta` derives.
+    st.nudge.wake(BackgroundTask::BalanceDelta);
+    Ok((StatusCode::CREATED, Json(valuation)))
 }
 
 /// Edit a valuation entered by hand — its date, amount or note.
@@ -116,7 +118,11 @@ pub async fn update(
     Path(id): Path<i64>,
     Json(input): Json<NewValuation>,
 ) -> AppResult<Json<Valuation>> {
-    Ok(Json(st.valuations.update(id, input).await?))
+    let valuation = st.valuations.update(id, input).await?;
+    // A balance-only account's transactions are the gap between two valuations, so writing
+    // one changes what `balance_delta` derives.
+    st.nudge.wake(BackgroundTask::BalanceDelta);
+    Ok(Json(valuation))
 }
 
 /// Delete a valuation.
@@ -133,6 +139,9 @@ pub async fn update(
 )]
 pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<StatusCode> {
     st.valuations.delete(id).await?;
+    // A balance-only account's transactions are the gap between two valuations, so writing
+    // one changes what `balance_delta` derives.
+    st.nudge.wake(BackgroundTask::BalanceDelta);
     Ok(StatusCode::NO_CONTENT)
 }
 
