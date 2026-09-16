@@ -44,7 +44,7 @@
     payments.filter((p) => p.status !== "expected" || p.due_on <= today)
   );
   const shown = $derived(showAll ? reviewable : reviewable.slice(0, SHOWN));
-  const anyMatchable = $derived(streams.some((s) => s.match_account_id != null));
+  const anyMatchable = $derived(streams.some((s) => s.match_targets.length > 0));
 
   async function rematch() {
     rematching = true;
@@ -94,16 +94,23 @@
     from.setDate(from.getDate() - 5);
     const to = new Date(due);
     to.setDate(to.getDate() + 3);
+    // The route narrows to one account; a stream may point at several. Narrow server-side only
+    // when there is exactly one, and otherwise fetch the window and keep the accounts the stream
+    // actually names — a stream with no targets at all is matched by hand from anywhere.
+    const accountIds = new Set((stream?.match_targets ?? []).map((t) => t.account_id));
     const { data } = await api.GET("/api/transactions", {
       params: {
         query: {
-          account_id: stream?.match_account_id ?? undefined,
+          account_id: accountIds.size === 1 ? [...accountIds][0] : undefined,
           from: from.toISOString().slice(0, 10),
           to: to.toISOString().slice(0, 10),
         },
       },
     });
-    candidates = (data ?? []).filter((t) => t.amount_minor > 0).slice(0, 5);
+    candidates = (data ?? [])
+      .filter((t) => t.amount_minor > 0)
+      .filter((t) => accountIds.size === 0 || accountIds.has(t.account_id))
+      .slice(0, 5);
   }
 
   function statusLabel(p: IncomePayment): string {

@@ -1204,6 +1204,8 @@ pub trait EquityRepo: Send + Sync {
         as_of: Option<&str>,
     ) -> AppResult<Vec<EquityEvent>>;
     async fn rebuild_history(&self, id: i64, today: Option<&str>) -> AppResult<RebuildResult>;
+    /// Accounts holding at least one equity grant — what the background rebuild walks.
+    async fn accounts_with_equity(&self) -> AppResult<Vec<i64>>;
     /// Value at each month from `from`, for `0..=months`. See
     /// `sure_dal::equity::projected_values`.
     async fn projected_values(&self, id: i64, from: &str, months: i64) -> AppResult<Vec<i64>>;

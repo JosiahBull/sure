@@ -98,6 +98,7 @@ fn build_state(
     shutdown: Shutdown,
     mcp_ceiling: sure_mcp::McpMode,
     sync_cooldown: Duration,
+    nudge: sure_app::tasks::TaskNudge,
 ) -> (sure_api::State, sure_mcp::McpState) {
     let Adapters {
         registry,
@@ -196,6 +197,7 @@ fn build_state(
         stock_price_provider,
         property_estimate_provider,
         shutdown,
+        nudge,
         mcp_ceiling,
     };
 
@@ -259,12 +261,18 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
     // does run reaches a stub or a replay-miss 503 rather than the network whatever this
     // flag says — which is what lets `specs/shutdown.spec.ts` turn it back on and drain a
     // poll that is genuinely in flight.
+    // Created here rather than taken from the scheduler, because the HTTP state is built after
+    // this block and needs the same handle. With background tasks off it is a handle nobody
+    // listens on, which is the honest thing for a process that runs no tasks: every `wake` is a
+    // no-op and no handler has to know.
+    let nudge = sure_scheduler::Nudge::new();
     if config.background_tasks {
         let task_state = Arc::new(sure_dal::scheduled_tasks::SqliteTaskStateStore::new(
             pool.clone(),
         ));
         let mut scheduler =
-            sure_scheduler::Scheduler::new(task_state, std::time::Duration::from_secs(60));
+            sure_scheduler::Scheduler::new(task_state, std::time::Duration::from_secs(60))
+                .with_nudge(nudge.clone());
 
         // One store + clock for the scheduled tasks' ports (a separate instance from the one
         // `build_state` builds for the HTTP handlers — both are stateless wrappers around
@@ -352,6 +360,13 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         scheduler.register(Box::new(
             sure_app::tasks::income_match::IncomeMatchTask::new(income_match),
         ));
+        // Keeps an equity account's valuation history in step with its grants and price ledger.
+        // Registered last because it derives from data the polls above may have just written,
+        // and nudged by whoever records a mark — see the module header for why this replaced a
+        // "Rebuild history" button.
+        scheduler.register(Box::new(
+            sure_app::tasks::equity_rebuild::EquityRebuildTask::new(store.clone()),
+        ));
         scheduled_task_names = scheduler.task_names();
         // Tracked, so the drain below waits for a sweep that is mid-flight when the
         // shutdown signal lands — a provider poll part-way through writing a sync row is
@@ -409,6 +424,7 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         shutdown.clone(),
         config.mcp.ceiling,
         config.provider_limits.sync_cooldown,
+        sure_app::tasks::TaskNudge::new(nudge),
     );
     let app = sure_api::build_app(
         state,

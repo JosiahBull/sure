@@ -50,14 +50,32 @@
     currency_code: initial?.currency_code ?? "NZD",
     enabled: initial?.enabled ?? true,
     pay_treatment: initial?.pay_treatment ?? ("regular" as Schemas["PayTreatment"]),
-    match_account_id: initial?.match_account_id ?? null,
-    match_pattern: initial?.match_pattern ?? "",
   });
-  let steps = $state<{ effective_on: string; amount: string; label: string }[]>(
+  let steps = $state<
+    {
+      effective_on: string;
+      amount: string;
+      label: string;
+      kiwisaver: string;
+      employer_kiwisaver: string;
+    }[]
+  >(
     (initial?.steps ?? []).map((s) => ({
       effective_on: s.effective_on,
       amount: (s.annual_amount_minor / 100).toString(),
       label: s.label ?? "",
+      // Blank means "unchanged from the stream's rate", which is what null means on the wire.
+      kiwisaver: s.kiwisaver_bps != null ? (s.kiwisaver_bps / 100).toString() : "",
+      employer_kiwisaver:
+        s.employer_kiwisaver_bps != null ? (s.employer_kiwisaver_bps / 100).toString() : "",
+    }))
+  );
+  // Where the matcher looks. A list because a job outlives a bank account and a bank rewrites
+  // its memo format; each row is one account plus the token its deposits carry there.
+  let matchTargets = $state<{ account_id: number | null; pattern: string }[]>(
+    (initial?.match_targets ?? []).map((t) => ({
+      account_id: t.account_id,
+      pattern: t.pattern,
     }))
   );
 
@@ -137,8 +155,7 @@
     // The detector's grouping token is the memo's stable prefix — exactly what the matcher
     // should look for, in exactly the account it was seen in. Never `d.label`: that is one
     // whole memo, usually with a per-run suffix that would match a single deposit.
-    f.match_account_id = d.account_id;
-    f.match_pattern = d.match_pattern;
+    matchTargets = [{ account_id: d.account_id, pattern: d.match_pattern }];
     dismissed = true;
   }
 
@@ -188,7 +205,13 @@
       effective_on: from.toISOString().slice(0, 10),
       amount: Math.round(base * 1.03).toString(),
       label: "",
+      kiwisaver: "",
+      employer_kiwisaver: "",
     });
+  }
+
+  function addMatchTarget() {
+    matchTargets.push({ account_id: null, pattern: "" });
   }
 
   const maxStep = $derived(
@@ -220,14 +243,21 @@
       linked_category_id: f.linked_category_id,
       enabled: f.enabled,
       pay_treatment: f.pay_treatment,
-      match_account_id: f.match_account_id,
-      match_pattern: f.match_pattern.trim() || null,
+      // A half-filled row is someone mid-edit, not a target — dropped rather than rejected, the
+      // same way an empty step row is.
+      match_targets: matchTargets
+        .filter((t) => t.account_id != null && t.pattern.trim())
+        .map((t) => ({ account_id: t.account_id!, pattern: t.pattern.trim() })),
       steps: steps
         .filter((s) => s.effective_on && parseFloat(s.amount))
         .map((s) => ({
           effective_on: s.effective_on,
           annual_amount_minor: Math.round(parseFloat(s.amount) * 100),
           label: s.label.trim() || null,
+          kiwisaver_bps: s.kiwisaver.trim() ? Math.round(parseFloat(s.kiwisaver) * 100) : null,
+          employer_kiwisaver_bps: s.employer_kiwisaver.trim()
+            ? Math.round(parseFloat(s.employer_kiwisaver) * 100)
+            : null,
         })),
     };
     const res = initial
@@ -448,32 +478,51 @@
   <!-- Always visible, never folded into a details row: matching is what turns a configured
        stream into checked-off paydays and the payslip layer on the cash-flow chart, and a
        collapsed section proved invisible in practice — a household set everything else up and
-       could not see why nothing matched. Both halves or neither: an account to look in and a
-       memo token to look for. -->
+       could not see why nothing matched. A list rather than one pair, because a job outlives a
+       bank account: change banks and the same salary lands somewhere new, and every deposit
+       before the switch is otherwise never even looked at. -->
   <div class="match-block">
     <div class="row spread" style="margin-bottom:6px">
       <strong class="small">Match deposits automatically</strong>
-      {#if f.match_account_id === null}
+      {#if matchTargets.length === 0}
         <span class="badge">off</span>
       {/if}
     </div>
-    <div class="grid-fields">
-      <label class="field">
-        <span class="lbl">Lands in account</span>
-        <select class="select" bind:value={f.match_account_id}>
-          <option value={null}>Not matched</option>
-          {#each accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
-        </select>
-      </label>
-      <label class="field">
-        <span class="lbl">Deposit memo contains</span>
-        <input class="input" placeholder="e.g. the employer's name" bind:value={f.match_pattern} />
-      </label>
-    </div>
-    <p class="small faint" style="margin:0">
-      With these set, each payday is checked off against the deposit that satisfied it and the
-      cash-flow chart draws the payslip behind it. A bonus paid inside the salary run should use
-      the same account and memo as the salary — the two are matched against the one deposit.
+    {#each matchTargets as t, i (i)}
+      <div class="grid-fields" style="margin-bottom:6px">
+        <label class="field">
+          <span class="lbl">Lands in account</span>
+          <select class="select" bind:value={t.account_id}>
+            <option value={null}>Choose an account…</option>
+            {#each accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+          </select>
+        </label>
+        <label class="field">
+          <span class="lbl">Deposit memo contains</span>
+          <div class="row" style="gap:6px">
+            <input
+              class="input"
+              placeholder="e.g. the employer's name"
+              bind:value={t.pattern}
+            />
+            <button
+              class="btn btn-sm btn-danger"
+              title="Remove this place to look"
+              onclick={() => matchTargets.splice(i, 1)}>✕</button
+            >
+          </div>
+        </label>
+      </div>
+    {/each}
+    <button class="btn btn-sm" onclick={addMatchTarget}>
+      {matchTargets.length ? "+ Add another account or memo" : "+ Match deposits"}
+    </button>
+    <p class="small faint" style="margin:6px 0 0">
+      Each payday is checked off against the deposit that satisfied it, and the cash-flow chart
+      draws the payslip behind it. Add a row per place the pay has landed — an old bank account,
+      or a memo the bank has since reworded — and the whole history is matched rather than only
+      the months since the change. A bonus paid inside the salary run should point at the same
+      account and memo as the salary: the two are matched against the one deposit.
     </p>
   </div>
 
@@ -500,6 +549,20 @@
           <input class="input" type="date" bind:value={s.effective_on} />
           <input class="input tabular" bind:value={s.amount} />
           <input class="input" placeholder="Step 5" bind:value={s.label} />
+          <!-- Blank is "unchanged", not 0% — 0% is a real election someone can make. A step is
+               the natural place for a re-election, and for the 1 Apr 2026 default change. -->
+          <input
+            class="input tabular narrow"
+            placeholder="KS %"
+            title="KiwiSaver % from this date — blank keeps the stream's rate"
+            bind:value={s.kiwisaver}
+          />
+          <input
+            class="input tabular narrow"
+            placeholder="Emp %"
+            title="Employer KiwiSaver % from this date — blank keeps the stream's rate"
+            bind:value={s.employer_kiwisaver}
+          />
           <!-- A bar per step: a mis-keyed order of magnitude is invisible in a number column and
                obvious the moment it is drawn. -->
           <div class="bar-track">
@@ -612,9 +675,20 @@
   }
   .step-row {
     display: grid;
-    grid-template-columns: minmax(120px, 1fr) minmax(80px, 0.7fr) minmax(80px, 1fr) 60px auto;
+    grid-template-columns:
+      minmax(120px, 1fr) minmax(80px, 0.7fr) minmax(80px, 1fr) 4.5rem 4.5rem
+      60px auto;
     gap: 8px;
     align-items: center;
+  }
+  /* Seven columns do not fit a phone; below that the row stacks and the bar spans it. */
+  @media (max-width: 640px) {
+    .step-row {
+      grid-template-columns: 1fr 1fr auto;
+    }
+  }
+  .narrow {
+    min-width: 0;
   }
   .bar-track {
     height: 6px;

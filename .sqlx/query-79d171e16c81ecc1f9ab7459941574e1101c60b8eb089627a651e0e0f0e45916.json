@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", income_stream_id, effective_on, annual_amount_minor, label\n             FROM income_stream_steps ORDER BY income_stream_id, effective_on",
+  "query": "SELECT id AS \"id!\", income_stream_id, effective_on, annual_amount_minor, label,\n                  created_at, kiwisaver_bps, employer_kiwisaver_bps\n             FROM income_stream_steps ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,39 @@
             "name": "label"
           }
         }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_stream_steps",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "kiwisaver_bps",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_steps",
+            "name": "kiwisaver_bps"
+          }
+        }
+      },
+      {
+        "name": "employer_kiwisaver_bps",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_steps",
+            "name": "employer_kiwisaver_bps"
+          }
+        }
       }
     ],
     "parameters": {
@@ -67,8 +100,11 @@
       false,
       false,
       false,
+      true,
+      false,
+      true,
       true
     ]
   },
-  "hash": "6ef89a50a76c66b05b23e9a437ae0353e536d2cc609e0406e89f3750c0c406d8"
+  "hash": "79d171e16c81ecc1f9ab7459941574e1101c60b8eb089627a651e0e0f0e45916"
 }

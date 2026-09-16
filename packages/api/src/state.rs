@@ -11,6 +11,7 @@ use sure_app::ports::{
 use sure_app::reports::ReportService;
 use sure_app::rules::RuleService;
 use sure_app::sync::SyncService;
+use sure_app::tasks::TaskNudge;
 
 /// Shared application state handed to every handler. Cheap to clone — every field is an
 /// `Arc` (the four logic-heavy services, or a repo port trait object directly for thin
@@ -69,6 +70,14 @@ pub struct AppState {
     /// valuation write that was cut in half. Tracked, the same task is either waited for or
     /// named in the report — which is the report's entire purpose.
     pub shutdown: sure_appbase::Shutdown,
+    /// Asks the scheduler to run a derived task now, because a handler just changed one of its
+    /// inputs. The interval is a staleness floor, not a promise that nothing happens sooner —
+    /// somebody who has just saved an income stream or a share price is watching the screen.
+    ///
+    /// Defaulted rather than optional: a process with no scheduler (MCP-only, and every route
+    /// test) gets a handle whose `wake` does nothing, so no handler has to branch on whether
+    /// background work exists in this deployment.
+    pub nudge: TaskNudge,
     /// The most of the MCP surface `SURE_MCP` permits this process to serve.
     ///
     /// Here rather than in `ApiConfig` because a *handler* needs it: the settings route
