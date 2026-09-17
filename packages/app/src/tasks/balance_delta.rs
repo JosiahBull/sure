@@ -122,11 +122,17 @@ impl BalanceDeltaTask {
 #[async_trait]
 impl ScheduledTask for BalanceDeltaTask {
     fn name(&self) -> &'static str {
-        "balance_delta"
+        super::BackgroundTask::BalanceDelta.as_str()
     }
 
     fn interval(&self) -> Duration {
         POLL_INTERVAL
+    }
+
+    /// Local — reads and writes only this database — so it runs at boot as well as on its
+    /// interval. See `ScheduledTask::run_on_startup`.
+    fn run_on_startup(&self) -> bool {
+        super::BackgroundTask::BalanceDelta.is_local()
     }
 
     async fn run(&self, cancel: &CancellationToken) -> anyhow::Result<TaskRun> {

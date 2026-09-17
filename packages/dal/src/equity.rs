@@ -563,6 +563,22 @@ const MAX_REBUILD_VALUATIONS: usize = 1_000;
 /// upserts (see [`write_valuation`]), so correcting a mark and rebuilding restates the history
 /// instead of doubling it.
 #[tracing::instrument(level = "debug", skip_all)]
+/// Every account that holds equity, oldest id first.
+///
+/// "Holds equity" means it has at least one grant: a price mark on an account with no grants
+/// values nothing, and an account with grants always has a history worth rebuilding even before
+/// anyone records a price. The background rebuild walks this rather than every account, so a
+/// household with no ESOP does no work at all.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn accounts_with_equity(db: &Db) -> AppResult<Vec<i64>> {
+    Ok(sqlx::query_scalar!(
+        r#"SELECT DISTINCT account_id AS "account_id!" FROM equity_grants
+                                ORDER BY account_id"#
+    )
+    .fetch_all(db)
+    .await?)
+}
+
 pub async fn rebuild_history(db: &Db, id: i64, today: Option<&str>) -> AppResult<RebuildResult> {
     let today = today
         .and_then(parse_date)

@@ -35,8 +35,7 @@ async function seedSalaryStream(
     starts_on: "2026-05-01",
     kiwisaver_bps: 350,
     student_loan: true,
-    match_account_id: account.id,
-    match_pattern: PATTERN,
+    match_targets: [{ account_id: account.id, pattern: PATTERN }],
     ...over,
   });
   return { personId: person.id, accountId: account.id, streamId: stream.id };
@@ -141,8 +140,7 @@ test("salary and bonus in one deposit split into two reconstructed payslips", as
     starts_on: "2026-06-01",
     kiwisaver_bps: 350,
     student_loan: true,
-    match_account_id: accountId,
-    match_pattern: PATTERN,
+    match_targets: [{ account_id: accountId, pattern: PATTERN }],
   });
   // Two ordinary pays first, so the matcher has an observed base to anchor the split on.
   for (const posted of ["2026-05-14", "2026-05-28"]) {
@@ -244,8 +242,7 @@ test("editing the schedule prunes stray expected rows and never settled ones", a
       starts_on: "2026-05-01",
       kiwisaver_bps: 350,
       student_loan: true,
-      match_account_id: accountId,
-      match_pattern: PATTERN,
+      match_targets: [{ account_id: accountId, pattern: PATTERN }],
     },
   });
   expect(response.status).toBe(200);
@@ -342,4 +339,193 @@ test("payment statuses move only along the human-owned edges", async ({ api }) =
   // …and the illegal edges are refused by name.
   expect((await set(expected.id, "matched")).response.status).toBe(409);
   expect((await set(matched.id, "dismissed")).response.status).toBe(409);
+});
+
+test("a job that changed bank accounts matches on both sides of the switch", async ({
+  api,
+}) => {
+  // The shape this exists for: one salary, paid into one account for a while and then another,
+  // with the bank wording the memo differently in each. Modelled as one stream with two targets
+  // — two streams would double-count the person's gross when a bonus's bracket is worked out,
+  // and would split one pay scale across two schedules.
+  const person = await createPerson(api, "Rua");
+  const oldBank = await createAccount(api, "Chequing", "bank");
+  const newBank = await createAccount(api, "Offset", "bank");
+  await createIncomeStream(api, person.id, {
+    label: "Salary",
+    basis: "gross_nz_paye",
+    annual_amount_minor: 96_000_00,
+    pay_frequency: "semi_monthly",
+    first_payment_on: "2026-05-14",
+    starts_on: "2026-05-01",
+    kiwisaver_bps: 350,
+    student_loan: true,
+    match_targets: [
+      { account_id: oldBank.id, pattern: "D/C FROM KAIMAHI COLLECTIVE SALARY/WAGES PAY" },
+      { account_id: newBank.id, pattern: "KAIMAHI COLLECTIVE SALARY/WAGESPAY" },
+    ],
+  });
+  await createTransaction(api, {
+    account_id: oldBank.id,
+    posted_at: "2026-05-14",
+    amount_minor: SALARY_NET,
+    description: "D/C FROM KAIMAHI COLLECTIVE SALARY/WAGES PAY ENDED 12-MAY-2026",
+  });
+  await createTransaction(api, {
+    account_id: newBank.id,
+    posted_at: "2026-05-28",
+    amount_minor: SALARY_NET,
+    description: "KAIMAHI COLLECTIVE SALARY/WAGESPAY ENDED28-MAY-2026",
+  });
+
+  expect((await rematch(api)).matched).toBe(2);
+  const matched = await payments(api, { status: "matched" });
+  expect(matched.map((p) => p.due_on).sort()).toEqual(["2026-05-14", "2026-05-28"]);
+  for (const p of matched) reconciles(p);
+});
+
+test("a stream that has ended stops expecting pay after its last day", async ({ api }) => {
+  // `ends_on` was stored and validated but never read by the matcher, so a finished job kept
+  // generating one unsatisfiable "missed pay" per payday, forever.
+  const { streamId } = await seedSalaryStream(api, { ends_on: "2026-06-30" });
+  await rematch(api);
+
+  const all = await payments(api, {});
+  expect(all.length).toBeGreaterThan(0);
+  for (const p of all) {
+    expect(p.due_on <= "2026-06-30", `${p.due_on} is after the stream ended`).toBe(true);
+  }
+  // Extending the end date brings the later paydays back, and shortening it prunes them again —
+  // the schedule is regenerated from the current config on every run.
+  const { data: stream } = await api.GET("/api/income-streams/{id}", {
+    params: { path: { id: streamId } },
+  });
+  const body = {
+    label: stream!.label,
+    currency_code: stream!.currency_code,
+    annual_amount_minor: stream!.annual_amount_minor,
+    basis: stream!.basis,
+    pay_frequency: stream!.pay_frequency,
+    first_payment_on: stream!.first_payment_on,
+    starts_on: stream!.starts_on,
+    kiwisaver_bps: stream!.kiwisaver_bps,
+    student_loan: stream!.student_loan,
+    match_targets: stream!.match_targets.map((t) => ({
+      account_id: t.account_id,
+      pattern: t.pattern,
+    })),
+  };
+  await api.PUT("/api/income-streams/{id}", {
+    params: { path: { id: streamId } },
+    body: { ...body, ends_on: "2026-08-31" },
+  });
+  await rematch(api);
+  const longer = await payments(api, {});
+  expect(longer.length).toBeGreaterThan(all.length);
+  for (const p of longer) expect(p.due_on <= "2026-08-31").toBe(true);
+});
+
+test("a variable stream claims every deposit its memo matches, whatever the amount", async ({
+  api,
+}) => {
+  // Casual work: the cadence is exact but the amount is whatever the hours came to. The spread
+  // here (24x between smallest and largest) is the shape a fixed-amount stream cannot express —
+  // its max($5, 2%) tolerance rejects every one of these.
+  const person = await createPerson(api, "Rua");
+  const account = await createAccount(api, "Everyday", "bank");
+  await createIncomeStream(api, person.id, {
+    label: "Tutoring",
+    basis: "gross_nz_paye",
+    // An estimate: for a variable stream it steers nothing but the bracket other income sits in.
+    annual_amount_minor: 12_000_00,
+    pay_frequency: "fortnightly",
+    first_payment_on: "2026-05-01",
+    starts_on: "2026-05-01",
+    ends_on: "2026-06-30",
+    pay_pattern: "variable",
+    kiwisaver_bps: 0,
+    student_loan: false,
+    match_targets: [{ account_id: account.id, pattern: "AWHINA TUTORING" }],
+  });
+
+  const amounts = [99_00, 412_50, 2_376_40];
+  for (const [i, amount_minor] of amounts.entries()) {
+    await createTransaction(api, {
+      account_id: account.id,
+      posted_at: `2026-05-${String(1 + i * 14).padStart(2, "0")}`,
+      amount_minor,
+      description: `AWHINA TUTORING PAYROLL ${i}`,
+    });
+  }
+  // Same account, same window, different employer: the pattern is what bounds a variable stream,
+  // so this must be left alone.
+  const other = await createTransaction(api, {
+    account_id: account.id,
+    posted_at: "2026-05-20",
+    amount_minor: 500_00,
+    description: "SOMEONE ELSE ENTIRELY",
+  });
+  // Outside the stream's dates. `ends_on` is the other bound, and it has to hold for a stream
+  // that claims on memo alone.
+  const afterTheEnd = await createTransaction(api, {
+    account_id: account.id,
+    posted_at: "2026-07-14",
+    amount_minor: 300_00,
+    description: "AWHINA TUTORING PAYROLL 9",
+  });
+
+  expect((await rematch(api)).matched).toBe(3);
+  const matched = await payments(api, { status: "matched" });
+  expect(matched.length).toBe(3);
+  expect(matched.map((p) => p.observed_net_minor).sort((a, b) => a! - b!)).toEqual(amounts);
+  for (const p of matched) {
+    // Nothing was expected, so there is no figure to drift from — the review UI reads this.
+    expect(p.expected_net_minor).toBeNull();
+    expect(p.matched_by).toBe("auto");
+    reconciles(p);
+    // KiwiSaver was switched off on this stream, so no contribution may be invented.
+    expect(p.kiwisaver_minor).toBe(0);
+  }
+  expect(matched.some((p) => p.transaction_id === other.id)).toBe(false);
+  expect(matched.some((p) => p.transaction_id === afterTheEnd.id)).toBe(false);
+
+  // A variable stream never reports a missed pay: it never claimed one was coming.
+  expect((await payments(api, { status: "expected" })).length).toBe(0);
+
+  // Idempotent, like the scheduled path.
+  expect((await rematch(api)).matched).toBe(0);
+  expect((await payments(api, { status: "matched" })).length).toBe(3);
+});
+
+test("unlinking a variable payment removes it rather than stranding a missed pay", async ({
+  api,
+}) => {
+  const person = await createPerson(api, "Rua");
+  const account = await createAccount(api, "Everyday", "bank");
+  await createIncomeStream(api, person.id, {
+    label: "Tutoring",
+    basis: "gross_nz_paye",
+    annual_amount_minor: 12_000_00,
+    pay_frequency: "fortnightly",
+    first_payment_on: "2026-05-01",
+    starts_on: "2026-05-01",
+    pay_pattern: "variable",
+    match_targets: [{ account_id: account.id, pattern: "AWHINA TUTORING" }],
+  });
+  await createTransaction(api, {
+    account_id: account.id,
+    posted_at: "2026-05-01",
+    amount_minor: 412_50,
+    description: "AWHINA TUTORING PAYROLL 1",
+  });
+  await rematch(api);
+  const [p] = await payments(api, { status: "matched" });
+
+  const { response } = await api.DELETE("/api/income-payments/{id}/link", {
+    params: { path: { id: p!.id } },
+  });
+  expect(response.status).toBe(200);
+  // Gone, not returned to `expected`: a date nothing will ever satisfy is not a missed pay, and
+  // the matcher would never clear it.
+  expect((await payments(api, {})).length).toBe(0);
 });

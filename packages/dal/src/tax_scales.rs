@@ -109,7 +109,15 @@ pub async fn seed(db: &Db) -> AppResult<()> {
         // kind of claim: their KiwiSaver rate is legislated, but the rest is this year's figures
         // carried forward. A reader deciding whether to trust a projection needs to be able to see
         // that from the row rather than from the source of the binary that wrote it.
-        let note = if scale.effective_from.as_str() > "2027-03-31" {
+        let note = if scale.effective_from.as_str() < "2025-04-01" {
+            // The historical rows exist so the payment matcher can price a deposit that landed
+            // years ago (see the NZ_TAX_SCALES header). Their figures are the ones that were in
+            // force at the time, not this year's carried backward.
+            "Seeded from the built-in New Zealand figures for the year it covers: ACC earner \
+             levy and cap and the student loan threshold from ird.govt.nz's published rates for \
+             that year, income tax brackets from the table in force on the effective date, all \
+             read 2026-09-17."
+        } else if scale.effective_from.as_str() > "2027-03-31" {
             "Seeded from the built-in figures. The KiwiSaver employer minimum is the legislated \
              Budget 2025 step; every other figure is the 2026/27 scale carried forward, because \
              the real ones are not published yet — treat this year as an estimate."
@@ -367,6 +375,13 @@ mod tests {
         assert_eq!(
             by_date,
             vec![
+                ("2019-04-01".to_string(), 300),
+                ("2020-04-01".to_string(), 300),
+                ("2021-04-01".to_string(), 300),
+                ("2022-04-01".to_string(), 300),
+                ("2023-04-01".to_string(), 300),
+                ("2024-04-01".to_string(), 300),
+                ("2024-07-31".to_string(), 300),
                 ("2025-04-01".to_string(), 300),
                 ("2025-07-01".to_string(), 300),
                 ("2026-04-01".to_string(), 350),

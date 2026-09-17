@@ -77,8 +77,7 @@ async function seedPayslips(request: APIRequestContext): Promise<Created> {
     student_loan: true,
     student_loan_account_id: loan.id,
     kiwisaver_account_id: kiwisaver.id,
-    match_account_id: everyday.id,
-    match_pattern: "KAIMAHI",
+    match_targets: [{ account_id: everyday.id, pattern: "KAIMAHI" }],
   });
 
   await api(request, "post", "/api/income-payments/rematch");

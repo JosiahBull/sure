@@ -1081,6 +1081,10 @@ impl EquityRepo for SqliteStore {
         crate::equity::rebuild_history(&self.db, id, today).await
     }
 
+    async fn accounts_with_equity(&self) -> AppResult<Vec<i64>> {
+        crate::equity::accounts_with_equity(&self.db).await
+    }
+
     async fn projected_values(&self, id: i64, from: &str, months: i64) -> AppResult<Vec<i64>> {
         let from = chrono::NaiveDate::parse_from_str(from, "%Y-%m-%d")
             .map_err(|e| AppError::validation(format!("projection start date: {e}")))?;
@@ -1182,15 +1186,7 @@ impl IncomeRepo for SqliteStore {
         from: &str,
         account_id: Option<i64>,
     ) -> AppResult<Vec<Transaction>> {
-        crate::transactions::list(
-            &self.db,
-            TxQuery {
-                from: Some(from.to_string()),
-                account_id,
-                ..Default::default()
-            },
-        )
-        .await
+        crate::transactions::credits_since(&self.db, from, account_id).await
     }
 
     async fn list_income_payments(
@@ -1222,6 +1218,25 @@ impl IncomeRepo for SqliteStore {
 
     async fn delete_expected_payment(&self, stream_id: i64, due_on: &str) -> AppResult<()> {
         crate::income::delete_expected(&self.db, stream_id, due_on).await
+    }
+
+    async fn record_variable_match(
+        &self,
+        stream_id: i64,
+        due_on: &str,
+        transaction_id: i64,
+        observed_net_minor: i64,
+        breakdown: &PayeBreakdown,
+    ) -> AppResult<()> {
+        crate::income::record_variable_match(
+            &self.db,
+            stream_id,
+            due_on,
+            transaction_id,
+            observed_net_minor,
+            breakdown,
+        )
+        .await
     }
 
     async fn record_payment_match(

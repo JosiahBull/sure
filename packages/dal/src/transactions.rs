@@ -100,6 +100,48 @@ async fn split_ownership(
     Ok((Some(kind), person_id))
 }
 
+/// Every **credit** in one account (or all of them) from `from` onward, oldest first, unpaged.
+///
+/// The income matcher and the salary detector both want "deposits since a date", and both used
+/// to ask [`list`] for it. That is the transaction *page* query: it orders newest-first and caps
+/// at 1,000 rows, so a window reaching back more than about a year returned the newest 1,000 and
+/// silently dropped the oldest — which is exactly the end the matcher is walking towards. In the
+/// tree this was written for, a three-year backfill over one account hit 1,167 rows and the
+/// matcher could not see anything before the 1,000th: six real salary deposits that had a
+/// matching expected row waiting for them, invisible, and reported as missed pay.
+///
+/// So: no `LIMIT`, and `amount_minor > 0` in SQL rather than in the caller, which is what keeps
+/// the unpaged result small — a household's spending outnumbers its deposits many times over.
+/// Transfer legs are excluded here for the same reason both callers excluded them anyway: an
+/// internal movement is not income, whatever its memo says.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn credits_since(
+    db: &Db,
+    from: &str,
+    account_id: Option<i64>,
+) -> AppResult<Vec<Transaction>> {
+    sqlx::query_as!(
+        TransactionRow,
+        r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
+                  merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                  linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                  ownership, person_id, created_at, updated_at
+             FROM transactions
+            WHERE amount_minor > 0
+              AND linked_transaction_id IS NULL
+              AND date(posted_at) >= date(?1)
+              AND (?2 IS NULL OR account_id = ?2)
+            ORDER BY date(posted_at), id"#,
+        from,
+        account_id
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(TryInto::try_into)
+    .collect()
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
     // `t.*`, not `*`: the join below would otherwise splice the account's own `ownership`

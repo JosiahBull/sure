@@ -46,9 +46,9 @@ pub use import::{
     MAX_UPLOAD_BYTES, Reconciliation,
 };
 pub use income::{
-    IncomeBasis, IncomePayment, IncomePaymentStatus, IncomeStream, IncomeStreamStep, MatchedBy,
-    PayFrequency, PayStep, PayTreatment, SaveIncomeStream, SaveIncomeStreamStep, TakeHome,
-    TakeHomeSource,
+    IncomeBasis, IncomePayment, IncomePaymentStatus, IncomeStream, IncomeStreamMatchTarget,
+    IncomeStreamStep, MatchedBy, PayFrequency, PayPattern, PayStep, PayTreatment, SaveIncomeStream,
+    SaveIncomeStreamMatchTarget, SaveIncomeStreamStep, TakeHome, TakeHomeSource,
 };
 pub use iso_date::IsoDate;
 pub use merchants::{Merchant, SaveMerchant};

@@ -1204,6 +1204,8 @@ pub trait EquityRepo: Send + Sync {
         as_of: Option<&str>,
     ) -> AppResult<Vec<EquityEvent>>;
     async fn rebuild_history(&self, id: i64, today: Option<&str>) -> AppResult<RebuildResult>;
+    /// Accounts holding at least one equity grant — what the background rebuild walks.
+    async fn accounts_with_equity(&self) -> AppResult<Vec<i64>>;
     /// Value at each month from `from`, for `0..=months`. See
     /// `sure_dal::equity::projected_values`.
     async fn projected_values(&self, id: i64, from: &str, months: i64) -> AppResult<Vec<i64>>;
@@ -1339,6 +1341,17 @@ pub trait IncomeRepo: Send + Sync {
     async fn expected_payment_due_ons(&self, stream_id: i64) -> AppResult<Vec<String>>;
     /// Delete one stray `expected` row; guarded on status so a race cannot delete history.
     async fn delete_expected_payment(&self, stream_id: i64, due_on: &str) -> AppResult<()>;
+    /// Create a payment for a variable stream's deposit — see
+    /// `sure_dal::income::record_variable_match`. `Conflict` when a different deposit already
+    /// holds that stream's date.
+    async fn record_variable_match(
+        &self,
+        stream_id: i64,
+        due_on: &str,
+        transaction_id: i64,
+        observed_net_minor: i64,
+        breakdown: &PayeBreakdown,
+    ) -> AppResult<()>;
     /// Claim a transaction for `(stream, due_on)` with its observed slice and reconstructed
     /// decomposition.
     #[allow(clippy::too_many_arguments)] // one write, one row — a struct would just move the field list

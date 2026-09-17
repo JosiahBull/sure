@@ -140,7 +140,132 @@ pub struct TaxScale<'a> {
 /// The 2025-26 scale is carried even though only the levy and cap differ from 2026-27: a
 /// projection reconciled against the trailing twelve months of history spans both, and a single
 /// scale would price last year's pay at this year's levy.
+///
+/// **The table reaches back to 2023-24, and that is for the matcher rather than the forecast.**
+/// [`scale_for`] answers `None` before the first entry, and `sure_app::income_match` turns that
+/// into a predicted *gross* where a net was wanted — so every pay before the earliest scale
+/// misses its deposit by a third and is reported as never paid. A household importing three
+/// years of bank history has three years of salary in it. The historical rows below are
+/// therefore load-bearing for reconciling what already happened, not a courtesy:
+///
+///   * ACC earner levy and cap — every year's pair read straight off ird.govt.nz's "ACC earners'
+///     levy rates" table (1.39% to $128,470, then $130,911 for two years; 1.46% / $136,544;
+///     1.53% / $139,384; 1.60% / $142,283), read 2026-09-17;
+///   * student loan — 12% throughout, over a threshold that steps $19,760, $20,020, $20,280,
+///     $21,268, $22,828 and then $24,128, frozen there since (calculate.co.nz's rates table,
+///     whose 2023-24 row matches the figure ird.govt.nz states directly);
+///   * income tax — [`NZ_BRACKETS_2010`] until the 39% rate arrived on 1 April 2021, then
+///     [`NZ_BRACKETS_2021`] until Budget 2024's thresholds took effect **on 31 July
+///     2024**, mid-tax-year, which is why that scale starts on a date that is not 1 April. The
+///     composite annual rates IR published for the 2024-25 *square-up* are deliberately not
+///     modelled: what a scale has to reproduce here is the PAYE a payroll run actually deducted
+///     from a deposit, and from 31 July 2024 that was the new thresholds flat.
+///   * ESCT — [`NZ_ESCT_2012`], then [`NZ_ESCT_2021`], until their reset on 1 April 2025, a year
+///     later than the PAYE
+///     thresholds moved. The two tables are 20% apart before and after, but they did not step on
+///     the same day, and pairing the new PAYE table with the new ESCT one for 2024-25 would
+///     understate the tax on every employer contribution that year.
 pub const NZ_TAX_SCALES: &[TaxScale<'static>] = &[
+    // The years before 1 April 2021 have no 39% rate — see `NZ_BRACKETS_2010`.
+    TaxScale {
+        effective_from: "2019-04-01",
+        brackets: NZ_BRACKETS_2010,
+        // 1.39% incl GST, capped at $128,470 — the 2019-20 figures.
+        acc_levy_bps: 139,
+        acc_income_cap_minor: 128_470_00,
+        student_loan_threshold_minor: 19_760_00,
+        student_loan_rate_bps: 1_200,
+        esct_brackets: NZ_ESCT_2012,
+        kiwisaver_employer_min_bps: 300,
+        kiwisaver_govt_match_bps: 5_000,
+        kiwisaver_govt_max_minor: 521_43,
+        kiwisaver_govt_income_cap_minor: i64::MAX,
+    },
+    TaxScale {
+        effective_from: "2020-04-01",
+        brackets: NZ_BRACKETS_2010,
+        // Same 1.39%, on a cap that rose to $130,911 and then held for two years.
+        acc_levy_bps: 139,
+        acc_income_cap_minor: 130_911_00,
+        student_loan_threshold_minor: 20_020_00,
+        student_loan_rate_bps: 1_200,
+        esct_brackets: NZ_ESCT_2012,
+        kiwisaver_employer_min_bps: 300,
+        kiwisaver_govt_match_bps: 5_000,
+        kiwisaver_govt_max_minor: 521_43,
+        kiwisaver_govt_income_cap_minor: i64::MAX,
+    },
+    // The 39% rate starts here: same levy and cap as the year before, a new bracket table.
+    TaxScale {
+        effective_from: "2021-04-01",
+        brackets: NZ_BRACKETS_2021,
+        acc_levy_bps: 139,
+        acc_income_cap_minor: 130_911_00,
+        student_loan_threshold_minor: 20_280_00,
+        student_loan_rate_bps: 1_200,
+        esct_brackets: NZ_ESCT_2021,
+        kiwisaver_employer_min_bps: 300,
+        kiwisaver_govt_match_bps: 5_000,
+        kiwisaver_govt_max_minor: 521_43,
+        kiwisaver_govt_income_cap_minor: i64::MAX,
+    },
+    TaxScale {
+        effective_from: "2022-04-01",
+        brackets: NZ_BRACKETS_2021,
+        // 1.46% incl GST, capped at $136,544 — the 2022-23 figures.
+        acc_levy_bps: 146,
+        acc_income_cap_minor: 136_544_00,
+        student_loan_threshold_minor: 21_268_00,
+        student_loan_rate_bps: 1_200,
+        esct_brackets: NZ_ESCT_2021,
+        kiwisaver_employer_min_bps: 300,
+        kiwisaver_govt_match_bps: 5_000,
+        kiwisaver_govt_max_minor: 521_43,
+        kiwisaver_govt_income_cap_minor: i64::MAX,
+    },
+    TaxScale {
+        effective_from: "2023-04-01",
+        brackets: NZ_BRACKETS_2021,
+        // 1.53% incl GST, capped at $139,384 — the 2023-24 figures.
+        acc_levy_bps: 153,
+        acc_income_cap_minor: 139_384_00,
+        student_loan_threshold_minor: 22_828_00,
+        student_loan_rate_bps: 1_200,
+        esct_brackets: NZ_ESCT_2021,
+        kiwisaver_employer_min_bps: 300,
+        kiwisaver_govt_match_bps: 5_000,
+        kiwisaver_govt_max_minor: 521_43,
+        kiwisaver_govt_income_cap_minor: i64::MAX,
+    },
+    TaxScale {
+        effective_from: "2024-04-01",
+        brackets: NZ_BRACKETS_2021,
+        // 1.60% incl GST, capped at $142,283 — the 2024-25 figures.
+        acc_levy_bps: 160,
+        acc_income_cap_minor: 142_283_00,
+        student_loan_threshold_minor: 24_128_00,
+        student_loan_rate_bps: 1_200,
+        esct_brackets: NZ_ESCT_2021,
+        kiwisaver_employer_min_bps: 300,
+        kiwisaver_govt_match_bps: 5_000,
+        kiwisaver_govt_max_minor: 521_43,
+        kiwisaver_govt_income_cap_minor: i64::MAX,
+    },
+    // Budget 2024's thresholds, which took effect part-way through the 2024-25 year. Same levy,
+    // cap and ESCT table as the row above — only `brackets` moves.
+    TaxScale {
+        effective_from: "2024-07-31",
+        brackets: NZ_BRACKETS_2025,
+        acc_levy_bps: 160,
+        acc_income_cap_minor: 142_283_00,
+        student_loan_threshold_minor: 24_128_00,
+        student_loan_rate_bps: 1_200,
+        esct_brackets: NZ_ESCT_2021,
+        kiwisaver_employer_min_bps: 300,
+        kiwisaver_govt_match_bps: 5_000,
+        kiwisaver_govt_max_minor: 521_43,
+        kiwisaver_govt_income_cap_minor: i64::MAX,
+    },
     TaxScale {
         effective_from: "2025-04-01",
         brackets: NZ_BRACKETS_2025,
@@ -213,9 +338,53 @@ pub const NZ_TAX_SCALES: &[TaxScale<'static>] = &[
     },
 ];
 
-/// In force from 1 April 2025, and unchanged for 2026-27. Shared between the scales above rather
-/// than duplicated, so a future bracket change is visibly a new table and not a typo in one of
-/// two copies that were meant to match.
+/// The 1 October 2010 thresholds as they stood before the 39% rate: 33% and no ceiling.
+///
+/// The Taxation (Income Tax Rate and Other Amendments) Act 2020 added the $180,000 / 39% band for
+/// the 2021-22 tax year, so this is the table for every date before 1 April 2021 and
+/// [`NZ_BRACKETS_2021`] the one after. Two tables rather than one with a caveat, because the
+/// difference is only visible on income most people never reach — exactly the shape of error that
+/// survives review.
+const NZ_BRACKETS_2010: &[(i64, i64)] = &[
+    (14_000_00, 1_050),
+    (48_000_00, 1_750),
+    (70_000_00, 3_000),
+    (i64::MAX, 3_300),
+];
+
+/// ESCT thresholds from 1 April 2012 until the 39% rate arrived — 20% above
+/// [`NZ_BRACKETS_2010`], and topping out at the same 33%.
+const NZ_ESCT_2012: &[(i64, i64)] = &[
+    (16_800_00, 1_050),
+    (57_600_00, 1_750),
+    (84_000_00, 3_000),
+    (i64::MAX, 3_300),
+];
+
+/// The 1 October 2010 thresholds with the 39% top rate added on 1 April 2021, in force until
+/// Budget 2024 lifted every threshold but the top one on 31 July 2024.
+const NZ_BRACKETS_2021: &[(i64, i64)] = &[
+    (14_000_00, 1_050),
+    (48_000_00, 1_750),
+    (70_000_00, 3_000),
+    (180_000_00, 3_300),
+    (i64::MAX, 3_900),
+];
+
+/// ESCT thresholds from 1 April 2021 until their reset on 1 April 2025 — 20% above
+/// [`NZ_BRACKETS_2021`], the same relationship [`NZ_ESCT_2025`] has to [`NZ_BRACKETS_2025`].
+const NZ_ESCT_2021: &[(i64, i64)] = &[
+    (16_800_00, 1_050),
+    (57_600_00, 1_750),
+    (84_000_00, 3_000),
+    (216_000_00, 3_300),
+    (i64::MAX, 3_900),
+];
+
+/// Budget 2024's thresholds: in force for PAYE from 31 July 2024, and unchanged since. Shared
+/// between the scales above rather than duplicated, so a future bracket change is visibly a new
+/// table and not a typo in one of two copies that were meant to match. Named for 2025 because
+/// that is the first full year it applied to; it is the 2024-25 table from 31 July onward.
 const NZ_BRACKETS_2025: &[(i64, i64)] = &[
     (15_600_00, 1_050),
     (53_500_00, 1_750),

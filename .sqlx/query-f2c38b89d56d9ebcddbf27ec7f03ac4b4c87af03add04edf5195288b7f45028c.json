@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO income_stream_match_targets (income_stream_id, account_id, pattern)\n             VALUES (?1,?2,?3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "f2c38b89d56d9ebcddbf27ec7f03ac4b4c87af03add04edf5195288b7f45028c"
+}

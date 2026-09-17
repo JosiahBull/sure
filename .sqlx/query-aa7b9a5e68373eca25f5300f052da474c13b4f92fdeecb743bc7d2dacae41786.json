@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", income_stream_id, account_id, pattern, created_at\n                 FROM income_stream_match_targets ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_match_targets",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "income_stream_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_match_targets",
+            "name": "income_stream_id"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_match_targets",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "pattern",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_stream_match_targets",
+            "name": "pattern"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_stream_match_targets",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "aa7b9a5e68373eca25f5300f052da474c13b4f92fdeecb743bc7d2dacae41786"
+}

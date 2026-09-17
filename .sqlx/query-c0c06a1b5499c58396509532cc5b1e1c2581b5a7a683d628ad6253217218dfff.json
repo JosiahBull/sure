@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM income_payments\n           WHERE transaction_id IS NULL AND status IN ('matched','confirmed')\n             AND income_stream_id IN (SELECT id FROM income_streams WHERE pay_pattern='variable')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "c0c06a1b5499c58396509532cc5b1e1c2581b5a7a683d628ad6253217218dfff"
+}

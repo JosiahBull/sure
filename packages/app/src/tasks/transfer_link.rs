@@ -37,11 +37,17 @@ impl TransferLinkTask {
 #[async_trait]
 impl ScheduledTask for TransferLinkTask {
     fn name(&self) -> &'static str {
-        "transfer_link"
+        super::BackgroundTask::TransferLink.as_str()
     }
 
     fn interval(&self) -> Duration {
         POLL_INTERVAL
+    }
+
+    /// Local — reads and writes only this database — so it runs at boot as well as on its
+    /// interval. See `ScheduledTask::run_on_startup`.
+    fn run_on_startup(&self) -> bool {
+        super::BackgroundTask::TransferLink.is_local()
     }
 
     /// `cancel` is deliberately unused: this task is a *single* call into the repo, which

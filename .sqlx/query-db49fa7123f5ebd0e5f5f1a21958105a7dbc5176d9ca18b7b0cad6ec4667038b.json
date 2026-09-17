@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", income_stream_id, account_id, pattern\n             FROM income_stream_match_targets ORDER BY income_stream_id, account_id, pattern",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_match_targets",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "income_stream_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_match_targets",
+            "name": "income_stream_id"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "income_stream_match_targets",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "pattern",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_stream_match_targets",
+            "name": "pattern"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "db49fa7123f5ebd0e5f5f1a21958105a7dbc5176d9ca18b7b0cad6ec4667038b"
+}
