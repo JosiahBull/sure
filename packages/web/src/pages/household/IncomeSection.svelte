@@ -182,6 +182,7 @@
                     <span class="ell" style="font-weight:560">{s.label}</span>
                     <span class="badge">{basisLabel(s.basis)}</span>
                     {#if s.pay_treatment === "extra_pay"}<span class="badge">bonus</span>{/if}
+                    {#if s.pay_pattern === "variable"}<span class="badge">varies</span>{/if}
                     {#if s.match_targets.length > 0}
                       <span class="badge matched-badge">auto-matched</span>
                     {:else if s.enabled}
@@ -192,7 +193,9 @@
                   </span>
                   <div class="row" style="gap:12px">
                     <span class="tabular small"
-                      >{formatMoney(levelNow(s), s.currency_code)}/yr</span
+                      >{s.pay_pattern === "variable"
+                        ? `about ${formatMoney(levelNow(s), s.currency_code)}`
+                        : `${formatMoney(levelNow(s), s.currency_code)}/yr`}</span
                     >
                     <span class="faint small">{freqLabel(s.pay_frequency)}</span>
                     <button

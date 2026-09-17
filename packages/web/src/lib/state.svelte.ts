@@ -147,6 +147,22 @@ function periodParams(): Record<string, string | null> {
 }
 
 /**
+ * The same period, for a link that is *building* a query string rather than rewriting one.
+ *
+ * `periodParams` speaks in nulls because the writer below uses them to delete a param that is
+ * no longer wanted; a link has nothing to delete, so it wants only the keys that carry a value.
+ * Drill-down links (the overview's pies, Sankey and balance-sheet rows into the transactions
+ * list) go through here so they carry the *whole* period — a brushed `start`/`end` window as
+ * well as the preset — rather than the preset alone, which landed the reader on a range they
+ * had zoomed out of.
+ */
+export function periodLinkParams(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(periodParams()).filter((e): e is [string, string] => e[1] !== null),
+  );
+}
+
+/**
  * Keep the selected period and the address bar saying the same thing.
  *
  * Called once from the shell. Two effects rather than one because the two directions have

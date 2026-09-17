@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", ownership, person_id, label, employer, currency_code,\n                  annual_amount_minor,\n                  basis, pay_frequency, first_payment_on, starts_on, ends_on,\n                  annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,\n                  student_loan AS \"student_loan!: bool\", take_home_bps, linked_category_id,\n                  kiwisaver_account_id, student_loan_account_id,\n                  pay_treatment, enabled AS \"enabled!: bool\",\n                  sort_order, notes, created_at, updated_at\n             FROM income_streams WHERE id=?1",
+  "query": "SELECT id AS \"id!\", ownership, person_id, label, employer, currency_code,\n                  annual_amount_minor,\n                  basis, pay_frequency, first_payment_on, starts_on, ends_on,\n                  annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,\n                  student_loan AS \"student_loan!: bool\", take_home_bps, linked_category_id,\n                  kiwisaver_account_id, student_loan_account_id,\n                  pay_treatment, pay_pattern, enabled AS \"enabled!: bool\",\n                  sort_order, notes, created_at, updated_at\n             FROM income_streams WHERE id=?1",
   "describe": {
     "columns": [
       {
@@ -235,8 +235,19 @@
         }
       },
       {
-        "name": "enabled!: bool",
+        "name": "pay_pattern",
         "ordinal": 21,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "pay_pattern"
+          }
+        }
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 22,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -247,7 +258,7 @@
       },
       {
         "name": "sort_order",
-        "ordinal": 22,
+        "ordinal": 23,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -258,7 +269,7 @@
       },
       {
         "name": "notes",
-        "ordinal": 23,
+        "ordinal": 24,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -269,7 +280,7 @@
       },
       {
         "name": "created_at",
-        "ordinal": 24,
+        "ordinal": 25,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -280,7 +291,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 25,
+        "ordinal": 26,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -317,10 +328,11 @@
       false,
       false,
       false,
+      false,
       true,
       false,
       false
     ]
   },
-  "hash": "abd3a87d28c4f3899cb4a7d0c9aa73103f1093df80177bb9eb3fafb5b8ea11ad"
+  "hash": "e6ae752ab0d2eab7c5c501293cd7ceff778fe07044ac33f7b2117a7643310448"
 }

@@ -50,6 +50,7 @@
     currency_code: initial?.currency_code ?? "NZD",
     enabled: initial?.enabled ?? true,
     pay_treatment: initial?.pay_treatment ?? ("regular" as Schemas["PayTreatment"]),
+    pay_pattern: initial?.pay_pattern ?? ("scheduled" as Schemas["PayPattern"]),
   });
   let steps = $state<
     {
@@ -84,7 +85,10 @@
   let saving = $state(false);
   let error = $state<string | null>(null);
   const labelMissing = $derived(submitted && !f.label.trim());
-  const amountMissing = $derived(submitted && !parseFloat(f.amount));
+  const varies = $derived(f.pay_pattern === "variable");
+  // A variable stream's figure is an estimate, so an empty one is not the error it is for a
+  // salary — it only makes the tax bracket for *other* income slightly wrong.
+  const amountMissing = $derived(submitted && !varies && !parseFloat(f.amount));
 
   let categories = $state<{ id: number; name: string }[]>([]);
   $effect(() => {
@@ -220,14 +224,14 @@
 
   async function save() {
     submitted = true;
-    if (!f.label.trim() || !parseFloat(f.amount)) return;
+    if (!f.label.trim() || (!varies && !parseFloat(f.amount))) return;
     saving = true;
     error = null;
     const body: Schemas["SaveIncomeStream"] = {
       label: f.label.trim(),
       employer: f.employer.trim() || null,
       currency_code: f.currency_code,
-      annual_amount_minor: Math.round(parseFloat(f.amount) * 100),
+      annual_amount_minor: Math.round(parseFloat(f.amount || "0") * 100),
       basis: f.basis,
       pay_frequency: f.pay_frequency,
       first_payment_on: f.first_payment_on,
@@ -243,12 +247,14 @@
       linked_category_id: f.linked_category_id,
       enabled: f.enabled,
       pay_treatment: f.pay_treatment,
+      pay_pattern: f.pay_pattern,
       // A half-filled row is someone mid-edit, not a target — dropped rather than rejected, the
       // same way an empty step row is.
       match_targets: matchTargets
         .filter((t) => t.account_id != null && t.pattern.trim())
         .map((t) => ({ account_id: t.account_id!, pattern: t.pattern.trim() })),
-      steps: steps
+      // A variable stream has no pay scale: there is no level for a step to change.
+      steps: (varies ? [] : steps)
         .filter((s) => s.effective_on && parseFloat(s.amount))
         .map((s) => ({
           effective_on: s.effective_on,
@@ -339,7 +345,9 @@
       <input class="input" placeholder="optional" bind:value={f.employer} />
     </label>
     <label class="field">
-      <span class="lbl req">Amount per year</span>
+      <span class="lbl" class:req={!varies}>
+        {varies ? "Estimated amount per year" : "Amount per year"}
+      </span>
       <input
         class="input tabular"
         class:invalid={amountMissing}
@@ -347,7 +355,44 @@
         placeholder="88000"
         bind:value={f.amount}
       />
+      {#if varies}
+        <span class="small faint">
+          A rough figure. Nothing is matched against it — it only sets the tax bracket the rest of
+          this person's income is priced in.
+        </span>
+      {/if}
     </label>
+  </div>
+
+  <div class="grid-fields">
+    <div class="field">
+      <!-- The axis that decides whether this stream has a schedule at all. A segmented control
+           beside the others for the same reason: not noticing which is set is the failure. -->
+      <span class="lbl req">The amount is</span>
+      <div class="seg" role="group" aria-label="Fixed or variable amount">
+        <button
+          type="button"
+          class="seg-btn"
+          class:on={!varies}
+          onclick={() => (f.pay_pattern = "scheduled")}>The same each time</button
+        >
+        <button
+          type="button"
+          class="seg-btn"
+          class:on={varies}
+          onclick={() => (f.pay_pattern = "variable")}>Different each time</button
+        >
+      </div>
+      <span class="small faint">
+        {#if varies}
+          Every deposit matching the memo below is recorded as it arrives, whatever it comes to —
+          casual, hourly or contract work. No paydays are predicted, so nothing is ever reported
+          as a missed pay.
+        {:else}
+          Paydays are worked out ahead and each is checked off against the deposit that paid it.
+        {/if}
+      </span>
+    </div>
   </div>
 
   <div class="grid-fields">
@@ -526,8 +571,8 @@
     </p>
   </div>
 
-  <details class="more" open={steps.length > 0}>
-    <summary>Pay scale, start and end</summary>
+  <details class="more" open={steps.length > 0 && !varies}>
+    <summary>{varies ? "Start and end" : "Pay scale, start and end"}</summary>
     <div class="grid-fields" style="margin-top:10px">
       <label class="field">
         <span class="lbl req">Starts</span>
@@ -537,13 +582,17 @@
         <span class="lbl">Ends</span>
         <input class="input" type="date" bind:value={f.ends_on} />
       </label>
-      <label class="field">
-        <span class="lbl">Rise per year after the last step %</span>
-        <input class="input tabular" bind:value={f.annual_increase} />
-      </label>
+      {#if !varies}
+        <label class="field">
+          <span class="lbl">Rise per year after the last step %</span>
+          <input class="input tabular" bind:value={f.annual_increase} />
+        </label>
+      {/if}
     </div>
 
-    <div class="steps">
+    <!-- A variable stream has no level, so there is nothing for a dated step to change. Its
+         start and end still matter — they are what bounds which deposits it may claim. -->
+    <div class="steps" hidden={varies}>
       {#each steps as s, i (i)}
         <div class="step-row">
           <input class="input" type="date" bind:value={s.effective_on} />

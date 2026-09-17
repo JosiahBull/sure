@@ -6756,6 +6756,12 @@ export interface components {
              */
             match_targets: components["schemas"]["IncomeStreamMatchTarget"][];
             pay_treatment: components["schemas"]["PayTreatment"];
+            /**
+             * @description Whether the amount is knowable in advance. A `Variable` stream has no pay scale and no
+             *     expected payments — `annual_amount_minor` is then only an estimate, and steers nothing but
+             *     the bracket the person's *other* income is taxed in.
+             */
+            pay_pattern: components["schemas"]["PayPattern"];
             enabled: boolean;
             /** Format: int64 */
             sort_order: number;
@@ -7147,6 +7153,15 @@ export interface components {
          * @enum {string}
          */
         PayFrequency: "weekly" | "fortnightly" | "four_weekly" | "semi_monthly" | "monthly" | "quarterly" | "annual";
+        /**
+         * @description Whether a stream's *amount* is knowable before the money arrives.
+         *
+         *     Orthogonal to [`IncomeBasis`], which says how the amount is taxed, and to [`PayFrequency`],
+         *     which stays meaningful either way — irregular pay still has a cycle, and that cycle is what
+         *     annualises a period's gross into a tax bracket.
+         * @enum {string}
+         */
+        PayPattern: "scheduled" | "variable";
         /**
          * @description How one arrival of this income is taxed: as an ordinary payslip, or as an IRD "extra pay".
          *
@@ -7789,6 +7804,7 @@ export interface components {
              */
             match_targets?: components["schemas"]["SaveIncomeStreamMatchTarget"][];
             pay_treatment?: components["schemas"]["PayTreatment"];
+            pay_pattern?: components["schemas"]["PayPattern"];
             enabled?: boolean;
             /** Format: int64 */
             sort_order?: number;

@@ -1341,6 +1341,17 @@ pub trait IncomeRepo: Send + Sync {
     async fn expected_payment_due_ons(&self, stream_id: i64) -> AppResult<Vec<String>>;
     /// Delete one stray `expected` row; guarded on status so a race cannot delete history.
     async fn delete_expected_payment(&self, stream_id: i64, due_on: &str) -> AppResult<()>;
+    /// Create a payment for a variable stream's deposit — see
+    /// `sure_dal::income::record_variable_match`. `Conflict` when a different deposit already
+    /// holds that stream's date.
+    async fn record_variable_match(
+        &self,
+        stream_id: i64,
+        due_on: &str,
+        transaction_id: i64,
+        observed_net_minor: i64,
+        breakdown: &PayeBreakdown,
+    ) -> AppResult<()>;
     /// Claim a transaction for `(stream, due_on)` with its observed slice and reconstructed
     /// decomposition.
     #[allow(clippy::too_many_arguments)] // one write, one row — a struct would just move the field list

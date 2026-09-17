@@ -424,3 +424,108 @@ test("a stream that has ended stops expecting pay after its last day", async ({ 
   expect(longer.length).toBeGreaterThan(all.length);
   for (const p of longer) expect(p.due_on <= "2026-08-31").toBe(true);
 });
+
+test("a variable stream claims every deposit its memo matches, whatever the amount", async ({
+  api,
+}) => {
+  // Casual work: the cadence is exact but the amount is whatever the hours came to. The spread
+  // here (24x between smallest and largest) is the shape a fixed-amount stream cannot express —
+  // its max($5, 2%) tolerance rejects every one of these.
+  const person = await createPerson(api, "Rua");
+  const account = await createAccount(api, "Everyday", "bank");
+  await createIncomeStream(api, person.id, {
+    label: "Tutoring",
+    basis: "gross_nz_paye",
+    // An estimate: for a variable stream it steers nothing but the bracket other income sits in.
+    annual_amount_minor: 12_000_00,
+    pay_frequency: "fortnightly",
+    first_payment_on: "2026-05-01",
+    starts_on: "2026-05-01",
+    ends_on: "2026-06-30",
+    pay_pattern: "variable",
+    kiwisaver_bps: 0,
+    student_loan: false,
+    match_targets: [{ account_id: account.id, pattern: "AWHINA TUTORING" }],
+  });
+
+  const amounts = [99_00, 412_50, 2_376_40];
+  for (const [i, amount_minor] of amounts.entries()) {
+    await createTransaction(api, {
+      account_id: account.id,
+      posted_at: `2026-05-${String(1 + i * 14).padStart(2, "0")}`,
+      amount_minor,
+      description: `AWHINA TUTORING PAYROLL ${i}`,
+    });
+  }
+  // Same account, same window, different employer: the pattern is what bounds a variable stream,
+  // so this must be left alone.
+  const other = await createTransaction(api, {
+    account_id: account.id,
+    posted_at: "2026-05-20",
+    amount_minor: 500_00,
+    description: "SOMEONE ELSE ENTIRELY",
+  });
+  // Outside the stream's dates. `ends_on` is the other bound, and it has to hold for a stream
+  // that claims on memo alone.
+  const afterTheEnd = await createTransaction(api, {
+    account_id: account.id,
+    posted_at: "2026-07-14",
+    amount_minor: 300_00,
+    description: "AWHINA TUTORING PAYROLL 9",
+  });
+
+  expect((await rematch(api)).matched).toBe(3);
+  const matched = await payments(api, { status: "matched" });
+  expect(matched.length).toBe(3);
+  expect(matched.map((p) => p.observed_net_minor).sort((a, b) => a! - b!)).toEqual(amounts);
+  for (const p of matched) {
+    // Nothing was expected, so there is no figure to drift from — the review UI reads this.
+    expect(p.expected_net_minor).toBeNull();
+    expect(p.matched_by).toBe("auto");
+    reconciles(p);
+    // KiwiSaver was switched off on this stream, so no contribution may be invented.
+    expect(p.kiwisaver_minor).toBe(0);
+  }
+  expect(matched.some((p) => p.transaction_id === other.id)).toBe(false);
+  expect(matched.some((p) => p.transaction_id === afterTheEnd.id)).toBe(false);
+
+  // A variable stream never reports a missed pay: it never claimed one was coming.
+  expect((await payments(api, { status: "expected" })).length).toBe(0);
+
+  // Idempotent, like the scheduled path.
+  expect((await rematch(api)).matched).toBe(0);
+  expect((await payments(api, { status: "matched" })).length).toBe(3);
+});
+
+test("unlinking a variable payment removes it rather than stranding a missed pay", async ({
+  api,
+}) => {
+  const person = await createPerson(api, "Rua");
+  const account = await createAccount(api, "Everyday", "bank");
+  await createIncomeStream(api, person.id, {
+    label: "Tutoring",
+    basis: "gross_nz_paye",
+    annual_amount_minor: 12_000_00,
+    pay_frequency: "fortnightly",
+    first_payment_on: "2026-05-01",
+    starts_on: "2026-05-01",
+    pay_pattern: "variable",
+    match_targets: [{ account_id: account.id, pattern: "AWHINA TUTORING" }],
+  });
+  await createTransaction(api, {
+    account_id: account.id,
+    posted_at: "2026-05-01",
+    amount_minor: 412_50,
+    description: "AWHINA TUTORING PAYROLL 1",
+  });
+  await rematch(api);
+  const [p] = await payments(api, { status: "matched" });
+
+  const { response } = await api.DELETE("/api/income-payments/{id}/link", {
+    params: { path: { id: p!.id } },
+  });
+  expect(response.status).toBe(200);
+  // Gone, not returned to `expected`: a date nothing will ever satisfy is not a missed pay, and
+  // the matcher would never clear it.
+  expect((await payments(api, {})).length).toBe(0);
+});

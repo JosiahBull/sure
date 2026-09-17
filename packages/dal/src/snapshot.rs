@@ -371,6 +371,10 @@ pub struct IncomeStreamRow {
     pub legacy_match_pattern: Option<String>,
     #[serde(default = "default_pay_treatment")]
     pub pay_treatment: String,
+    /// Added by 0051 — `#[serde(default)]` so a snapshot from before variable pay imports with
+    /// every stream scheduled, which is what they all were.
+    #[serde(default = "default_pay_pattern")]
+    pub pay_pattern: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -378,6 +382,12 @@ pub struct IncomeStreamRow {
 /// What 0037 backfills existing rows to; `String::default()`'s `""` would fail the CHECK.
 fn default_pay_treatment() -> String {
     "regular".into()
+}
+
+/// What 0051 backfills existing rows to. Same reason as above: `""` fails the CHECK, and every
+/// stream that existed before variable pay could be recorded had a schedule.
+fn default_pay_pattern() -> String {
+    "scheduled".into()
 }
 
 /// What 0038 backfills existing rows to. Same reason as above: `""` fails the CHECK, and every
@@ -633,7 +643,7 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
                   take_home_bps, linked_category_id, enabled AS "enabled!: bool", sort_order,
                   notes, employer_kiwisaver_bps, kiwisaver_account_id, student_loan_account_id,
                   NULL AS "legacy_match_account_id: i64", NULL AS "legacy_match_pattern: String",
-                  pay_treatment, created_at, updated_at
+                  pay_treatment, pay_pattern, created_at, updated_at
              FROM income_streams ORDER BY id"#
     );
     table!(
@@ -836,7 +846,7 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
                       kiwisaver_account_id, student_loan_account_id,
                       NULL AS "legacy_match_account_id: i64",
                       NULL AS "legacy_match_pattern: String",
-                      pay_treatment, created_at, updated_at
+                      pay_treatment, pay_pattern, created_at, updated_at
                  FROM income_streams ORDER BY id"#
         )
         .fetch_all(db)
@@ -1291,9 +1301,9 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
                  kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled,
                  sort_order, notes, created_at, updated_at, employer_kiwisaver_bps,
                  kiwisaver_account_id, student_loan_account_id,
-                 pay_treatment, ownership)
+                 pay_treatment, ownership, pay_pattern)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
-             ?22,?23,?24,?25,?26)",
+             ?22,?23,?24,?25,?26,?27)",
             s.id,
             s.person_id,
             s.label,
@@ -1319,7 +1329,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             s.kiwisaver_account_id,
             s.student_loan_account_id,
             s.pay_treatment,
-            s.ownership
+            s.ownership,
+            s.pay_pattern
         )
         .execute(&mut *txn)
         .await?;
