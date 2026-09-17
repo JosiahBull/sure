@@ -3,7 +3,7 @@
 
   import { router } from "./lib/router.svelte";
   import { filters, RANGES, syncPeriodWithUrl } from "./lib/state.svelte";
-  import { people, ensureLoaded as ensurePeopleLoaded, ownershipOptions } from "./lib/people.svelte";
+  import { ensureLoaded as ensurePeopleLoaded } from "./lib/people.svelte";
   import { ensureSettingsLoaded } from "./lib/settings.svelte";
   import Icon from "./lib/Icon.svelte";
   import AccountPanel from "./lib/AccountPanel.svelte";
@@ -264,9 +264,9 @@
           </nav>
         </div>
         {#if showFilters}
-          <!-- Two groups, not one row of four controls. On a wide bar they sit side by side and
-               read as one group anyway; on a phone the selects need the whole width to show
-               their value ("Last 12 months" truncated to "Last 12 m" is a filter you cannot
+          <!-- Two groups, not one row of controls. On a wide bar they sit side by side and read
+               as one group anyway; on a phone the range select needs the whole width to show
+               its value ("Last 12 months" truncated to "Last 12 m" is a filter you cannot
                read) while the toggle is narrow enough to ride along with the breadcrumb. -->
           <div class="subbar-selects">
             {#if filters.custom}
@@ -289,17 +289,6 @@
                 <option value={r.key}>{r.label}</option>
               {/each}
             </select>
-            {#if people.list.length > 1}
-              <select
-                class="select"
-                style="width:auto"
-                bind:value={filters.attributedTo}
-                aria-label="Whose money"
-              >
-                <option value="">Whole household</option>
-                {#each ownershipOptions() as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
-              </select>
-            {/if}
           </div>
           <label class="switch subbar-switch" title="Include one-off transactions">
             <input type="checkbox" bind:checked={filters.includeOneOff} />
