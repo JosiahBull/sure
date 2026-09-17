@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO income_payments\n            (income_stream_id, due_on, status, transaction_id, matched_by, observed_net_minor,\n             gross_minor, income_tax_minor, acc_levy_minor, kiwisaver_minor, student_loan_minor,\n             employer_kiwisaver_minor, esct_minor)\n         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)\n         ON CONFLICT(income_stream_id, due_on) DO UPDATE SET\n             status=excluded.status, transaction_id=excluded.transaction_id,\n             matched_by=excluded.matched_by, observed_net_minor=excluded.observed_net_minor,\n             gross_minor=excluded.gross_minor, income_tax_minor=excluded.income_tax_minor,\n             acc_levy_minor=excluded.acc_levy_minor, kiwisaver_minor=excluded.kiwisaver_minor,\n             student_loan_minor=excluded.student_loan_minor,\n             employer_kiwisaver_minor=excluded.employer_kiwisaver_minor,\n             esct_minor=excluded.esct_minor,\n             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           -- Only the row this same deposit wrote. A different transaction already holding the\n           -- date is two pays on one day, which the caller surfaces rather than overwriting:\n           -- silently replacing one with the other would lose money from the chart.\n           WHERE income_payments.transaction_id IS NULL\n              OR income_payments.transaction_id = excluded.transaction_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 13
+    },
+    "nullable": []
+  },
+  "hash": "8ea5c8e331a83ee3961675515bd6d459a374188a6f85d3616f53c0baea6c14ce"
+}

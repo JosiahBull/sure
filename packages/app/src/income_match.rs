@@ -106,12 +106,16 @@ impl IncomeMatchService {
         if matchable.is_empty() {
             return Ok(summary);
         }
+        // The two kinds are matched by different means and must not be mixed: a scheduled stream
+        // is reconciled against paydays it enumerated, a variable one has no paydays at all.
+        let (scheduled, variable): (Vec<&IncomeStream>, Vec<&IncomeStream>) =
+            matchable.iter().partition(|s| s.pay_pattern.has_schedule());
         let scales = TaxScales::new(&self.income.list_tax_scales().await?);
         let today = self.clock.today();
 
         // ---- regenerate the expected schedule --------------------------------------
         let mut expected: HashMap<i64, BTreeMap<NaiveDate, i64>> = HashMap::new();
-        for s in &matchable {
+        for s in &scheduled {
             let Some(anchor) = crate::reports::parse_date_pub(&s.first_payment_on) else {
                 continue; // an unparseable anchor has no schedule to regenerate
             };
@@ -175,7 +179,7 @@ impl IncomeMatchService {
         // are searched in turn and `claimed` is shared, so one deposit still satisfies one
         // payday, and each group re-reads which of the stream's dates are still open.
         let mut groups: BTreeMap<(i64, String), Vec<&IncomeStream>> = BTreeMap::new();
-        for s in &matchable {
+        for s in &scheduled {
             for key in match_keys(s) {
                 groups.entry(key).or_default().push(s);
             }
@@ -261,7 +265,110 @@ impl IncomeMatchService {
                 claimed.insert(tx_id);
             }
         }
+
+        // ---- claim deposits for variable streams -----------------------------------
+        //
+        // **After** the scheduled pass, deliberately. A scheduled stream knows what it expects
+        // and when, so it is the more specific claim on a shared deposit; a variable stream takes
+        // whatever its memo matches. Running variable first would let a broad pattern — the kind
+        // that also catches an employer's expense reimbursements — swallow a salary that had a
+        // payday waiting for it. `claimed` is shared, so the ordering is the whole guard.
+        for s in &variable {
+            summary.matched += self
+                .claim_variable(s, &streams, &scales, &mut claimed, today)
+                .await?;
+        }
         Ok(summary)
+    }
+
+    /// Every unclaimed deposit a variable stream's targets match, turned into a payment.
+    ///
+    /// There is no window and no tolerance here, because there is nothing to have a window or a
+    /// tolerance *around*: the stream does not claim to know when it is paid or how much. What
+    /// bounds it instead is the three things it does know — which account, what the memo says,
+    /// and between which dates it ran. The payment is dated the day the money landed, and
+    /// `expected_net_minor` stays NULL, which is what stops the review UI drawing a drift against
+    /// a figure nobody predicted.
+    async fn claim_variable(
+        &self,
+        stream: &IncomeStream,
+        streams: &[IncomeStream],
+        scales: &TaxScales,
+        claimed: &mut HashSet<i64>,
+        today: NaiveDate,
+    ) -> AppResult<usize> {
+        let from = crate::reports::parse_date_pub(&stream.starts_on);
+        let until = crate::reports::parse_date_pub(stream.ends_on.as_deref().unwrap_or(""))
+            .unwrap_or(today)
+            .min(today);
+        // A stream switched from scheduled to variable leaves its enumerated paydays behind, and
+        // nothing else would ever clear them: the schedule pass no longer visits this stream, so
+        // its pruning cannot run. They are phantoms — a date nothing will ever satisfy — so they
+        // go. Settled rows are untouched; the DAL guards the delete on status.
+        for stale in self.income.expected_payment_due_ons(stream.id).await? {
+            self.income
+                .delete_expected_payment(stream.id, &stale)
+                .await?;
+        }
+
+        let mut matched = 0;
+        for (account_id, pattern) in match_keys(stream) {
+            let search_from = from.map(|d| d.to_string()).unwrap_or_default();
+            let deposits = self
+                .income
+                .income_transactions(&search_from, Some(account_id))
+                .await?;
+            for t in deposits {
+                let Some(posted) = crate::reports::parse_date_pub(&t.posted_at) else {
+                    continue;
+                };
+                if from.is_some_and(|f| posted < f) || posted > until {
+                    continue;
+                }
+                if claimed.contains(&t.id) || !t.description.to_lowercase().contains(&pattern) {
+                    continue;
+                }
+                // A gross decomposition is only meaningful in the scale's own currency — the same
+                // guard `plan_slices` applies to a scheduled deposit.
+                if stream.basis.is_gross() && t.currency_code != stream.currency_code {
+                    continue;
+                }
+                let breakdown = decompose(
+                    stream,
+                    posted,
+                    t.amount_minor,
+                    scales,
+                    person_regular_annualised_on(streams, stream.ownership.person_id(), posted),
+                );
+                match self
+                    .income
+                    .record_variable_match(
+                        stream.id,
+                        &posted.to_string(),
+                        t.id,
+                        t.amount_minor,
+                        &breakdown,
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        claimed.insert(t.id);
+                        matched += 1;
+                    }
+                    // The same-day collision above. Reported once per deposit rather than failing
+                    // the run: every other deposit this stream has is still worth claiming.
+                    Err(AppError::Conflict(_)) => tracing::warn!(
+                        stream_id = stream.id,
+                        transaction_id = t.id,
+                        posted = %posted,
+                        "a payment already exists for this stream on this date; leaving the \
+                         second deposit for a person to link"
+                    ),
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+        Ok(matched)
     }
 
     /// Re-derive the stored payslip of every settled payment whose stream's terms have moved
@@ -797,6 +904,7 @@ mod tests {
                 pattern: "KAIMAHI".into(),
             }],
             pay_treatment: treatment,
+            pay_pattern: sure_core::PayPattern::Scheduled,
             enabled: true,
             sort_order: 0,
             notes: None,

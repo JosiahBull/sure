@@ -128,7 +128,17 @@ impl FromStr for PayFrequency {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum IncomeBasis {
-    /// The recorded figure is take-home. Nothing is deducted and nothing is reconciled.
+    /// Nothing is deducted by the payer, so the figure that lands is the figure recorded and
+    /// there is no payslip to reconstruct.
+    ///
+    /// Covers two situations that are the same arithmetic and different stories. Income that
+    /// genuinely is take-home — boarder income under IRD's standard-cost rules, a reimbursement —
+    /// and income paid *before* tax that the earner settles themselves: an invoiced contractor,
+    /// who receives the whole invoice and pays provisional tax later as its own transaction. For
+    /// the second, this is the honest basis precisely because it invents nothing. Reaching for
+    /// `GrossNzPaye` to "account for the tax" would fabricate PAYE, an ACC earner levy and a
+    /// KiwiSaver contribution that no payer ever deducted — and it would still reconcile to the
+    /// deposit, so nothing on screen would say it was fiction.
     Net,
     /// The recorded figure is before New Zealand PAYE, ACC, KiwiSaver and student loan.
     GrossNzPaye,
@@ -155,6 +165,56 @@ impl IncomeBasis {
         match self {
             IncomeBasis::Net => false,
             IncomeBasis::GrossNzPaye => true,
+        }
+    }
+}
+
+/// Whether a stream's *amount* is knowable before the money arrives.
+///
+/// Orthogonal to [`IncomeBasis`], which says how the amount is taxed, and to [`PayFrequency`],
+/// which stays meaningful either way — irregular pay still has a cycle, and that cycle is what
+/// annualises a period's gross into a tax bracket.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PayPattern {
+    /// A known amount on a known cycle. Paydays are enumerated ahead of the deposits and each is
+    /// reconciled against the one that satisfied it — a salary, and every stream before 0051.
+    #[default]
+    Scheduled,
+    /// The employer pays what the hours came to. There is no schedule to enumerate and no figure
+    /// to reconcile against, so a payment row is created *because* a deposit exists rather than
+    /// in anticipation of one — see the 0051 header.
+    Variable,
+}
+
+impl PayPattern {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PayPattern::Scheduled => "scheduled",
+            PayPattern::Variable => "variable",
+        }
+    }
+
+    /// Whether the matcher should enumerate paydays for this stream and reconcile against them.
+    ///
+    /// The single question every site that branches on the pattern is really asking, named once
+    /// so those sites read as intent rather than as an equality check against a variant.
+    pub fn has_schedule(self) -> bool {
+        match self {
+            PayPattern::Scheduled => true,
+            PayPattern::Variable => false,
+        }
+    }
+}
+
+impl FromStr for PayPattern {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "scheduled" => Ok(PayPattern::Scheduled),
+            "variable" => Ok(PayPattern::Variable),
+            other => Err(format!("unknown pay pattern '{other}'")),
         }
     }
 }
@@ -416,6 +476,10 @@ pub struct IncomeStream {
     /// is a new income stream. Empty means matching is off.
     pub match_targets: Vec<IncomeStreamMatchTarget>,
     pub pay_treatment: PayTreatment,
+    /// Whether the amount is knowable in advance. A `Variable` stream has no pay scale and no
+    /// expected payments — `annual_amount_minor` is then only an estimate, and steers nothing but
+    /// the bracket the person's *other* income is taxed in.
+    pub pay_pattern: PayPattern,
     pub enabled: bool,
     pub sort_order: i64,
     pub notes: Option<String>,
@@ -507,6 +571,8 @@ pub struct SaveIncomeStream {
     pub match_targets: Vec<SaveIncomeStreamMatchTarget>,
     #[serde(default)]
     pub pay_treatment: PayTreatment,
+    #[serde(default)]
+    pub pay_pattern: PayPattern,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -575,8 +641,15 @@ mod tests {
         for m in [MatchedBy::Auto, MatchedBy::Manual] {
             assert_eq!(MatchedBy::from_str(m.as_str()), Ok(m));
         }
+        for p in [PayPattern::Scheduled, PayPattern::Variable] {
+            assert_eq!(PayPattern::from_str(p.as_str()), Ok(p));
+        }
         assert!(PayFrequency::from_str("biweekly").is_err());
         assert!(IncomeBasis::from_str("gross").is_err());
+        assert!(PayPattern::from_str("irregular").is_err());
+        // The stored default has to be the variant every pre-0051 row was written as, or the
+        // column default and the type disagree about what an un-migrated stream means.
+        assert_eq!(PayPattern::default(), PayPattern::Scheduled);
         assert!(PayTreatment::from_str("bonus").is_err());
         assert!(IncomePaymentStatus::from_str("linked").is_err());
     }

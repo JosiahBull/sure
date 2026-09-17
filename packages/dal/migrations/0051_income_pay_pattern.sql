@@ -1,0 +1,36 @@
+-- Income whose amount is not knowable in advance.
+--
+-- Every stream until now has been *scheduled*: a level and a cycle, from which the matcher
+-- enumerates paydays ahead of the deposits and reconciles each against the one that satisfied it.
+-- That shape is right for a salary and wrong for casual, hourly and contract work, where the
+-- employer pays what the hours came to. The two halves of a stream come apart:
+--
+--   * **the cycle is still real.** Measured against live data, the pay *cadence* of irregular
+--     work is often exact — fortnightly to the day for a tutoring job, weekly for another,
+--     monthly for a consultancy. It also has to stay, because it is what annualises a period's
+--     gross into a tax bracket: `reconstruct_period` needs `periods_per_year`, and payroll used
+--     the same figure.
+--   * **the amount is not.** Across four such employers in the tree this was written for, the
+--     largest payment was between 2.4 and 22.5 times the smallest. There is no level to predict
+--     and therefore nothing for a tolerance to be a tolerance *of*: the matcher's `max($5, 2%)`
+--     rejects nearly every real deposit, and the schedule it built reports them all as missed.
+--
+-- So a variable stream is **deposit-driven**: a payment row exists because a deposit does, dated
+-- the day it landed, with `expected_net_minor` left NULL because nothing was expected. It can
+-- never produce a "missed pay", which is the point — it never claimed to know one was coming.
+--
+-- The obvious cheaper alternative, keeping the schedule and widening the tolerance to infinity,
+-- was measured and rejected: one of those employers paid at gaps of 28 to 62 days, so a monthly
+-- schedule manufactures a missed pay for every cycle it skipped — exactly the noise this removes.
+--
+-- **Nothing downstream changes.** `matched_payments` — what the cash-flow chart's payslip layer
+-- reads — selects on `status IN ('matched','confirmed')` and joins the transaction; it never
+-- touches the schedule. The schedule was always an input to matching rather than a property of a
+-- payment, and this migration is mostly the admission of that.
+--
+-- Orthogonal to `basis`: a variable stream may be `gross_nz_paye` (casual PAYE work) or `net`
+-- (an invoiced contractor, who is paid before tax and settles it themselves — no deduction to
+-- itemise, and `decompose` passes it through whole).
+
+ALTER TABLE income_streams ADD COLUMN pay_pattern TEXT NOT NULL DEFAULT 'scheduled'
+    CHECK (pay_pattern IN ('scheduled', 'variable'));

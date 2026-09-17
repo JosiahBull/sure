@@ -1220,6 +1220,25 @@ impl IncomeRepo for SqliteStore {
         crate::income::delete_expected(&self.db, stream_id, due_on).await
     }
 
+    async fn record_variable_match(
+        &self,
+        stream_id: i64,
+        due_on: &str,
+        transaction_id: i64,
+        observed_net_minor: i64,
+        breakdown: &PayeBreakdown,
+    ) -> AppResult<()> {
+        crate::income::record_variable_match(
+            &self.db,
+            stream_id,
+            due_on,
+            transaction_id,
+            observed_net_minor,
+            breakdown,
+        )
+        .await
+    }
+
     async fn record_payment_match(
         &self,
         stream_id: i64,
