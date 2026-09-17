@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE income_streams SET\n            ownership=COALESCE(?23, ownership),\n            person_id=CASE WHEN ?23 IS NULL THEN person_id ELSE ?24 END,\n            label=?2, employer=?3, currency_code=?4, annual_amount_minor=?5, basis=?6,\n            pay_frequency=?7, first_payment_on=?8, starts_on=?9, ends_on=?10,\n            annual_increase_bps=?11, kiwisaver_bps=?12, student_loan=?13, take_home_bps=?14,\n            linked_category_id=?15, enabled=?16, sort_order=?17, notes=?18,\n            employer_kiwisaver_bps=?19, kiwisaver_account_id=?20, student_loan_account_id=?21,\n            pay_treatment=?22, pay_pattern=?25,\n            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n         WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 25
+    },
+    "nullable": []
+  },
+  "hash": "c9fd39345d1fbf2b627f2d213fa848d8130ade0da775803f740a6f8314a03c39"
+}

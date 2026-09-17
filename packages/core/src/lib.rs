@@ -47,7 +47,7 @@ pub use import::{
 };
 pub use income::{
     IncomeBasis, IncomePayment, IncomePaymentStatus, IncomeStream, IncomeStreamMatchTarget,
-    IncomeStreamStep, MatchedBy, PayFrequency, PayStep, PayTreatment, SaveIncomeStream,
+    IncomeStreamStep, MatchedBy, PayFrequency, PayPattern, PayStep, PayTreatment, SaveIncomeStream,
     SaveIncomeStreamMatchTarget, SaveIncomeStreamStep, TakeHome, TakeHomeSource,
 };
 pub use iso_date::IsoDate;

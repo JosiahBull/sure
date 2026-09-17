@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT pay_pattern FROM income_streams WHERE id=?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "pay_pattern",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "income_streams",
+            "name": "pay_pattern"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "75c2c1629a195ceddc265864be0155d057e3ec556ef87e18ce148ef4605d923a"
+}

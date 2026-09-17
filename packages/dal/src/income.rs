@@ -3,8 +3,8 @@
 
 use sure_core::{
     AppError, AppResult, IncomeBasis, IncomePayment, IncomePaymentStatus, IncomeStream,
-    IncomeStreamMatchTarget, IncomeStreamStep, MatchedBy, Ownership, PayFrequency, PayTreatment,
-    PayeBreakdown, SaveIncomeStream,
+    IncomeStreamMatchTarget, IncomeStreamStep, MatchedBy, Ownership, PayFrequency, PayPattern,
+    PayTreatment, PayeBreakdown, SaveIncomeStream,
 };
 
 use crate::Db;
@@ -32,6 +32,7 @@ struct IncomeStreamRow {
     kiwisaver_account_id: Option<i64>,
     student_loan_account_id: Option<i64>,
     pay_treatment: String,
+    pay_pattern: String,
     enabled: bool,
     sort_order: i64,
     notes: Option<String>,
@@ -54,6 +55,7 @@ impl IncomeStreamRow {
         let basis: IncomeBasis = self.basis.parse().map_err(bad)?;
         let pay_frequency: PayFrequency = self.pay_frequency.parse().map_err(bad)?;
         let pay_treatment: PayTreatment = self.pay_treatment.parse().map_err(bad)?;
+        let pay_pattern: PayPattern = self.pay_pattern.parse().map_err(bad)?;
         // Same contract as the parses above: the 0038 CHECK keeps the pair consistent, so a row
         // that fails to rebuild came from something that went around every writer we own.
         let ownership = Ownership::from_stored(&self.ownership, self.person_id).map_err(bad)?;
@@ -79,6 +81,7 @@ impl IncomeStreamRow {
             student_loan_account_id: self.student_loan_account_id,
             match_targets,
             pay_treatment,
+            pay_pattern,
             enabled: self.enabled,
             sort_order: self.sort_order,
             notes: self.notes,
@@ -144,7 +147,7 @@ pub async fn list(db: &Db) -> AppResult<Vec<IncomeStream>> {
                   annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,
                   student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
                   kiwisaver_account_id, student_loan_account_id,
-                  pay_treatment, enabled AS "enabled!: bool",
+                  pay_treatment, pay_pattern, enabled AS "enabled!: bool",
                   sort_order, notes, created_at, updated_at
              FROM income_streams ORDER BY person_id, sort_order, label, id"#
     )
@@ -202,7 +205,7 @@ pub async fn get(db: &Db, id: i64) -> AppResult<IncomeStream> {
                   annual_increase_bps, kiwisaver_bps, employer_kiwisaver_bps,
                   student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
                   kiwisaver_account_id, student_loan_account_id,
-                  pay_treatment, enabled AS "enabled!: bool",
+                  pay_treatment, pay_pattern, enabled AS "enabled!: bool",
                   sort_order, notes, created_at, updated_at
              FROM income_streams WHERE id=?1"#,
         id
@@ -319,6 +322,18 @@ fn validate(input: &SaveIncomeStream) -> AppResult<()> {
                 "a step's {field} must be between 0 and 10000, got {v}"
             ));
         }
+    }
+    // A variable stream has no predicted figure, and the salary+bonus split is built on one: the
+    // base slice comes from the regular stream's last observed or predicted pay, and the bonus is
+    // the residual. With neither, there is no principled way to divide a deposit, so the
+    // combination is refused rather than silently matching nothing.
+    if input.pay_pattern == PayPattern::Variable && input.pay_treatment == PayTreatment::ExtraPay {
+        problems.push(
+            "a variable-amount stream cannot be an extra pay: splitting a deposit between a \
+             salary and a bonus needs a predicted figure for the salary, and a variable stream \
+             has none. Record the bonus as its own scheduled stream."
+                .into(),
+        );
     }
     // A schedule with two figures on the same date is a typo, and the unique index would report it
     // as an opaque constraint failure. Name it instead.
@@ -439,6 +454,7 @@ pub async fn create(db: &Db, owner: Ownership, input: SaveIncomeStream) -> AppRe
     let ends_on = input.ends_on.as_ref().map(|d| d.to_string());
     let notes = input.notes.as_deref();
     let pay_treatment = input.pay_treatment.as_str();
+    let pay_pattern = input.pay_pattern.as_str();
     // Only the new id is wanted — the steps go in below and `get` re-reads the whole stream —
     // so this returns that rather than restating all two dozen columns.
     let id = sqlx::query_scalar!(
@@ -447,9 +463,9 @@ pub async fn create(db: &Db, owner: Ownership, input: SaveIncomeStream) -> AppRe
                pay_frequency, first_payment_on, starts_on, ends_on, annual_increase_bps,
                kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled,
                sort_order, notes, employer_kiwisaver_bps, kiwisaver_account_id,
-               student_loan_account_id, pay_treatment)
+               student_loan_account_id, pay_treatment, pay_pattern)
            VALUES (?23,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
-                   ?22)
+                   ?22,?24)
            RETURNING id AS "id!""#,
         person_id,
         label,
@@ -473,7 +489,8 @@ pub async fn create(db: &Db, owner: Ownership, input: SaveIncomeStream) -> AppRe
         input.kiwisaver_account_id,
         input.student_loan_account_id,
         pay_treatment,
-        ownership
+        ownership,
+        pay_pattern
     )
     .fetch_one(&mut *txn)
     .await
@@ -500,6 +517,7 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
     let ends_on = input.ends_on.as_ref().map(|d| d.to_string());
     let notes = input.notes.as_deref();
     let pay_treatment = input.pay_treatment.as_str();
+    let pay_pattern = input.pay_pattern.as_str();
     // `None` leaves the owner alone, which is what every caller that only edits the figures
     // sends. `COALESCE` on the pair rather than two statements: moving a stream between owners
     // and clearing `person_id` have to happen together or the 0038 CHECK rejects the row.
@@ -519,7 +537,7 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
             annual_increase_bps=?11, kiwisaver_bps=?12, student_loan=?13, take_home_bps=?14,
             linked_category_id=?15, enabled=?16, sort_order=?17, notes=?18,
             employer_kiwisaver_bps=?19, kiwisaver_account_id=?20, student_loan_account_id=?21,
-            pay_treatment=?22,
+            pay_treatment=?22, pay_pattern=?25,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id=?1",
         id,
@@ -545,7 +563,8 @@ pub async fn update(db: &Db, id: i64, input: SaveIncomeStream) -> AppResult<Inco
         input.student_loan_account_id,
         pay_treatment,
         ownership,
-        owner_person_id
+        owner_person_id,
+        pay_pattern
     )
     .execute(&mut *txn)
     .await
@@ -788,9 +807,87 @@ pub async fn record_match(
     get_payment(db, id).await
 }
 
+/// Record a variable stream's deposit as a payment, creating the row rather than filling one in.
+///
+/// The mirror of [`record_match`] for a stream with no schedule: there is no `expected` row
+/// waiting to be claimed, because nothing was expected. `expected_net_minor` is therefore left
+/// NULL — the review UI reads that as "no prediction to drift from" and shows a dash, which is
+/// the honest thing rather than a drift computed against zero.
+///
+/// `matched_by` is `auto`: the matcher chose this deposit, and a person confirming it later goes
+/// through the ordinary confirm path. Idempotent on `(income_stream_id, due_on)` — a re-run
+/// updates the row it wrote last time rather than duplicating it — except when a *different*
+/// transaction already holds that date, which is the same-day collision the caller reports.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn record_variable_match(
+    db: &Db,
+    stream_id: i64,
+    due_on: &str,
+    transaction_id: i64,
+    observed_net_minor: i64,
+    breakdown: &PayeBreakdown,
+) -> AppResult<()> {
+    let matched_by = MatchedBy::Auto.as_str();
+    let status = IncomePaymentStatus::Matched.as_str();
+    let res = sqlx::query!(
+        "INSERT INTO income_payments
+            (income_stream_id, due_on, status, transaction_id, matched_by, observed_net_minor,
+             gross_minor, income_tax_minor, acc_levy_minor, kiwisaver_minor, student_loan_minor,
+             employer_kiwisaver_minor, esct_minor)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+         ON CONFLICT(income_stream_id, due_on) DO UPDATE SET
+             status=excluded.status, transaction_id=excluded.transaction_id,
+             matched_by=excluded.matched_by, observed_net_minor=excluded.observed_net_minor,
+             gross_minor=excluded.gross_minor, income_tax_minor=excluded.income_tax_minor,
+             acc_levy_minor=excluded.acc_levy_minor, kiwisaver_minor=excluded.kiwisaver_minor,
+             student_loan_minor=excluded.student_loan_minor,
+             employer_kiwisaver_minor=excluded.employer_kiwisaver_minor,
+             esct_minor=excluded.esct_minor,
+             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           -- Only the row this same deposit wrote. A different transaction already holding the
+           -- date is two pays on one day, which the caller surfaces rather than overwriting:
+           -- silently replacing one with the other would lose money from the chart.
+           WHERE income_payments.transaction_id IS NULL
+              OR income_payments.transaction_id = excluded.transaction_id",
+        stream_id,
+        due_on,
+        status,
+        transaction_id,
+        matched_by,
+        observed_net_minor,
+        breakdown.gross_minor,
+        breakdown.income_tax_minor,
+        breakdown.acc_levy_minor,
+        breakdown.kiwisaver_minor,
+        breakdown.student_loan_minor,
+        breakdown.employer_kiwisaver_minor,
+        breakdown.esct_minor
+    )
+    .execute(db)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::conflict(format!(
+            "another deposit is already recorded for this stream on {due_on}"
+        )));
+    }
+    Ok(())
+}
+
 /// Undo a match: back to `expected`, decomposition cleared, the transaction released.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn unlink_payment(db: &Db, id: i64) -> AppResult<IncomePayment> {
+    // A variable stream has no schedule, so there is nothing for an unlinked row to go back to
+    // being: `expected` would mean "a pay was due on this date and never arrived", which is a
+    // claim the stream cannot make and the matcher would never clear. The row exists because the
+    // deposit does — unlink it and it should be gone. Returned before it is deleted so the
+    // caller still gets the row it acted on, which is what the route's 200 body is.
+    let payment = get_payment(db, id).await?;
+    if is_variable(db, payment.income_stream_id).await? {
+        sqlx::query!("DELETE FROM income_payments WHERE id=?1", id)
+            .execute(db)
+            .await?;
+        return Ok(payment);
+    }
     let res = sqlx::query!(
         "UPDATE income_payments
             SET status='expected', transaction_id=NULL, matched_by=NULL,
@@ -839,6 +936,18 @@ pub async fn set_payment_status(
 /// deposit. Returns how many were repaired, for the matcher's log line.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn reset_orphaned_payments(db: &Db) -> AppResult<u64> {
+    // Same rule as `unlink_payment`, for the same reason: a variable stream's row is only ever a
+    // record of a deposit, so when the deposit goes (an undone import) the row goes with it
+    // rather than becoming a missed pay nothing can ever satisfy. Deleted first, so the reset
+    // below cannot claim it.
+    let dropped = sqlx::query!(
+        "DELETE FROM income_payments
+           WHERE transaction_id IS NULL AND status IN ('matched','confirmed')
+             AND income_stream_id IN (SELECT id FROM income_streams WHERE pay_pattern='variable')"
+    )
+    .execute(db)
+    .await?
+    .rows_affected();
     let res = sqlx::query!(
         "UPDATE income_payments
             SET status='expected', matched_by=NULL, observed_net_minor=NULL, gross_minor=NULL,
@@ -849,7 +958,29 @@ pub async fn reset_orphaned_payments(db: &Db) -> AppResult<u64> {
     )
     .execute(db)
     .await?;
-    Ok(res.rows_affected())
+    Ok(dropped + res.rows_affected())
+}
+
+/// Whether this stream's amount is unknowable in advance — see [`PayPattern::Variable`].
+///
+/// A one-column read rather than loading the stream: the two callers need exactly this and both
+/// are on a path that already has the payment in hand.
+async fn is_variable(db: &Db, stream_id: i64) -> AppResult<bool> {
+    let pattern = sqlx::query_scalar!(
+        "SELECT pay_pattern FROM income_streams WHERE id=?1",
+        stream_id
+    )
+    .fetch_optional(db)
+    .await?;
+    match pattern {
+        Some(p) => Ok(p
+            .parse::<PayPattern>()
+            .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+            == PayPattern::Variable),
+        // The payment's stream is gone, so its rows went with it (ON DELETE CASCADE) and this is
+        // a race rather than a state. Treat it as scheduled: the caller's UPDATE matches nothing.
+        None => Ok(false),
+    }
 }
 
 /// Transaction ids already claimed by any live match — the matcher's exclusion list, so one
@@ -942,7 +1073,9 @@ pub async fn matched_payments(db: &Db) -> AppResult<Vec<MatchedPaymentRow>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sure_core::{IsoDate, Money, SaveIncomeStreamMatchTarget, SaveIncomeStreamStep};
+    use sure_core::{
+        IsoDate, Money, PayPattern, SaveIncomeStreamMatchTarget, SaveIncomeStreamStep,
+    };
 
     async fn test_db() -> Db {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -989,6 +1122,7 @@ mod tests {
             kiwisaver_account_id: None,
             student_loan_account_id: None,
             match_targets: Vec::new(),
+            pay_pattern: PayPattern::Scheduled,
             pay_treatment: PayTreatment::Regular,
             enabled: true,
             sort_order: 0,
@@ -1222,6 +1356,57 @@ mod tests {
             .unwrap();
         assert_eq!(created.steps[0].kiwisaver_bps, Some(350));
         assert_eq!(created.steps[1].kiwisaver_bps, None);
+    }
+
+    #[tokio::test]
+    async fn a_variable_stream_cannot_be_an_extra_pay() {
+        let db = test_db().await;
+        let person = a_person(&db).await;
+        let mut input = stream("Tutoring");
+        input.pay_pattern = PayPattern::Variable;
+        input.pay_treatment = PayTreatment::ExtraPay;
+        let err = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:?}").contains("cannot be an extra pay"),
+            "got {err:?}"
+        );
+    }
+
+    /// The pattern survives a write and comes back as itself, and the default is the one every
+    /// pre-0051 row was stored as.
+    #[tokio::test]
+    async fn a_streams_pay_pattern_round_trips() {
+        let db = test_db().await;
+        let person = a_person(&db).await;
+        let mut input = stream("Tutoring");
+        input.pay_pattern = PayPattern::Variable;
+        let created = create(&db, Ownership::Person { person_id: person }, input)
+            .await
+            .unwrap();
+        assert_eq!(created.pay_pattern, PayPattern::Variable);
+        assert_eq!(
+            get(&db, created.id).await.unwrap().pay_pattern,
+            PayPattern::Variable
+        );
+
+        // Switching back is an ordinary edit, not a special case.
+        let mut edit = stream("Tutoring");
+        edit.pay_pattern = PayPattern::Scheduled;
+        assert_eq!(
+            update(&db, created.id, edit).await.unwrap().pay_pattern,
+            PayPattern::Scheduled
+        );
+
+        let plain = create(
+            &db,
+            Ownership::Person { person_id: person },
+            stream("Salary"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(plain.pay_pattern, PayPattern::Scheduled, "the default");
     }
 
     #[tokio::test]

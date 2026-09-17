@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, colorFor, type Schemas } from "../lib/api";
-  import { DEFAULT_RANGE, filters, activeRange } from "../lib/state.svelte";
+  import { activeRange, filters, periodLinkParams } from "../lib/state.svelte";
   import { navigate } from "../lib/router.svelte";
   import { Tween } from "svelte/motion";
   import { cubicOut } from "svelte/easing";
@@ -155,9 +155,8 @@
     else if (!expandedBSKinds.has(kind)) toggleBSKind(kind);
   }
   function goToAccount(accountId: number) {
-    const p = new URLSearchParams();
+    const p = new URLSearchParams(periodLinkParams());
     p.set("account", String(accountId));
-    if (filters.range !== DEFAULT_RANGE) p.set("range", filters.range);
     navigate(`/transactions?${p.toString()}`);
   }
 
@@ -389,12 +388,9 @@
   // handful the user clicked. `kind` still narrows it to income or outgoings, since a null
   // category alone can't tell an uncategorised income transaction from an expense one.
   function goToCategory(categoryId: number | null, kind?: "income" | "expense") {
-    const p = new URLSearchParams();
+    const p = new URLSearchParams(periodLinkParams());
     p.set("category", categoryId == null ? "none" : String(categoryId));
     if (kind) p.set("type", kind);
-    // Only when it is not the default — see `periodParams`. A link is shorter and reads as a
-    // deliberate choice when the one parameter on it is one somebody actually made.
-    if (filters.range !== DEFAULT_RANGE) p.set("range", filters.range);
     navigate(`/transactions?${p.toString()}`);
   }
 </script>
