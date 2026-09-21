@@ -270,6 +270,30 @@
   // Hovered slice per pie ([expense, income]) — shared between the donut and its legend.
   let hovered = $state<(number | null)[]>([null, null]);
 
+  /**
+   * How wide the donut-and-legend row actually is, and the donut size that leaves the legend
+   * enough of it.
+   *
+   * The donut is drawn at a pixel size and the legend's rows are "● Name  NZ$16,744.00" — a
+   * fixed-width amount plus a name that ellipsises. Held at 150px, the legend got whatever was
+   * left, which on a phone was 64px of name: "Housing" rendered as "Housi…", and the category
+   * a slice belongs to is the one thing its legend row exists to say. So the donut yields
+   * instead, down to a floor where it is still a readable chart.
+   *
+   * LEGEND_FLOOR is measured from the widest seeded row: a 10px dot, two 8px gaps, ~70px of
+   * name and an 88px amount. Above roughly a 360px row the donut is back at its full size, so
+   * the desktop two-column layout is unaffected.
+   */
+  const LEGEND_FLOOR = 190;
+  const PIE_MAX = 150;
+  const PIE_MIN = 104;
+  let pieRowW = $state(0);
+  const pieSize = $derived(
+    pieRowW === 0 ? PIE_MAX : Math.max(PIE_MIN, Math.min(PIE_MAX, pieRowW - 18 - LEGEND_FLOOR)),
+  );
+  // The ring scales with the circle, or a small donut reads as a thick washer.
+  const pieThickness = $derived(Math.round((pieSize * 26) / PIE_MAX));
+
   // Jump to the transactions page filtered to this category (its whole subtree) over the
   // overview's current range. Shared by the pie arcs, their legend rows and the Sankey, so
   // all three open the same slice the same way.
@@ -347,11 +371,14 @@
         {#if panel.slices.length === 0}
           <div class="empty">Nothing here yet.</div>
         {:else}
-          <div class="row" style="gap:18px;align-items:flex-start">
+          <!-- Both pies share one measurement: the two cards are the same width in every
+               layout this has (side by side, or stacked one per row), so measuring each
+               separately would buy nothing and let them disagree by a rounding. -->
+          <div class="row pie-row" style="gap:18px;align-items:flex-start" bind:clientWidth={pieRowW}>
             <PieChart
               slices={panel.slices}
-              size={150}
-              thickness={26}
+              size={pieSize}
+              thickness={pieThickness}
               centerValue={money0(panel.total)}
               centerLabel="total"
               active={hovered[pi]}
@@ -712,9 +739,35 @@
   .two {
     grid-template-columns: 1fr 1fr;
   }
-  @media (max-width: 720px) {
+  /* Against the content column, not the window: with the panel docked, a 1024px window leaves
+     638px here, and two 311px columns cannot hold a 150px donut beside its legend. The old
+     `@media (max-width: 720px)` was measuring the wrong box and let exactly that through. */
+  @container main (max-width: 760px) {
     .two {
       grid-template-columns: 1fr;
+    }
+  }
+  /* Donut beside its legend. The donut gives up width first (see `pieSize` in the script), and
+     `min-width: 0` lets the legend's names ellipsise rather than setting the row's floor
+     themselves — between them the row fits any width down to the one below, where the donut
+     has reached PIE_MIN and the legend goes underneath rather than beside. */
+  .pie-row :global(.pie) {
+    flex: none;
+  }
+  .pie-row .legend {
+    min-width: 0;
+  }
+  /* 360, measured: the legend gets `container − 28px of card padding − 168px of donut`, and
+     under about 124px of that a category name ellipsises to two letters. Above it, side by
+     side reads better than stacked. */
+  @container main (max-width: 360px) {
+    .pie-row {
+      flex-direction: column;
+      align-items: center !important;
+      gap: 12px !important;
+    }
+    .pie-row .legend {
+      width: 100%;
     }
   }
   .legend {
@@ -754,6 +807,14 @@
   .legend-row:hover,
   .legend-row:focus-visible {
     background: var(--hover);
+  }
+  /* Every legend row is a link into a filtered transaction list — on a phone it is the primary
+     way into the data, not a caption beside the chart. */
+  @media (pointer: coarse) {
+    .legend-row {
+      min-height: 44px;
+      padding: 8px 6px;
+    }
   }
   .legend-row.dim {
     opacity: 0.4;
@@ -844,7 +905,13 @@
     flex-direction: column;
     gap: 2px;
   }
-  @media (max-width: 480px) {
+  /* Three money figures across a 374px card is ~115px each, and "NZ$32,401.82" needs more. */
+  @container main (max-width: 520px) {
+    .activity-stats {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+  @container main (max-width: 340px) {
     .activity-stats {
       grid-template-columns: 1fr;
     }

@@ -371,7 +371,7 @@
   {#if runs.length === 0}
     <div class="empty">Runs will appear here.</div>
   {:else}
-    <div style="overflow-x:auto">
+    <div class="scroll-x">
     <table class="table">
       <thead><tr><th>When</th><th>Rule</th><th>Matched</th><th>Changed</th><th></th></tr></thead>
       <tbody>

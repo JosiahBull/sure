@@ -652,6 +652,18 @@
         already here are skipped, and dates a bank feed already covers are held back so nothing
         is counted twice.
       </div>
+      <!-- A phone cannot drop a file, so on a touch device the sentence above describes a
+           gesture that does not exist and the only way in is a 20px inline link inside it.
+           This is the same action as a real, thumb-sized button. Hidden on a pointer device,
+           where the link and the drop target both work. -->
+      <button
+        type="button"
+        class="btn btn-primary choose-btn"
+        onclick={() => fileInput?.click()}
+        disabled={busy !== null}
+      >
+        {busy === "preview" ? "Reading…" : "Choose files"}
+      </button>
       <input
         bind:this={fileInput}
         type="file"
@@ -825,5 +837,16 @@
     background: var(--surface-2);
     border-radius: 4px;
     padding: 0 4px;
+  }
+  /* Pointer devices keep the drag-and-drop sentence and its inline link; the button is for
+     the device that has neither a drag nor a 20px-accurate tap. */
+  .choose-btn {
+    display: none;
+  }
+  @media (pointer: coarse) {
+    .choose-btn {
+      display: inline-flex;
+      margin-top: 12px;
+    }
   }
 </style>

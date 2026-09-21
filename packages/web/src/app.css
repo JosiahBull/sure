@@ -32,6 +32,36 @@
   --maxw: 1080px;
   --rail-w: 80px;
   --panel-w: 300px;
+  /* Card padding, and the page's side gutter. Both shrink on a phone, where 18px of card
+     padding either side of a 402px screen is 9% of the reading width spent on air. */
+  --card-pad: 18px;
+  --gutter: clamp(16px, 2.8vw, 40px);
+
+  /* ---- Breakpoints, named so the reason for each is written down once -------------------
+     These are documentation: CSS cannot interpolate a custom property into a media query, so
+     each number is restated at its `@media`/`@container` rule. tests/mobile.spec.ts checks the
+     restatements against these, so a change here that misses a rule fails the suite rather
+     than drifting silently.
+
+     --bp-phone   the rail becomes a bottom tab bar and the page lays out in one column.
+     --bp-dock    below this the side panel overlays the content as a drawer instead of
+                  taking a 300px column: rail (80) + panel (300) + a content column worth
+                  having (~620) is 1000px, and under it the content column is the thing that
+                  loses — at 768px it collapsed to 382px, narrower than a phone.
+
+     Everything *inside* the content column is sized with `@container main (...)` instead,
+     because the column's width and the window's width are different numbers. */
+  --bp-phone: 720px;
+  --bp-dock: 1000px;
+
+  /* Height of the phone's bottom tab bar, excluding the safe-area inset it adds underneath.
+     Stated rather than left to the content, because three things have to agree on it: the bar
+     itself, the page's bottom padding, and anything else that floats above the bar (the
+     transactions bulk-action bar). Derived from the content it holds — a 20px icon, a 3px gap
+     and an 11px label at line-height 1.5, inside 7px item padding and 6px bar padding — and
+     then *enforced* on the bar, so the sum cannot quietly drift out from under the two rules
+     that depend on it. tests/mobile.spec.ts checks the page clears the bar it measures. */
+  --tabbar-h: 66px;
 
   --font: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
     "Apple Color Emoji", sans-serif;
@@ -109,6 +139,21 @@ body {
   margin: 0;
   padding: 0;
 }
+html {
+  /* Keep the two floating bars out of the landing zone of anything the browser scrolls into
+     view — a `?tx=` deep link, find-in-page, tabbing to an off-screen field. A sticky or fixed
+     bar is not subtracted from the scrollport, so without this the browser is free to place the
+     thing you asked for underneath one. `--subbar-h` is measured and published by App.svelte,
+     because that bar is one row or two depending on the page and on whether its filters
+     wrapped; `--tabbar-h` is fixed and only real on a phone, where the bar exists. */
+  scroll-padding-top: calc(var(--subbar-h, 0px) + 8px);
+  scroll-padding-bottom: 8px;
+}
+@media (max-width: 720px) {
+  html {
+    scroll-padding-bottom: calc(var(--tabbar-h) + 8px + env(safe-area-inset-bottom));
+  }
+}
 body {
   font-family: var(--font);
   background: radial-gradient(1200px 600px at 70% -10%, var(--bg-glow) 0%, transparent 60%),
@@ -119,6 +164,17 @@ body {
   text-rendering: optimizeLegibility;
   font-size: 15px;
   line-height: 1.5;
+  /* A phone has no horizontal scrollbar to tell you the page is wider than the screen; it just
+     drifts sideways under your thumb, sliding the content out from under the sticky bars. Any
+     element that genuinely needs to be wider than the screen (the transactions grid, a wide
+     table) scrolls inside its own container — see `.scroll-x`. */
+  overflow-x: hidden;
+}
+/* Set while a modal drawer or overlay is open. Without it, a touch-drag that starts over the
+   scrim scrolls the page underneath it, which on iOS also drags the drawer's own scroll
+   position. */
+body.scroll-locked {
+  overflow: hidden;
 }
 h1,
 h2,
@@ -152,7 +208,14 @@ button {
      capped and centred, with fluid side padding (≈40px on desktop, tighter on mobile). */
   max-width: none;
   margin: 0 auto;
-  padding: 0 clamp(16px, 2.8vw, 40px) calc(48px + env(safe-area-inset-bottom));
+  padding: 0 var(--gutter) calc(48px + env(safe-area-inset-bottom));
+}
+/* The one sanctioned way for something to be wider than its column: it scrolls itself, and
+   says so by touch. Used by the wide tables and the transactions grid — never by the page. */
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
 }
 .row {
   display: flex;
@@ -171,6 +234,15 @@ button {
 .grid {
   display: grid;
   gap: var(--gap);
+}
+/* A grid item's `min-width` defaults to `auto`, meaning "never narrower than my min-content".
+   One item deep inside a card that refuses to shrink therefore widens its whole track, and
+   because the tracks stretch, every sibling card grows with it — which is how a 320px screen
+   ended up with a 323px document and five cards each 17px past the gutter, with no single
+   element wide enough to blame. Grid tracks already say how the width is shared; this stops a
+   descendant overriding that. */
+.grid > * {
+  min-width: 0;
 }
 .muted {
   color: var(--text-muted);
@@ -193,7 +265,7 @@ button {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  padding: 18px;
+  padding: var(--card-pad);
   box-shadow: var(--shadow);
 }
 .card h2 {
@@ -338,21 +410,43 @@ label.field {
   opacity: 0;
 }
 .switch .track {
-  width: 38px;
-  height: 22px;
+  /* The knob (`.track::after`) is absolutely positioned, so it lands relative to whichever
+     ancestor is positioned. That has to be the track itself: `.switch` is also positioned (for
+     the visually-hidden input), and while the two boxes were the same height the difference did
+     not show — until the touch rule gave `.switch` a 44px minimum and the knob floated 11px
+     above the track it belongs to.
+
+     The geometry is stated once, here, because four numbers have to agree and three of them
+     used to be written out by hand in two places. --knob-travel in particular is not a free
+     choice: it is whatever distance leaves the same gap at the far end as at the near one. */
+  --track-w: 38px;
+  --track-h: 22px;
+  --track-border: 1px;
+  --knob-size: 16px;
+  /* The gap between the knob and the edge you can see, on whichever side it is resting. */
+  --knob-gap: 3px;
+  --knob-travel: calc(var(--track-w) - var(--knob-size) - 2 * var(--knob-gap));
+
+  position: relative;
+  width: var(--track-w);
+  height: var(--track-h);
   border-radius: 999px;
   background: var(--surface-2);
-  border: 1px solid var(--border-strong);
+  border: var(--track-border) solid var(--border-strong);
   transition: background 0.15s;
   flex: none;
 }
 .switch .track::after {
   content: "";
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 16px;
-  height: 16px;
+  /* Minus the border, because an absolutely positioned child's offsets resolve against the
+     *padding* box and the border insets that by 1px — so a bare `3px` drew a 4px gap on the
+     near side and left 2px at the far one. The knob was a pixel low and a pixel off-centre in
+     both states, which on a 22px control is visible. */
+  top: calc(var(--knob-gap) - var(--track-border));
+  left: calc(var(--knob-gap) - var(--track-border));
+  width: var(--knob-size);
+  height: var(--knob-size);
   border-radius: 50%;
   background: var(--knob);
   transition: transform 0.15s;
@@ -361,7 +455,7 @@ label.field {
   background: var(--accent);
 }
 .switch input:checked + .track::after {
-  transform: translateX(16px);
+  transform: translateX(var(--knob-travel));
   background: var(--knob-on);
 }
 
@@ -432,4 +526,121 @@ label.field {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* ---- Touch --------------------------------------------------------------------------------
+   Everything above is sized for a pointer that lands where it is aimed. A fingertip is ~9mm
+   across and lands about 7mm from where the eye thinks it did, which is why both platform
+   guidelines put the floor at 44px (Apple) / 48px (Material). The rule is scoped to
+   `pointer: coarse` rather than to a width, because the input device is the actual reason: a
+   500px browser window on a laptop still has a mouse, and widening its buttons would be
+   spending space on nothing.
+
+   Where a control can simply be bigger, it is. Where its drawn size is load-bearing — a dense
+   row is readable because its buttons are small — the hit area grows without the drawing: a
+   centred, transparent pseudo-element. See `.btn-sm` for where the line between the two fell,
+   and why it is not all the way at one end. */
+@media (pointer: coarse) {
+  .btn,
+  .chip,
+  .input,
+  .select,
+  textarea {
+    /* A 16px font is also what stops iOS Safari zooming the page on focus — under 16px it
+       scales the viewport to the field and never scales it back, which is the single most
+       common way a form "breaks" on an iPhone. */
+    font-size: max(16px, 1em);
+  }
+  .btn {
+    min-height: 44px;
+  }
+  .btn-sm {
+    /* 40px drawn, not 32px plus a 44px phantom. An invisible hit area works for a lone button
+       and fails for a row of them — an account row is [Edit][Import][×], and three 44px areas
+       around three 33px buttons overlap, so whichever is painted last wins the shared strip and
+       the other two get *less* reach than before. Real height costs 7px per row and gives each
+       button its own. The phantom below then only tops up the remaining 4px, where a 2px
+       overlap between neighbours is of no consequence. */
+    min-height: 40px;
+    position: relative;
+  }
+  .btn-sm::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+  }
+  .input,
+  .select,
+  textarea {
+    min-height: 44px;
+  }
+  /* The toggle is drawn at 38x22 and has no text of its own to enlarge; the label around it is
+     the target, so give that the height instead. */
+  .switch {
+    min-height: 44px;
+    align-items: center;
+  }
+  /* A checkbox is 18px of drawn box and the commonest miss in the app — the transaction list
+     puts ninety of them down the left of the screen. The wrapper it already sits in becomes
+     the target; the box keeps its size. */
+  label:has(> input[type="checkbox"]),
+  label:has(> input[type="radio"]) {
+    min-height: 44px;
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
+    position: relative;
+  }
+  input[type="checkbox"]::before,
+  input[type="radio"]::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 44px;
+    height: 44px;
+  }
+  /* Except the toggle's, which is visually hidden behind a drawn track and must keep the
+     absolute positioning that takes it out of flow — made `relative` above it claims 18px of
+     layout inside the label, shoving the track sideways and widening the control by 29px. The
+     label is already 44px tall, so it needs no hit area of its own. */
+  .switch input {
+    position: absolute;
+  }
+  .switch input::before {
+    content: none;
+  }
+}
+
+/* ---- Phone ---------------------------------------------------------------------------------
+   Mirrors --bp-phone. Only the things that are about the *screen* live here; anything about how
+   much room a card has lives in an `@container main (...)` rule beside the card. */
+@media (max-width: 720px) {
+  :root {
+    --card-pad: 14px;
+    --gutter: 14px;
+    --gap: 12px;
+  }
+  body {
+    /* One notch down carries ~8% more characters per line, which on a 402px screen is the
+       difference between a wrapped account name and a fitted one. */
+    font-size: 14.5px;
+  }
+  .card {
+    border-radius: var(--r);
+  }
+  .stat .value {
+    font-size: 22px;
+  }
+  /* A row of buttons is the commonest overflow in the app: three of them at their natural
+     widths exceed a phone screen, and `.row` does not wrap. It does here. */
+  .card-title {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
 }

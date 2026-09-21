@@ -53,6 +53,14 @@ and never touches the control plane; it has a proxy because the *browser* is a s
 and an expanded brokerage account's Revalue/Backfill each make the backend dial a third party on
 demand, so the containment held only as long as nobody wrote that spec. Now it holds either way.
 
+The whole suite runs in a 402×874 mobile context, so a baseline is already a phone screenshot —
+but a screenshot cannot see whether a link can be *tapped*, and for a year nine of the eleven
+settings pages could not be, because their only navigation sat in a panel the phone breakpoint
+gave `width: 0`. `tests/mobile.spec.ts` holds the properties a photograph misses: every route
+reachable, no page wider than the screen, a transaction's amount on screen without a sideways
+gesture, and the two declared breakpoints matching the rules that restate them. It is the
+regression net for [LAYOUT.md](LAYOUT.md); read that before changing how anything is sized.
+
 ## Running them
 
 ```bash
