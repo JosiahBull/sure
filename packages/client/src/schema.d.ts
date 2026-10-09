@@ -814,6 +814,18 @@ export interface paths {
                      *     whole household.
                      */
                     attributed_to?: string;
+                    /**
+                     * @description Which question the money-flow graph answers — `cash` (the default), `net_worth`, or
+                     *     `spending`.
+                     *
+                     *     `cash` counts every movement of the household's liquid money, a mortgage principal
+                     *     repayment and a loan drawdown included. `net_worth` keeps only what left the household
+                     *     better or worse off, so a principal repayment, a drawdown and an asset sale all drop out
+                     *     while the interest beside them stays. `spending` is income and consumption alone, with
+                     *     every transfer excluded — what the category pies show. Read only by
+                     *     `/api/reports/sankey`; the other reports ignore it.
+                     */
+                    basis?: string;
                 };
                 header?: never;
                 path: {
@@ -4198,6 +4210,18 @@ export interface paths {
                      *     whole household.
                      */
                     attributed_to?: string;
+                    /**
+                     * @description Which question the money-flow graph answers — `cash` (the default), `net_worth`, or
+                     *     `spending`.
+                     *
+                     *     `cash` counts every movement of the household's liquid money, a mortgage principal
+                     *     repayment and a loan drawdown included. `net_worth` keeps only what left the household
+                     *     better or worse off, so a principal repayment, a drawdown and an asset sale all drop out
+                     *     while the interest beside them stays. `spending` is income and consumption alone, with
+                     *     every transfer excluded — what the category pies show. Read only by
+                     *     `/api/reports/sankey`; the other reports ignore it.
+                     */
+                    basis?: string;
                 };
                 header?: never;
                 path?: never;
@@ -4261,6 +4285,18 @@ export interface paths {
                      *     whole household.
                      */
                     attributed_to?: string;
+                    /**
+                     * @description Which question the money-flow graph answers — `cash` (the default), `net_worth`, or
+                     *     `spending`.
+                     *
+                     *     `cash` counts every movement of the household's liquid money, a mortgage principal
+                     *     repayment and a loan drawdown included. `net_worth` keeps only what left the household
+                     *     better or worse off, so a principal repayment, a drawdown and an asset sale all drop out
+                     *     while the interest beside them stays. `spending` is income and consumption alone, with
+                     *     every transfer excluded — what the category pies show. Read only by
+                     *     `/api/reports/sankey`; the other reports ignore it.
+                     */
+                    basis?: string;
                 };
                 header?: never;
                 path?: never;
@@ -4382,7 +4418,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Money-flow graph: income categories -> cash flow -> expense categories (+ savings). */
+        /**
+         * Money-flow graph: income categories -> cash flow -> expense categories (+ savings or
+         *     deficit), plus one node per account cash crossed to or from on the `cash` basis.
+         */
         get: {
             parameters: {
                 query?: {
@@ -4404,6 +4443,18 @@ export interface paths {
                      *     whole household.
                      */
                     attributed_to?: string;
+                    /**
+                     * @description Which question the money-flow graph answers — `cash` (the default), `net_worth`, or
+                     *     `spending`.
+                     *
+                     *     `cash` counts every movement of the household's liquid money, a mortgage principal
+                     *     repayment and a loan drawdown included. `net_worth` keeps only what left the household
+                     *     better or worse off, so a principal repayment, a drawdown and an asset sale all drop out
+                     *     while the interest beside them stays. `spending` is income and consumption alone, with
+                     *     every transfer excluded — what the category pies show. Read only by
+                     *     `/api/reports/sankey`; the other reports ignore it.
+                     */
+                    basis?: string;
                 };
                 header?: never;
                 path?: never;
@@ -4419,7 +4470,7 @@ export interface paths {
                         "application/json": components["schemas"]["SankeyGraph"];
                     };
                 };
-                /** @description unknown `currency` or `attributed_to` */
+                /** @description unknown `currency`, `attributed_to` or `basis` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -5972,6 +6023,13 @@ export interface components {
              * @description Present → set the merchant (or clear it with `null`); absent → leave unchanged.
              */
             merchant_id?: number | null;
+            /**
+             * Format: int64
+             * @description Present → set the counterparty account (or clear it with `null`); absent → leave
+             *     unchanged. Bulk is how a year of already-imported rows gets attributed at all: a rule
+             *     only ever sees what arrives after it.
+             */
+            counterparty_account_id?: number | null;
             /** @description Present → set the one-off flag; absent → leave unchanged. */
             is_one_off?: boolean | null;
             ownership?: null | components["schemas"]["Ownership"];
@@ -7527,8 +7585,8 @@ export interface components {
              * @description Zen expression evaluated against a transaction context; truthy => match.
              *     Fields available: `amount`, `amount_minor`, `abs_amount`, `is_income`,
              *     `is_expense`, `description`, `merchant`, `merchant_id`, `notes`, `currency`,
-             *     `account`, `account_kind`, `account_id`, `category_id`, `is_one_off`, `date`,
-             *     `year`, `month`, `day`.
+             *     `account`, `account_kind`, `account_id`, `category_id`, `is_one_off`,
+             *     `counterparty_account_id`, `date`, `year`, `month`, `day`.
              */
             expression: string;
             /** Format: int64 */
@@ -7539,6 +7597,14 @@ export interface components {
              * @description Action: assign this custom merchant on match.
              */
             set_merchant_id?: number | null;
+            /**
+             * Format: int64
+             * @description Action: assign this counterparty account on match — the account the money went to or
+             *     came from, where the far side has no transaction to link to. A mortgage's interest is
+             *     charged every fortnight forever, so this has to be a standing rule rather than something
+             *     re-applied by hand.
+             */
+            set_counterparty_account_id?: number | null;
             overwrite_manual: boolean;
             stop_on_match: boolean;
             /** Format: int64 */
@@ -7570,6 +7636,10 @@ export interface components {
             prev_merchant_id?: number | null;
             /** Format: int64 */
             new_merchant_id?: number | null;
+            /** Format: int64 */
+            prev_counterparty_account_id?: number | null;
+            /** Format: int64 */
+            new_counterparty_account_id?: number | null;
             prev_one_off?: boolean | null;
             new_one_off?: boolean | null;
             reverted: boolean;
@@ -7616,6 +7686,11 @@ export interface components {
             currency: string;
             nodes: components["schemas"]["SankeyNode"][];
             links: components["schemas"]["SankeyLink"][];
+            /**
+             * @description Currencies with no rate to `currency`; their transactions are left out of the graph
+             *     rather than drawn at parity.
+             */
+            unconverted: string[];
         };
         SankeyLink: {
             source: string;
@@ -7625,23 +7700,28 @@ export interface components {
         };
         SankeyNode: {
             /**
-             * @description `center`, `savings`, or `in:<category_id>` / `out:<category_id>` at any level of
-             *     the hierarchy (`0` being the uncategorised bucket). Treat it as an opaque key and
-             *     read the fields below rather than parsing it.
+             * @description `center`, `savings`, `deficit`, `in:<category_id>` / `out:<category_id>` at any level
+             *     of the hierarchy (`0` being the uncategorised bucket), `gross:<person_id>`, one of the
+             *     four `ded:*` sinks, or `acct:<account_id>`. Treat it as an opaque key and read the
+             *     fields below rather than parsing it.
              */
             id: string;
             label: string;
-            /** @description `income` | `center` | `expense` | `savings`. */
+            /**
+             * @description `income` | `center` | `expense` | `savings` | `deficit` | `gross` | `deduction` |
+             *     `account` | `crossing`.
+             */
             kind: string;
             /**
              * Format: int64
-             * @description The category this node stands for; null for the hub, savings and uncategorised.
+             * @description The category this node stands for; null for the hub, the balance nodes, the
+             *     uncategorised bucket and everything account-shaped.
              */
             category_id?: number | null;
             /**
              * Format: int32
              * @description 0-based level within its own side (0 = top-level, adjacent to the hub); null for
-             *     the hub and savings.
+             *     the hub, the balance nodes and the pre-income layer.
              */
             depth?: number | null;
             /**
@@ -7651,6 +7731,20 @@ export interface components {
             root_id?: number | null;
             /** @description That top-level ancestor's own colour, if set — the branch's base shade. */
             root_color?: string | null;
+            /**
+             * @description Which half of the graph this node is drawn in: `income` | `expense`.
+             *
+             *     Stated rather than left to be inferred from `kind`, because a crossing can be either —
+             *     a mortgage repayment is an outflow and a loan drawdown an inflow. Null for the hub, the
+             *     balance nodes and the pre-income layer.
+             */
+            side?: string | null;
+            /**
+             * Format: int64
+             * @description The balance-sheet account this node stands for — a perimeter crossing, or the account a
+             *     payslip deduction lands in. Null everywhere else.
+             */
+            account_id?: number | null;
         };
         SaveAccount: {
             name: string;
@@ -7862,6 +7956,8 @@ export interface components {
             set_one_off?: boolean | null;
             /** Format: int64 */
             set_merchant_id?: number | null;
+            /** Format: int64 */
+            set_counterparty_account_id?: number | null;
             overwrite_manual?: boolean;
             stop_on_match?: boolean;
             /** Format: int64 */
@@ -7889,6 +7985,11 @@ export interface components {
             /** Format: int64 */
             category_id?: number | null;
             is_one_off?: boolean;
+            /**
+             * Format: int64
+             * @description The account on the other side; omit (or send `null`) for an ordinary payee.
+             */
+            counterparty_account_id?: number | null;
         };
         SecuredLiability: {
             /** Format: int64 */
@@ -8149,6 +8250,18 @@ export interface components {
              * @description The other side of a transfer, if linked.
              */
             linked_transaction_id?: number | null;
+            /**
+             * Format: int64
+             * @description The account this money went to or came from, when the other side is an account rather
+             *     than a payee — a mortgage, a brokerage, the house a deposit bought.
+             *
+             *     An *override* of what [`Self::linked_transaction_id`] implies, not a replacement: a
+             *     report reads this first and falls back to the linked transaction's account. It exists
+             *     because the far side often has no transaction to link to — a property is valuation-backed
+             *     and has none at all, and a loan's interest is charged to the facility rather than to the
+             *     loan.
+             */
+            counterparty_account_id?: number | null;
             provider?: string | null;
             external_id?: string | null;
             /**

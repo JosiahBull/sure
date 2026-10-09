@@ -1,8 +1,19 @@
+<script lang="ts" module>
+  /**
+   * What a click on the chart opens. A category filters the transactions page by category; a
+   * crossing has no category — both legs of a mortgage payment carry the same "Transfer" — so it
+   * filters by the account it reached instead.
+   */
+  export type SankeyTarget =
+    | { t: "category"; categoryId: number | null; kind: "income" | "expense" }
+    | { t: "account"; accountId: number };
+</script>
+
 <script lang="ts">
   import { sankeyLinkHorizontal } from "d3-sankey";
-  import { categoryColor, colorFor } from "../color";
+  import { categoryColor, colorFor, shade } from "../color";
   import { resolvedTheme } from "../theme.svelte";
-  import { layout, isCatKind, NODE_W, type Link, type Node } from "./sankeyLayout";
+  import { layout, isCatKind, sideOf, NODE_W, type Link, type Node } from "./sankeyLayout";
 
   let {
     nodes,
@@ -17,10 +28,11 @@
     height?: string;
     /** Formats a minor-unit value for the hover tooltip. */
     format?: (minor: number) => string;
-    /** Called when a category node/link is clicked (categoryId null = uncategorised;
-     * kind distinguishes an uncategorised-income click from an uncategorised-expense one,
-     * which would otherwise be indistinguishable. */
-    onselect?: (categoryId: number | null, kind: "income" | "expense") => void;
+    /** Called when a node or link the reader can drill into is clicked. A category opens its
+     * transactions (categoryId null = uncategorised; `kind` distinguishes an
+     * uncategorised-income click from an uncategorised-expense one, which would otherwise be
+     * indistinguishable); a crossing opens the account's instead. */
+    onselect?: (target: SankeyTarget) => void;
   } = $props();
 
   // The chart lays out in real pixels against its measured box rather than scaling a fixed
@@ -40,6 +52,13 @@
   const SPINE = "#10a861";
   /** Statutory deductions: a muted brick red, hardcoded like SPINE and legible on both themes. */
   const DEDUCTION = "#b35953";
+  /** The surplus's opposite, and `--negative`'s light value the way SPINE is `--positive`'s.
+   * Hot rather than muted on purpose: a household that spent more than it earned should not read
+   * as one that saved. */
+  const DEFICIT = "#ec2222";
+  /** Money crossing the cash perimeter — a mortgage, a brokerage, a car. Structural rather than
+   * categorical, so a desaturated slate that belongs to none of the ten category families. */
+  const CROSSING = "#5f7d8c";
   const dark = $derived(resolvedTheme() === "dark");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function nodeColor(n: any): string {
@@ -47,7 +66,12 @@
     // through, so it takes the colour of the node that ribbon is heading for.
     if (n.kind === "via") return nodeColor({ ...n, kind: n.via.colorKind });
     if (n.kind === "center" || n.kind === "savings") return SPINE;
+    if (n.kind === "deficit") return DEFICIT;
     if (n.kind === "deduction") return DEDUCTION;
+    // A crossing and the account it reaches read as one branch, the way a category and its child
+    // do — which is what `shade` already does for the category families.
+    if (n.kind === "crossing" || n.kind === "account")
+      return shade(CROSSING, n.level ?? 0, dark);
     // A gross node's id is `gross:<person id>`; the id-derived palette is the same fallback
     // `personColor` uses, without coupling the chart to the household store.
     if (n.kind === "gross") return colorFor(Number(n.id.slice("gross:".length)) || 0);
@@ -88,15 +112,19 @@
     if (n.kind === "center") return { x: (n.x0 + n.x1) / 2, y: n.y0 - 18, anchor: "middle" };
     // The pre-income nodes label rightwards like income: gross sits in the leftmost column
     // with only MARGIN_X to its left, and the deduction sinks share the income side's gaps.
-    // A destination joins them, and must: it sits one column right of the deduction it came
-    // from, so labelling it leftwards drew its name back across the gap and straight over its
-    // own deduction's — two nodes that, being a sink and the account it feeds, carry the same
-    // name and the same figure ("Student Stadent loan").
+    // A deduction's destination account joins them, and must: it sits one column right of the
+    // deduction it came from, so labelling it leftwards drew its name back across the gap and
+    // straight over its own deduction's — two nodes that, being a sink and the account it
+    // feeds, carry the same name and the same figure ("Student Stadent loan").
+    //
+    // Everything else follows its side, which is the same rule stated once: an income-side
+    // crossing (a loan drawdown) would otherwise fall through to the `end` branch below and
+    // draw its label leftwards, into the strip the expense columns own.
     if (
-      n.kind === "income" ||
+      sideOf(n) === "income" ||
       n.kind === "gross" ||
       n.kind === "deduction" ||
-      n.kind === "destination"
+      n.kind === "account"
     )
       return { x: n.x1 + LABEL_PAD, y: (n.y0 + n.y1) / 2, anchor: "start" };
     return { x: n.x0 - LABEL_PAD, y: (n.y0 + n.y1) / 2, anchor: "end" };
@@ -115,7 +143,13 @@
   // Two-line labels need vertical room; in a crowded column they would overlap into an
   // unreadable stack. Hide any label sitting within MIN_LABEL_GAP of the previous visible
   // one in its column (keeping the topmost); hover reveals a hidden label via `nodeActive`.
-  const MIN_LABEL_GAP = 26;
+  //
+  // The figure is the *measured* height of a rendered label box — 31.2px for the 12.5px name
+  // over the 11px value at `dy=1.2em` — rounded up, and not a pixel less. At 26 two labels
+  // could clear the test and still overlap by five pixels, which is how a crossing's two halves
+  // came to draw "Interest" through "Principal": they sit in one column, adjacent, and nothing
+  // else in the chart had ever put two nodes that close together.
+  const MIN_LABEL_GAP = 32;
   const hiddenLabels = $derived.by(() => {
     const hide = new Set<string>();
     if (!graph) return hide;
@@ -154,26 +188,43 @@
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const isCat = (n: any) => isCatKind(n.kind);
-  /** An "Other" bucket stands for several categories at once, so it has nothing to open. */
+  /**
+   * What a click on this node should open. An "Other" bucket stands for several categories at
+   * once, so it has nothing to open; a crossing has no category to filter by and opens the
+   * account it reached instead — which is also why `isCatKind` stays narrow rather than growing
+   * to cover the new kinds, since it is what gates this.
+   */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const isClickable = (n: any) => isCat(n) && !n.aggregate;
+  const isClickable = (n: any) =>
+    (isCat(n) && !n.aggregate) || (n.kind === "crossing" && n.account_id != null);
   const fmt = (v: number) => (format ? format(v) : String(v));
   /** id → laid node, for resolving a routed leg back to the flow's real endpoints. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const byNodeId = $derived(new Map<string, any>((graph?.nodes ?? []).map((n: any) => [n.id, n])));
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const emit = (n: any) => onselect?.(n.category_id ?? null, n.kind as "income" | "expense");
+  const emit = (n: any) =>
+    onselect?.(
+      n.kind === "crossing"
+        ? { t: "account", accountId: n.account_id }
+        : { t: "category", categoryId: n.category_id ?? null, kind: n.kind as "income" | "expense" },
+    );
 
   /**
    * Each side's total, for the top-level percentages. The hub's own `value` is
    * `max(inflow, outflow)`, so it only equals the larger side — using it for both would
-   * quietly understate every category on the smaller one. Savings is excluded from the
-   * expense total: it's the leftover, not a thing that was spent.
+   * quietly understate every category on the smaller one.
+   *
+   * The surplus and the deficit are excluded: neither is money that came in or went out, each
+   * *is* the difference between the two, and counting one would make every share on that side
+   * read small. A crossing is not one of them — a mortgage principal repayment is cash that
+   * genuinely left, and a category's share of outgoings that ignored it would overstate every
+   * category on the page.
    */
+  const NOT_A_FLOW = new Set(["savings", "deficit"]);
   const sideTotals = $derived.by(() => {
     const hub = graph?.nodes.find((n: any) => n.kind === "center");
     const sum = (ls: any[] | undefined, pick: (l: any) => any) =>
-      (ls ?? []).reduce((t, l) => (pick(l).kind === "savings" ? t : t + l.value), 0);
+      (ls ?? []).reduce((t, l) => (NOT_A_FLOW.has(pick(l).kind) ? t : t + l.value), 0);
     return {
       income: sum(hub?.targetLinks, (l) => l.source),
       expense: sum(hub?.sourceLinks, (l) => l.target),
@@ -188,14 +239,17 @@
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function sharePct(n: any): number | null {
-    if (!graph || !isCat(n)) return null;
+    // Crossings answer too: "Home Mortgage, 18% of outgoings" is one of the two most useful
+    // numbers this chart gained.
+    if (!graph || !(isCat(n) || n.kind === "crossing")) return null;
+    const side = sideOf(n);
     // Income flows leaf→hub and expense hub→leaf, so the hub-ward link is the node's own.
-    const own = n.kind === "income" ? n.sourceLinks?.[0] : n.targetLinks?.[0];
-    const parent = n.kind === "income" ? own?.target : own?.source;
+    const own = side === "income" ? n.sourceLinks?.[0] : n.targetLinks?.[0];
+    const parent = side === "income" ? own?.target : own?.source;
     if (!own || !parent) return null;
     const basis =
       parent.kind === "center"
-        ? n.kind === "income"
+        ? side === "income"
           ? sideTotals.income
           : sideTotals.expense
         : parent.value;
@@ -239,7 +293,7 @@
    * — which is all this used to handle, so a link between two category levels was dead.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function linkCatNode(l: any): any | null {
+  function linkTargetNode(l: any): any | null {
     const ends = endsOf(l)
       .map((id: string) => byNodeId.get(id))
       .filter((n: any) => n && isClickable(n));
@@ -305,7 +359,7 @@
         {/each}
       </defs>
       {#each graph.links as l, i}
-        {@const cat = linkCatNode(l)}
+        {@const cat = linkTargetNode(l)}
         <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
         <path
           class="link"

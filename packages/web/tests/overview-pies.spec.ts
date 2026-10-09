@@ -8,6 +8,25 @@ async function goto(page: Page, route: string) {
   await page.waitForLoadState("networkidle");
 }
 
+/**
+ * Assert a drill-down landed on the transactions page with these query params.
+ *
+ * By param rather than by a literal query string: the order the keys are written in depends on
+ * whether the period had reached `filters` before the link was built, which is a render-timing
+ * detail and not something a reader can tell apart. Both orders are the same URL.
+ */
+async function expectTransactionsUrl(page: Page, want: Record<string, string | RegExp>) {
+  await expect
+    .poll(() => {
+      const q = new URLSearchParams(page.url().split("#/transactions?")[1] ?? "");
+      return Object.entries(want).every(([k, v]) => {
+        const got = q.get(k);
+        return got !== null && (typeof v === "string" ? got === v : v.test(got));
+      });
+    }, { message: `transactions URL should carry ${JSON.stringify(want)}` })
+    .toBe(true);
+}
+
 // The donut segments are full circles (only their arc is painted), so a normal click/hover
 // targets the empty centre. Drive them directly and target by aria-label.
 
@@ -41,7 +60,7 @@ test("clicking a pie segment opens transactions filtered to that category and ra
   // The deep-link carries the pie's own side of the ledger as `type` alongside the
   // category and the overview's range — an uncategorised slice has only `type` to tell
   // income from outgoings, so it's always sent.
-  await expect(page).toHaveURL(/#\/transactions\?range=last_12m&category=\d+&type=expense/);
+  await expectTransactionsUrl(page, { category: /^\d+$/, type: "expense", range: "last_12m" });
   await expect(page.locator(".tx-row").first()).toBeVisible();
 });
 
@@ -107,7 +126,7 @@ test("clicking a sankey category node opens its filtered transactions", async ({
   await node(page, await nodeId(page, "Housing", "out")).dispatchEvent("click");
 
   // Same deep-link shape as the pie: the node's kind rides along as `type`.
-  await expect(page).toHaveURL(/#\/transactions\?range=last_12m&category=\d+&type=expense/);
+  await expectTransactionsUrl(page, { category: /^\d+$/, type: "expense", range: "last_12m" });
   await expect(page.locator(".tx-row").first()).toBeVisible();
 });
 
@@ -276,7 +295,7 @@ test("the uncategorised slice and node open the transactions that have no catego
     await pie.locator('svg .seg[aria-label="Uncategorised"]').dispatchEvent("click");
     // `category=none`, not an omitted param: the slice stands for the rows whose category is
     // null, which no id can name — omitting it lands on every expense instead of these.
-    await expect(page).toHaveURL(/#\/transactions\?range=last_30&category=none&type=expense/);
+    await expectTransactionsUrl(page, { category: "none", type: "expense", range: "last_30" });
     await expect(page.locator(".tx-row").first()).toBeVisible();
     for (const c of await page.locator(".tx-row .cat-pill > .ell").allInnerTexts())
       expect(c.trim()).toBe("Uncategorised");
@@ -285,7 +304,7 @@ test("the uncategorised slice and node open the transactions that have no catego
     // `data-node-id` carries the report's raw sentinel key rather than a category id.
     await goto(page, "/?range=last_30");
     await node(page, "out:0").dispatchEvent("click");
-    await expect(page).toHaveURL(/#\/transactions\?range=last_30&category=none&type=expense/);
+    await expectTransactionsUrl(page, { category: "none", type: "expense", range: "last_30" });
     await expect(page.locator(".tx-row").first()).toBeVisible();
   } finally {
     expect((await page.request.delete(`/api/transactions/${txId}`)).ok(), "cleaned up").toBe(true);

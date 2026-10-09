@@ -278,6 +278,13 @@ struct SpendTransactionRow {
     account_id: i64,
     account_name: String,
     account_kind: String,
+    // The account on the other side, resolved in SQL: the row's own `counterparty_account_id`
+    // where it has one, else the account of the transaction it is linked to. All three are NULL
+    // together — the row names no counterparty and is linked to nothing (or, only reachable in a
+    // hand-edited database, to a transaction that no longer exists).
+    counterparty_account_id: Option<i64>,
+    counterparty_account_kind: Option<String>,
+    counterparty_account_name: Option<String>,
     merchant_id: Option<i64>,
     // The merchant record's name where the transaction has one, else whatever text the feed
     // wrote. Coalesced in SQL rather than resolved later: a row can carry a payee as free
@@ -303,6 +310,20 @@ pub struct SpendTransaction {
     pub account_id: i64,
     pub account_name: String,
     pub account_kind: AccountKind,
+    /// The account on the other side, and its kind and name.
+    ///
+    /// Already resolved: the row's own `counterparty_account_id` wins, and a linked
+    /// transaction's account is the fallback. Precedence lives in the query rather than in each
+    /// reader, so the auto-linker keeps working untouched and there is one answer to "where did
+    /// this go" rather than two that can disagree.
+    ///
+    /// Carried so a cashflow report can tell internal movement (both sides inside the cash
+    /// perimeter) from a crossing of it, and label a crossing with the account it reached — a
+    /// mortgage, a brokerage — rather than with the "Transfer" category the feed's rule gave
+    /// both legs. `None` when the row names no counterparty.
+    pub counterparty_account_id: Option<i64>,
+    pub counterparty_account_kind: Option<AccountKind>,
+    pub counterparty_account_name: Option<String>,
     pub merchant_id: Option<i64>,
     /// The merchant record's name, or the raw payee text where the row has no merchant.
     pub merchant: Option<String>,
@@ -328,7 +349,10 @@ impl TryFrom<SpendTransactionRow> for SpendTransaction {
         };
         Ok(SpendTransaction {
             account_kind: parse_kind(r.account_kind)?,
+            counterparty_account_kind: r.counterparty_account_kind.map(parse_kind).transpose()?,
             attribution: effective_ownership(over, account),
+            counterparty_account_id: r.counterparty_account_id,
+            counterparty_account_name: r.counterparty_account_name,
             id: r.id,
             posted_at: r.posted_at,
             amount_minor: r.amount_minor,
@@ -682,7 +706,18 @@ pub async fn spend_transactions(
         r#"SELECT t.id AS "id!", t.posted_at, t.amount_minor, t.currency_code, t.category_id,
                   t.is_one_off AS "is_one_off!: bool", t.linked_transaction_id,
                   t.account_id, a.name AS account_name,
-                  a.kind AS account_kind, t.merchant_id,
+                  a.kind AS account_kind,
+                  -- The account on the other side, with the row's own answer winning over the
+                  -- one its link implies. Resolved here, once, rather than in each reader:
+                  -- `counterparty_account_id` exists precisely because the far side often has no
+                  -- transaction to link to (a property has no ledger at all; a loan's interest
+                  -- is charged to the facility rather than to the loan), so the two are a
+                  -- fallback chain and not alternatives.
+                  COALESCE(t.counterparty_account_id, lt.account_id)
+                      AS "counterparty_account_id?",
+                  ca.kind AS "counterparty_account_kind?: String",
+                  ca.name AS "counterparty_account_name?: String",
+                  t.merchant_id,
                   -- `COALESCE` over two nullable columns describes as having no type at
                   -- all, so the decode type has to be named; `?` keeps it nullable, which
                   -- it genuinely is when a row carries neither a merchant nor payee text.
@@ -693,6 +728,9 @@ pub async fn spend_transactions(
              FROM transactions t
              JOIN accounts a ON a.id = t.account_id
              LEFT JOIN merchants m ON m.id = t.merchant_id
+             LEFT JOIN transactions lt ON lt.id = t.linked_transaction_id
+             LEFT JOIN accounts ca
+                    ON ca.id = COALESCE(t.counterparty_account_id, lt.account_id)
             WHERE t.posted_at >= ?1 AND t.posted_at < ?2"#,
         from,
         to

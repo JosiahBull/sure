@@ -44,6 +44,7 @@
     name: "",
     set_category_id: "" as number | "",
     set_merchant_id: "" as number | "",
+    set_counterparty_account_id: "" as number | "",
     set_one_off: "" as "" | "true" | "false",
     overwrite_manual: false,
     stop_on_match: false,
@@ -61,6 +62,7 @@
   let runDetails = $state<Record<number, AppDetail[]>>({});
 
   const merchName = $derived(new Map(merchants.map((m) => [m.id, m.name])));
+  const acctName = $derived(new Map(accounts.map((a) => [a.id, a.name])));
   const ruleName = $derived(new Map(rules.map((r) => [r.id, r.name])));
 
   const refs = $derived<BuilderRefs>({
@@ -128,7 +130,7 @@
   function openCreate() {
     editId = null;
     form = {
-      name: "", set_category_id: "", set_merchant_id: "", set_one_off: "",
+      name: "", set_category_id: "", set_merchant_id: "", set_counterparty_account_id: "", set_one_off: "",
       overwrite_manual: false, stop_on_match: false, enabled: true, priority: 0,
     };
     root = emptyRoot();
@@ -144,6 +146,7 @@
       name: r.name,
       set_category_id: r.set_category_id ?? "",
       set_merchant_id: r.set_merchant_id ?? "",
+      set_counterparty_account_id: r.set_counterparty_account_id ?? "",
       set_one_off: r.set_one_off == null ? "" : r.set_one_off ? "true" : "false",
       overwrite_manual: r.overwrite_manual,
       stop_on_match: r.stop_on_match,
@@ -169,6 +172,7 @@
     expression: r.expression,
     set_category_id: r.set_category_id ?? null,
     set_merchant_id: r.set_merchant_id ?? null,
+    set_counterparty_account_id: r.set_counterparty_account_id ?? null,
     set_one_off: r.set_one_off ?? null,
     overwrite_manual: r.overwrite_manual,
     stop_on_match: r.stop_on_match,
@@ -192,6 +196,8 @@
       expression,
       set_category_id: form.set_category_id === "" ? null : Number(form.set_category_id),
       set_merchant_id: form.set_merchant_id === "" ? null : Number(form.set_merchant_id),
+      set_counterparty_account_id:
+        form.set_counterparty_account_id === "" ? null : Number(form.set_counterparty_account_id),
       set_one_off: form.set_one_off === "" ? null : form.set_one_off === "true",
       overwrite_manual: form.overwrite_manual,
       stop_on_match: form.stop_on_match,
@@ -321,6 +327,15 @@
           {#each merchants as m}<option value={m.id}>{m.name}</option>{/each}
         </select>
       </label>
+      <!-- Where the money went, when the other side is an account rather than a payee. The
+           case this is for recurs forever — a mortgage charges its interest every fortnight —
+           which is why it is a standing rule and not a one-off bulk edit. -->
+      <label class="field">Money went to
+        <select class="select" bind:value={form.set_counterparty_account_id}>
+          <option value="">— leave as is —</option>
+          {#each accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+        </select>
+      </label>
       <label class="field">One-off
         <select class="select" bind:value={form.set_one_off}>
           <option value="">— leave as is —</option>
@@ -350,6 +365,7 @@
             <strong>{r.name}</strong>
             {#if r.set_category_id}<span class="badge" style="margin-left:6px">→ {catLabel(r.set_category_id)}</span>{/if}
             {#if r.set_merchant_id}<span class="badge" style="margin-left:6px">merchant: {merchName.get(r.set_merchant_id) ?? "?"}</span>{/if}
+            {#if r.set_counterparty_account_id}<span class="badge" style="margin-left:6px">→ {acctName.get(r.set_counterparty_account_id) ?? "?"}</span>{/if}
             {#if r.set_one_off != null}<span class="badge" style="margin-left:6px">{r.set_one_off ? "mark one-off" : "clear one-off"}</span>{/if}
             {#if !r.enabled}<span class="badge" style="margin-left:6px">disabled</span>{/if}
           </div>

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", account_id, posted_at, amount_minor, currency_code,\n                      description, merchant, notes, category_id,\n                      is_one_off AS \"is_one_off!: bool\", linked_transaction_id, provider,\n                      external_id, categorized_by_rule_id, merchant_id, ownership, person_id,\n                      created_at, updated_at\n                 FROM transactions ORDER BY id",
+  "query": "SELECT t.id AS \"id!\", t.account_id, t.posted_at, t.amount_minor, t.currency_code,\n                  cur.decimal_places, t.description, t.merchant, t.merchant_id, t.notes,\n                  t.category_id, t.is_one_off AS \"is_one_off!: bool\", t.categorized_by_rule_id,\n                  t.counterparty_account_id,\n                  a.name AS account_name, a.kind AS account_kind\n             FROM transactions t\n             JOIN accounts a ON a.id = t.account_id\n             JOIN currencies cur ON cur.code = t.currency_code",
   "describe": {
     "columns": [
       {
@@ -59,8 +59,19 @@
         }
       },
       {
-        "name": "description",
+        "name": "decimal_places",
         "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "currencies",
+            "name": "decimal_places"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "merchant",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -81,8 +92,19 @@
         }
       },
       {
+        "name": "merchant_id",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "merchant_id"
+          }
+        }
+      },
+      {
         "name": "notes",
-        "ordinal": 7,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +115,7 @@
       },
       {
         "name": "category_id",
-        "ordinal": 8,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -104,7 +126,7 @@
       },
       {
         "name": "is_one_off!: bool",
-        "ordinal": 9,
+        "ordinal": 11,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -114,41 +136,8 @@
         }
       },
       {
-        "name": "linked_transaction_id",
-        "ordinal": 10,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "linked_transaction_id"
-          }
-        }
-      },
-      {
-        "name": "provider",
-        "ordinal": 11,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "provider"
-          }
-        }
-      },
-      {
-        "name": "external_id",
-        "ordinal": 12,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "external_id"
-          }
-        }
-      },
-      {
         "name": "categorized_by_rule_id",
-        "ordinal": 13,
+        "ordinal": 12,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -158,57 +147,35 @@
         }
       },
       {
-        "name": "merchant_id",
-        "ordinal": 14,
+        "name": "counterparty_account_id",
+        "ordinal": 13,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "merchant_id"
+            "name": "counterparty_account_id"
           }
         }
       },
       {
-        "name": "ownership",
+        "name": "account_name",
+        "ordinal": 14,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "account_kind",
         "ordinal": 15,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "transactions",
-            "name": "ownership"
-          }
-        }
-      },
-      {
-        "name": "person_id",
-        "ordinal": 16,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "person_id"
-          }
-        }
-      },
-      {
-        "name": "created_at",
-        "ordinal": 17,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "created_at"
-          }
-        }
-      },
-      {
-        "name": "updated_at",
-        "ordinal": 18,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "updated_at"
+            "table": "accounts",
+            "name": "kind"
           }
         }
       }
@@ -223,20 +190,17 @@
       false,
       false,
       false,
-      true,
-      true,
-      true,
       false,
       true,
       true,
       true,
       true,
-      true,
+      false,
       true,
       true,
       false,
       false
     ]
   },
-  "hash": "54cbc7cb4080f3a829bd1a0a9d6c87eb32f6eb2f6cc37af395f316cfe8cae654"
+  "hash": "244bdb861492243ffddebbf5a3380d949f916cbb75ee842e49f8369a43ccd6f9"
 }

@@ -25,6 +25,7 @@ pub(crate) struct TransactionRow {
     pub(crate) category_id: Option<i64>,
     pub(crate) is_one_off: bool,
     pub(crate) linked_transaction_id: Option<i64>,
+    pub(crate) counterparty_account_id: Option<i64>,
     pub(crate) provider: Option<String>,
     pub(crate) external_id: Option<String>,
     pub(crate) categorized_by_rule_id: Option<i64>,
@@ -68,6 +69,7 @@ impl TryFrom<TransactionRow> for Transaction {
             category_id: r.category_id,
             is_one_off: r.is_one_off,
             linked_transaction_id: r.linked_transaction_id,
+            counterparty_account_id: r.counterparty_account_id,
             provider: r.provider,
             external_id: r.external_id,
             categorized_by_rule_id: r.categorized_by_rule_id,
@@ -124,7 +126,8 @@ pub async fn credits_since(
         TransactionRow,
         r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
                   merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
-                  linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                  linked_transaction_id, counterparty_account_id,
+                     provider, external_id, categorized_by_rule_id,
                   ownership, person_id, created_at, updated_at
              FROM transactions
             WHERE amount_minor > 0
@@ -237,11 +240,13 @@ pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
         TransactionRow,
         r#"INSERT INTO transactions
               (account_id, posted_at, amount_minor, currency_code, description, merchant, notes,
-               category_id, is_one_off, merchant_id, ownership, person_id)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+               category_id, is_one_off, merchant_id, ownership, person_id,
+               counterparty_account_id)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
            RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
                      merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
-                     linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                     linked_transaction_id, counterparty_account_id,
+                     provider, external_id, categorized_by_rule_id,
                      ownership, person_id, created_at, updated_at"#,
         input.account_id,
         posted_at,
@@ -254,7 +259,8 @@ pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
         input.is_one_off,
         input.merchant_id,
         ownership,
-        person_id
+        person_id,
+        input.counterparty_account_id
     )
     .fetch_one(db)
     .await
@@ -275,11 +281,13 @@ pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Trans
         r#"UPDATE transactions SET account_id=?2, posted_at=?3, amount_minor=?4,
               currency_code=?5, description=?6, merchant=?7, notes=?8, category_id=?9,
               is_one_off=?10, merchant_id=?11, ownership=?12, person_id=?13,
+              counterparty_account_id=?14,
               categorized_by_rule_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE id=?1
            RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
                      merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
-                     linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                     linked_transaction_id, counterparty_account_id,
+                     provider, external_id, categorized_by_rule_id,
                      ownership, person_id, created_at, updated_at"#,
         id,
         input.account_id,
@@ -293,7 +301,8 @@ pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Trans
         input.is_one_off,
         input.merchant_id,
         ownership,
-        person_id
+        person_id,
+        input.counterparty_account_id
     )
     .fetch_optional(db)
     .await
@@ -328,8 +337,13 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
         merchant_id,
         is_one_off,
         ownership,
+        counterparty_account_id,
     } = input;
-    if category_id.is_none() && merchant_id.is_none() && is_one_off.is_none() && ownership.is_none()
+    if category_id.is_none()
+        && merchant_id.is_none()
+        && is_one_off.is_none()
+        && ownership.is_none()
+        && counterparty_account_id.is_none()
     {
         return Ok(0);
     }
@@ -362,6 +376,12 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
         if let Some(one_off) = is_one_off {
             set.push("is_one_off = ");
             set.push_bind_unseparated(one_off);
+        }
+        // No pre-flight check for the account the way `category_id` gets one: the column's FK
+        // catches a stale id, and `map_fk` below turns it into the same named 422.
+        if let Some(aid) = counterparty_account_id {
+            set.push("counterparty_account_id = ");
+            set.push_bind_unseparated(aid);
         }
         // Both columns always move together — a discriminant without its person (or the
         // reverse) is refused by the table's trigger, and rightly so.
@@ -644,7 +664,8 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
            VALUES (?1,?2,?3,?4,?5,?6)
            RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
                      merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
-                     linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                     linked_transaction_id, counterparty_account_id,
+                     provider, external_id, categorized_by_rule_id,
                      ownership, person_id, created_at, updated_at"#,
         req.from_account_id,
         posted_at,
@@ -664,7 +685,8 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
            VALUES (?1,?2,?3,?4,?5,?6,?7)
            RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
                      merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
-                     linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                     linked_transaction_id, counterparty_account_id,
+                     provider, external_id, categorized_by_rule_id,
                      ownership, person_id, created_at, updated_at"#,
         req.to_account_id,
         posted_at,
@@ -805,7 +827,8 @@ async fn fetch(db: &Db, id: i64) -> AppResult<Transaction> {
         TransactionRow,
         r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
                   merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
-                  linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                  linked_transaction_id, counterparty_account_id,
+                     provider, external_id, categorized_by_rule_id,
                   ownership, person_id, created_at, updated_at
              FROM transactions WHERE id = ?1"#,
         id
@@ -924,6 +947,7 @@ mod tests {
                 is_one_off: false,
                 merchant_id: None,
                 ownership: None,
+                counterparty_account_id: None,
             },
         )
         .await
@@ -1041,6 +1065,7 @@ mod tests {
                 merchant_id: None,
                 is_one_off: None,
                 ownership: None,
+                counterparty_account_id: None,
             },
         )
         .await
@@ -1098,6 +1123,7 @@ mod tests {
                 merchant_id: None,
                 is_one_off: Some(true),
                 ownership: None,
+                counterparty_account_id: None,
             },
         )
         .await
@@ -1129,6 +1155,7 @@ mod tests {
                 merchant_id: None,
                 is_one_off: None,
                 ownership: None,
+                counterparty_account_id: None,
             },
         )
         .await
@@ -1144,6 +1171,7 @@ mod tests {
                 merchant_id: None,
                 is_one_off: None,
                 ownership: None,
+                counterparty_account_id: None,
             },
         )
         .await
@@ -1168,6 +1196,7 @@ mod tests {
                     merchant_id: None,
                     is_one_off: None,
                     ownership: None,
+                    counterparty_account_id: None,
                 }
             )
             .await
@@ -1213,6 +1242,7 @@ mod tests {
                     merchant_id: None,
                     is_one_off: Some(true),
                     ownership: None,
+                    counterparty_account_id: None,
                 }
             )
             .await
@@ -1350,6 +1380,7 @@ mod tests {
                 is_one_off: false,
                 merchant_id: None,
                 ownership,
+                counterparty_account_id: None,
             },
         )
         .await
@@ -1449,6 +1480,7 @@ mod tests {
             merchant_id: None,
             is_one_off: None,
             ownership: Some(Some(Ownership::Person { person_id: alex })),
+            counterparty_account_id: None,
         };
         assert_eq!(bulk_update(&db, set).await.unwrap(), 2);
         assert_eq!(
@@ -1463,6 +1495,7 @@ mod tests {
             merchant_id: None,
             is_one_off: None,
             ownership: Some(None),
+            counterparty_account_id: None,
         };
         assert_eq!(bulk_update(&db, clear).await.unwrap(), 2);
         assert_eq!(attributed(&db, Ownership::Joint).await, ["one", "two"]);
@@ -1486,6 +1519,7 @@ mod tests {
                 is_one_off: false,
                 merchant_id: None,
                 ownership: Some(Ownership::Person { person_id: 404 }),
+                counterparty_account_id: None,
             },
         )
         .await

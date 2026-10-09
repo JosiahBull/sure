@@ -182,6 +182,10 @@ pub struct TransactionRow {
     pub external_id: Option<String>,
     pub categorized_by_rule_id: Option<i64>,
     pub merchant_id: Option<i64>,
+    /// Defaulted, so a snapshot taken before the column existed restores as "nothing recorded"
+    /// — which is exactly what those rows meant.
+    #[serde(default)]
+    pub counterparty_account_id: Option<i64>,
     // The per-transaction attribution override, as its two stored columns. Both default,
     // so a snapshot from before transactions had one restores as "inherit the account's
     // owner" — which is what those rows meant.
@@ -218,6 +222,10 @@ pub struct RuleRow {
     pub priority: i64,
     pub enabled: bool,
     pub set_merchant_id: Option<i64>,
+    /// Defaulted for the same reason as a transaction's — a snapshot from before the column
+    /// existed restores as a rule that sets no counterparty.
+    #[serde(default)]
+    pub set_counterparty_account_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -561,7 +569,8 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
         TransactionRow,
         r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
                   merchant, notes, category_id, is_one_off AS "is_one_off!: bool",
-                  linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                  linked_transaction_id, counterparty_account_id, provider, external_id,
+                  categorized_by_rule_id,
                   merchant_id, ownership, person_id, created_at, updated_at
              FROM transactions ORDER BY id"#
     );
@@ -579,7 +588,7 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
                   set_one_off AS "set_one_off: bool",
                   overwrite_manual AS "overwrite_manual!: bool",
                   stop_on_match AS "stop_on_match!: bool", priority, enabled AS "enabled!: bool",
-                  set_merchant_id, created_at, updated_at
+                  set_merchant_id, set_counterparty_account_id, created_at, updated_at
              FROM rules ORDER BY id"#
     );
     table!(
@@ -751,7 +760,8 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
             TransactionRow,
             r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code,
                       description, merchant, notes, category_id,
-                      is_one_off AS "is_one_off!: bool", linked_transaction_id, provider,
+                      is_one_off AS "is_one_off!: bool", linked_transaction_id,
+                      counterparty_account_id, provider,
                       external_id, categorized_by_rule_id, merchant_id, ownership, person_id,
                       created_at, updated_at
                  FROM transactions ORDER BY id"#
@@ -772,7 +782,8 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
                       set_one_off AS "set_one_off: bool",
                       overwrite_manual AS "overwrite_manual!: bool",
                       stop_on_match AS "stop_on_match!: bool", priority,
-                      enabled AS "enabled!: bool", set_merchant_id, created_at, updated_at
+                      enabled AS "enabled!: bool", set_merchant_id,
+                      set_counterparty_account_id, created_at, updated_at
                  FROM rules ORDER BY id"#
         )
         .fetch_all(db)
@@ -1082,8 +1093,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
                 (id, account_id, posted_at, amount_minor, currency_code, description, merchant,
                  notes, category_id, is_one_off, linked_transaction_id, provider, external_id,
                  categorized_by_rule_id, merchant_id, ownership, person_id, created_at,
-                 updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                 updated_at, counterparty_account_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
             t.id,
             t.account_id,
             t.posted_at,
@@ -1102,7 +1113,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             t.ownership,
             t.person_id,
             t.created_at,
-            t.updated_at
+            t.updated_at,
+            t.counterparty_account_id
         )
         .execute(&mut *txn)
         .await?;
@@ -1129,8 +1141,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             "INSERT INTO rules
                 (id, name, description, expression, set_category_id, set_one_off,
                  overwrite_manual, stop_on_match, priority, enabled, set_merchant_id, created_at,
-                 updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                 updated_at, set_counterparty_account_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             r.id,
             r.name,
             r.description,
@@ -1143,7 +1155,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             r.enabled,
             r.set_merchant_id,
             r.created_at,
-            r.updated_at
+            r.updated_at,
+            r.set_counterparty_account_id
         )
         .execute(&mut *txn)
         .await?;

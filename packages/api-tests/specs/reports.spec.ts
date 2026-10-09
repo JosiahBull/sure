@@ -166,6 +166,294 @@ const node = (g: Graph, id: string) => g.nodes.find((n) => n.id === id);
 const linkInto = (g: Graph, id: string) =>
   g.links.find((l) => (id.startsWith("in:") ? l.source === id : l.target === id))?.value_minor;
 
+// ---- sankey: the cash basis ------------------------------------------------
+// The graph answers one of two questions and says which. On `cash` every movement of the
+// household's liquid money counts, including the ones a transfer rule and a link would
+// otherwise hide; on `spending` none of them do.
+
+test("the cash basis draws a mortgage payment as interest plus a labelled crossing", async ({ api }) => {
+  // The shape ASB actually posts: interest charged to the facility the payment is drawn from,
+  // and the principal moved from that facility into the loan. Two rows, not one — so nothing
+  // here has to derive the split.
+  const jam = await createAccount(api, "The Jam", "revolving_credit");
+  const mortgage = await createAccount(api, "Home Mortgage", "mortgage");
+  const interestCat = await createCategory(api, "Interest charged", "expense");
+  const transferCat = await createCategory(api, "Transfer", "transfer");
+
+  await createTransaction(api, {
+    account_id: jam.id,
+    posted_at: "2026-01-10",
+    amount_minor: -95_202,
+    description: "LOAN REPAYMENT 006INTEREST",
+    category_id: interestCat.id,
+  });
+  const out = await createTransaction(api, {
+    account_id: jam.id,
+    posted_at: "2026-01-10",
+    amount_minor: -44_530,
+    description: "LOAN REPAYMENT 006PRINCIPAL",
+    category_id: transferCat.id,
+  });
+  const inn = await createTransaction(api, {
+    account_id: mortgage.id,
+    posted_at: "2026-01-10",
+    amount_minor: 44_530,
+    description: "Principal payment",
+    category_id: transferCat.id,
+  });
+  const linked = await api.POST("/api/transactions/{id}/link", {
+    params: { path: { id: out.id } },
+    body: { linked_transaction_id: inn.id },
+  });
+  expect(linked.response.status).toBe(200);
+
+  const cash = (
+    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis: "cash" } } })
+  ).data!;
+  // The principal: one node named after the account it reached, never after the "Transfer"
+  // category both legs carry.
+  expect(node(cash, `acct:${mortgage.id}`)).toMatchObject({
+    kind: "crossing",
+    label: "Home Mortgage",
+    account_id: mortgage.id,
+    side: "expense",
+    depth: 0,
+    category_id: null,
+  });
+  expect(cash.links).toContainEqual(
+    expect.objectContaining({ source: "center", target: `acct:${mortgage.id}`, value_minor: 44_530 })
+  );
+  // …counted once. The loan's own row is the far leg, outside the perimeter.
+  expect(cash.links.filter((l) => l.target === `acct:${mortgage.id}`)).toHaveLength(1);
+  // The interest stays the ordinary expense category it always was.
+  expect(cash.links).toContainEqual(
+    expect.objectContaining({ source: "center", target: `out:${interestCat.id}`, value_minor: 95_202 })
+  );
+
+  // On the spending basis the principal is gone and the interest is untouched.
+  const spending = (
+    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis: "spending" } } })
+  ).data!;
+  expect(spending.nodes.some((n) => n.kind === "crossing")).toBe(false);
+  expect(spending.links).toContainEqual(
+    expect.objectContaining({ source: "center", target: `out:${interestCat.id}`, value_minor: 95_202 })
+  );
+});
+
+test("naming the loan on its interest rows splits the crossing into interest and principal", async ({
+  api,
+}) => {
+  // The question the basis exists for: what does the mortgage cost? The bank charges interest to
+  // the facility rather than to the loan, so that row has nothing to link to — naming the
+  // counterparty is the only way to say the two belong together.
+  const jam = await createAccount(api, "The Jam", "revolving_credit");
+  const mortgage = await createAccount(api, "Home Mortgage", "mortgage");
+  const interestCat = await createCategory(api, "Interest charged", "expense");
+  const transferCat = await createCategory(api, "Transfer", "transfer");
+
+  await createTransaction(api, {
+    account_id: jam.id,
+    posted_at: "2026-01-10",
+    amount_minor: -95_202,
+    description: "LOAN REPAYMENT 006INTEREST",
+    category_id: interestCat.id,
+    counterparty_account_id: mortgage.id,
+  });
+  const out = await createTransaction(api, {
+    account_id: jam.id,
+    posted_at: "2026-01-10",
+    amount_minor: -44_530,
+    description: "LOAN REPAYMENT 006PRINCIPAL",
+    category_id: transferCat.id,
+  });
+  const inn = await createTransaction(api, {
+    account_id: mortgage.id,
+    posted_at: "2026-01-10",
+    amount_minor: 44_530,
+    description: "Principal payment",
+    category_id: transferCat.id,
+  });
+  await api.POST("/api/transactions/{id}/link", {
+    params: { path: { id: out.id } },
+    body: { linked_transaction_id: inn.id },
+  });
+
+  const g = (
+    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis: "cash" } } })
+  ).data!;
+  // The whole payment crosses…
+  expect(g.links).toContainEqual(
+    expect.objectContaining({ source: "center", target: `acct:${mortgage.id}`, value_minor: 139_732 })
+  );
+  // …and splits by what the loan's own ledger says the balance did. Nothing read a rate or a memo.
+  expect(node(g, `acct:${mortgage.id}:cost`)).toMatchObject({ label: "Interest", depth: 1 });
+  expect(node(g, `acct:${mortgage.id}:rest`)).toMatchObject({ label: "Principal", depth: 1 });
+  expect(g.links).toContainEqual(
+    expect.objectContaining({
+      source: `acct:${mortgage.id}`,
+      target: `acct:${mortgage.id}:cost`,
+      value_minor: 95_202,
+    })
+  );
+});
+
+test("the net-worth basis keeps the interest and drops the principal", async ({ api }) => {
+  const jam = await createAccount(api, "The Jam", "revolving_credit");
+  const mortgage = await createAccount(api, "Home Mortgage", "mortgage");
+  const interestCat = await createCategory(api, "Interest charged", "expense");
+  const transferCat = await createCategory(api, "Transfer", "transfer");
+
+  await createTransaction(api, {
+    account_id: jam.id,
+    posted_at: "2026-01-10",
+    amount_minor: -95_202,
+    description: "LOAN REPAYMENT 006INTEREST",
+    category_id: interestCat.id,
+    counterparty_account_id: mortgage.id,
+  });
+  const out = await createTransaction(api, {
+    account_id: jam.id,
+    posted_at: "2026-01-10",
+    amount_minor: -44_530,
+    description: "LOAN REPAYMENT 006PRINCIPAL",
+    category_id: transferCat.id,
+  });
+  const inn = await createTransaction(api, {
+    account_id: mortgage.id,
+    posted_at: "2026-01-10",
+    amount_minor: 44_530,
+    description: "Principal payment",
+    category_id: transferCat.id,
+  });
+  await api.POST("/api/transactions/{id}/link", {
+    params: { path: { id: out.id } },
+    body: { linked_transaction_id: inn.id },
+  });
+
+  const g = (
+    await api.GET("/api/reports/sankey", {
+      params: { query: { ...SANKEY_WINDOW, basis: "net_worth" } },
+    })
+  ).data!;
+  // Repaying a loan is a net zero change: only the interest survives, and it says so.
+  expect(g.links).toContainEqual(
+    expect.objectContaining({ source: "center", target: `acct:${mortgage.id}`, value_minor: 95_202 })
+  );
+  expect(node(g, `acct:${mortgage.id}`)?.label).toBe("Interest — Home Mortgage");
+  expect(g.nodes.some((n) => n.id.endsWith(":rest")), "the principal is not drawn").toBe(false);
+  // The spine and the leftover name the question, so the two bases cannot be confused.
+  expect(node(g, "center")?.label).toBe("Net worth");
+});
+
+test("a rule can name the counterparty, and the run is undoable", async ({ api }) => {
+  const jam = await createAccount(api, "The Jam", "revolving_credit");
+  const mortgage = await createAccount(api, "Home Mortgage", "mortgage");
+  const tx = await createTransaction(api, {
+    account_id: jam.id,
+    posted_at: "2026-01-10",
+    amount_minor: -95_202,
+    description: "LOAN REPAYMENT 006INTEREST",
+  });
+
+  const rule = await api.POST("/api/rules", {
+    body: {
+      name: "Loan interest → Home Mortgage",
+      expression: "contains(lower(description), '006interest')",
+      set_counterparty_account_id: mortgage.id,
+      overwrite_manual: false,
+      stop_on_match: false,
+      priority: 0,
+      enabled: true,
+    },
+  });
+  expect(rule.response.status).toBe(201);
+  const run = await api.POST("/api/rules/{id}/run", { params: { path: { id: rule.data!.id } } });
+  expect(run.data?.changed).toBe(1);
+
+  const after = await api.GET("/api/transactions/{id}", { params: { path: { id: tx.id } } });
+  expect(after.data?.counterparty_account_id).toBe(mortgage.id);
+
+  // Undoable like every other rule action — otherwise a mis-aimed rule is a manual repair job.
+  const undone = await api.POST("/api/rules/runs/{run_id}/undo", {
+    params: { path: { run_id: run.data!.run_id } },
+  });
+  expect(undone.data?.changed).toBe(1);
+  const reverted = await api.GET("/api/transactions/{id}", { params: { path: { id: tx.id } } });
+  expect(reverted.data?.counterparty_account_id).toBeNull();
+});
+
+test("a transfer between two cash accounts is internal on every basis", async ({ api }) => {
+  const everyday = await createAccount(api, "Everyday", "bank");
+  const savings = await createAccount(api, "Savings", "savings");
+  const transferred = await api.POST("/api/transfers", {
+    body: {
+      from_account_id: everyday.id,
+      to_account_id: savings.id,
+      posted_at: "2026-01-10",
+      from_amount_minor: 100_000,
+      description: "To savings",
+    },
+  });
+  expect(transferred.response.status).toBe(201);
+  await createTransaction(api, { account_id: everyday.id, posted_at: "2026-01-05", amount_minor: 500_000 });
+
+  for (const basis of ["cash", "spending"] as const) {
+    const g = (await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis } } })).data!;
+    expect(g.nodes.some((n) => n.kind === "crossing"), basis).toBe(false);
+    // Only the deposit survives, so the hub carries it and nothing else.
+    expect(g.links.filter((l) => l.target === "center").map((l) => l.value_minor), basis).toEqual([500_000]);
+  }
+});
+
+test("an unlinked transfer-category row is cash but not spending", async ({ api }) => {
+  // A student-loan living-cost drawdown: real money arriving, unlinked because the loan is
+  // balance-only and has no opposite row to pair with.
+  const acc = await createAccount(api, "Everyday", "bank");
+  const drawdowns = await createCategory(api, "Student loan drawdowns", "transfer");
+  await createTransaction(api, {
+    account_id: acc.id,
+    posted_at: "2026-01-08",
+    amount_minor: 33_348,
+    description: "STUDYLINK (MSD) LC PAYMENT",
+    category_id: drawdowns.id,
+  });
+
+  const cash = (
+    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis: "cash" } } })
+  ).data!;
+  expect(linkInto(cash, `in:${drawdowns.id}`)).toBe(33_348);
+
+  const spending = (
+    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis: "spending" } } })
+  ).data!;
+  expect(node(spending, `in:${drawdowns.id}`)).toBeUndefined();
+});
+
+test("a month that spent more than it earned draws a deficit into the hub", async ({ api }) => {
+  const acc = await createAccount(api, "Everyday", "bank");
+  await createTransaction(api, { account_id: acc.id, posted_at: "2026-01-05", amount_minor: 100_000 });
+  await createTransaction(api, { account_id: acc.id, posted_at: "2026-01-15", amount_minor: -120_000 });
+
+  const g = (await getSankey(api)).data!;
+  expect(node(g, "deficit")).toMatchObject({ kind: "deficit", side: null });
+  // A source *into* the hub, not a sink out of it: the other way round draws a ribbon
+  // backwards through the centre.
+  expect(g.links).toContainEqual(
+    expect.objectContaining({ source: "deficit", target: "center", value_minor: 20_000 })
+  );
+  expect(g.nodes.some((n) => n.kind === "savings")).toBe(false);
+});
+
+test("an unrecognised basis is a bad request", async ({ api }) => {
+  const r = await api.GET("/api/reports/sankey", {
+    // The generated client types `basis` as the legal strings, which is the point — this is the
+    // untyped caller the 400 exists for.
+    params: { query: { ...SANKEY_WINDOW, basis: "networth" as "cash" } },
+  });
+  expect(r.response.status).toBe(400);
+  expect(r.error?.error.message).toContain("networth");
+});
+
 test("sankey fans a category chain out into one node per level", async ({ api }) => {
   const acc = await createAccount(api, "Everyday", "bank");
   const income = await createCategory(api, "Income", "income");

@@ -154,12 +154,13 @@
   {
     "name": "money_flow",
     "tier": "read",
-    "description": "The money-flow graph for a window: income sources into the household, and out again into expense categories and savings. Returns one line per flow.",
+    "description": "The money-flow graph for a window: income sources into the household, and out again into expense categories, savings, and the accounts cash crossed to — a mortgage, a loan, a brokerage. Returns one line per flow.",
     "read_only": true,
     "destructive": null,
     "idempotent": true,
     "arguments": [
       "attributed_to",
+      "basis",
       "currency",
       "from",
       "include_one_off",
@@ -247,6 +248,7 @@
       "overwrite_manual",
       "priority",
       "set_category_id",
+      "set_counterparty_account_id",
       "set_merchant_id",
       "set_one_off",
       "stop_on_match"

@@ -147,6 +147,10 @@ pub struct SaveRuleParams {
     pub set_category_id: Option<i64>,
     #[serde(default)]
     pub set_merchant_id: Option<i64>,
+    /// Also record which account the money went to — a mortgage, a brokerage, the house a
+    /// deposit bought — where the other side has no transaction of its own to link to.
+    #[serde(default)]
+    pub set_counterparty_account_id: Option<i64>,
     #[serde(default)]
     pub set_one_off: Option<bool>,
     /// Also re-file transactions somebody categorised by hand. Default false.
@@ -209,6 +213,7 @@ impl SureMcp {
                 merchant_id: params.merchant_id,
                 is_one_off: params.is_one_off,
                 ownership: None,
+                counterparty_account_id: None,
             })
             .await
             .map_err(to_mcp)?;
@@ -314,6 +319,7 @@ impl SureMcp {
                 merchant_id: params.merchant_id.map(Some),
                 is_one_off: params.is_one_off,
                 ownership: None,
+                counterparty_account_id: None,
             })
             .await
             .map_err(to_mcp)?;
@@ -359,6 +365,7 @@ impl SureMcp {
                 notes: params.notes,
                 category_id: params.category_id,
                 is_one_off: params.is_one_off.unwrap_or(false),
+                counterparty_account_id: None,
             })
             .await
             .map_err(to_mcp)?;
@@ -501,6 +508,7 @@ impl SureMcp {
             set_category_id: params.set_category_id,
             set_one_off: params.set_one_off,
             set_merchant_id: params.set_merchant_id,
+            set_counterparty_account_id: params.set_counterparty_account_id,
             overwrite_manual: params.overwrite_manual.unwrap_or(false),
             stop_on_match: params.stop_on_match.unwrap_or(false),
             priority: params.priority.unwrap_or(0),

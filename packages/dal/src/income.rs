@@ -1465,6 +1465,7 @@ mod tests {
                 is_one_off: false,
                 merchant_id: None,
                 ownership: None,
+                counterparty_account_id: None,
             },
         )
         .await
