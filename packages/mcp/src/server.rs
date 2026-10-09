@@ -5,7 +5,7 @@ use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, GetPromptRequestParams, GetPromptResponse,
     Implementation, ListPromptsResult, ListResourcesResult, ListToolsResult,
     PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
-    ResultType, ServerCapabilities, ServerInfo, Tool,
+    ResultType, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -113,15 +113,15 @@ impl SureMcp {
 /// The macro skips any method already present, so the difference is only that these three are
 /// spelled out.
 impl ServerHandler for SureMcp {
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        let mut info = ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
                 .enable_prompts()
                 .build(),
         );
-        // `ServerInfo::new` fills this from `CARGO_*` — but those are expanded inside `rmcp`,
+        // `ServerConfig::new` fills this from `CARGO_*` — but those are expanded inside `rmcp`,
         // so the default identifies the SDK ("rmcp 3.1.2") rather than this server. A client
         // listing several connections shows that name.
         info.server_info = Implementation::new("sure", env!("CARGO_PKG_VERSION"))
