@@ -40,6 +40,7 @@ struct Current {
     categorized_by_rule_id: Option<i64>,
     is_one_off: bool,
     merchant_id: Option<i64>,
+    counterparty_account_id: Option<i64>,
 }
 
 impl Current {
@@ -49,6 +50,7 @@ impl Current {
             categorized_by_rule_id: row.categorized_by_rule_id,
             is_one_off: row.is_one_off,
             merchant_id: row.merchant_id,
+            counterparty_account_id: row.counterparty_account_id,
         }
     }
 }
@@ -338,8 +340,20 @@ fn plan_run(rules: &[Rule], rows: &[TxCtx]) -> (i64, Vec<PlannedApplication>) {
                 new_merchant = Some(m);
                 merchant_changed = true;
             }
+            // No `overwrite_manual` gate, unlike the category. That flag exists because a
+            // category is the field a person curates by hand and a rule must not stamp over;
+            // a counterparty is a statement of fact about where the money went, which a rule
+            // either knows or does not, and there is nothing for it to overrule.
+            let mut new_counterparty = cur.counterparty_account_id;
+            let mut counterparty_changed = false;
+            if let Some(a) = rule.set_counterparty_account_id
+                && cur.counterparty_account_id != Some(a)
+            {
+                new_counterparty = Some(a);
+                counterparty_changed = true;
+            }
 
-            if cat_changed || one_off_changed || merchant_changed {
+            if cat_changed || one_off_changed || merchant_changed || counterparty_changed {
                 let new_cat_by_rule = if cat_changed {
                     Some(rule.id)
                 } else {
@@ -356,11 +370,14 @@ fn plan_run(rules: &[Rule], rows: &[TxCtx]) -> (i64, Vec<PlannedApplication>) {
                     new_one_off,
                     prev_merchant_id: cur.merchant_id,
                     new_merchant_id: new_merchant,
+                    prev_counterparty_account_id: cur.counterparty_account_id,
+                    new_counterparty_account_id: new_counterparty,
                 });
                 cur.category_id = new_category;
                 cur.categorized_by_rule_id = new_cat_by_rule;
                 cur.is_one_off = new_one_off;
                 cur.merchant_id = new_merchant;
+                cur.counterparty_account_id = new_counterparty;
                 // The row's context is no longer rebuilt from `cur` on the next iteration,
                 // so the fields a rule can move have to be written back here — a later rule
                 // keying off `category_id`/`is_one_off`/`merchant_id` must see what this one
@@ -416,7 +433,7 @@ fn build_context(row: &TxCtx, cur: &Current) -> Map<String, Value> {
     obj
 }
 
-/// Write the only three context fields a run can change while it is walking a row's rules.
+/// Write the context fields a run can change while it is walking a row's rules.
 ///
 /// The single place these keys are produced, called both when [`build_context`] first builds
 /// the map and whenever [`plan_run`] patches it after a rule applies — so the initial value
@@ -431,6 +448,12 @@ fn write_current(obj: &mut Map<String, Value>, cur: &Current) {
         cur.category_id.map(|v| json!(v)).unwrap_or(Value::Null),
     );
     obj.insert("is_one_off".into(), json!(cur.is_one_off));
+    obj.insert(
+        "counterparty_account_id".into(),
+        cur.counterparty_account_id
+            .map(|v| json!(v))
+            .unwrap_or(Value::Null),
+    );
 }
 
 /// Evaluate a compiled rule against a context, treating any error or non-boolean result as
@@ -556,6 +579,7 @@ mod tests {
             categorized_by_rule_id: None,
             account_name: "Everyday".to_string(),
             account_kind: AccountKind::Bank,
+            counterparty_account_id: None,
         }
     }
 
@@ -568,6 +592,7 @@ mod tests {
             set_category_id: Some(set_category_id),
             set_one_off: None,
             set_merchant_id: None,
+            set_counterparty_account_id: None,
             overwrite_manual: false,
             stop_on_match: true,
             priority: 0,

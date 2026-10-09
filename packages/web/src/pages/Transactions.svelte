@@ -683,6 +683,7 @@
         notes: t.notes,
         category_id: t.category_id,
         is_one_off: t.is_one_off,
+        counterparty_account_id: t.counterparty_account_id,
         // Every field the row already has must be restated: this is a full-replace PUT, so
         // anything omitted is cleared. `ownership` especially — an omitted attribution
         // override reads as "follow the account", which would quietly undo a hand-set one
@@ -764,6 +765,19 @@
     e.currentTarget.value = "";
     if (v === "") return;
     bulkPatch({ merchant_id: v === "__clear__" ? null : Number(v) });
+  }
+  /**
+   * Say which account the selected rows' money went to or came from.
+   *
+   * Bulk rather than an inline picker per row, and deliberately so: this is how a year of
+   * already-imported history gets attributed in one pass, which a rule cannot do — a rule only
+   * ever sees what arrives after it exists.
+   */
+  function onBulkCounterparty(e: Event & { currentTarget: HTMLSelectElement }) {
+    const v = e.currentTarget.value;
+    e.currentTarget.value = "";
+    if (v === "") return;
+    bulkPatch({ counterparty_account_id: v === "__clear__" ? null : Number(v) });
   }
   /**
    * Attribute the selection. `inherit` sends an explicit `null`, which the API reads as
@@ -1312,6 +1326,19 @@
       <option value="">Set merchant…</option>
       <option value="__clear__">— clear —</option>
       {#each merchants as m}<option value={m.id}>{m.name}</option>{/each}
+    </select>
+    <select
+      class="select btn-sm"
+      aria-label="Set counterparty account for selected"
+      onchange={onBulkCounterparty}
+      disabled={bulkBusy}
+    >
+      <option value="">Money went to…</option>
+      <option value="__clear__">— clear —</option>
+      <!-- Every account, cash ones included: saying a payment went to your own savings is as
+           legitimate an answer as saying it went to the mortgage, and the cashflow report treats
+           the first as internal movement precisely because it was told so. -->
+      {#each accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
     </select>
     <button class="btn btn-sm" onclick={() => bulkPatch({ is_one_off: true })} disabled={bulkBusy}>Mark one-off</button>
     <button class="btn btn-sm" onclick={() => bulkPatch({ is_one_off: false })} disabled={bulkBusy}>Clear one-off</button>

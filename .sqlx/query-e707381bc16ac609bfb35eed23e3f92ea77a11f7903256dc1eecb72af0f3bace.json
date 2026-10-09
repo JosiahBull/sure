@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT a.id AS \"id!\", a.transaction_id, t.posted_at, t.description, t.amount_minor,\n                  t.currency_code, a.prev_category_id, a.new_category_id, a.prev_merchant_id,\n                  a.new_merchant_id, a.prev_one_off AS \"prev_one_off: bool\",\n                  a.new_one_off AS \"new_one_off: bool\", a.reverted AS \"reverted!: bool\"\n             FROM rule_applications a\n             JOIN transactions t ON t.id = a.transaction_id\n            WHERE a.rule_run_id = ?1\n            ORDER BY a.id",
+  "query": "SELECT a.id AS \"id!\", a.transaction_id, t.posted_at, t.description, t.amount_minor,\n                  t.currency_code, a.prev_category_id, a.new_category_id, a.prev_merchant_id,\n                  a.new_merchant_id, a.prev_counterparty_account_id,\n                  a.new_counterparty_account_id, a.prev_one_off AS \"prev_one_off: bool\",\n                  a.new_one_off AS \"new_one_off: bool\", a.reverted AS \"reverted!: bool\"\n             FROM rule_applications a\n             JOIN transactions t ON t.id = a.transaction_id\n            WHERE a.rule_run_id = ?1\n            ORDER BY a.id",
   "describe": {
     "columns": [
       {
@@ -114,8 +114,30 @@
         }
       },
       {
-        "name": "prev_one_off: bool",
+        "name": "prev_counterparty_account_id",
         "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "prev_counterparty_account_id"
+          }
+        }
+      },
+      {
+        "name": "new_counterparty_account_id",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "new_counterparty_account_id"
+          }
+        }
+      },
+      {
+        "name": "prev_one_off: bool",
+        "ordinal": 12,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -126,7 +148,7 @@
       },
       {
         "name": "new_one_off: bool",
-        "ordinal": 11,
+        "ordinal": 13,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -137,7 +159,7 @@
       },
       {
         "name": "reverted!: bool",
-        "ordinal": 12,
+        "ordinal": 14,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -163,8 +185,10 @@
       true,
       true,
       true,
+      true,
+      true,
       false
     ]
   },
-  "hash": "48916995108ae48fe75c7e9dd399b1c882cc6fa69324d0d2a0e1c29bfff0536e"
+  "hash": "e707381bc16ac609bfb35eed23e3f92ea77a11f7903256dc1eecb72af0f3bace"
 }

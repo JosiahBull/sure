@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", rule_run_id, rule_id, transaction_id, prev_category_id,\n                  new_category_id, prev_categorized_by_rule_id,\n                  prev_one_off AS \"prev_one_off: bool\", new_one_off AS \"new_one_off: bool\",\n                  prev_merchant_id, new_merchant_id, reverted AS \"reverted!: bool\", created_at\n             FROM rule_applications WHERE rule_run_id=?1 AND reverted=0",
+  "query": "SELECT id AS \"id!\", rule_run_id, rule_id, transaction_id, prev_category_id,\n                  new_category_id, prev_categorized_by_rule_id,\n                  prev_one_off AS \"prev_one_off: bool\", new_one_off AS \"new_one_off: bool\",\n                  prev_merchant_id, new_merchant_id,\n                  prev_counterparty_account_id, new_counterparty_account_id,\n                  reverted AS \"reverted!: bool\", created_at\n             FROM rule_applications WHERE rule_run_id=?1 AND reverted=0",
   "describe": {
     "columns": [
       {
@@ -125,8 +125,30 @@
         }
       },
       {
-        "name": "reverted!: bool",
+        "name": "prev_counterparty_account_id",
         "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "prev_counterparty_account_id"
+          }
+        }
+      },
+      {
+        "name": "new_counterparty_account_id",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "new_counterparty_account_id"
+          }
+        }
+      },
+      {
+        "name": "reverted!: bool",
+        "ordinal": 13,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -137,7 +159,7 @@
       },
       {
         "name": "created_at",
-        "ordinal": 12,
+        "ordinal": 14,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -162,9 +184,11 @@
       true,
       true,
       true,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "ac36881cafc90caf1ec177450a96c42f25afd655ec3ad0345036f6dbb2fa36da"
+  "hash": "97ba48d2f7037dc013de667645d0ac7f2170beee0da369c201fc446c0fac49de"
 }

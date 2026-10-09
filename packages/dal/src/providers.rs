@@ -1105,7 +1105,8 @@ mod tests {
             crate::transactions::TransactionRow,
             r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
                       merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
-                      linked_transaction_id, provider, external_id, categorized_by_rule_id,
+                      linked_transaction_id, counterparty_account_id,
+                      provider, external_id, categorized_by_rule_id,
                       ownership, person_id, created_at, updated_at
                  FROM transactions WHERE external_id = ?1"#,
             external_id

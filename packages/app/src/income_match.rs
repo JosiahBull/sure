@@ -940,6 +940,7 @@ mod tests {
             category_id: None,
             is_one_off: false,
             linked_transaction_id: None,
+            counterparty_account_id: None,
             provider: None,
             external_id: None,
             categorized_by_rule_id: None,

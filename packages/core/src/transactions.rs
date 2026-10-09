@@ -114,6 +114,15 @@ pub struct Transaction {
     pub is_one_off: bool,
     /// The other side of a transfer, if linked.
     pub linked_transaction_id: Option<i64>,
+    /// The account this money went to or came from, when the other side is an account rather
+    /// than a payee — a mortgage, a brokerage, the house a deposit bought.
+    ///
+    /// An *override* of what [`Self::linked_transaction_id`] implies, not a replacement: a
+    /// report reads this first and falls back to the linked transaction's account. It exists
+    /// because the far side often has no transaction to link to — a property is valuation-backed
+    /// and has none at all, and a loan's interest is charged to the facility rather than to the
+    /// loan.
+    pub counterparty_account_id: Option<i64>,
     pub provider: Option<String>,
     pub external_id: Option<String>,
     /// Which rule (if any) last set this transaction's category.
@@ -151,6 +160,9 @@ pub struct SaveTransaction {
     pub category_id: Option<i64>,
     #[serde(default)]
     pub is_one_off: bool,
+    /// The account on the other side; omit (or send `null`) for an ordinary payee.
+    #[serde(default)]
+    pub counterparty_account_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, IntoParams, Default)]
@@ -202,6 +214,11 @@ pub struct BulkUpdate {
     /// Present → set the merchant (or clear it with `null`); absent → leave unchanged.
     #[serde(default, deserialize_with = "double_option")]
     pub merchant_id: Option<Option<i64>>,
+    /// Present → set the counterparty account (or clear it with `null`); absent → leave
+    /// unchanged. Bulk is how a year of already-imported rows gets attributed at all: a rule
+    /// only ever sees what arrives after it.
+    #[serde(default, deserialize_with = "double_option")]
+    pub counterparty_account_id: Option<Option<i64>>,
     /// Present → set the one-off flag; absent → leave unchanged.
     #[serde(default)]
     pub is_one_off: Option<bool>,

@@ -35,6 +35,8 @@ pub struct RuleApplication {
     pub new_one_off: Option<bool>,
     pub prev_merchant_id: Option<i64>,
     pub new_merchant_id: Option<i64>,
+    pub prev_counterparty_account_id: Option<i64>,
+    pub new_counterparty_account_id: Option<i64>,
     pub reverted: bool,
     pub created_at: String,
 }
@@ -57,6 +59,7 @@ struct TxCtxRow {
     categorized_by_rule_id: Option<i64>,
     account_name: String,
     account_kind: String,
+    counterparty_account_id: Option<i64>,
 }
 
 /// A transaction row denormalised for rule evaluation. The API crate reads these
@@ -78,6 +81,7 @@ pub struct TxCtx {
     pub categorized_by_rule_id: Option<i64>,
     pub account_name: String,
     pub account_kind: AccountKind,
+    pub counterparty_account_id: Option<i64>,
 }
 
 impl TryFrom<TxCtxRow> for TxCtx {
@@ -105,6 +109,7 @@ impl TryFrom<TxCtxRow> for TxCtx {
             category_id: r.category_id,
             is_one_off: r.is_one_off,
             categorized_by_rule_id: r.categorized_by_rule_id,
+            counterparty_account_id: r.counterparty_account_id,
             account_name: r.account_name,
         })
     }
@@ -124,6 +129,8 @@ pub struct PlannedApplication {
     pub new_one_off: bool,
     pub prev_merchant_id: Option<i64>,
     pub new_merchant_id: Option<i64>,
+    pub prev_counterparty_account_id: Option<i64>,
+    pub new_counterparty_account_id: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -135,6 +142,7 @@ struct RuleRow {
     set_category_id: Option<i64>,
     set_one_off: Option<bool>,
     set_merchant_id: Option<i64>,
+    set_counterparty_account_id: Option<i64>,
     overwrite_manual: bool,
     stop_on_match: bool,
     priority: i64,
@@ -153,6 +161,7 @@ impl From<RuleRow> for Rule {
             set_category_id: r.set_category_id,
             set_one_off: r.set_one_off,
             set_merchant_id: r.set_merchant_id,
+            set_counterparty_account_id: r.set_counterparty_account_id,
             overwrite_manual: r.overwrite_manual,
             stop_on_match: r.stop_on_match,
             priority: r.priority,
@@ -172,6 +181,7 @@ pub async fn list(db: &Db) -> AppResult<Vec<Rule>> {
         RuleRow,
         r#"SELECT id AS "id!", name, description, expression, set_category_id,
                   set_one_off AS "set_one_off: bool", set_merchant_id,
+                  set_counterparty_account_id,
                   overwrite_manual AS "overwrite_manual!: bool",
                   stop_on_match AS "stop_on_match!: bool", priority,
                   enabled AS "enabled!: bool", created_at, updated_at
@@ -191,6 +201,7 @@ pub async fn enabled_rules(db: &Db) -> AppResult<Vec<Rule>> {
         RuleRow,
         r#"SELECT id AS "id!", name, description, expression, set_category_id,
                   set_one_off AS "set_one_off: bool", set_merchant_id,
+                  set_counterparty_account_id,
                   overwrite_manual AS "overwrite_manual!: bool",
                   stop_on_match AS "stop_on_match!: bool", priority,
                   enabled AS "enabled!: bool", created_at, updated_at
@@ -209,6 +220,7 @@ pub async fn get(db: &Db, id: i64) -> AppResult<Rule> {
         RuleRow,
         r#"SELECT id AS "id!", name, description, expression, set_category_id,
                   set_one_off AS "set_one_off: bool", set_merchant_id,
+                  set_counterparty_account_id,
                   overwrite_manual AS "overwrite_manual!: bool",
                   stop_on_match AS "stop_on_match!: bool", priority,
                   enabled AS "enabled!: bool", created_at, updated_at
@@ -229,11 +241,13 @@ pub async fn create(db: &Db, input: SaveRule) -> AppResult<Rule> {
         RuleRow,
         r#"INSERT INTO rules
               (name, description, expression, set_category_id, set_one_off, overwrite_manual,
-               stop_on_match, priority, enabled, set_merchant_id)
-           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+               stop_on_match, priority, enabled, set_merchant_id,
+               set_counterparty_account_id)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
            RETURNING id AS "id!", name, description, expression,
                      set_category_id AS "set_category_id?",
                      set_one_off AS "set_one_off: bool", set_merchant_id AS "set_merchant_id?",
+                     set_counterparty_account_id AS "set_counterparty_account_id?",
                      overwrite_manual AS "overwrite_manual!: bool",
                      stop_on_match AS "stop_on_match!: bool", priority,
                      enabled AS "enabled!: bool", created_at, updated_at"#,
@@ -246,7 +260,8 @@ pub async fn create(db: &Db, input: SaveRule) -> AppResult<Rule> {
         input.stop_on_match,
         input.priority,
         input.enabled,
-        input.set_merchant_id
+        input.set_merchant_id,
+        input.set_counterparty_account_id
     )
     .fetch_one(db)
     .await?
@@ -261,11 +276,13 @@ pub async fn update(db: &Db, id: i64, input: SaveRule) -> AppResult<Rule> {
         RuleRow,
         r#"UPDATE rules SET name=?2, description=?3, expression=?4, set_category_id=?5,
               set_one_off=?6, overwrite_manual=?7, stop_on_match=?8, priority=?9, enabled=?10,
-              set_merchant_id=?11, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              set_merchant_id=?11, set_counterparty_account_id=?12,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE id=?1
            RETURNING id AS "id!", name, description, expression,
                      set_category_id AS "set_category_id?",
                      set_one_off AS "set_one_off: bool", set_merchant_id AS "set_merchant_id?",
+                     set_counterparty_account_id AS "set_counterparty_account_id?",
                      overwrite_manual AS "overwrite_manual!: bool",
                      stop_on_match AS "stop_on_match!: bool", priority,
                      enabled AS "enabled!: bool", created_at, updated_at"#,
@@ -279,7 +296,8 @@ pub async fn update(db: &Db, id: i64, input: SaveRule) -> AppResult<Rule> {
         input.stop_on_match,
         input.priority,
         input.enabled,
-        input.set_merchant_id
+        input.set_merchant_id,
+        input.set_counterparty_account_id
     )
     .fetch_optional(db)
     .await?
@@ -311,6 +329,7 @@ pub async fn load_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
         r#"SELECT t.id AS "id!", t.account_id, t.posted_at, t.amount_minor, t.currency_code,
                   cur.decimal_places, t.description, t.merchant, t.merchant_id, t.notes,
                   t.category_id, t.is_one_off AS "is_one_off!: bool", t.categorized_by_rule_id,
+                  t.counterparty_account_id,
                   a.name AS account_name, a.kind AS account_kind
              FROM transactions t
              JOIN accounts a ON a.id = t.account_id
@@ -352,6 +371,7 @@ pub async fn load_uncategorized_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
         r#"SELECT t.id AS "id!", t.account_id, t.posted_at, t.amount_minor, t.currency_code,
                   cur.decimal_places, t.description, t.merchant, t.merchant_id, t.notes,
                   t.category_id, t.is_one_off AS "is_one_off!: bool", t.categorized_by_rule_id,
+                  t.counterparty_account_id,
                   a.name AS account_name, a.kind AS account_kind
              FROM transactions t
              JOIN accounts a ON a.id = t.account_id
@@ -392,12 +412,14 @@ pub async fn persist_run(
     for a in &applications {
         sqlx::query!(
             "UPDATE transactions SET category_id=?2, categorized_by_rule_id=?3, is_one_off=?4,
-                merchant_id=?5, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
+                merchant_id=?5, counterparty_account_id=?6,
+                updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
             a.transaction_id,
             a.new_category_id,
             a.new_categorized_by_rule_id,
             a.new_one_off,
-            a.new_merchant_id
+            a.new_merchant_id,
+            a.new_counterparty_account_id
         )
         .execute(&mut *txn)
         .await?;
@@ -405,8 +427,9 @@ pub async fn persist_run(
             "INSERT INTO rule_applications
                 (rule_run_id, rule_id, transaction_id, prev_category_id, new_category_id,
                  prev_categorized_by_rule_id, prev_one_off, new_one_off,
-                 prev_merchant_id, new_merchant_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                 prev_merchant_id, new_merchant_id,
+                 prev_counterparty_account_id, new_counterparty_account_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             run_id,
             a.rule_id,
             a.transaction_id,
@@ -416,7 +439,9 @@ pub async fn persist_run(
             a.prev_one_off,
             a.new_one_off,
             a.prev_merchant_id,
-            a.new_merchant_id
+            a.new_merchant_id,
+            a.prev_counterparty_account_id,
+            a.new_counterparty_account_id
         )
         .execute(&mut *txn)
         .await?;
@@ -478,6 +503,8 @@ struct RuleApplicationDetailRow {
     new_category_id: Option<i64>,
     prev_merchant_id: Option<i64>,
     new_merchant_id: Option<i64>,
+    prev_counterparty_account_id: Option<i64>,
+    new_counterparty_account_id: Option<i64>,
     prev_one_off: Option<bool>,
     new_one_off: Option<bool>,
     reverted: bool,
@@ -496,6 +523,8 @@ impl From<RuleApplicationDetailRow> for RuleApplicationDetail {
             new_category_id: r.new_category_id,
             prev_merchant_id: r.prev_merchant_id,
             new_merchant_id: r.new_merchant_id,
+            prev_counterparty_account_id: r.prev_counterparty_account_id,
+            new_counterparty_account_id: r.new_counterparty_account_id,
             prev_one_off: r.prev_one_off,
             new_one_off: r.new_one_off,
             reverted: r.reverted,
@@ -528,7 +557,8 @@ pub async fn run_applications(db: &Db, run_id: i64) -> AppResult<Vec<RuleApplica
         RuleApplicationDetailRow,
         r#"SELECT a.id AS "id!", a.transaction_id, t.posted_at, t.description, t.amount_minor,
                   t.currency_code, a.prev_category_id, a.new_category_id, a.prev_merchant_id,
-                  a.new_merchant_id, a.prev_one_off AS "prev_one_off: bool",
+                  a.new_merchant_id, a.prev_counterparty_account_id,
+                  a.new_counterparty_account_id, a.prev_one_off AS "prev_one_off: bool",
                   a.new_one_off AS "new_one_off: bool", a.reverted AS "reverted!: bool"
              FROM rule_applications a
              JOIN transactions t ON t.id = a.transaction_id
@@ -559,7 +589,9 @@ pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<RunResult> {
         r#"SELECT id AS "id!", rule_run_id, rule_id, transaction_id, prev_category_id,
                   new_category_id, prev_categorized_by_rule_id,
                   prev_one_off AS "prev_one_off: bool", new_one_off AS "new_one_off: bool",
-                  prev_merchant_id, new_merchant_id, reverted AS "reverted!: bool", created_at
+                  prev_merchant_id, new_merchant_id,
+                  prev_counterparty_account_id, new_counterparty_account_id,
+                  reverted AS "reverted!: bool", created_at
              FROM rule_applications WHERE rule_run_id=?1 AND reverted=0"#,
         run_id
     )
@@ -573,8 +605,10 @@ pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<RunResult> {
         let res = sqlx::query!(
             "UPDATE transactions
              SET category_id=?2, categorized_by_rule_id=?3, is_one_off=?4, merchant_id=?7,
+                 counterparty_account_id=?9,
                  updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-             WHERE id=?1 AND category_id IS ?5 AND is_one_off = ?6 AND merchant_id IS ?8",
+             WHERE id=?1 AND category_id IS ?5 AND is_one_off = ?6 AND merchant_id IS ?8
+               AND counterparty_account_id IS ?10",
             app.transaction_id,
             app.prev_category_id,
             app.prev_categorized_by_rule_id,
@@ -582,7 +616,9 @@ pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<RunResult> {
             app.new_category_id,
             app.new_one_off,
             app.prev_merchant_id,
-            app.new_merchant_id
+            app.new_merchant_id,
+            app.prev_counterparty_account_id,
+            app.new_counterparty_account_id
         )
         .execute(&mut *txn)
         .await?;

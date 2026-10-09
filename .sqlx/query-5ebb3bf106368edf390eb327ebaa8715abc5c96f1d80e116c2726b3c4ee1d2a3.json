@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name, description, expression, set_category_id,\n                  set_one_off AS \"set_one_off: bool\", set_merchant_id,\n                  overwrite_manual AS \"overwrite_manual!: bool\",\n                  stop_on_match AS \"stop_on_match!: bool\", priority,\n                  enabled AS \"enabled!: bool\", created_at, updated_at\n                 FROM rules WHERE enabled=1 ORDER BY priority, id",
+  "query": "SELECT id AS \"id!\", name, description, expression, set_category_id,\n                  set_one_off AS \"set_one_off: bool\",\n                  overwrite_manual AS \"overwrite_manual!: bool\",\n                  stop_on_match AS \"stop_on_match!: bool\", priority, enabled AS \"enabled!: bool\",\n                  set_merchant_id, set_counterparty_account_id, created_at, updated_at\n             FROM rules ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -70,19 +70,8 @@
         }
       },
       {
-        "name": "set_merchant_id",
-        "ordinal": 6,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "rules",
-            "name": "set_merchant_id"
-          }
-        }
-      },
-      {
         "name": "overwrite_manual!: bool",
-        "ordinal": 7,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -93,7 +82,7 @@
       },
       {
         "name": "stop_on_match!: bool",
-        "ordinal": 8,
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -104,7 +93,7 @@
       },
       {
         "name": "priority",
-        "ordinal": 9,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -115,7 +104,7 @@
       },
       {
         "name": "enabled!: bool",
-        "ordinal": 10,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -125,8 +114,30 @@
         }
       },
       {
-        "name": "created_at",
+        "name": "set_merchant_id",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_merchant_id"
+          }
+        }
+      },
+      {
+        "name": "set_counterparty_account_id",
         "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_counterparty_account_id"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,7 +148,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -157,14 +168,15 @@
       false,
       true,
       true,
+      false,
+      false,
+      false,
+      false,
       true,
-      false,
-      false,
-      false,
-      false,
+      true,
       false,
       false
     ]
   },
-  "hash": "b9d215cb146e4b59035f06b4fa68748b1580850297d8bb460bc74705ceda53c5"
+  "hash": "5ebb3bf106368edf390eb327ebaa8715abc5c96f1d80e116c2726b3c4ee1d2a3"
 }

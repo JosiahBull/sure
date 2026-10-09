@@ -53,13 +53,18 @@ pub struct Rule {
     /// Zen expression evaluated against a transaction context; truthy => match.
     /// Fields available: `amount`, `amount_minor`, `abs_amount`, `is_income`,
     /// `is_expense`, `description`, `merchant`, `merchant_id`, `notes`, `currency`,
-    /// `account`, `account_kind`, `account_id`, `category_id`, `is_one_off`, `date`,
-    /// `year`, `month`, `day`.
+    /// `account`, `account_kind`, `account_id`, `category_id`, `is_one_off`,
+    /// `counterparty_account_id`, `date`, `year`, `month`, `day`.
     pub expression: String,
     pub set_category_id: Option<i64>,
     pub set_one_off: Option<bool>,
     /// Action: assign this custom merchant on match.
     pub set_merchant_id: Option<i64>,
+    /// Action: assign this counterparty account on match — the account the money went to or
+    /// came from, where the far side has no transaction to link to. A mortgage's interest is
+    /// charged every fortnight forever, so this has to be a standing rule rather than something
+    /// re-applied by hand.
+    pub set_counterparty_account_id: Option<i64>,
     pub overwrite_manual: bool,
     pub stop_on_match: bool,
     pub priority: i64,
@@ -80,6 +85,8 @@ pub struct SaveRule {
     pub set_one_off: Option<bool>,
     #[serde(default)]
     pub set_merchant_id: Option<i64>,
+    #[serde(default)]
+    pub set_counterparty_account_id: Option<i64>,
     #[serde(default)]
     pub overwrite_manual: bool,
     #[serde(default)]
@@ -120,6 +127,8 @@ pub struct RuleApplicationDetail {
     pub new_category_id: Option<i64>,
     pub prev_merchant_id: Option<i64>,
     pub new_merchant_id: Option<i64>,
+    pub prev_counterparty_account_id: Option<i64>,
+    pub new_counterparty_account_id: Option<i64>,
     pub prev_one_off: Option<bool>,
     pub new_one_off: Option<bool>,
     pub reverted: bool,

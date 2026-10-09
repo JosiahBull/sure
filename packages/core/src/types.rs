@@ -76,6 +76,30 @@ impl AccountKind {
         }
     }
 
+    /// Whether this kind holds the household's *liquid* money — the cash perimeter.
+    ///
+    /// The boundary a cashflow report is drawn around: a movement between two accounts inside it
+    /// is the household shuffling its own money, and a movement across it is cash arriving or
+    /// leaving. Everything outside is an instrument with its own bookkeeping — a loan whose
+    /// balance falls, a brokerage that settles trades, a house that is only ever valued.
+    ///
+    /// Cards are **inside**, which is the one call worth stating. A credit card is an everyday
+    /// transaction account: spending on it counts when you swipe, and the monthly payment from
+    /// the bank is then internal movement that nets out. Treating it as the liability its class
+    /// says it is would hide a month of groceries behind one lump payment with no categories.
+    ///
+    /// Exhaustive on purpose (CLAUDE.md rule 2): a new account kind has to be placed on one side
+    /// of the boundary here, at the one definition, rather than falling into whichever side a
+    /// wildcard happened to choose.
+    pub fn in_cash_perimeter(self) -> bool {
+        use AccountKind::*;
+        match self {
+            Cash | Bank | Savings | CreditCard | RevolvingCredit => true,
+            Mortgage | StudentLoan | Loan | Vehicle | RealEstate | SharesNz | SharesUs
+            | SharesPrivate | Brokerage | Crypto | Asset | Liability => false,
+        }
+    }
+
     /// The stored/wire representation (snake_case) — matches
     /// `#[serde(rename_all = "snake_case")]`. Used by the DAL to bind/read this as a
     /// plain `TEXT` column without `sure-core` needing an `sqlx` dependency.
@@ -210,6 +234,69 @@ impl std::str::FromStr for Interval {
             "week" => Interval::Week,
             "month" => Interval::Month,
             other => return Err(format!("unknown interval '{other}'")),
+        })
+    }
+}
+
+/// Which question the money-flow chart answers.
+///
+/// The chart used to answer both of these at once and say which only by accident — whether a
+/// movement counted depended on how its row happened to be categorised. A mortgage payment was
+/// invisible (a linked transfer in a transfer-kind category) while the proceeds of a share sale
+/// were counted as income, though both are the same shape: cash moving without net worth moving.
+/// Naming the basis is what makes each one internally consistent.
+///
+/// Parsed at the HTTP edge from a query-string value, exactly like [`Interval`]; an unrecognised
+/// value is a 400, never a silent default.
+#[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowBasis {
+    /// Every movement of the household's liquid money: spending, income, and every crossing of
+    /// the cash perimeter — a mortgage principal repayment, a loan drawdown, money in or out of a
+    /// brokerage. Internal movement between two cash accounts still nets out.
+    ///
+    /// The raw dollars the household can actually get at, and the basis that answers "what did
+    /// our accounts do".
+    #[default]
+    Cash,
+    /// Only the movements that left the household better or worse off.
+    ///
+    /// The same rows as [`Self::Cash`], less everything that merely moved value from one pocket
+    /// to another: a mortgage principal repayment buys equity, a loan drawdown is borrowed, a car
+    /// sale turns a car into cash, and none of the three changes what the household is worth by a
+    /// cent. What survives of a crossing is the part that bought *nothing* — the interest on a
+    /// debt, a broker's fee — because that money is simply gone.
+    ///
+    /// Not yet a complete account of net worth: an asset appreciating or a fund gaining in the
+    /// market moves it too, and neither carries a transaction to read. So this answers "what did
+    /// we do to our net worth", which is the half a household controls.
+    NetWorth,
+    /// Income and spending alone, with every transfer excluded. What the chart showed before the
+    /// basis existed, and what the category pies still are — see
+    /// `sure_app::reports::ReportService::category_breakdown_inputs`.
+    Spending,
+}
+
+impl FlowBasis {
+    /// The wire representation (snake_case) — matches `#[serde(rename_all = "snake_case")]`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FlowBasis::Cash => "cash",
+            FlowBasis::NetWorth => "net_worth",
+            FlowBasis::Spending => "spending",
+        }
+    }
+}
+
+impl std::str::FromStr for FlowBasis {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "cash" => FlowBasis::Cash,
+            "net_worth" => FlowBasis::NetWorth,
+            "spending" => FlowBasis::Spending,
+            other => return Err(format!("unknown basis '{other}'")),
         })
     }
 }
@@ -1405,6 +1492,60 @@ mod tests {
         assert!(
             meta.validate_for(AccountKind::StudentLoan, ValidationMode::Linked)
                 .is_ok()
+        );
+    }
+
+    /// The perimeter is the boundary a cashflow report is drawn around, so the test names every
+    /// kind rather than spot-checking: getting one wrong moves real money in or out of the
+    /// household's picture silently.
+    #[test]
+    fn the_cash_perimeter_holds_everyday_accounts_and_nothing_else() {
+        use AccountKind::*;
+        for kind in [Cash, Bank, Savings, CreditCard, RevolvingCredit] {
+            assert!(kind.in_cash_perimeter(), "{} must be inside", kind.as_str());
+        }
+        for kind in [
+            Mortgage,
+            StudentLoan,
+            Loan,
+            Vehicle,
+            RealEstate,
+            SharesNz,
+            SharesUs,
+            SharesPrivate,
+            Brokerage,
+            Crypto,
+            Asset,
+            Liability,
+        ] {
+            assert!(
+                !kind.in_cash_perimeter(),
+                "{} must be outside",
+                kind.as_str()
+            );
+        }
+    }
+
+    /// A card is a liability by class and inside the perimeter anyway — the one place the two
+    /// disagree, and the reason `in_cash_perimeter` exists instead of a test on `class`.
+    #[test]
+    fn a_card_is_a_liability_that_is_still_spendable() {
+        assert_eq!(AccountKind::CreditCard.class(), AccountClass::Liability);
+        assert!(AccountKind::CreditCard.in_cash_perimeter());
+        assert_eq!(AccountKind::Mortgage.class(), AccountClass::Liability);
+        assert!(!AccountKind::Mortgage.in_cash_perimeter());
+    }
+
+    #[test]
+    fn a_basis_round_trips_and_refuses_anything_else() {
+        for basis in [FlowBasis::Cash, FlowBasis::NetWorth, FlowBasis::Spending] {
+            assert_eq!(basis.as_str().parse::<FlowBasis>(), Ok(basis));
+        }
+        assert_eq!(FlowBasis::default(), FlowBasis::Cash);
+        let err = "networth".parse::<FlowBasis>().unwrap_err();
+        assert!(
+            err.contains("networth"),
+            "message must name the value: {err}"
         );
     }
 }

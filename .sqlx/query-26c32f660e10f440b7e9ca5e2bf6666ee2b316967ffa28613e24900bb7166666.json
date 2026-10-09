@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rule_applications\n                (rule_run_id, rule_id, transaction_id, prev_category_id, new_category_id,\n                 prev_categorized_by_rule_id, prev_one_off, new_one_off,\n                 prev_merchant_id, new_merchant_id,\n                 prev_counterparty_account_id, new_counterparty_account_id)\n             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": []
+  },
+  "hash": "26c32f660e10f440b7e9ca5e2bf6666ee2b316967ffa28613e24900bb7166666"
+}

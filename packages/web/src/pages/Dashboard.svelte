@@ -2,12 +2,13 @@
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, colorFor, type Schemas } from "../lib/api";
   import { activeRange, filters, periodLinkParams } from "../lib/state.svelte";
-  import { navigate } from "../lib/router.svelte";
+  import { navigate, queryParams, setQueryParams } from "../lib/router.svelte";
+  import { untrack } from "svelte";
   import { Tween } from "svelte/motion";
   import { cubicOut } from "svelte/easing";
   import LineChart from "../lib/charts/LineChart.svelte";
   import PieChart from "../lib/charts/PieChart.svelte";
-  import Sankey from "../lib/charts/Sankey.svelte";
+  import Sankey, { type SankeyTarget } from "../lib/charts/Sankey.svelte";
   import WeightBar from "../lib/charts/WeightBar.svelte";
   import { balances, refresh as refreshBalances } from "../lib/balances.svelte";
   import { groupByKind } from "../lib/balanceGroups";
@@ -26,6 +27,31 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
 
+  /**
+   * Which question the money-flow chart answers.
+   *
+   * Local to this page rather than in the shared `filters`, deliberately. A basis means nothing
+   * on Transactions, Accounts or Settings — and `filters` is what `periodLinkParams()` feeds into
+   * every drill-down link, so putting it there would start sending `basis=` to a page that has no
+   * concept of one. `setQueryParams` only touches the keys it is handed, so a page-owned `basis=`
+   * and the shell-owned `range=`/`start=`/`end=` compose in the same query string.
+   */
+  type Basis = "cash" | "net_worth";
+  const BASES: { key: Basis; label: string; caption: string }[] = [
+    { key: "cash", label: "Cashflow", caption: "every dollar our accounts actually moved" },
+    {
+      key: "net_worth",
+      label: "Net Worth",
+      caption: "only what left us better or worse off — repaying a loan is neither",
+    },
+  ];
+  const DEFAULT_BASIS: Basis = "cash";
+  const isBasis = (v: string | null): v is Basis => BASES.some((b) => b.key === v);
+  // Read once: the page remounts on a route change, so there is nothing to keep in sync
+  // afterwards — only to write, below.
+  const urlBasis = queryParams().get("basis");
+  let basis = $state<Basis>(isBasis(urlBasis) ? urlBasis : DEFAULT_BASIS);
+
   /** Sample finer as the window narrows so a zoomed-in range stays legible. */
   function intervalFor(from?: string, to?: string): "day" | "week" | "month" {
     if (!from || !to) return "month";
@@ -42,7 +68,7 @@
     const { from, to } = activeRange();
     const interval = intervalFor(from, to);
     try {
-      const [a, b, s] = await Promise.all([
+      const [a, b] = await Promise.all([
         api.GET("/api/reports/net-worth", {
           params: { query: { from, to, interval } },
         }),
@@ -51,21 +77,31 @@
             query: { from, to, include_one_off: filters.includeOneOff },
           },
         }),
-        api.GET("/api/reports/sankey", {
-          params: {
-            query: { from, to, include_one_off: filters.includeOneOff },
-          },
-        }),
       ]);
       nw = a.data ?? null;
       breakdown = b.data ?? null;
-      sankey = s.data ?? null;
-      if (a.error || b.error || s.error) error = "Failed to load reports.";
+      if (a.error || b.error) error = "Failed to load reports.";
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
     }
+  }
+
+  /**
+   * The money-flow chart alone, because it is the only report the basis changes.
+   *
+   * Separate from `load` so flipping the basis does not re-request net worth and the pies — and
+   * does not set `loading`, which swaps the whole page for a spinner and drops the net-worth
+   * hover.
+   */
+  async function loadSankey() {
+    const { from, to } = activeRange();
+    const s = await api.GET("/api/reports/sankey", {
+      params: { query: { from, to, include_one_off: filters.includeOneOff, basis } },
+    });
+    sankey = s.data ?? null;
+    if (s.error) error = "Failed to load reports.";
   }
 
   $effect(() => {
@@ -74,6 +110,26 @@
     filters.includeOneOff;
     filters.custom;
     load();
+  });
+
+  $effect(() => {
+    filters.range;
+    filters.includeOneOff;
+    filters.custom;
+    basis;
+    loadSankey();
+  });
+
+  // basis → URL, in the shape `periodParams` uses: the default appears as nothing at all, and
+  // the write is a replace so flipping between bases leaves one entry to go back from rather
+  // than one per click.
+  $effect(() => {
+    const wanted = basis === DEFAULT_BASIS ? null : basis;
+    untrack(() => {
+      if ((queryParams().get("basis") ?? null) !== wanted) {
+        setQueryParams({ basis: wanted }, { replace: true });
+      }
+    });
   });
 
   // Balance Sheet / Investments show today's balances, not the date-range report — loaded
@@ -393,6 +449,26 @@
     if (kind) p.set("type", kind);
     navigate(`/transactions?${p.toString()}`);
   }
+
+  /**
+   * Jump to one account's transactions, keeping the range on screen.
+   *
+   * Distinct from `goToAccount`, which the balance sheet uses, in exactly one way: the range is
+   * named explicitly even when it is the default, which `periodLinkParams` would otherwise leave
+   * out. A bare `?account=` link makes the transactions page widen to all time — right when you
+   * open an account from the balance sheet, because its history is usually older than the
+   * selected window, and wrong when you click a bar that means "$1,336 of mortgage, in August".
+   * Naming the period is what opts out of that.
+   */
+  function goToAccountInPeriod(accountId: number) {
+    const p = new URLSearchParams(periodLinkParams());
+    if (!p.has("range") && !p.has("start")) p.set("range", filters.range);
+    p.set("account", String(accountId));
+    navigate(`/transactions?${p.toString()}`);
+  }
+
+  const openFlow = (t: SankeyTarget) =>
+    t.t === "account" ? goToAccountInPeriod(t.accountId) : goToCategory(t.categoryId, t.kind);
 </script>
 
 {#if error}
@@ -502,7 +578,22 @@
       <div class="card-title">
         <h2>Money flow</h2>
         <div class="row" style="gap:10px">
-          <span class="muted small">income → cash flow → expenses</span>
+          <!-- The caption is basis-specific, so it moves with the toggle rather than making a
+               claim that is only true on one of them. -->
+          <span class="muted small">{BASES.find((b) => b.key === basis)?.caption}</span>
+          <div class="segmented" role="group" aria-label="Money-flow basis">
+            {#each BASES as b (b.key)}
+              <button
+                type="button"
+                class="seg"
+                class:active={basis === b.key}
+                aria-pressed={basis === b.key}
+                onclick={() => (basis = b.key)}
+              >
+                {b.label}
+              </button>
+            {/each}
+          </div>
           <!-- The chart shows as many category levels as the width can render legibly, so a
                narrow card gets fewer. This is where the rest of them live. -->
           <button type="button" class="btn btn-sm" onclick={() => (flowExpanded = true)}>Expand</button>
@@ -512,8 +603,9 @@
         nodes={sankey.nodes}
         links={sankeyLinks}
         format={(v) => formatMoney(v, currency)}
-        onselect={goToCategory}
+        onselect={openFlow}
       />
+      <FxNotice unconverted={sankey.unconverted ?? []} currency={sankey.currency} />
     </section>
   {/if}
 
@@ -531,16 +623,33 @@
       <div class="modal" role="dialog" aria-modal="true" aria-label="Money flow">
         <div class="card-title">
           <h2>Money flow</h2>
-          <button type="button" class="btn btn-sm" onclick={() => (flowExpanded = false)}>Close</button>
+          <div class="row" style="gap:10px">
+            <!-- Bound to the same variable as the card's: one basis, two controls, never out of
+                 step with each other or with what is drawn. -->
+            <div class="segmented" role="group" aria-label="Money-flow basis">
+              {#each BASES as b (b.key)}
+                <button
+                  type="button"
+                  class="seg"
+                  class:active={basis === b.key}
+                  aria-pressed={basis === b.key}
+                  onclick={() => (basis = b.key)}
+                >
+                  {b.label}
+                </button>
+              {/each}
+            </div>
+            <button type="button" class="btn btn-sm" onclick={() => (flowExpanded = false)}>Close</button>
+          </div>
         </div>
         <Sankey
           nodes={sankey.nodes}
           links={sankeyLinks}
           height="calc(85dvh - 72px)"
           format={(v) => formatMoney(v, currency)}
-          onselect={(id, kind) => {
+          onselect={(t) => {
             flowExpanded = false;
-            goToCategory(id, kind);
+            openFlow(t);
           }}
         />
       </div>
@@ -1044,5 +1153,41 @@
     .activity-stats {
       grid-template-columns: 1fr;
     }
+  }
+  /* The money-flow basis switch. Same shape as the theme switch in Appearance, sized for a card
+     header rather than a settings page — two words a reader compares at a glance, where a
+     dropdown hides the alternative behind a click and reads as a filter rather than a choice
+     between two answers to the same question. */
+  .segmented {
+    display: inline-flex;
+    padding: 2px;
+    gap: 2px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-elev);
+  }
+  .seg {
+    all: unset;
+    padding: 4px 11px;
+    border-radius: 6px;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 550;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  /* A basis is one tap on a phone and there is no second way to reach it, so the target has to
+     clear the 44px thumb minimum the rest of the app holds to. */
+  @media (pointer: coarse) {
+    .seg {
+      padding: 11px 14px;
+    }
+  }
+  .seg:hover:not(.active) {
+    color: var(--text);
+  }
+  .seg.active {
+    background: var(--surface);
+    color: var(--text);
   }
 </style>

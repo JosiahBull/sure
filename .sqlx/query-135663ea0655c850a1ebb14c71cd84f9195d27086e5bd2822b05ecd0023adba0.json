@@ -1,0 +1,232 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT t.id AS \"id!\", t.posted_at, t.amount_minor, t.currency_code, t.category_id,\n                  t.is_one_off AS \"is_one_off!: bool\", t.linked_transaction_id,\n                  t.account_id, a.name AS account_name,\n                  a.kind AS account_kind,\n                  -- The account on the other side, with the row's own answer winning over the\n                  -- one its link implies. Resolved here, once, rather than in each reader:\n                  -- `counterparty_account_id` exists precisely because the far side often has no\n                  -- transaction to link to (a property has no ledger at all; a loan's interest\n                  -- is charged to the facility rather than to the loan), so the two are a\n                  -- fallback chain and not alternatives.\n                  COALESCE(t.counterparty_account_id, lt.account_id)\n                      AS \"counterparty_account_id?\",\n                  ca.kind AS \"counterparty_account_kind?: String\",\n                  ca.name AS \"counterparty_account_name?: String\",\n                  t.merchant_id,\n                  -- `COALESCE` over two nullable columns describes as having no type at\n                  -- all, so the decode type has to be named; `?` keeps it nullable, which\n                  -- it genuinely is when a row carries neither a merchant nor payee text.\n                  COALESCE(m.name, t.merchant) AS \"merchant?: String\",\n                  t.ownership AS tx_ownership,\n                  t.person_id AS tx_person_id, a.ownership AS account_ownership,\n                  a.person_id AS account_person_id\n             FROM transactions t\n             JOIN accounts a ON a.id = t.account_id\n             LEFT JOIN merchants m ON m.id = t.merchant_id\n             LEFT JOIN transactions lt ON lt.id = t.linked_transaction_id\n             LEFT JOIN accounts ca\n                    ON ca.id = COALESCE(t.counterparty_account_id, lt.account_id)\n            WHERE t.posted_at >= ?1 AND t.posted_at < ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "posted_at",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "posted_at"
+          }
+        }
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "amount_minor"
+          }
+        }
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "currency_code"
+          }
+        }
+      },
+      {
+        "name": "category_id",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "category_id"
+          }
+        }
+      },
+      {
+        "name": "is_one_off!: bool",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "is_one_off"
+          }
+        }
+      },
+      {
+        "name": "linked_transaction_id",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "linked_transaction_id"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "account_name",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "account_kind",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "counterparty_account_id?",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "counterparty_account_kind?: String",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "counterparty_account_name?: String",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "merchant_id",
+        "ordinal": 13,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "merchant_id"
+          }
+        }
+      },
+      {
+        "name": "merchant?: String",
+        "ordinal": 14,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "tx_ownership",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "ownership"
+          }
+        }
+      },
+      {
+        "name": "tx_person_id",
+        "ordinal": 16,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "person_id"
+          }
+        }
+      },
+      {
+        "name": "account_ownership",
+        "ordinal": 17,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "ownership"
+          }
+        }
+      },
+      {
+        "name": "account_person_id",
+        "ordinal": 18,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "person_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "135663ea0655c850a1ebb14c71cd84f9195d27086e5bd2822b05ecd0023adba0"
+}

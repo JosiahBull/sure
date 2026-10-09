@@ -489,6 +489,7 @@ fn tx_ctx(r: crate::rules::TxCtx) -> TxCtx {
         categorized_by_rule_id: r.categorized_by_rule_id,
         account_name: r.account_name,
         account_kind: r.account_kind, // already `sure_core::AccountKind`, parsed in the DAL
+        counterparty_account_id: r.counterparty_account_id,
     }
 }
 
@@ -530,6 +531,8 @@ impl RuleRepo for SqliteStore {
                 new_one_off: a.new_one_off,
                 prev_merchant_id: a.prev_merchant_id,
                 new_merchant_id: a.new_merchant_id,
+                prev_counterparty_account_id: a.prev_counterparty_account_id,
+                new_counterparty_account_id: a.new_counterparty_account_id,
             })
             .collect();
         crate::rules::persist_run(&self.db, rule_id, kind, matched, applications).await
@@ -682,6 +685,9 @@ impl ReportRepo for SqliteStore {
                 account_id: t.account_id,
                 account_name: t.account_name,
                 account_kind: t.account_kind, // already `sure_core::AccountKind`, parsed in the DAL
+                counterparty_account_id: t.counterparty_account_id,
+                counterparty_account_kind: t.counterparty_account_kind,
+                counterparty_account_name: t.counterparty_account_name,
                 merchant_id: t.merchant_id,
                 merchant: t.merchant,
             })

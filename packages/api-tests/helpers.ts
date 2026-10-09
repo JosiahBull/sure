@@ -159,6 +159,8 @@ export async function createTransaction(
     is_one_off?: boolean;
     /** Attribution override; omitted means "follow the account's owner", as an import does. */
     ownership?: Schemas["Ownership"];
+    /** The account on the other side, where it is one — a mortgage, the house a deposit bought. */
+    counterparty_account_id?: number | null;
   }
 ) {
   const { data, response } = await api.POST("/api/transactions", {
@@ -171,6 +173,7 @@ export async function createTransaction(
       merchant_id: input.merchant_id ?? null,
       is_one_off: input.is_one_off ?? false,
       ownership: input.ownership ?? null,
+      counterparty_account_id: input.counterparty_account_id ?? null,
     },
   });
   expect(response.status, "create transaction").toBe(201);

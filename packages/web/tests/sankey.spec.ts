@@ -213,7 +213,7 @@ test.describe("money flow", () => {
 
     const box = await boxes(page);
     const deduction = box["ded:sl"];
-    const destination = box["dest:" + made.accountIds[0]];
+    const destination = box["acct:" + made.accountIds[0]];
     expect(deduction, "the student-loan deduction was not drawn").toBeTruthy();
     expect(destination, "the student-loan account was not drawn").toBeTruthy();
 
@@ -228,7 +228,7 @@ test.describe("money flow", () => {
     expect(Math.abs(centre(destination) - centre(deduction))).toBeLessThan(40);
 
     // Two routed deductions keep their sinks' order.
-    const other = box["dest:" + made.accountIds[1]];
+    const other = box["acct:" + made.accountIds[1]];
     if (other) {
       expect(centre(destination), "the destinations are not in their deductions' order").toBeLessThan(centre(other));
     }
@@ -256,7 +256,7 @@ test.describe("money flow", () => {
     // adjacent columns — so labelling the account leftwards drew it back over its own sink's,
     // rendering "Student loan" as "Student Stadent loan".
     const rects = await page.evaluate(() => {
-      const wanted = ["ded:sl", "dest:"];
+      const wanted = ["ded:sl", "acct:"];
       return [...document.querySelectorAll(".sankey-wrap g.node")]
         .filter((g) => wanted.some((w) => ((g as HTMLElement).dataset.nodeId ?? "").startsWith(w)))
         .map((g) => {
@@ -281,5 +281,61 @@ test.describe("money flow", () => {
         expect(overlaps, `${a.id} and ${b.id} draw their labels over each other`).toBe(false);
       }
     }
+  });
+
+  test("the basis lives in the URL and both views agree on it", async ({ page }) => {
+    await page.goto("/#/");
+    await page.waitForLoadState("networkidle");
+    const card = page.locator(".card", { hasText: "Money flow" }).first();
+    const pressed = (scope: typeof card) =>
+      scope.getByRole("group", { name: "Money-flow basis" }).getByRole("button", { pressed: true });
+
+    // Cashflow is the default, and a default is absent from the URL rather than spelled out in
+    // it — the same bargain `periodParams` makes.
+    await expect(pressed(card)).toHaveText("Cashflow");
+    expect(page.url()).not.toContain("basis=");
+
+    await card.getByRole("button", { name: "Net Worth" }).click();
+    await expect.poll(() => page.url()).toContain("basis=net_worth");
+    await expect(page.locator(".sankey-wrap g.node").first()).toBeVisible();
+    // The hub says which question is being answered, so the two are never confused.
+    await expect(page.locator(".sankey-wrap")).toContainText("Net worth");
+
+    // …and it survives a reload, which is the whole point of putting it in the URL.
+    await page.reload();
+    await page.waitForLoadState("networkidle");
+    await expect(pressed(card)).toHaveText("Net Worth");
+
+    // The expand view is a second control over one variable, so it must already agree.
+    await page.getByRole("button", { name: "Expand" }).click();
+    await expect(pressed(page.locator(".overlay"))).toHaveText("Net Worth");
+    await page.getByRole("button", { name: "Close" }).click();
+
+    // Going back to the default takes the parameter out again rather than pinning it.
+    await card.getByRole("button", { name: "Cashflow" }).click();
+    await expect.poll(() => page.url()).not.toContain("basis=");
+  });
+
+  test("the cash basis draws the mortgage, and clicking it keeps the period", async ({ page }) => {
+    await page.goto("/#/?range=last_12m");
+    await page.waitForLoadState("networkidle");
+    await expect(page.locator(".sankey-wrap g.node").first()).toBeVisible();
+
+    // Ask the graph which node is the crossing rather than guessing from the id: the payslip
+    // layer's deduction destinations share the `acct:` prefix by design — one node per account,
+    // whatever reaches it — and only a crossing is clickable.
+    const graph = await page
+      .request.get("/api/reports/sankey?basis=cash&range=last_12m")
+      .then((r) => r.json());
+    const crossing = (graph.nodes as { id: string; kind: string }[]).find((n) => n.kind === "crossing");
+    expect(crossing, "the seeded mortgage draws no crossing").toBeTruthy();
+
+    // The handler is on the group; the shape inside it is a `<path>`, not a `<rect>`.
+    await page.locator(`.sankey-wrap g.node[data-node-id="${crossing!.id}"]`).first().dispatchEvent("click");
+    await expect(page).toHaveURL(/#\/transactions\?.*account=\d+/);
+    // A bare `?account=` link widens the transactions page to all time, which is right when you
+    // open an account from the balance sheet and wrong when you click a bar that means "this
+    // much, in this period". Naming the range is what opts out of that.
+    await expect(page.getByLabel("Time range")).toHaveValue("last_12m");
   });
 });

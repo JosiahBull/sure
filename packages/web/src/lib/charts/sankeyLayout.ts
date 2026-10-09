@@ -15,11 +15,17 @@ export interface Node {
   id: string;
   label: string;
   kind: string;
-  /** 0-based level within its own side; null for the hub and savings. */
+  /** 0-based level within its own side; null for the hub and the balance nodes. */
   depth?: number | null;
   category_id?: number | null;
   root_id?: number | null;
   root_color?: string | null;
+  /** Which half of the graph this sits in; null for the hub, the balance nodes and the
+   * pre-income layer. A plain string, like `kind`, because that is what the wire carries — see
+   * {@link sideOf}, which is the only thing that should read it and which narrows it. */
+  side?: string | null;
+  /** The balance-sheet account a crossing or a deduction destination stands for. */
+  account_id?: number | null;
 }
 export interface Link {
   source: string;
@@ -90,11 +96,26 @@ function columnsOf(live: Placed[], links: Link[]): Cols {
   let anyGross = false;
   let anyDeduction = false;
   for (const n of live) {
-    if (n.kind === "income") income = Math.max(income, n.level + 1);
-    else if (n.kind === "expense") expense = Math.max(expense, n.level + 1);
-    else if (n.kind === "savings") expense = Math.max(expense, 1);
-    else if (n.kind === "gross") anyGross = true;
-    else if (n.kind === "deduction") anyDeduction = true;
+    if (n.kind === "gross") {
+      anyGross = true;
+      continue;
+    }
+    if (n.kind === "deduction") {
+      anyDeduction = true;
+      continue;
+    }
+    // A waypoint's own level counts for nothing: every column one occupies is a gap between two
+    // columns a real node's level already claimed. `columnsOf` runs before routing, so this is
+    // belt and braces — but it keeps the invariant true by construction rather than by call order.
+    if (n.kind === "via") continue;
+    const side = sideOf(n);
+    if (!side) continue; // the hub
+    // One rule for everything that hangs off the hub by a side and a depth: both category trees,
+    // a perimeter crossing, and the surplus or deficit. `savings` reaching `expense >= 1` and
+    // `deficit` reaching `income >= 1` fall out of it, which is what stops a graph that is only a
+    // deficit and some expenses from putting the deficit node on the spine.
+    if (side === "income") income = Math.max(income, n.level + 1);
+    else expense = Math.max(expense, n.level + 1);
   }
   const walksOn = links.some(
     (l) => byId.get(l.source)?.kind === "gross" && byId.get(l.target)?.kind !== "deduction",
@@ -124,12 +145,8 @@ function columnsOf(live: Placed[], links: Link[]): Cols {
  */
 function columnOf(n: Placed, c: Cols): number {
   switch (n.kind) {
-    case "income":
-      return c.income - 1 - n.level;
-    case "expense":
-      return c.expenseBase + n.level;
-    case "savings":
-      return c.expenseBase;
+    case "center":
+      return c.center;
     // The reconstructed payslips: gross pay on the far left, its deduction sinks pinned
     // into the first income column (their natural d3 depth is 1, which is only the same
     // thing while exactly one category level is drawn).
@@ -137,22 +154,31 @@ function columnOf(n: Placed, c: Cols): number {
       return 0;
     case "deduction":
       return Math.min(1, c.center);
-    // The account a deduction was routed into — a terminal sink, one hop past its sink.
-    // Immediately right of the deductions, *not* on the spine: falling through to the hub's
+    // A balance-sheet account a deduction was routed into. One hop past its sink and
+    // immediately right of the deductions, *not* on the spine: falling through to the hub's
     // column (which is what `default` used to do for it) made the ribbon span every income
     // column in between, so it cut across the whole income fan to reach a node the width of
     // a hairline. Clamped to the hub because a graph with no income categories has nothing
     // between the two, and a column past the hub would put a payslip sink among the
     // expenses.
-    case "destination":
+    //
+    // An account that is *also* a crossing states a side, so it never reaches this arm — it
+    // sits in its own fan and its deduction ribbon routes across to it instead.
+    case "account":
       return Math.min(Math.min(1, c.center) + 1, c.total - 1);
     // A routing waypoint carries its column outright — see `routeSpans`.
     case "via":
       return n.via!.column;
-    // `kind` is a plain string on the wire, so the hub — and anything a newer backend
-    // adds — sits on the spine rather than breaking the layout.
-    default:
-      return c.center;
+    default: {
+      // Everything that hangs off the hub by a side and a depth, in one rule because they are
+      // one shape: both category trees, a perimeter crossing (depth 0, so it lands beside the
+      // top-level categories), and the surplus or deficit. `kind` is a plain string on the wire,
+      // so anything a newer backend adds without a side still sits on the spine rather than
+      // breaking the layout.
+      const side = sideOf(n);
+      if (!side) return c.center;
+      return side === "income" ? c.income - 1 - n.level : c.expenseBase + n.level;
+    }
   }
 }
 
@@ -225,16 +251,28 @@ function outwardOrder(live: Placed[], links: Link[], cols: Cols): Map<string, nu
     const s = byId.get(l.source);
     const t = byId.get(l.target);
     if (!s || !t || s.kind === "gross") continue;
-    // Which end is the child is "which end is further from the hub", and for a waypoint that
-    // is the side its chain is travelling on rather than its own kind.
-    const towardHub = (n: Placed) =>
-      n.kind === "income" || (n.kind === "via" && n.via!.side === "income");
-    const [child, parent] = towardHub(s) ? [s, t] : [t, s];
+    // Which end is the child is "which end is further from the hub", which `sideOf` answers for
+    // every kind — including a waypoint, whose own kind says nothing and whose chain's direction
+    // says everything, and the deficit, whose link points *at* the hub: without this it would
+    // read as the hub's parent, which is the same fault the `gross` skip above guards against.
+    const [child, parent] = sideOf(s) === "income" ? [s, t] : [t, s];
     kids.set(parent.id, [...(kids.get(parent.id) ?? []), child.id]);
     inward.set(child.id, l.value);
   }
+  // Within a sibling group the order is free (see the note above), so it ranks by value —
+  // except that the hub's own children are two different things. Categories are money earned and
+  // spent; a crossing is money that left the household's cash for an account, and interleaving
+  // the two by size reads a mortgage repayment as a spending category. Crossings sink to the
+  // bottom of the fan as one band, the payslip layer's mirror image at the top. The surplus and
+  // the deficit stay in the size order they have always had.
+  const bandOf = (id: string) => (byId.get(id)!.kind === "crossing" ? 1 : 0);
   for (const list of kids.values()) {
-    list.sort((a, b) => (inward.get(b) ?? 0) - (inward.get(a) ?? 0) || (a < b ? -1 : 1));
+    list.sort(
+      (a, b) =>
+        bandOf(a) - bandOf(b) ||
+        (inward.get(b) ?? 0) - (inward.get(a) ?? 0) ||
+        (a < b ? -1 : 1),
+    );
   }
 
   const inColumn = new Map<number, string[]>();
@@ -290,7 +328,7 @@ function outwardOrder(live: Placed[], links: Link[], cols: Cols): Map<string, nu
   /** `dest:<account>` → the rank of the `ded:*` it hangs off, for the ordering above. */
   const destParentRank = new Map<string, number>();
   for (const l of links) {
-    if (byId.get(l.source)?.kind === "deduction" && byId.get(l.target)?.kind === "destination") {
+    if (byId.get(l.source)?.kind === "deduction" && byId.get(l.target)?.kind === "account") {
       destParentRank.set(l.target, deductionRank.get(l.source) ?? 0);
     }
   }
@@ -332,7 +370,7 @@ function outwardOrder(live: Placed[], links: Link[], cols: Cols): Map<string, nu
     // dropped through the middle of the income fan to reach a sink at the bottom.
     take(
       here
-        .filter((id) => byId.get(id)!.kind === "destination")
+        .filter((id) => byId.get(id)!.kind === "account")
         .sort(
           (a, b) =>
             (destParentRank.get(a) ?? Infinity) - (destParentRank.get(b) ?? Infinity) ||
@@ -370,6 +408,36 @@ function nodePadding(count: number, available: number): number {
 /** Room a two-line label needs before a column is worth drawing at all. */
 const MIN_PITCH = 104;
 export const isCatKind = (kind: string) => kind === "income" || kind === "expense";
+
+/**
+ * Which half of the graph a node is drawn in — and therefore which way "toward the hub" points,
+ * which is the question {@link columnOf}, {@link outwardOrder} and {@link foldHairlines} were
+ * each answering from `kind` on their own.
+ *
+ * The wire now states a side for every node that has one, because a crossing broke the old
+ * inference: a mortgage repayment is an outflow and a loan drawdown an inflow, and both are
+ * `crossing`. The table below wins over it for exactly two kinds. The surplus and the deficit
+ * carry no side — neither is income or spending, each *is* the difference between them — but
+ * each has a half it must be drawn in: the surplus is a sink one column right of the hub, the
+ * deficit a source one column left. Reusing one for the other sends a ribbon backwards through
+ * the hub, which `routeSpans` would wave through and d3 would draw looping behind it.
+ *
+ * The `kind` fallback beneath that is for a server older than `side`, and for the layout tests,
+ * which write kinds and nothing else.
+ */
+const SIDE_BY_KIND: Record<string, "income" | "expense"> = {
+  income: "income",
+  expense: "expense",
+  savings: "expense",
+  deficit: "income",
+};
+export const sideOf = (n: Pick<Placed, "kind" | "side" | "via">): "income" | "expense" | null => {
+  if (n.kind === "via") return n.via?.side ?? null;
+  // `SIDE_BY_KIND` first, then the wire's own word — narrowed rather than trusted, because
+  // `side` is a plain string there and an unrecognised one has to land on the spine like an
+  // unrecognised `kind` does, not be asserted into a column.
+  return SIDE_BY_KIND[n.kind] ?? SIDE_BY_KIND[n.side ?? ""] ?? null;
+};
 export const pitchOf = (cols: Cols, width: number) =>
   cols.total > 1 ? (width - 2 * MARGIN_X - NODE_W) / (cols.total - 1) : Infinity;
 
@@ -383,8 +451,14 @@ export const pitchOf = (cols: Cols, width: number) =>
  * view, being far wider, keeps all of them.
  */
 function fitToWidth(all: Placed[], links: Link[], width: number): Placed[] {
-  const keep = (cap: number) => all.filter((n) => !isCatKind(n.kind) || n.level <= cap);
-  let cap = all.reduce((m, n) => (isCatKind(n.kind) ? Math.max(m, n.level) : m), 0);
+  // Keyed on *having a side*, which is exactly the set `columnOf` places by `(side, level)`.
+  // The trimmable set and the side-placed set have to be the same set: if they diverge, a node
+  // survives a cap that `columnsOf` has already shrunk the side past, `columnOf` returns a
+  // column nobody allocated, and d3 silently clamps two columns into one — the invisible failure
+  // this module's `routeSpans` comment was written about. A depth-0 node (a crossing, the
+  // surplus, the deficit) is never trimmed, since `cap >= 0`.
+  const keep = (cap: number) => all.filter((n) => sideOf(n) === null || n.level <= cap);
+  let cap = all.reduce((m, n) => (sideOf(n) === null ? m : Math.max(m, n.level)), 0);
   while (cap > 0 && pitchOf(columnsOf(keep(cap), links), width) < MIN_PITCH) cap--;
   return keep(cap);
 }
@@ -432,11 +506,13 @@ function foldHairlines(nodes: Placed[], links: Link[], available: number): {
     // backwards as the category's hub-ward edge (clobbering its real value), and ACC
     // vanishing into "Other (2)" is exactly what an itemised layer must not do.
     if (s.kind === "gross" || t.kind === "deduction") continue;
-    // Which end is the child is "which end is further from the hub", and for a waypoint that
-    // is the side its chain is travelling on rather than its own kind.
-    const towardHub = (n: Placed) =>
-      n.kind === "income" || (n.kind === "via" && n.via!.side === "income");
-    const [child, parent] = towardHub(s) ? [s, t] : [t, s];
+    // Which end is the child is "which end is further from the hub", which `sideOf` answers for
+    // every kind — including a waypoint, whose own kind says nothing and whose chain's direction
+    // says everything.
+    const [child, parent] = sideOf(s) === "income" ? [s, t] : [t, s];
+    // Only categories fold. A crossing carries an account and a click target, and an itemised
+    // perimeter that collapses into "Other (3)" is worse than not drawing it — the same argument
+    // the ACC note above makes for the deduction sinks.
     if (!isCatKind(child.kind)) continue;
     inward.set(child.id, { parent: parent.id, value: l.value });
     const key = groupKey(child.kind, parent.id);
@@ -446,14 +522,23 @@ function foldHairlines(nodes: Placed[], links: Link[], available: number): {
     ...(siblings.get(groupKey("income", id)) ?? []),
     ...(siblings.get(groupKey("expense", id)) ?? []),
   ];
-  const sideTotal = { income: 0, expense: 0 };
-  for (const [id, { parent, value }] of inward) {
-    if (parent === "center") sideTotal[byId.get(id)!.kind as "income" | "expense"] += value;
+  // The tallest column, which sets the scale for every other one — measured off the hub's own
+  // links rather than off the folding candidates.
+  //
+  // `inward` holds only categories, and a crossing, the surplus and the deficit all share a
+  // column with the top-level categories while being unfoldable. Counting only what *can* fold
+  // therefore reads every slice as taller than it lands and folds too little, so the hairline
+  // stack this function exists to remove comes back — on a household whose expense side is half
+  // mortgage, badly. Both sides of the hub sum to the same figure by construction: whichever way
+  // the month came out, the difference is the surplus or the deficit, and that sits in a column
+  // too.
+  let hubIn = 0;
+  let hubOut = 0;
+  for (const l of links) {
+    if (l.target === "center") hubIn += l.value;
+    if (l.source === "center") hubOut += l.value;
   }
-  // The tallest column, which sets the scale for every other one. Whichever side is
-  // larger is it: when income exceeds expense the shortfall reappears as `savings` in the
-  // expense roots' own column, so both columns sum to the same figure.
-  const scale = Math.max(sideTotal.income, sideTotal.expense);
+  const scale = Math.max(hubIn, hubOut);
   const floor = (scale * MIN_VISIBLE_PX) / Math.max(available, 1);
 
   const drop = new Set<string>();
@@ -482,6 +567,10 @@ function foldHairlines(nodes: Placed[], links: Link[], available: number): {
       category_id: null,
       root_id: null,
       root_color: null,
+      // Redundant with `kind` for a category, which `SIDE_BY_KIND` already answers — written
+      // anyway so the literal is honest against the interface rather than relying on a fallback.
+      side,
+      account_id: null,
       aggregate: true,
     });
     extraLinks.push(

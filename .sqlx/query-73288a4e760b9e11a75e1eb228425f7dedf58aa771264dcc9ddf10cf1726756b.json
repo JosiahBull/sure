@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name, description, expression, set_category_id,\n                  set_one_off AS \"set_one_off: bool\",\n                  overwrite_manual AS \"overwrite_manual!: bool\",\n                  stop_on_match AS \"stop_on_match!: bool\", priority, enabled AS \"enabled!: bool\",\n                  set_merchant_id, created_at, updated_at\n             FROM rules ORDER BY id",
+  "query": "UPDATE rules SET name=?2, description=?3, expression=?4, set_category_id=?5,\n              set_one_off=?6, overwrite_manual=?7, stop_on_match=?8, priority=?9, enabled=?10,\n              set_merchant_id=?11, set_counterparty_account_id=?12,\n              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           WHERE id=?1\n           RETURNING id AS \"id!\", name, description, expression,\n                     set_category_id AS \"set_category_id?\",\n                     set_one_off AS \"set_one_off: bool\", set_merchant_id AS \"set_merchant_id?\",\n                     set_counterparty_account_id AS \"set_counterparty_account_id?\",\n                     overwrite_manual AS \"overwrite_manual!: bool\",\n                     stop_on_match AS \"stop_on_match!: bool\", priority,\n                     enabled AS \"enabled!: bool\", created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -48,7 +48,7 @@
         }
       },
       {
-        "name": "set_category_id",
+        "name": "set_category_id?",
         "ordinal": 4,
         "type_info": "Integer",
         "origin": {
@@ -70,8 +70,30 @@
         }
       },
       {
-        "name": "overwrite_manual!: bool",
+        "name": "set_merchant_id?",
         "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_merchant_id"
+          }
+        }
+      },
+      {
+        "name": "set_counterparty_account_id?",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_counterparty_account_id"
+          }
+        }
+      },
+      {
+        "name": "overwrite_manual!: bool",
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +104,7 @@
       },
       {
         "name": "stop_on_match!: bool",
-        "ordinal": 7,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -93,7 +115,7 @@
       },
       {
         "name": "priority",
-        "ordinal": 8,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -104,7 +126,7 @@
       },
       {
         "name": "enabled!: bool",
-        "ordinal": 9,
+        "ordinal": 11,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -114,19 +136,8 @@
         }
       },
       {
-        "name": "set_merchant_id",
-        "ordinal": 10,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "rules",
-            "name": "set_merchant_id"
-          }
-        }
-      },
-      {
         "name": "created_at",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,7 +148,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -148,23 +159,24 @@
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 12
     },
     "nullable": [
       false,
       false,
       true,
       false,
-      true,
-      true,
-      false,
-      false,
-      false,
       false,
       true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
       false,
       false
     ]
   },
-  "hash": "bb7f0b07e5ea68bc9bf60a1cbb5d690b2e9dc9823f41db87543bcc12087d5417"
+  "hash": "73288a4e760b9e11a75e1eb228425f7dedf58aa771264dcc9ddf10cf1726756b"
 }

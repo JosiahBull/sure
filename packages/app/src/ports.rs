@@ -562,6 +562,18 @@ pub struct SpendTransaction {
     pub account_id: i64,
     pub account_name: String,
     pub account_kind: AccountKind,
+    /// The account on the other side, with its kind and name — already resolved from the row's
+    /// own `counterparty_account_id`, falling back to the account of the transaction it is
+    /// linked to.
+    ///
+    /// The cash basis needs all three. The *kind* decides whether this is internal movement
+    /// (both sides inside the cash perimeter, nets to zero) or a crossing of it; the *name* is
+    /// what a crossing is labelled with, because both legs carry whatever category the feed's
+    /// transfer rule gave them and "Transfer" does not say a mortgage from a flatmate. `None`
+    /// when the row names no counterparty.
+    pub counterparty_account_id: Option<i64>,
+    pub counterparty_account_kind: Option<AccountKind>,
+    pub counterparty_account_name: Option<String>,
     pub merchant_id: Option<i64>,
     /// The merchant record's name, or — where the row has no merchant record — whatever
     /// payee text the feed wrote. Already coalesced, so a caller grouping by payee sees one
@@ -589,6 +601,9 @@ pub struct TxCtx {
     pub categorized_by_rule_id: Option<i64>,
     pub account_name: String,
     pub account_kind: AccountKind,
+    /// The account on the other side, where one is already recorded — a rule can read it as
+    /// well as set it, so "tag this only if it isn't tagged yet" is expressible.
+    pub counterparty_account_id: Option<i64>,
 }
 
 /// One decided change from a rule evaluation, ready to be persisted.
@@ -604,6 +619,8 @@ pub struct PlannedApplication {
     pub new_one_off: bool,
     pub prev_merchant_id: Option<i64>,
     pub new_merchant_id: Option<i64>,
+    pub prev_counterparty_account_id: Option<i64>,
+    pub new_counterparty_account_id: Option<i64>,
 }
 
 /// A normalised transaction handed from a provider to be imported (dedupe on external id).

@@ -9,7 +9,7 @@ use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::{schemars, tool, tool_router};
 use serde::Deserialize;
 use sure_app::reports::{ReportQuery, SpendGroup};
-use sure_core::{GroupBy, Interval, Ownership};
+use sure_core::{FlowBasis, GroupBy, Interval, Ownership};
 
 use crate::convert::{Range, money_to_string, resolve_window, table};
 use crate::error::{ToolResult, invalid_params, to_mcp};
@@ -115,6 +115,35 @@ pub struct MoneyFlowParams {
     pub include_one_off: Option<bool>,
     #[serde(default)]
     pub attributed_to: Option<String>,
+    /// Which question to answer.
+    #[serde(default)]
+    pub basis: Option<BasisArg>,
+}
+
+/// The wire spelling of [`sure_core::FlowBasis`], so the tool's JSON schema offers the two
+/// legal values instead of a free-text field a model has to guess at.
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum BasisArg {
+    /// Every movement of the household's liquid money, a mortgage principal repayment and a
+    /// loan drawdown included. The default: "where did the money actually go".
+    #[default]
+    Cash,
+    /// Only what left the household better or worse off: a principal repayment, a drawdown and
+    /// an asset sale all drop out, while the interest beside them stays.
+    NetWorth,
+    /// Income and consumption alone, with every transfer excluded.
+    Spending,
+}
+
+impl From<BasisArg> for FlowBasis {
+    fn from(b: BasisArg) -> Self {
+        match b {
+            BasisArg::Cash => FlowBasis::Cash,
+            BasisArg::NetWorth => FlowBasis::NetWorth,
+            BasisArg::Spending => FlowBasis::Spending,
+        }
+    }
 }
 
 #[tool_router(router = reports_router, vis = "pub")]
@@ -294,15 +323,15 @@ impl SureMcp {
     #[tool(
         name = "money_flow",
         description = "The money-flow graph for a window: income sources into the household, \
-                       and out again into expense categories and savings. Returns one line \
-                       per flow.",
+                       and out again into expense categories, savings, and the accounts cash \
+                       crossed to — a mortgage, a loan, a brokerage. Returns one line per flow.",
         annotations(read_only_hint = true, idempotent_hint = true)
     )]
     pub async fn money_flow(
         &self,
         Parameters(params): Parameters<MoneyFlowParams>,
     ) -> ToolResult<CallToolResult> {
-        let query = self.report_query(
+        let mut query = self.report_query(
             params.range,
             params.from,
             params.to,
@@ -310,6 +339,7 @@ impl SureMcp {
             params.include_one_off,
             params.attributed_to,
         )?;
+        query.basis = Some(params.basis.unwrap_or_default().into());
         let graph = self.state.reports.sankey(&query).await.map_err(to_mcp)?;
         let decimals = self.currency_decimals().await?;
         let scale = Self::scale_of(&decimals, &graph.currency);
@@ -334,6 +364,7 @@ impl SureMcp {
             .collect();
         let mut out = format!("Money flow in {}.\n", graph.currency);
         out.push_str(&table(&["from", "to", "amount"], &rows));
+        out.push_str(&unconverted_note(&graph.unconverted, &graph.currency));
         Ok(CallToolResult::success(vec![ContentBlock::text(out)]))
     }
 }
@@ -357,6 +388,9 @@ impl SureMcp {
             include_one_off,
             currency,
             attributed_to: parse_attribution(attributed_to.as_deref())?,
+            // Only `money_flow` reads it, and it sets its own; the two spending tools are a
+            // spending view by definition.
+            basis: None,
         })
     }
 }

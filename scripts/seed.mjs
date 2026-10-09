@@ -98,6 +98,9 @@ async function main() {
   // than banishing to the far column with everyone else's leaves.
   const transport = (await cat("Transport", "expense")).id;
   const bankFees = (await cat("Bank fees", "expense")).id;
+  // What a mortgage actually costs, as an expense in its own right — the bank charges it to the
+  // everyday account the payment is drawn from, separately from the principal.
+  const loanInterest = (await cat("Loan interest", "expense")).id;
   // "Transfer", the one spelling both provider adapters now emit — see sharesies.rs. A seeded tree
   // that disagrees with them would make the e2e fixtures and the visual baselines describe a
   // category shape no real import produces.
@@ -290,6 +293,33 @@ async function main() {
     if (m === 3) await txOneOff(card, monthsAgo(m, 18), -145_000, "Dishwasher");
   }
 
+  // The mortgage, posted the way a bank actually posts one: interest charged to the everyday
+  // account as its own expense row, and the principal moved across into the loan. Two rows per
+  // payment, which is what lets the cash basis draw "$1,690 to the mortgage, $1,411 of it
+  // interest" without deriving anything — and what the money-flow chart showed none of before a
+  // basis existed, because the principal is a linked transfer and the loan is not a cash account.
+  for (let m = 6; m >= 0; m--) {
+    // A $585,000 loan at 6.49% early in its term: most of the payment is interest, and the
+    // principal share creeps up a little each month.
+    const principal = 27_900 + (6 - m) * 150;
+    await tx(everyday, monthsAgo(m, 4), -(169_000 - principal), "ANZ HOME LOAN INTEREST", loanInterest);
+    const { id: out } = await post("/api/transactions", {
+      account_id: everyday,
+      posted_at: monthsAgo(m, 4),
+      amount_minor: -principal,
+      description: "ANZ HOME LOAN PRINCIPAL",
+      category_id: transfers,
+    });
+    const { id: into } = await post("/api/transactions", {
+      account_id: loan,
+      posted_at: monthsAgo(m, 4),
+      amount_minor: principal,
+      description: "Principal payment",
+      category_id: transfers,
+    });
+    await post(`/api/transactions/${out}/link`, { linked_transaction_id: into });
+  }
+
   // A transfer between everyday and savings.
   await post("/api/transfers", {
     from_account_id: everyday,
@@ -333,6 +363,23 @@ async function main() {
   });
   await post(`/api/rules/${merchantRule.id}/run`, {});
 
+  // A rule that says where the money *went*, which is the only kind of attribution a bank feed
+  // cannot supply on its own. A loan's interest is charged to the account the payment is drawn
+  // from rather than to the loan, so the row that is the entire cost of a mortgage has no
+  // counterpart anywhere to link it to — and it recurs every fortnight forever, which is what
+  // makes this a standing rule instead of something re-tagged by hand. With it, the money-flow
+  // chart can say "$1,690 to the mortgage, $1,403.50 of it interest".
+  const loanRule = await post("/api/rules", {
+    name: "Home loan interest → Home Loan",
+    expression: "contains(lower(description), 'home loan interest')",
+    set_counterparty_account_id: loan,
+    overwrite_manual: false,
+    stop_on_match: false,
+    priority: 2,
+    enabled: true,
+  });
+  await post(`/api/rules/${loanRule.id}/run`, {});
+
   // A rule recognising internal bank transfers by their statement wording, then run it.
   const transferRule = await post("/api/rules", {
     name: "Internal bank transfers → Transfer",
@@ -340,7 +387,7 @@ async function main() {
     set_category_id: transfers,
     overwrite_manual: false,
     stop_on_match: false,
-    priority: 2,
+    priority: 3,
     enabled: true,
   });
   await post(`/api/rules/${transferRule.id}/run`, {});
@@ -352,7 +399,7 @@ async function main() {
     set_category_id: interest,
     overwrite_manual: false,
     stop_on_match: false,
-    priority: 3,
+    priority: 4,
     enabled: true,
   });
   await post(`/api/rules/${interestRule.id}/run`, {});
@@ -364,7 +411,7 @@ async function main() {
     set_category_id: transport,
     overwrite_manual: false,
     stop_on_match: false,
-    priority: 4,
+    priority: 5,
     enabled: true,
   });
   await post(`/api/rules/${parkingRule.id}/run`, {});
@@ -375,7 +422,7 @@ async function main() {
     set_category_id: fun,
     overwrite_manual: false,
     stop_on_match: false,
-    priority: 5,
+    priority: 6,
     enabled: true,
   });
   await post(`/api/rules/${subscriptionRule.id}/run`, {});
@@ -387,7 +434,7 @@ async function main() {
     set_category_id: bankFees,
     overwrite_manual: false,
     stop_on_match: false,
-    priority: 6,
+    priority: 7,
     enabled: true,
   });
   await post(`/api/rules/${fxFeeRule.id}/run`, {});
