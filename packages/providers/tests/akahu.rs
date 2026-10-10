@@ -678,7 +678,7 @@ async fn a_second_page_is_fetched_with_the_cursor_the_first_page_returned() {
 /// The expected timestamps are written out rather than computed from the adapter's own `OVERLAP`,
 /// which would make this test agree with any window at all.
 #[tokio::test]
-async fn an_incremental_sync_asks_from_three_days_before_the_last_one() {
+async fn an_incremental_sync_asks_from_thirty_days_before_the_last_one() {
     let fixture = Fixture::configured().await;
     for _ in 0..3 {
         fixture.stub_once(&transactions_path(), empty_page()).await;
@@ -702,7 +702,7 @@ async fn an_incremental_sync_asks_from_three_days_before_the_last_one() {
     // like: the window is UTC, so the offset has to be applied before the subtraction.
     sync_from(&fixture, &config, Some("2026-03-02T08:15:30+13:00")).await;
     // Never synced. The whole history is wanted, so there is no `start` at all — a
-    // "three days before now" fallback would import three days and then advance the watermark
+    // "thirty days before now" fallback would import thirty days and then advance the watermark
     // past everything older.
     sync_from(&fixture, &config, None).await;
 
@@ -710,11 +710,11 @@ async fn an_incremental_sync_asks_from_three_days_before_the_last_one() {
     assert_eq!(requests.len(), 3);
     assert_eq!(
         query_param(&requests[0].uri, "start").as_deref(),
-        Some("2026-01-07T00:00:00.000Z"),
+        Some("2025-12-11T00:00:00.000Z"),
     );
     assert_eq!(
         query_param(&requests[1].uri, "start").as_deref(),
-        Some("2026-02-26T19:15:30.000Z"),
+        Some("2026-01-30T19:15:30.000Z"),
     );
     assert_eq!(
         query_param(&requests[2].uri, "start"),
@@ -1318,5 +1318,44 @@ async fn the_snapshot_boundary_strips_both_credentials_from_what_a_recording_wou
     assert_eq!(header(request, "authorization"), None);
     assert_eq!(header(request, "accept"), Some("application/json"));
 
+    fixture.stop().await;
+}
+
+/// A charge can first settle after the old three-day window has already passed its
+/// posting date. Returning it from a stub is not enough: the actual request must cover
+/// that date, otherwise Akahu would never include it in its answer.
+#[tokio::test]
+async fn an_incremental_sync_covers_a_card_charge_settling_more_than_three_days_late() {
+    let fixture = Fixture::configured().await;
+    let delayed = txn(
+        "trans_delayed01",
+        "2026-01-06T12:00:00.000Z",
+        "Delayed card charge",
+        "-12.34",
+        "EFTPOS",
+    )
+    .replace("2026-01-07T02:00:00.000Z", "2026-01-09T18:30:00.000Z");
+    fixture
+        .stub_once(
+            &transactions_path(),
+            format!(r#"{{"success":true,"items":[{delayed}],"cursor":{{"next":null}}}}"#),
+        )
+        .await;
+    let config = config(ACCOUNT_ID);
+    let rows = fixture
+        .provider
+        .fetch(ctx(&config, Some("2026-01-09T13:50:00Z")))
+        .await
+        .expect("a delayed settlement is fetched");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].amount_minor, -1234);
+    let requests = fixture.requests().await;
+    let start = query_param(&requests[0].uri, "start").expect("incremental window");
+    let start = chrono::DateTime::parse_from_rfc3339(&start).unwrap();
+    let posting = chrono::DateTime::parse_from_rfc3339(&rows[0].posted_at).unwrap();
+    assert!(
+        start < posting,
+        "the requested window must include the late charge"
+    );
     fixture.stop().await;
 }

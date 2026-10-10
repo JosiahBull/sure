@@ -34,9 +34,12 @@ use crate::http::{Endpoint, Pacing, Throttle};
 /// The real API. `pub` because the composition root owns the decision of where this provider
 /// points (it is the only place configuration is read) and needs a default to fall back to.
 pub const DEFAULT_BASE_URL: &str = "https://api.akahu.io/v1";
-/// Re-fetch a small window before the last successful sync, since a transaction's
-/// settlement date can shift slightly as NZ bank data trickles in.
-const OVERLAP: chrono::Duration = chrono::Duration::days(3);
+/// Re-fetch a month before the last successful sync. Akahu filters on the posting date,
+/// not when it learned about the transaction: a card charge can first appear more than
+/// three days after that date, and banks can amend their records weeks later. A three-day
+/// window permanently missed those delayed settlements while reporting successful polls.
+/// Existing rows are deduped by upstream id; pacing and sweep limits still apply.
+const OVERLAP: chrono::Duration = chrono::Duration::days(30);
 /// Defensive cap on pagination so a cursor bug can't spin forever; 100 txns/page per the API,
 /// so this bounds one sweep at 10,000 transactions — several years of a busy household
 /// account, and about two orders of magnitude more than an incremental poll fetches.
@@ -289,7 +292,7 @@ impl AkahuProvider {
                 // again, where the time budget only fails while the upstream is unwell. Keep
                 // the 10,000 transactions we have (and say so loudly) — the gap it can leave
                 // is only reachable on a first/backfill sync, since an incremental one asks
-                // for three days.
+                // for thirty days.
                 SweepStep::OutOfPages => {
                     record_sweep_limited("pages");
                     tracing::warn!(
@@ -325,7 +328,7 @@ impl AkahuProvider {
         }
         // Every exit from the loop above passes through here except `OutOfTime`, which bails.
         // A rising distribution is the signal that an incremental sweep is no longer
-        // incremental — three days of transactions should be one page.
+        // incremental — a month of transactions should be a handful of pages.
         sure_telemetry::instruments().provider_sweep_pages.record(
             pages as u64,
             &[sure_telemetry::KeyValue::new("provider", "akahu")],
