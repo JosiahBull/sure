@@ -27,11 +27,11 @@ import { createAccount } from "../helpers";
 // cannot see `sure_app::sync` writing a timestamp the adapter's `parse_from_rfc3339(..).ok()`
 // then drops on the floor — which would re-sweep the account's whole history on every six-hourly
 // poll, forever, with no error anywhere and no symptom but a slow sync. The re-sync test below
-// asserts the window is there. Its three-day *width* is not readable from TypeScript:
+// asserts the window is there. Its thirty-day *width* is not readable from TypeScript:
 // `sure_testproxy::start` installs `CanonicaliseQuery` and `partly-proxy-lib` hands the recorder
 // the request after every middleware's `redact_request_for_snapshot`, so the recorded `?start=`
-// reads `CANONICAL`. `akahu.rs`'s `an_incremental_sync_asks_from_three_days_before_the_last_one`
-// is where the three days are pinned, against a middleware-free cluster.
+// reads `CANONICAL`. `akahu.rs`'s `an_incremental_sync_asks_from_thirty_days_before_the_last_one`
+// is where the thirty days are pinned, against a middleware-free cluster.
 
 /**
  * The linked Akahu account every fixture below belongs to.
@@ -337,7 +337,7 @@ test("akahu sync imports, then dedupes the overlap it deliberately re-fetches", 
     expect(askedFrom(sweeps[0]!.request.uri), "a first sync asks for everything").toBeNull();
     // Present, not compared: `CanonicaliseQuery` has already rewritten the value to `CANONICAL` by
     // the time the recorder sees it (see the file comment). When that stops being true, this is
-    // the assertion to tighten to `last_synced_at` minus three days.
+    // the assertion to tighten to `last_synced_at` minus thirty days.
     expect(
       askedFrom(sweeps[1]!.request.uri),
       "the re-sync dropped the watermark and re-swept all history",
