@@ -6,7 +6,7 @@
    */
   export type SankeyTarget =
     | { t: "category"; categoryId: number | null; kind: "income" | "expense" }
-    | { t: "account"; accountId: number };
+    | { t: "account"; accountId: number; kind: "income" | "expense" };
 </script>
 
 <script lang="ts">
@@ -177,7 +177,7 @@
   const emit = (n: any) =>
     onselect?.(
       n.kind === "crossing"
-        ? { t: "account", accountId: n.account_id }
+        ? { t: "account", accountId: n.account_id, kind: n.side as "income" | "expense" }
         : { t: "category", categoryId: n.category_id ?? null, kind: n.kind as "income" | "expense" },
     );
 

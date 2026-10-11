@@ -155,6 +155,11 @@ pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
         "SELECT t.* FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE 1=1",
     );
+    if let Some(ids) = q.ids {
+        qb.push(" AND t.id IN (SELECT value FROM json_each(")
+            .push_bind(sqlx::types::Json(ids))
+            .push("))");
+    }
     if let Some(account_id) = q.account_id {
         qb.push(" AND t.account_id = ").push_bind(account_id);
     }

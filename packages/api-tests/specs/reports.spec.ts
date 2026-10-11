@@ -570,3 +570,55 @@ test("a student loan can send and receive cash without duplicate graph nodes", a
   expect(g.links).toContainEqual({ source: "center", target: `acct:${loan.id}:expense`, value_minor: 25_000 });
   expect(g.months).toEqual([{ month: "2026-01", inflow_minor: 40_000, outflow_minor: 25_000 }]);
 });
+
+test("cashflow drilldowns exclude internal transfers before pagination", async ({ api }) => {
+  const bank = await createAccount(api, "Everyday", "bank");
+  const revolving = await createAccount(api, "Revolving", "revolving_credit");
+  const transfer = await createCategory(api, "Transfer", "transfer");
+  const purchase = await createTransaction(api, {
+    account_id: bank.id, posted_at: "2026-01-05", amount_minor: -2500,
+    description: "Farm purchase", category_id: transfer.id,
+  });
+  const internal = await api.POST("/api/transfers", { body: {
+    from_account_id: bank.id, to_account_id: revolving.id,
+    posted_at: "2026-01-10", from_amount_minor: 10000,
+    description: "Internal movement", category_id: transfer.id,
+  } });
+  expect(internal.response.status).toBe(201);
+  const mortgage = await createAccount(api, "Mortgage", "mortgage");
+  const crossing = await api.POST("/api/transfers", { body: {
+    from_account_id: bank.id, to_account_id: mortgage.id,
+    posted_at: "2026-01-15", from_amount_minor: 30000,
+    description: "Mortgage principal", category_id: transfer.id,
+  } });
+  expect(crossing.response.status).toBe(201);
+  const listed = await api.GET("/api/transactions", { params: { query: {
+    ...SANKEY_WINDOW, cashflow_categories_only: true, category_id: transfer.id, limit: 1,
+  } } });
+  expect(listed.response.status).toBe(200);
+  expect(listed.data?.map((t) => t.id)).toEqual([purchase.id]);
+});
+
+test("a mortgage drilldown shows outgoing cash rather than the mortgage ledger", async ({ api }) => {
+  const bank = await createAccount(api, "Everyday", "bank");
+  const mortgage = await createAccount(api, "Mortgage", "mortgage");
+  const principal = await createTransaction(api, {
+    account_id: bank.id, posted_at: "2026-01-05", amount_minor: -30000,
+  });
+  const ledger = await createTransaction(api, {
+    account_id: mortgage.id, posted_at: "2026-01-05", amount_minor: 30000,
+  });
+  await api.POST("/api/transactions/{id}/link", {
+    params: { path: { id: principal.id } }, body: { linked_transaction_id: ledger.id },
+  });
+  const interest = await createTransaction(api, {
+    account_id: bank.id, posted_at: "2026-01-05", amount_minor: -20000,
+    counterparty_account_id: mortgage.id,
+  });
+  const listed = await api.GET("/api/transactions", { params: { query: {
+    ...SANKEY_WINDOW, cashflow_account_id: mortgage.id,
+  } } });
+  expect(listed.response.status).toBe(200);
+  expect(listed.data?.map((t) => t.id).sort()).toEqual([principal.id, interest.id].sort());
+  expect(listed.data?.reduce((sum, t) => sum + t.amount_minor, 0)).toBe(-50000);
+});

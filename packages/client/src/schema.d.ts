@@ -4369,6 +4369,10 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
+                    /** @description Only cashflow category transactions; excludes internal transfers and account crossings. */
+                    cashflow_categories_only?: boolean;
+                    /** @description Cashflow across the perimeter to/from this account, excluding its bookkeeping. */
+                    cashflow_account_id?: number;
                     account_id?: number;
                     category_id?: number;
                     /** @description Inclusive lower bound on the transaction date (ISO-8601). */

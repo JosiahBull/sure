@@ -1737,6 +1737,29 @@ impl ReportService {
         })
     }
 
+    /// The transactions represented by cashflow categories, or by one account crossing.
+    /// Reuse the graph's loader and currency filter so
+    /// its drilldowns cannot include internal transfers or instrument bookkeeping.
+    pub async fn cashflow_transaction_ids(
+        &self,
+        q: &ReportQuery,
+        counterparty_account_id: Option<i64>,
+    ) -> AppResult<Vec<i64>> {
+        let inputs = self.sankey_inputs(q).await?;
+        Ok(inputs
+            .spend
+            .iter()
+            .filter(|t| {
+                t.counterparty_account_id == counterparty_account_id
+                    && inputs
+                        .fx
+                        .try_to_base_major(t.amount_minor, &t.currency_code)
+                        .is_some()
+            })
+            .map(|t| t.id)
+            .collect())
+    }
+
     /// The synchronous half of [`Self::sankey`]: build both roll-up forests from the window's
     /// transactions, then walk them into nodes and links.
     ///

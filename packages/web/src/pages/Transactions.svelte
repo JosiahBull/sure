@@ -29,6 +29,7 @@
   //   ?range=<key>    apply a preset time range
   //   ?at=<id>        resume the scroll position around a transaction (written as the list scrolls)
   const params = new URLSearchParams(router.path.split("?")[1] ?? "");
+  if (params.get("cashflow") === "1" || params.has("cashflow_account")) filters.includeOneOff = true;
   const num = (v: string | null) => (v && Number.isFinite(Number(v)) ? Number(v) : null);
   const isRangeKey = (v: string | null): v is RangeKey => !!v && RANGES.some((r) => r.key === v);
   type TypeFilter = "" | "income" | "expense";
@@ -77,6 +78,8 @@
   let error = $state<string | null>(null);
 
   let accountId = $state<number | "">(paramAccount ?? "");
+  let cashflowOnly = $state(params.get("cashflow") === "1");
+  let cashflowAccountId = $state<number | "">(num(params.get("cashflow_account")) ?? "");
   // Three states: "" is every category, "none" is only the rows that have no category at all
   // (the ones the list shows as "Uncategorised"), and an id is that category and its subtree.
   // "none" is a filter no category id can express — a row's `category_id` is null, not a
@@ -388,6 +391,8 @@
   // exactly this reason). Kept in sync on every relevant change below.
   function syncUrl() {
     const p = new URLSearchParams();
+    if (cashflowOnly) p.set("cashflow", "1");
+    if (cashflowAccountId !== "") p.set("cashflow_account", String(cashflowAccountId));
     if (categoryId !== "") p.set("category", String(categoryId));
     if (accountId !== "") p.set("account", String(accountId));
     if (typeFilter) p.set("type", typeFilter);
@@ -426,8 +431,11 @@
   // holds the last *navigated* value). Tracking `accountId` would make this effect re-run on
   // an in-page account change, read the stale URL, and put the old account straight back.
   $effect(() => {
-    const fromUrl = num(queryParams().get("account")) ?? "";
+    const query = queryParams();
+    const fromUrl = num(query.get("account")) ?? "";
     untrack(() => {
+      cashflowOnly = query.get("cashflow") === "1";
+      cashflowAccountId = num(query.get("cashflow_account")) ?? "";
       if (fromUrl === accountId) return;
       accountId = fromUrl;
       page = 1;
@@ -459,7 +467,7 @@
   $effect(() => {
     // Depend on the full filter/paging surface so the shareable URL tracks every change.
     page;
-    void [categoryId, accountId, typeFilter, filters.custom?.from, filters.custom?.to, search, activeTab, pageSize, sortKey, sortDir];
+    void [categoryId, accountId, cashflowOnly, cashflowAccountId, typeFilter, filters.custom?.from, filters.custom?.to, search, activeTab, pageSize, sortKey, sortDir];
     if (didInitPage) syncUrl();
   });
 
@@ -468,7 +476,7 @@
   // change here, so the current page survives it.)
   let prevFilterSig: string | null = null;
   $effect(() => {
-    const sig = `${accountId}|${categoryId}|${typeFilter}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}|${pageSize}`;
+    const sig = `${accountId}|${cashflowOnly}|${cashflowAccountId}|${categoryId}|${typeFilter}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}|${pageSize}`;
     if (prevFilterSig != null && sig !== prevFilterSig) {
       // The visible set changed, so a lingering selection could act on rows the user can
       // no longer see — clear it. (A same-filter reload, e.g. after a save, isn't a change.)
@@ -491,6 +499,13 @@
   type Chip = { key: string; icon?: keyof typeof ICONS; label: string; clear: () => void };
   const activeChips = $derived.by<Chip[]>(() => {
     const chips: Chip[] = [];
+    if (cashflowOnly)
+      chips.push({ key: "cashflow", label: "Cashflow only", clear: () => {
+        cashflowOnly = false;
+        cashflowAccountId = "";
+      } });
+    if (cashflowAccountId !== "")
+      chips.push({ key: "cashflow_account", label: `To/from ${accountName.get(cashflowAccountId) ?? "account"}`, clear: () => (cashflowAccountId = "") });
     if (filters.custom) {
       const { from, to } = filters.custom;
       chips.push({ key: "start", icon: "calendar", label: `on or after ${from}`, clear: () => (filters.custom = null) });
@@ -592,6 +607,8 @@
     error = null;
     const { from, to } = activeRange();
     const query: Record<string, unknown> = { from, to, include_one_off: filters.includeOneOff, limit: 2000 };
+    if (cashflowOnly && cashflowAccountId === "") query.cashflow_categories_only = true;
+    if (cashflowAccountId !== "") query.cashflow_account_id = cashflowAccountId;
     if (accountId !== "") query.account_id = accountId;
     // Category is filtered client-side (subtree-aware) in `sortedFiltered`, not on the server.
     const { data, error: e } = await api.GET("/api/transactions", { params: { query } });
@@ -606,6 +623,8 @@
   $effect(() => {
     // Category is filtered client-side, so it isn't a reload trigger.
     accountId;
+    cashflowOnly;
+    cashflowAccountId;
     filters.includeOneOff;
     filters.range;
     filters.custom;

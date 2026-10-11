@@ -22,6 +22,10 @@ pub use sure_core::{
 #[derive(Debug, Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
 pub struct TxQueryParams {
+    /// Only cashflow category transactions; excludes internal transfers and account crossings.
+    pub cashflow_categories_only: Option<bool>,
+    /// Cashflow across the perimeter to/from this account, excluding its bookkeeping.
+    pub cashflow_account_id: Option<i64>,
     pub account_id: Option<i64>,
     pub category_id: Option<i64>,
     /// Inclusive lower bound on the transaction date (ISO-8601).
@@ -47,6 +51,7 @@ impl TryFrom<TxQueryParams> for TxQuery {
 
     fn try_from(q: TxQueryParams) -> Result<Self, Self::Error> {
         Ok(TxQuery {
+            ids: None,
             attributed_to: q
                 .attributed_to
                 .as_deref()
@@ -93,7 +98,26 @@ pub async fn list(
     State(st): State<AppState>,
     Query(q): Query<TxQueryParams>,
 ) -> AppResult<Json<Vec<Transaction>>> {
-    Ok(Json(st.transactions.list(q.try_into()?).await?))
+    let cashflow = q.cashflow_categories_only.unwrap_or(false) || q.cashflow_account_id.is_some();
+    let counterparty = q.cashflow_account_id;
+    let mut query: TxQuery = q.try_into()?;
+    if cashflow {
+        query.ids = Some(
+            st.reports
+                .cashflow_transaction_ids(
+                    &sure_app::reports::ReportQuery {
+                        from: query.from.clone(),
+                        to: query.to.clone(),
+                        include_one_off: query.include_one_off,
+                        attributed_to: query.attributed_to,
+                        ..Default::default()
+                    },
+                    counterparty,
+                )
+                .await?,
+        );
+    }
+    Ok(Json(st.transactions.list(query).await?))
 }
 
 /// Fetch one transaction.

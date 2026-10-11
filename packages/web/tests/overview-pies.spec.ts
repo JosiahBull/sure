@@ -133,7 +133,7 @@ test.describe("money flow at desktop width", () => {
       .dispatchEvent("click");
 
     // Utilities, not its parent Housing — an intermediate node used to be unreachable.
-    await expect(page).toHaveURL(new RegExp(`#/transactions\\?category=${utilities.id}&type=expense`));
+    await expectTransactionsUrl(page, { category: String(utilities.id), type: "expense", cashflow: "1" });
     await expect(page.locator(".tx-row").first()).toBeVisible();
   });
 
@@ -254,4 +254,41 @@ test("the uncategorised slice and node open the transactions that have no catego
   } finally {
     expect((await page.request.delete(`/api/transactions/${txId}`)).ok(), "cleaned up").toBe(true);
   }
+});
+
+test("a Transfer category drilldown includes the purchase but excludes internal movement", async ({ page }) => {
+  const accounts = await (await page.request.get("/api/accounts")).json();
+  const bank = accounts.find((a: { kind: string }) => a.kind === "bank");
+  const savings = accounts.find((a: { kind: string }) => a.kind === "savings");
+  const category = await (await page.request.post("/api/categories", {
+    data: { name: "Test transfer bucket", kind: "transfer", parent_id: null },
+  })).json();
+  const transfer = await page.request.post("/api/transfers", { data: {
+    from_account_id: bank.id, to_account_id: savings.id, posted_at: "2026-03-10",
+    from_amount_minor: 1000000, description: "Test internal movement", category_id: category.id,
+  } });
+  expect(transfer.status()).toBe(201);
+  const purchase = await page.request.post("/api/transactions", { data: {
+    account_id: bank.id, posted_at: "2026-03-10", amount_minor: -1000000,
+    description: "Test farm purchase", category_id: category.id, is_one_off: true,
+  } });
+  expect(purchase.status()).toBe(201);
+  await goto(page, "/?range=last_12m");
+  await page.locator(`g.node[data-node-id="out:${category.id}"]`).dispatchEvent("click");
+  await expectTransactionsUrl(page, { cashflow: "1", category: String(category.id), type: "expense" });
+  await expect(page.locator(".tx-row")).toHaveCount(1);
+  await expect(page.locator(".tx-row")).toContainText("Test farm purchase");
+  await page.reload();
+  await expect(page.locator(".tx-row")).toHaveCount(1);
+  await expect(page.locator(".tx-row")).toContainText("Test farm purchase");
+});
+
+test("a mortgage node opens its outgoing cash payments", async ({ page }) => {
+  const accounts = await (await page.request.get("/api/accounts")).json();
+  const mortgage = accounts.find((a: { kind: string }) => a.kind === "mortgage");
+  await goto(page, "/");
+  await page.locator(`g.node[data-node-id="acct:${mortgage.id}:expense"]`).dispatchEvent("click");
+  await expectTransactionsUrl(page, { cashflow: "1", cashflow_account: String(mortgage.id), type: "expense" });
+  await expect(page.locator(".tx-row").first()).toBeVisible();
+  await expect(page.getByText(`To/from ${mortgage.name}`, { exact: true })).toBeVisible();
 });

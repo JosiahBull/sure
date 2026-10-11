@@ -168,6 +168,9 @@ pub struct SaveTransaction {
 #[derive(Debug, Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
 pub struct TxQuery {
+    /// Restrict to an application-selected set before pagination (report drilldowns).
+    #[serde(skip)]
+    pub ids: Option<Vec<i64>>,
     pub account_id: Option<i64>,
     pub category_id: Option<i64>,
     /// Inclusive lower bound on the transaction date (ISO-8601).

@@ -603,6 +603,7 @@ impl SureMcp {
             .state
             .transactions
             .list(TxQuery {
+                ids: None,
                 account_id: params.account_id,
                 category_id: None,
                 from,

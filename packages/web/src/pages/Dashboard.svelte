@@ -102,22 +102,25 @@
   function goToCategory(categoryId: number | null, kind?: "income" | "expense") {
     filters.includeOneOff = true;
     const p = new URLSearchParams(periodLinkParams());
+    p.set("cashflow", "1");
     p.set("category", categoryId == null ? "none" : String(categoryId));
     if (kind) p.set("type", kind);
     navigate(`/transactions?${p.toString()}`);
   }
 
   /** Keep the chart period when opening an account, including the default period. */
-  function goToAccountInPeriod(accountId: number) {
+  function goToAccountInPeriod(accountId: number, kind?: "income" | "expense") {
     filters.includeOneOff = true;
     const p = new URLSearchParams(periodLinkParams());
     if (!p.has("range") && !p.has("start")) p.set("range", filters.range);
-    p.set("account", String(accountId));
+    p.set("cashflow", "1");
+    p.set("cashflow_account", String(accountId));
+    if (kind) p.set("type", kind);
     navigate(`/transactions?${p.toString()}`);
   }
 
   const openFlow = (t: SankeyTarget) =>
-    t.t === "account" ? goToAccountInPeriod(t.accountId) : goToCategory(t.categoryId, t.kind);
+    t.t === "account" ? goToAccountInPeriod(t.accountId, t.kind) : goToCategory(t.categoryId, t.kind);
 </script>
 
 {#if error}
