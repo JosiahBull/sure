@@ -323,7 +323,7 @@ test("a hand-entered row does not set the cutover", async ({ api, server }) => {
       posted_at: "2021-01-01",
       amount_minor: -999,
       description: "Entered by hand",
-      is_one_off: false,
+      exclude_from_cashflow: false,
     },
   });
   expect(manual.response.status).toBe(201);
@@ -1184,8 +1184,8 @@ test("records the opening balance the export implies, by default", async ({ api,
   const opening = txns!.find((t) => t.description === "Opening balance")!;
   expect(opening.amount_minor).toBe(OPENING_MINOR);
   expect(opening.posted_at).toBe("2020-01-19T12:00:00+00:00");
-  // A one-off: counted towards balances, never towards income.
-  expect(opening.is_one_off).toBe(true);
+  // Excluded from cashflow: counted towards balances, never towards income.
+  expect(opening.exclude_from_cashflow).toBe(true);
   expect(opening.category_id).toBe(null);
   // Tagged like the rest, so the undo takes it too.
   expect(opening.provider).toBe(`asb#${acc.id}`);
@@ -1287,7 +1287,7 @@ test("an account with earlier history gets no opening balance, and is told why",
       posted_at: "2015-01-01",
       amount_minor: -999,
       description: "Ancient history",
-      is_one_off: false,
+      exclude_from_cashflow: false,
     },
   });
 

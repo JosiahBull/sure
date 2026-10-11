@@ -53,11 +53,11 @@ pub struct Rule {
     /// Zen expression evaluated against a transaction context; truthy => match.
     /// Fields available: `amount`, `amount_minor`, `abs_amount`, `is_income`,
     /// `is_expense`, `description`, `merchant`, `merchant_id`, `notes`, `currency`,
-    /// `account`, `account_kind`, `account_id`, `category_id`, `is_one_off`,
+    /// `account`, `account_kind`, `account_id`, `category_id`, `exclude_from_cashflow`,
     /// `counterparty_account_id`, `date`, `year`, `month`, `day`.
     pub expression: String,
     pub set_category_id: Option<i64>,
-    pub set_one_off: Option<bool>,
+    pub set_exclude_from_cashflow: Option<bool>,
     /// Action: assign this custom merchant on match.
     pub set_merchant_id: Option<i64>,
     /// Action: assign this counterparty account on match — the account the money went to or
@@ -82,7 +82,7 @@ pub struct SaveRule {
     #[serde(default)]
     pub set_category_id: Option<i64>,
     #[serde(default)]
-    pub set_one_off: Option<bool>,
+    pub set_exclude_from_cashflow: Option<bool>,
     #[serde(default)]
     pub set_merchant_id: Option<i64>,
     #[serde(default)]
@@ -129,8 +129,8 @@ pub struct RuleApplicationDetail {
     pub new_merchant_id: Option<i64>,
     pub prev_counterparty_account_id: Option<i64>,
     pub new_counterparty_account_id: Option<i64>,
-    pub prev_one_off: Option<bool>,
-    pub new_one_off: Option<bool>,
+    pub prev_exclude_from_cashflow: Option<bool>,
+    pub new_exclude_from_cashflow: Option<bool>,
     pub reverted: bool,
 }
 

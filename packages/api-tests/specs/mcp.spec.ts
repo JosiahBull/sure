@@ -300,7 +300,7 @@ test("summarize_spending totals rather than listing, and names the axis it group
           posted_at: date,
           amount_minor: minor,
           description: "Countdown",
-          is_one_off: false,
+          exclude_from_cashflow: false,
           category_id: categoryId,
         },
       });
@@ -362,7 +362,7 @@ test("a bulk write is refused until the caller confirms the count it was shown",
           posted_at: date,
           amount_minor: -60_00,
           description: "Z ENERGY",
-          is_one_off: false,
+          exclude_from_cashflow: false,
         },
       });
       ids.push(created.data!.id);

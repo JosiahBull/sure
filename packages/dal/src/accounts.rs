@@ -498,7 +498,7 @@ pub(crate) async fn insert(
                     sqlx::query!(
                         "INSERT INTO transactions
                             (account_id, posted_at, amount_minor, currency_code, description,
-                             is_one_off)
+                             exclude_from_cashflow)
                          VALUES (?1, ?2, ?3, ?4, 'Opening balance', 1)",
                         account.id,
                         date,
@@ -521,7 +521,7 @@ pub(crate) async fn insert(
 /// Which ledger an account's opening balance is seeded into.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum OpeningBalanceLedger {
-    /// A one-off transaction (kept out of the spend/income reports), for a kind that already
+    /// A cashflow-excluded transaction (kept out of the spend/income reports), for a kind that already
     /// accumulates its balance from its own transaction stream.
     Transaction,
     /// A manual valuation, for a kind with no transaction stream of its own.
@@ -1819,7 +1819,7 @@ mod tests {
         .unwrap();
 
         // A valuation would freeze the account at this figure (see `insert`), so it has to
-        // be a transaction — and a one-off, to stay out of the spend/income reports.
+        // be a transaction — and excluded from cashflow, to stay out of the spend/income reports.
         let txs = crate::transactions::list(
             &db,
             sure_core::TxQuery {
@@ -1833,7 +1833,7 @@ mod tests {
         assert_eq!(txs[0].posted_at, "2024-03-01");
         assert_eq!(txs[0].amount_minor, 250_000);
         assert_eq!(txs[0].description, "Opening balance");
-        assert!(txs[0].is_one_off);
+        assert!(txs[0].exclude_from_cashflow);
         assert!(
             crate::valuations::list_for_account(&db, account.id, Default::default())
                 .await

@@ -163,7 +163,7 @@ test("a rejected snapshot leaves the existing data untouched", async ({ api, ser
         amount_minor: -100,
         currency_code: "NZD",
         description: "Orphan",
-        is_one_off: false,
+        exclude_from_cashflow: false,
         created_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:00Z",
       },
@@ -212,4 +212,26 @@ test("the server survives a burst of malformed snapshots", async ({ api, server 
   expect(health.response.status).toBe(200);
   const accounts = await api.GET("/api/accounts", {});
   expect(accounts.data?.map((a) => a.id)).toEqual([acc.id]);
+});
+
+
+test("older exports preserve cashflow exclusions and rule expressions", async ({ api }) => {
+  const bank = await createAccount(api, "Everyday", "bank");
+  const tx = await createTransaction(api, {
+    account_id: bank.id, posted_at: "2026-01-10", amount_minor: -5000, exclude_from_cashflow: true,
+  });
+  await api.POST("/api/rules", { body: {
+    name: "Excluded purchases", expression: "exclude_from_cashflow", set_exclude_from_cashflow: true,
+  } });
+  const exported = (await api.GET("/api/config/export", {})).data;
+  const legacy = JSON.parse(JSON.stringify(exported)
+    .replaceAll('"exclude_from_cashflow":', '"is_one_off":')
+    .replaceAll('"set_exclude_from_cashflow":', '"set_one_off":')
+    .replaceAll('"expression":"exclude_from_cashflow"', '"expression":"is_one_off"'));
+  expect((await api.POST("/api/config/import", { body: legacy })).response.status).toBe(200);
+  expect((await getTransaction(api, tx.id)).exclude_from_cashflow).toBe(true);
+  const rules = (await api.GET("/api/rules", {})).data!;
+  const restoredRule = rules.find((r) => r.name === "Excluded purchases")!;
+  expect(restoredRule.set_exclude_from_cashflow).toBe(true);
+  expect(restoredRule.expression).toBe("exclude_from_cashflow");
 });

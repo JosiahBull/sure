@@ -8,14 +8,11 @@ async function goto(page: Page, route: string) {
   await page.waitForLoadState("networkidle");
 }
 
-test("overview shows net worth, category breakdown and the money-flow sankey", async ({ page }) => {
+test("overview shows net worth and actual cashflow", async ({ page }) => {
   await goto(page, "/");
-  // Exact: the overview also carries a "Net worth by person" card, which a substring
-  // match would tie with the headline "Net worth" one.
   await expect(page.getByRole("heading", { name: "Net worth", exact: true })).toBeVisible();
-  await expect(page.getByText("Where money went")).toBeVisible();
-  // Seeded expense categories roll up to top-level buckets (appears in the pie legend
-  // and the sankey, so scope to the first match).
+  await expect(page.getByRole("table", { name: "Monthly cashflow" })).toBeVisible();
+  // Seeded expense categories roll up to top-level buckets in the Sankey.
   await expect(page.getByText("Housing").first()).toBeVisible();
   // The Sankey (formerly its own tab) is now the last card on the overview. Its nodes
   // and flows are both <path> (nodes have fill, flows use fill:none), so assert DOM
@@ -40,6 +37,7 @@ test("the time-range dropdown offers month-to-date, and it means the 1st to toda
     "Month to date (MTD)",
     "Last 30 days",
     "Last month",
+    "Last 3 months",
     "Last 90 days",
     "Year to date",
     "Last 12 months",
@@ -57,7 +55,7 @@ test("the time-range dropdown offers month-to-date, and it means the 1st to toda
 });
 
 test("the toggle's knob rests centred, in both states", async ({ page }) => {
-  await goto(page, "/");
+  await goto(page, "/transactions");
   const track = page.locator(".subbar-switch .track");
 
   // The knob is a pseudo-element positioned inside the track, and an absolutely positioned

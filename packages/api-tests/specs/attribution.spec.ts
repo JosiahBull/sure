@@ -120,7 +120,7 @@ test("an omitted ownership in a bulk update leaves the override alone", async ({
 
   // A bulk edit of something else entirely must not disturb the attribution.
   const res = await api.POST("/api/transactions/bulk-update", {
-    body: { ids: [tx.id], is_one_off: true },
+    body: { ids: [tx.id], exclude_from_cashflow: true },
   });
   expect(res.response.status).toBe(200);
   expect(await attributedTo(api, String(alex.id))).toEqual(["mine"]);

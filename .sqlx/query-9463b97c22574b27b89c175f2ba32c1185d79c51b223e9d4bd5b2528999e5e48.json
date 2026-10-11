@@ -1,0 +1,254 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO transactions\n              (account_id, posted_at, amount_minor, currency_code, description, merchant, notes,\n               category_id, exclude_from_cashflow, merchant_id, ownership, person_id,\n               counterparty_account_id)\n           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)\n           RETURNING id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                     merchant, merchant_id, notes, category_id, exclude_from_cashflow AS \"exclude_from_cashflow!: bool\",\n                     linked_transaction_id, counterparty_account_id,\n                     provider, external_id, categorized_by_rule_id,\n                     ownership, person_id, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "posted_at",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "posted_at"
+          }
+        }
+      },
+      {
+        "name": "amount_minor",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "amount_minor"
+          }
+        }
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "currency_code"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "merchant",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "merchant"
+          }
+        }
+      },
+      {
+        "name": "merchant_id",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "merchant_id"
+          }
+        }
+      },
+      {
+        "name": "notes",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "notes"
+          }
+        }
+      },
+      {
+        "name": "category_id",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "category_id"
+          }
+        }
+      },
+      {
+        "name": "exclude_from_cashflow!: bool",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "exclude_from_cashflow"
+          }
+        }
+      },
+      {
+        "name": "linked_transaction_id",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "linked_transaction_id"
+          }
+        }
+      },
+      {
+        "name": "counterparty_account_id",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "counterparty_account_id"
+          }
+        }
+      },
+      {
+        "name": "provider",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "name": "external_id",
+        "ordinal": 14,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "external_id"
+          }
+        }
+      },
+      {
+        "name": "categorized_by_rule_id",
+        "ordinal": 15,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "categorized_by_rule_id"
+          }
+        }
+      },
+      {
+        "name": "ownership",
+        "ordinal": 16,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "ownership"
+          }
+        }
+      },
+      {
+        "name": "person_id",
+        "ordinal": 17,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "person_id"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 18,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 19,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 13
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "9463b97c22574b27b89c175f2ba32c1185d79c51b223e9d4bd5b2528999e5e48"
+}

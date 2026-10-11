@@ -9,7 +9,7 @@ use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
-use sure_core::{AccountClass, AccountKind, FlowBasis, Ownership};
+use sure_core::{AccountClass, AccountKind, Ownership};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::compute;
@@ -33,8 +33,8 @@ pub struct ReportQuery {
     pub from: Option<String>,
     /// Inclusive end date (ISO-8601). Defaults to today.
     pub to: Option<String>,
-    /// Include one-off transactions (default false).
-    pub include_one_off: Option<bool>,
+    /// Include transactions excluded from cashflow (default false).
+    pub include_excluded_from_cashflow: Option<bool>,
     /// Report currency; defaults to the configured base currency. A code that isn't in the
     /// `currencies` table is a 400, not a report denominated in a currency that doesn't exist
     /// with every account listed as `unconverted` — see `sure_app::reports`'s
@@ -43,16 +43,6 @@ pub struct ReportQuery {
     /// Whose spending to report: `joint`, or a household member's id. Omitted reports the
     /// whole household.
     pub attributed_to: Option<String>,
-    /// Which question the money-flow graph answers — `cash` (the default), `net_worth`, or
-    /// `spending`.
-    ///
-    /// `cash` counts every movement of the household's liquid money, a mortgage principal
-    /// repayment and a loan drawdown included. `net_worth` keeps only what left the household
-    /// better or worse off, so a principal repayment, a drawdown and an asset sale all drop out
-    /// while the interest beside them stays. `spending` is income and consumption alone, with
-    /// every transfer excluded — what the category pies show. Read only by
-    /// `/api/reports/sankey`; the other reports ignore it.
-    pub basis: Option<String>,
 }
 
 impl TryFrom<&ReportQuery> for sure_app::reports::ReportQuery {
@@ -61,23 +51,12 @@ impl TryFrom<&ReportQuery> for sure_app::reports::ReportQuery {
     fn try_from(q: &ReportQuery) -> Result<Self, Self::Error> {
         Ok(sure_app::reports::ReportQuery {
             attributed_to: parse_attribution(q.attributed_to.as_deref())?,
-            basis: parse_basis(q.basis.as_deref())?,
             from: q.from.clone(),
             to: q.to.clone(),
-            include_one_off: q.include_one_off,
+            include_excluded_from_cashflow: q.include_excluded_from_cashflow,
             currency: q.currency.clone(),
         })
     }
-}
-
-/// Parse the `basis` query param into the domain enum. Same rule as `interval` and
-/// `attributed_to`: unrecognised is a 400, never a silent fall back to the default — a chart
-/// that quietly answered a different question than the one asked for would be worse than an
-/// error, because nothing on screen would say so.
-fn parse_basis(raw: Option<&str>) -> AppResult<Option<FlowBasis>> {
-    raw.map(str::parse::<FlowBasis>)
-        .transpose()
-        .map_err(AppError::bad_request)
 }
 
 /// Parse the `attributed_to` query param into the domain enum. Same rule as everywhere
@@ -219,19 +198,16 @@ impl From<sure_app::reports::CategoryBreakdown> for CategoryBreakdown {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SankeyNode {
     /// `center`, `savings`, `deficit`, `in:<category_id>` / `out:<category_id>` at any level
-    /// of the hierarchy (`0` being the uncategorised bucket), `gross:<person_id>`, one of the
-    /// four `ded:*` sinks, or `acct:<account_id>`. Treat it as an opaque key and read the
-    /// fields below rather than parsing it.
+    /// of the hierarchy (`0` being uncategorised), or an account crossing id.
     pub id: String,
     pub label: String,
-    /// `income` | `center` | `expense` | `savings` | `deficit` | `gross` | `deduction` |
-    /// `account` | `crossing`.
+    /// `income` | `center` | `expense` | `savings` | `deficit` | `crossing`.
     pub kind: String,
     /// The category this node stands for; null for the hub, the balance nodes, the
     /// uncategorised bucket and everything account-shaped.
     pub category_id: Option<i64>,
     /// 0-based level within its own side (0 = top-level, adjacent to the hub); null for
-    /// the hub, the balance nodes and the pre-income layer.
+    /// the hub and balance nodes.
     pub depth: Option<u8>,
     /// Top-level ancestor, for colouring a whole branch from one key.
     pub root_id: Option<i64>,
@@ -241,10 +217,10 @@ pub struct SankeyNode {
     ///
     /// Stated rather than left to be inferred from `kind`, because a crossing can be either —
     /// a mortgage repayment is an outflow and a loan drawdown an inflow. Null for the hub, the
-    /// balance nodes and the pre-income layer.
+    /// balance nodes.
     pub side: Option<String>,
-    /// The balance-sheet account this node stands for — a perimeter crossing, or the account a
-    /// payslip deduction lands in. Null everywhere else.
+    /// The balance-sheet account this node stands for — the account a cash movement reached.
+    /// Null everywhere else.
     pub account_id: Option<i64>,
 }
 
@@ -282,10 +258,18 @@ impl From<sure_app::reports::SankeyLink> for SankeyLink {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+pub struct CashflowMonth {
+    pub month: String,
+    pub inflow_minor: i64,
+    pub outflow_minor: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SankeyGraph {
     pub currency: String,
     pub nodes: Vec<SankeyNode>,
     pub links: Vec<SankeyLink>,
+    pub months: Vec<CashflowMonth>,
     /// Currencies with no rate to `currency`; their transactions are left out of the graph
     /// rather than drawn at parity.
     pub unconverted: Vec<String>,
@@ -297,6 +281,15 @@ impl From<sure_app::reports::SankeyGraph> for SankeyGraph {
             currency: g.currency,
             nodes: g.nodes.into_iter().map(Into::into).collect(),
             links: g.links.into_iter().map(Into::into).collect(),
+            months: g
+                .months
+                .into_iter()
+                .map(|m| CashflowMonth {
+                    month: m.month,
+                    inflow_minor: m.inflow_minor,
+                    outflow_minor: m.outflow_minor,
+                })
+                .collect(),
             unconverted: g.unconverted,
         }
     }
@@ -515,10 +508,10 @@ pub async fn category_breakdown(
 }
 
 /// Money-flow graph: income categories -> cash flow -> expense categories (+ savings or
-/// deficit), plus one node per account cash crossed to or from on the `cash` basis.
+/// deficit), plus one node per account cash crossed to or from.
 #[utoipa::path(get, path = "/api/reports/sankey", tag = "reports", params(ReportQuery),
     responses((status = 200, body = SankeyGraph),
-        (status = 400, description = "unknown `currency`, `attributed_to` or `basis`",
+        (status = 400, description = "unknown `currency`, `attributed_to`",
             body = crate::error::ErrorBody),
         // Same `overloaded` envelope as every other "busy" answer — see `net_worth` above.
         (status = 503, description = "every compute slot is busy; retry after `Retry-After`",

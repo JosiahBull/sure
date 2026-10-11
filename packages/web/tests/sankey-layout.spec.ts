@@ -122,20 +122,9 @@ const node = (
 });
 const link = (source: string, target: string, value: number): Link => ({ source, target, value });
 
-/**
- * The reported graph: one earner's payslip, two income branches plus an uncategorised leaf, and
- * eight expense roots with children of their own. Figures are invented (CLAUDE.md rule 3) but
- * the *shape* and the relative sizes are the ones in the screenshot, which is what decides the
- * ordering.
- */
 function reportedGraph(): { nodes: Node[]; links: Link[] } {
   const nodes: Node[] = [
     node("center", "center", null, "Cash flow"),
-    node("gross:1", "gross", null, "Kaimahi — gross pay"),
-    node("ded:paye", "deduction", null, "PAYE"),
-    node("ded:sl", "deduction", null, "Student loan"),
-    node("ded:acc", "deduction", null, "ACC levy"),
-    node("acct:9", "account", null, "Student loan"),
     node("in:salary", "income", 0, "Salary"),
     node("in:flat", "income", 0, "Flatmate income"),
     node("in:unc", "income", 0, "Uncategorised"),
@@ -162,11 +151,6 @@ function reportedGraph(): { nodes: Node[]; links: Link[] } {
     node("out:council", "expense", 1, "Local government"),
   ];
   const links: Link[] = [
-    link("gross:1", "ded:paye", 20_783_32),
-    link("gross:1", "ded:sl", 8_048_56),
-    link("gross:1", "ded:acc", 1_420_14),
-    link("gross:1", "in:main", 51_899_27),
-    link("ded:sl", "acct:9", 8_048_56),
     link("in:main", "in:salary", 77_498_36),
     link("in:tutor", "in:salary", 9_375_75),
     link("in:salary", "center", 89_000_06),
@@ -218,14 +202,6 @@ function spans(laid: NonNullable<ReturnType<typeof layout>>): number[] {
   return laid.links.map((l) => col(l.target.x0) - col(l.source.x0));
 }
 
-const payslipKinds = ["gross", "deduction", "account"];
-
-/** Whether a ribbon belongs to the payslip layer, following a routed chain back to its start. */
-function isPayslip(l: { source: { kind: string; id: string }; target: { kind: string }; origin?: { source: string } }) {
-  if (payslipKinds.includes(l.source.kind) || payslipKinds.includes(l.target.kind)) return true;
-  return (l.origin?.source ?? l.source.id).startsWith("gross:");
-}
-
 test("the reported graph draws no crossing ribbons", () => {
   const found = crossings(laidOut(reportedGraph()));
   expect(found, `${found.length} crossing(s):\n  ${found.join("\n  ")}`).toEqual([]);
@@ -271,54 +247,20 @@ test("every link reaches exactly one column", () => {
   expect(bad, `${bad.length} misplaced link(s):\n  ${bad.slice(0, 10).join("\n  ")}`).toEqual([]);
 });
 
-/**
- * The guarantee, stated as the class of graph it actually holds for.
- *
- * `outwardOrder` makes the category tree planar and routing makes the payslip layer a chain of
- * single-column hops, so a household with one payslip has no crossings at all — which is every
- * household with one earner, and the shape this was reported on.
- *
- * Two payslips is a different graph. Each one's flows split into a band of deduction sinks,
- * which must sit above the income they were taken from, and a take-home that lands in that
- * income — so with two earners one's sinks and the other's take-home are forced to interleave,
- * whatever order the columns are in. There is no planar drawing to find. What is checked is
- * that the damage stays there: see the test below.
- */
-test("a household with one payslip draws no visible crossing", () => {
+test("cashflow trees draw no visible crossings", () => {
   let checked = 0;
   const bad: string[] = [];
   for (let seed = 1; seed <= 400; seed++) {
     const g = generate(seed);
     const laid = layout(g.nodes, g.links, BOX.w, BOX.h);
     if (!laid) continue;
-    if (laid.nodes.filter((n) => n.kind === "gross").length > 1) continue;
     checked++;
     const wide = visible(laid);
     const found = crossings(laid).filter((f) => f.split("  ×  ").every((k) => wide.has(k)));
     if (found.length) bad.push(`seed ${seed}: ${found[0]}`);
   }
-  expect(checked, "the generator produced no single-payslip graphs to check").toBeGreaterThan(100);
+  expect(checked, "the generator produced no cashflow graphs to check").toBeGreaterThan(100);
   expect(bad, `${bad.length}/${checked} crossed:\n  ${bad.slice(0, 10).join("\n  ")}`).toEqual([]);
-});
-
-test("nothing outside the payslip layer ever crosses", () => {
-  const bad: string[] = [];
-  for (let seed = 1; seed <= 400; seed++) {
-    const g = generate(seed);
-    const laid = layout(g.nodes, g.links, BOX.w, BOX.h);
-    if (!laid) continue;
-    const wide = visible(laid);
-    const payslip = new Set(
-      laid.links.filter((l) => isPayslip(l)).map((l) => `${l.source.id}→${l.target.id}`),
-    );
-    for (const f of crossings(laid)) {
-      const ends = f.split("  ×  ");
-      if (!ends.every((k) => wide.has(k))) continue;
-      // Both ribbons must be payslip ones for this to be the known, unavoidable case.
-      if (!ends.every((k) => payslip.has(k))) bad.push(`seed ${seed}: ${f}`);
-    }
-  }
-  expect(bad, `${bad.length} crossing(s) outside the payslip layer:\n  ${bad.slice(0, 10).join("\n  ")}`).toEqual([]);
 });
 
 // ---- generated graphs --------------------------------------------------------------------
@@ -332,11 +274,6 @@ function rng(seed: number) {
   };
 }
 
-/**
- * A graph with the shapes this app actually produces: an income tree and an expense tree either
- * side of the hub, optionally a payslip layer, optionally the surplus node, and values spanning
- * the range real categories do.
- */
 function generate(seed: number): { nodes: Node[]; links: Link[]; seed: number } {
   const r = rng(seed);
   const int = (lo: number, hi: number) => lo + Math.floor(r() * (hi - lo + 1));
@@ -400,29 +337,6 @@ function generate(seed: number): { nodes: Node[]; links: Link[]; seed: number } 
   } else if (expenseTotal > incomeTotal) {
     nodes.push(node("deficit", "deficit", null, "Drawn from reserves"));
     links.push(link("deficit", "center", expenseTotal - incomeTotal));
-  }
-  if (r() < 0.6) {
-    for (let e = 0; e < int(1, 2); e++) {
-      const g = `gross:${e}`;
-      const takeHome = Math.round(money() * int(10, 60));
-      const sinks = ["paye", "acc", "sl", "kiwisaver"].slice(0, int(1, 4));
-      nodes.push(node(g, "gross", null, g));
-      // Which income node the take-home lands on is exactly the variable that decides whether
-      // its ribbon has to reach across a column.
-      const leaves = nodes.filter((n) => n.kind === "income");
-      links.push(link(g, leaves[int(0, leaves.length - 1)].id, takeHome));
-      for (const s of sinks) {
-        const id = `ded:${s}:${e}`;
-        nodes.push(node(id, "deduction", null, id));
-        const v = Math.round(takeHome * (0.05 + r() * 0.3));
-        links.push(link(g, id, v));
-        if (r() < 0.4) {
-          const d = `acct:${s}:${e}`;
-          nodes.push(node(d, "account", null, d));
-          links.push(link(id, d, v));
-        }
-      }
-    }
   }
   return { nodes, links, seed };
 }

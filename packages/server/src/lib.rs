@@ -108,10 +108,6 @@ fn build_state(
     } = adapters;
     let store = Arc::new(SqliteStore::new(db));
     let clock = Arc::new(SystemClock);
-    let income_match = Arc::new(sure_app::income_match::IncomeMatchService::new(
-        store.clone(),
-        clock.clone(),
-    ));
 
     let brokerage = Arc::new(BrokerageService::new(
         store.clone(),
@@ -188,8 +184,6 @@ fn build_state(
         settings: store.clone(),
         valuations: store.clone(),
         equity: store.clone(),
-        income: store.clone(),
-        income_match,
         crons: store.clone(),
         snapshot: store.clone(),
         providers: store,
@@ -296,13 +290,6 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
             // of sweeping the same window again.
             config.provider_limits.sync_cooldown,
         ));
-        // The scheduler's own matcher instance, like `sync` above: a stateless wrapper around
-        // the same pool the HTTP path's instance wraps.
-        let income_match = Arc::new(sure_app::income_match::IncomeMatchService::new(
-            store.clone(),
-            clock.clone(),
-        ));
-
         scheduler.register(Box::new(
             sure_app::tasks::exchange_rates::ExchangeRateTask::new(
                 store.clone(),
@@ -351,14 +338,6 @@ pub async fn serve(config: Config, shutdown: Shutdown) -> anyhow::Result<()> {
         ));
         scheduler.register(Box::new(
             sure_app::tasks::transfer_link::TransferLinkTask::new(store.clone()),
-        ));
-        // After the transfer linker in registration order for the same politeness as
-        // balance-delta's: a payroll credit wrongly paired as a transfer is invisible to the
-        // matcher (it skips linked rows), so letting the pairer run first each cycle keeps the
-        // two from racing over one deposit. Correctness doesn't depend on it — both are
-        // idempotent and re-run every few minutes.
-        scheduler.register(Box::new(
-            sure_app::tasks::income_match::IncomeMatchTask::new(income_match),
         ));
         // Keeps an equity account's valuation history in step with its grants and price ledger.
         // Registered last because it derives from data the polls above may have just written,

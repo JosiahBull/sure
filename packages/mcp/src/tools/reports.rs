@@ -9,7 +9,7 @@ use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::{schemars, tool, tool_router};
 use serde::Deserialize;
 use sure_app::reports::{ReportQuery, SpendGroup};
-use sure_core::{FlowBasis, GroupBy, Interval, Ownership};
+use sure_core::{GroupBy, Interval, Ownership};
 
 use crate::convert::{Range, money_to_string, resolve_window, table};
 use crate::error::{ToolResult, invalid_params, to_mcp};
@@ -70,10 +70,10 @@ pub struct SummarizeSpendingParams {
     /// Report currency. Defaults to the household's base currency.
     #[serde(default)]
     pub currency: Option<String>,
-    /// Include one-off transactions. Default false — a house purchase in the middle of a
+    /// Include transactions excluded from cashflow. Default false — a house purchase in the middle of a
     /// spending summary swamps everything else.
     #[serde(default)]
-    pub include_one_off: Option<bool>,
+    pub include_excluded_from_cashflow: Option<bool>,
     /// Whose spending: "joint", or a household member's person id.
     #[serde(default)]
     pub attributed_to: Option<String>,
@@ -112,38 +112,9 @@ pub struct MoneyFlowParams {
     #[serde(default)]
     pub currency: Option<String>,
     #[serde(default)]
-    pub include_one_off: Option<bool>,
+    pub include_excluded_from_cashflow: Option<bool>,
     #[serde(default)]
     pub attributed_to: Option<String>,
-    /// Which question to answer.
-    #[serde(default)]
-    pub basis: Option<BasisArg>,
-}
-
-/// The wire spelling of [`sure_core::FlowBasis`], so the tool's JSON schema offers the two
-/// legal values instead of a free-text field a model has to guess at.
-#[derive(Debug, Deserialize, schemars::JsonSchema, Default, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
-pub enum BasisArg {
-    /// Every movement of the household's liquid money, a mortgage principal repayment and a
-    /// loan drawdown included. The default: "where did the money actually go".
-    #[default]
-    Cash,
-    /// Only what left the household better or worse off: a principal repayment, a drawdown and
-    /// an asset sale all drop out, while the interest beside them stays.
-    NetWorth,
-    /// Income and consumption alone, with every transfer excluded.
-    Spending,
-}
-
-impl From<BasisArg> for FlowBasis {
-    fn from(b: BasisArg) -> Self {
-        match b {
-            BasisArg::Cash => FlowBasis::Cash,
-            BasisArg::NetWorth => FlowBasis::NetWorth,
-            BasisArg::Spending => FlowBasis::Spending,
-        }
-    }
 }
 
 #[tool_router(router = reports_router, vis = "pub")]
@@ -168,7 +139,7 @@ impl SureMcp {
             params.from,
             params.to,
             params.currency,
-            params.include_one_off,
+            params.include_excluded_from_cashflow,
             params.attributed_to,
         )?;
 
@@ -331,15 +302,14 @@ impl SureMcp {
         &self,
         Parameters(params): Parameters<MoneyFlowParams>,
     ) -> ToolResult<CallToolResult> {
-        let mut query = self.report_query(
+        let query = self.report_query(
             params.range,
             params.from,
             params.to,
             params.currency,
-            params.include_one_off,
+            params.include_excluded_from_cashflow,
             params.attributed_to,
         )?;
-        query.basis = Some(params.basis.unwrap_or_default().into());
         let graph = self.state.reports.sankey(&query).await.map_err(to_mcp)?;
         let decimals = self.currency_decimals().await?;
         let scale = Self::scale_of(&decimals, &graph.currency);
@@ -377,7 +347,7 @@ impl SureMcp {
         from: Option<String>,
         to: Option<String>,
         currency: Option<String>,
-        include_one_off: Option<bool>,
+        include_excluded_from_cashflow: Option<bool>,
         attributed_to: Option<String>,
     ) -> ToolResult<ReportQuery> {
         let today = chrono::Utc::now().date_naive();
@@ -385,12 +355,9 @@ impl SureMcp {
         Ok(ReportQuery {
             from,
             to,
-            include_one_off,
+            include_excluded_from_cashflow,
             currency,
             attributed_to: parse_attribution(attributed_to.as_deref())?,
-            // Only `money_flow` reads it, and it sets its own; the two spending tools are a
-            // spending view by definition.
-            basis: None,
         })
     }
 }

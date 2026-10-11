@@ -800,8 +800,8 @@ export interface paths {
                     from?: string;
                     /** @description Inclusive end date (ISO-8601). Defaults to today. */
                     to?: string;
-                    /** @description Include one-off transactions (default false). */
-                    include_one_off?: boolean;
+                    /** @description Include transactions excluded from cashflow (default false). */
+                    include_excluded_from_cashflow?: boolean;
                     /**
                      * @description Report currency; defaults to the configured base currency. A code that isn't in the
                      *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
@@ -814,18 +814,6 @@ export interface paths {
                      *     whole household.
                      */
                     attributed_to?: string;
-                    /**
-                     * @description Which question the money-flow graph answers — `cash` (the default), `net_worth`, or
-                     *     `spending`.
-                     *
-                     *     `cash` counts every movement of the household's liquid money, a mortgage principal
-                     *     repayment and a loan drawdown included. `net_worth` keeps only what left the household
-                     *     better or worse off, so a principal repayment, a drawdown and an asset sale all drop out
-                     *     while the interest beside them stays. `spending` is income and consumption alone, with
-                     *     every transfer excluded — what the category pies show. Read only by
-                     *     `/api/reports/sankey`; the other reports ignore it.
-                     */
-                    basis?: string;
                 };
                 header?: never;
                 path: {
@@ -2570,7 +2558,7 @@ export interface paths {
                     dry_run?: boolean;
                     /**
                      * @description Whether to also record the opening balance an export implies — the account's value
-                     *     immediately before its first row — as a one-off transaction. On by default: without it
+                     *     immediately before its first row — as a transaction excluded from cashflow. On by default: without it
                      *     the reconstructed history starts from nothing rather than from what the account held.
                      *     Ignored by sources whose exports state no balance to work back from, and skipped anyway
                      *     when the account already has a row from before that date.
@@ -2735,531 +2723,6 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/income-payments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Expected and matched payments, newest first.
-         * @description Past-due `expected` rows are the "missed pay" signal; `matched` rows carry the reconstructed
-         *     gross → deductions → net decomposition of the deposit they claimed.
-         */
-        get: {
-            parameters: {
-                query?: {
-                    /** @description Earliest `due_on` (ISO-8601 date), inclusive. */
-                    from?: string;
-                    /** @description Latest `due_on` (ISO-8601 date), inclusive. */
-                    to?: string;
-                    /** @description Limit to one person's streams. */
-                    person_id?: number;
-                    /** @description `expected`, `matched`, `confirmed` or `dismissed`. */
-                    status?: string;
-                };
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["IncomePayment"][];
-                    };
-                };
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/income-payments/rematch": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Run the matcher now — the same idempotent pass the background task runs every few minutes,
-         *     for the person who just fixed a stream's pattern and wants to see the result.
-         */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["RematchSummary"];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/income-payments/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /**
-         * Move a payment between the human-owned statuses.
-         * @description Legal moves: `matched → confirmed` (agree with the matcher), `expected → dismissed` (this
-         *     payday is not real — unpaid leave, a contract gap; kept so the matcher does not resurrect
-         *     it), and `dismissed → expected` (re-open). `matched` is the matcher's own state and
-         *     `expected`-from-`matched` is what DELETE …/link does, so neither is reachable from here —
-         *     a refused move is a 409 naming the states.
-         */
-        patch: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: number;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SetPaymentStatus"];
-                };
-            };
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["IncomePayment"];
-                    };
-                };
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
-        trace?: never;
-    };
-    "/api/income-payments/{id}/link": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Link a deposit to a payment by hand — recorded as `confirmed`, since the person just did
-         *     the confirming, with the decomposition reconstructed from the amount actually claimed.
-         * @description The claimed slice is whatever the deposit has left after every other payment already on it,
-         *     so linking the salary row and then the bonus row of one deposit works in either order.
-         */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: number;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["LinkPayment"];
-                };
-            };
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["IncomePayment"];
-                    };
-                };
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                422: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
-        /**
-         * Undo a match: the payment returns to `expected` with its decomposition cleared, and the
-         *     transaction is released for the matcher (or a person) to claim elsewhere.
-         */
-        delete: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: number;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["IncomePayment"];
-                    };
-                };
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/income-streams": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Every income stream in the household, with its dated pay-scale steps attached.
-         * @description Flat and unfiltered: the income screen wants every person's streams at once, and one request
-         *     per person would be N round trips for a few rows.
-         */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["IncomeStream"][];
-                    };
-                };
-            };
-        };
-        put?: never;
-        /**
-         * Record income the household earns rather than one of its people — rent from a flatmate, a
-         *     refund the household is owed.
-         * @description A second create route rather than a nullable path segment: the per-person one above puts the
-         *     owner where it cannot be omitted or contradicted, and that property is worth keeping for the
-         *     case it covers. Here the body is the only place an owner can come from, so `ownership` is
-         *     required and its absence is a 422 rather than a silent guess at whose income this is.
-         */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SaveIncomeStream"];
-                };
-            };
-            responses: {
-                201: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["IncomeStream"];
-                    };
-                };
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                422: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/income-streams/detect": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Salaries already visible in the ledger, so recording one is a confirmation rather than a
-         *     transcription.
-         * @description Worth doing because the details people get wrong are exactly the ones the ledger already knows:
-         *     whether "fortnightly" means every fourteen days or twice a month, which day it lands on, and what
-         *     the net figure actually is after payroll has taken everything off.
-         */
-        get: {
-            parameters: {
-                query?: {
-                    /** @description Limit the search to one account. Omit to search every account. */
-                    account_id?: number;
-                };
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["DetectedStream"][];
-                    };
-                };
-            };
-        };
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/income-streams/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** One income stream. */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: number;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["IncomeStream"];
-                    };
-                };
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
-        /**
-         * Replace an income stream, its pay-scale schedule included.
-         * @description The steps sent here *are* the schedule afterwards, so removing one is omitting it — the
-         *     full-replace contract `PUT /api/forecast/assumptions` already has.
-         */
-        put: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: number;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SaveIncomeStream"];
-                };
-            };
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["IncomeStream"];
-                    };
-                };
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                422: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
-        post?: never;
-        /**
-         * Remove an income stream. Refused with 409 while a forecast change still points at it — repoint
-         *     or remove those first, so a promotion cannot quietly become a no-op.
-         */
-        delete: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: number;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                204: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
         options?: never;
         head?: never;
         patch?: never;
@@ -3620,68 +3083,6 @@ export interface paths {
                 };
             };
         };
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/people/{person_id}/income-streams": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Record income for someone in the household.
-         * @description Nested under the person, and flat for every mutation below — the `valuations` arrangement. It
-         *     puts `person_id` in the path, where it cannot be omitted or contradicted by the body, and keeps
-         *     the mutation URLs stable.
-         */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    person_id: number;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SaveIncomeStream"];
-                };
-            };
-            responses: {
-                201: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["IncomeStream"];
-                    };
-                };
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                422: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
-        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4196,8 +3597,8 @@ export interface paths {
                     from?: string;
                     /** @description Inclusive end date (ISO-8601). Defaults to today. */
                     to?: string;
-                    /** @description Include one-off transactions (default false). */
-                    include_one_off?: boolean;
+                    /** @description Include transactions excluded from cashflow (default false). */
+                    include_excluded_from_cashflow?: boolean;
                     /**
                      * @description Report currency; defaults to the configured base currency. A code that isn't in the
                      *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
@@ -4210,18 +3611,6 @@ export interface paths {
                      *     whole household.
                      */
                     attributed_to?: string;
-                    /**
-                     * @description Which question the money-flow graph answers — `cash` (the default), `net_worth`, or
-                     *     `spending`.
-                     *
-                     *     `cash` counts every movement of the household's liquid money, a mortgage principal
-                     *     repayment and a loan drawdown included. `net_worth` keeps only what left the household
-                     *     better or worse off, so a principal repayment, a drawdown and an asset sale all drop out
-                     *     while the interest beside them stays. `spending` is income and consumption alone, with
-                     *     every transfer excluded — what the category pies show. Read only by
-                     *     `/api/reports/sankey`; the other reports ignore it.
-                     */
-                    basis?: string;
                 };
                 header?: never;
                 path?: never;
@@ -4271,8 +3660,8 @@ export interface paths {
                     from?: string;
                     /** @description Inclusive end date (ISO-8601). Defaults to today. */
                     to?: string;
-                    /** @description Include one-off transactions (default false). */
-                    include_one_off?: boolean;
+                    /** @description Include transactions excluded from cashflow (default false). */
+                    include_excluded_from_cashflow?: boolean;
                     /**
                      * @description Report currency; defaults to the configured base currency. A code that isn't in the
                      *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
@@ -4285,18 +3674,6 @@ export interface paths {
                      *     whole household.
                      */
                     attributed_to?: string;
-                    /**
-                     * @description Which question the money-flow graph answers — `cash` (the default), `net_worth`, or
-                     *     `spending`.
-                     *
-                     *     `cash` counts every movement of the household's liquid money, a mortgage principal
-                     *     repayment and a loan drawdown included. `net_worth` keeps only what left the household
-                     *     better or worse off, so a principal repayment, a drawdown and an asset sale all drop out
-                     *     while the interest beside them stays. `spending` is income and consumption alone, with
-                     *     every transfer excluded — what the category pies show. Read only by
-                     *     `/api/reports/sankey`; the other reports ignore it.
-                     */
-                    basis?: string;
                 };
                 header?: never;
                 path?: never;
@@ -4420,7 +3797,7 @@ export interface paths {
         };
         /**
          * Money-flow graph: income categories -> cash flow -> expense categories (+ savings or
-         *     deficit), plus one node per account cash crossed to or from on the `cash` basis.
+         *     deficit), plus one node per account cash crossed to or from.
          */
         get: {
             parameters: {
@@ -4429,8 +3806,8 @@ export interface paths {
                     from?: string;
                     /** @description Inclusive end date (ISO-8601). Defaults to today. */
                     to?: string;
-                    /** @description Include one-off transactions (default false). */
-                    include_one_off?: boolean;
+                    /** @description Include transactions excluded from cashflow (default false). */
+                    include_excluded_from_cashflow?: boolean;
                     /**
                      * @description Report currency; defaults to the configured base currency. A code that isn't in the
                      *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
@@ -4443,18 +3820,6 @@ export interface paths {
                      *     whole household.
                      */
                     attributed_to?: string;
-                    /**
-                     * @description Which question the money-flow graph answers — `cash` (the default), `net_worth`, or
-                     *     `spending`.
-                     *
-                     *     `cash` counts every movement of the household's liquid money, a mortgage principal
-                     *     repayment and a loan drawdown included. `net_worth` keeps only what left the household
-                     *     better or worse off, so a principal repayment, a drawdown and an asset sale all drop out
-                     *     while the interest beside them stays. `spending` is income and consumption alone, with
-                     *     every transfer excluded — what the category pies show. Read only by
-                     *     `/api/reports/sankey`; the other reports ignore it.
-                     */
-                    basis?: string;
                 };
                 header?: never;
                 path?: never;
@@ -4470,7 +3835,7 @@ export interface paths {
                         "application/json": components["schemas"]["SankeyGraph"];
                     };
                 };
-                /** @description unknown `currency`, `attributed_to` or `basis` */
+                /** @description unknown `currency`, `attributed_to` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -4993,225 +4358,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/tax-scales": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * The tax rules the projection uses.
-         * @description Editable because they are external facts with a shelf life: IRD changes a threshold and a
-         *     projection is quietly wrong until someone ships a binary. The built-in figures seed this on first
-         *     run and are what `restore` puts back.
-         */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["StoredTaxScale"][];
-                    };
-                };
-            };
-        };
-        put?: never;
-        /** Add a scale — how you record next year's rates before they take effect. */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SaveTaxScale"];
-                };
-            };
-            responses: {
-                201: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["StoredTaxScale"];
-                    };
-                };
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                422: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/tax-scales/restore": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Throw away every stored scale and put the built-in figures back — the way out of an edit that
-         *     went wrong.
-         */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["StoredTaxScale"][];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/tax-scales/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: number;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SaveTaxScale"];
-                };
-            };
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["StoredTaxScale"];
-                    };
-                };
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                422: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
-        post?: never;
-        /**
-         * Remove a scale. Refused when it is the last one — an empty table taxes every gross salary at
-         *     nothing, which reads as a windfall rather than a mistake.
-         */
-        delete: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: number;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                204: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorBody"];
-                    };
-                };
-            };
-        };
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/transactions": {
         parameters: {
             query?: never;
@@ -5223,14 +4369,18 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
+                    /** @description Only cashflow category transactions; excludes internal transfers and account crossings. */
+                    cashflow_categories_only?: boolean;
+                    /** @description Cashflow across the perimeter to/from this account, excluding its bookkeeping. */
+                    cashflow_account_id?: number;
                     account_id?: number;
                     category_id?: number;
                     /** @description Inclusive lower bound on the transaction date (ISO-8601). */
                     from?: string;
                     /** @description Inclusive upper bound on the transaction date (ISO-8601). */
                     to?: string;
-                    /** @description When false, one-off transactions are excluded. Defaults to true. */
-                    include_one_off?: boolean;
+                    /** @description When false, transactions excluded from cashflow are excluded. Defaults to true. */
+                    include_excluded_from_cashflow?: boolean;
                     /** @description Case-insensitive substring match on description/merchant/notes. */
                     search?: string;
                     /**
@@ -5358,7 +4508,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Apply a partial patch (category / merchant / one-off) to many transactions at once.
+         * Apply a partial patch (category / merchant / cashflow exclusion) to many transactions at once.
          *     Omitted fields are left untouched; an explicit `null` clears a category/merchant.
          */
         post: {
@@ -6030,9 +5180,16 @@ export interface components {
              *     only ever sees what arrives after it.
              */
             counterparty_account_id?: number | null;
-            /** @description Present → set the one-off flag; absent → leave unchanged. */
-            is_one_off?: boolean | null;
+            /** @description Present → set the cashflow exclusion flag; absent → leave unchanged. */
+            exclude_from_cashflow?: boolean | null;
             ownership?: null | components["schemas"]["Ownership"];
+        };
+        CashflowMonth: {
+            month: string;
+            /** Format: int64 */
+            inflow_minor: number;
+            /** Format: int64 */
+            outflow_minor: number;
         };
         Category: {
             /** Format: int64 */
@@ -6199,47 +5356,6 @@ export interface components {
             /** @description A link to online banking or the statement portal. */
             url?: string | null;
             notes?: string | null;
-        };
-        /** @description A salary the ledger appears to contain. */
-        DetectedStream: {
-            label: string;
-            /** Format: int64 */
-            account_id: number;
-            /** Format: int64 */
-            category_id?: number | null;
-            currency_code: string;
-            pay_frequency: components["schemas"]["PayFrequency"];
-            last_paid_on: string;
-            /**
-             * @description Where a stream recorded from this should start, so a payment already in the ledger is not
-             *     credited a second time as a projection.
-             */
-            next_payment_on: string;
-            /** Format: int64 */
-            per_payment_minor: number;
-            /**
-             * Format: int64
-             * @description The annual figure implied by the cadence. **Net** — it is what actually landed, so a stream
-             *     created from it should be recorded as take-home rather than before tax.
-             */
-            annual_net_minor: number;
-            payments_seen: number;
-            /**
-             * @description The days of the month payments land on. Two fixed days is the evidence for twice-monthly
-             *     rather than every-fourteen-days, which are 24 and 26 payments a year respectively.
-             */
-            days_of_month: number[];
-            /**
-             * Format: int64
-             * @description How much the amounts vary, in basis points of the typical one. Near zero is a salary;
-             *     anything wide is a payment a fixed annual figure would misrepresent.
-             */
-            variability_bps: number;
-            /**
-             * @description The stable memo token these payments share — what a stream's `match_pattern` should be.
-             *     Distinct from `label`, which is one whole memo and usually carries a per-run suffix.
-             */
-            match_pattern: string;
         };
         Dividend: {
             /** Format: int64 */
@@ -6693,198 +5809,11 @@ export interface components {
              */
             warnings: string[];
         };
-        /**
-         * @description Which direction a stream's recorded figure points, and — when it is before deductions — whose
-         *     rules apply.
-         *
-         *     One enum rather than a `taxable` flag beside a separate `tax_scale`, because those would be two
-         *     independent encodings of the same fact and free to drift apart (CLAUDE.md rule 1). Adding
-         *     another jurisdiction is one variant here, and the exhaustive-match lint then finds every site
-         *     that has to decide what it means.
-         * @enum {string}
-         */
-        IncomeBasis: "net" | "gross_nz_paye";
-        /**
-         * @description One expected payment of one stream, and — once matched — the deposit it claimed with its
-         *     reconstructed decomposition.
-         *
-         *     The decomposition is materialised at match time from the *observed* net (the deposit is
-         *     ground truth; see `sure_core::tax::reconstruct_period`), under the tax scale in force on the
-         *     date it landed. `gross_minor − income_tax − acc − kiwisaver − student_loan ==
-         *     observed_net_minor`, always — which is what lets a report draw the pre-income graph and still
-         *     balance to the cent.
-         */
-        IncomePayment: {
-            /** Format: int64 */
-            id: number;
-            /** Format: int64 */
-            income_stream_id: number;
-            /**
-             * @description The scheduled date. The claimed deposit may sit a few days earlier — payroll shifts off
-             *     weekends and holidays.
-             */
-            due_on: string;
-            status: components["schemas"]["IncomePaymentStatus"];
-            /** Format: int64 */
-            transaction_id?: number | null;
-            matched_by?: null | components["schemas"]["MatchedBy"];
-            /**
-             * Format: int64
-             * @description What the configured level predicted for this date, kept beside the observed figure
-             *     because their gap is the reconciliation signal.
-             */
-            expected_net_minor?: number | null;
-            /**
-             * Format: int64
-             * @description This stream's slice of the claimed deposit.
-             */
-            observed_net_minor?: number | null;
-            /** Format: int64 */
-            gross_minor?: number | null;
-            /** Format: int64 */
-            income_tax_minor?: number | null;
-            /** Format: int64 */
-            acc_levy_minor?: number | null;
-            /** Format: int64 */
-            kiwisaver_minor?: number | null;
-            /** Format: int64 */
-            student_loan_minor?: number | null;
-            /** Format: int64 */
-            employer_kiwisaver_minor?: number | null;
-            /** Format: int64 */
-            esct_minor?: number | null;
-            created_at: string;
-            updated_at: string;
-        };
-        /**
-         * @description Where one expected payment of a stream stands against the ledger.
-         * @enum {string}
-         */
-        IncomePaymentStatus: "expected" | "matched" | "confirmed" | "dismissed";
-        IncomeStream: {
-            /** Format: int64 */
-            id: number;
-            /**
-             * @description Whose income this is. `Person` for a salary; `Joint` for something the household earns
-             *     together, like rent from a flatmate, which has no one person to attribute it to. A joint
-             *     stream is always `basis: Net` — a gross figure needs the person whose marginal rate
-             *     prices it, and a joint stream has none. Nested, exactly as `Account::ownership` is.
-             */
-            ownership: components["schemas"]["Ownership"];
-            label: string;
-            employer?: string | null;
-            currency_code: string;
-            /** Format: int64 */
-            annual_amount_minor: number;
-            basis: components["schemas"]["IncomeBasis"];
-            pay_frequency: components["schemas"]["PayFrequency"];
-            first_payment_on: string;
-            starts_on: string;
-            ends_on?: string | null;
-            /** Format: int64 */
-            annual_increase_bps: number;
-            /** Format: int64 */
-            kiwisaver_bps: number;
-            /**
-             * Format: int64
-             * @description The employer's contribution, in basis points of gross. Never part of take-home.
-             */
-            employer_kiwisaver_bps: number;
-            student_loan: boolean;
-            /** Format: int64 */
-            take_home_bps?: number | null;
-            /** Format: int64 */
-            linked_category_id?: number | null;
-            /**
-             * Format: int64
-             * @description The account KiwiSaver contributions land in. Setting it takes that account off its fitted
-             *     growth rate — see `0023_income_contribution_targets.sql` for why that is unavoidable.
-             */
-            kiwisaver_account_id?: number | null;
-            /**
-             * Format: int64
-             * @description The student loan these deductions pay down. Same consequence for that account.
-             */
-            student_loan_account_id?: number | null;
-            /**
-             * @description Where this stream's deposits land and what their memo says, for the matcher. A list
-             *     because **a job outlives a bank account**: change banks and the same salary arrives in a
-             *     new account, change payroll providers and the same account sees a new memo, and neither
-             *     is a new income stream. Empty means matching is off.
-             */
-            match_targets: components["schemas"]["IncomeStreamMatchTarget"][];
-            pay_treatment: components["schemas"]["PayTreatment"];
-            /**
-             * @description Whether the amount is knowable in advance. A `Variable` stream has no pay scale and no
-             *     expected payments — `annual_amount_minor` is then only an estimate, and steers nothing but
-             *     the bracket the person's *other* income is taxed in.
-             */
-            pay_pattern: components["schemas"]["PayPattern"];
-            enabled: boolean;
-            /** Format: int64 */
-            sort_order: number;
-            notes?: string | null;
-            /**
-             * @description The dated pay scale, ascending. Loaded with the stream — a schedule is not useful without
-             *     the thing it schedules, and the UI edits them together.
-             */
-            steps: components["schemas"]["IncomeStreamStep"][];
-            created_at: string;
-            updated_at: string;
-        };
-        /**
-         * @description One place the matcher looks for this stream's deposits: an account, and a case-insensitive
-         *     substring its description carries.
-         *
-         *     The pattern is the payroll memo's *stable* token — "ACME PAYROLL", not the whole memo with its
-         *     per-run date suffix, which would match a single deposit and nothing else.
-         */
-        IncomeStreamMatchTarget: {
-            /** Format: int64 */
-            id: number;
-            /** Format: int64 */
-            income_stream_id: number;
-            /** Format: int64 */
-            account_id: number;
-            pattern: string;
-        };
-        IncomeStreamStep: {
-            /** Format: int64 */
-            id: number;
-            /** Format: int64 */
-            income_stream_id: number;
-            effective_on: string;
-            /** Format: int64 */
-            annual_amount_minor: number;
-            label?: string | null;
-            /**
-             * Format: int64
-             * @description The employee KiwiSaver election from this date, in basis points of gross. `None` — the
-             *     usual case — means the stream's own rate still applies.
-             *
-             *     Dated for the same reason the level is: an election changes, and the statutory default
-             *     moved 3% -> 3.5% on 1 April 2026, taking everyone who had never made one with it. A single
-             *     rate on the stream reconstructs every historical deposit at today's figure, which shows up
-             *     as a KiwiSaver ribbon that is too fat and a PAYE line that silently absorbs the difference.
-             */
-            kiwisaver_bps?: number | null;
-            /**
-             * Format: int64
-             * @description The employer contribution from this date, same units and same `None` meaning. It moves on
-             *     its own dates (the compulsory minimum stepped on 1 April 2026 too) and never touches
-             *     take-home — only what reaches the fund, and the ESCT taken off it.
-             */
-            employer_kiwisaver_bps?: number | null;
-        };
         LinkGroupMember: {
             /** @description The upstream's stable identifier (`ProviderAccount::external_id`). */
             external_id: string;
             /** @description Name for this member's `providers` row. */
             name: string;
-        };
-        LinkPayment: {
-            /** Format: int64 */
-            transaction_id: number;
         };
         /**
          * @description Link an upstream account (surfaced by `GET /provider-kinds/{kind}/accounts`) to a local
@@ -6992,11 +5921,6 @@ export interface components {
          * @enum {string}
          */
         LotKind: "buy" | "sell" | "corporate";
-        /**
-         * @description Who claimed the deposit — the matcher, or a person overriding it.
-         * @enum {string}
-         */
-        MatchedBy: "auto" | "manual";
         /**
          * @description How much of the MCP (agent) surface is served.
          *
@@ -7138,49 +6062,6 @@ export interface components {
             note?: string | null;
         };
         /**
-         * @description A tax scale that owns its brackets — what a stored, user-editable one deserialises into.
-         *
-         *     The same fields as [`TaxScale`], and [`OwnedTaxScale::as_scale`] hands back a borrowed view, so
-         *     every function in this module works on either. That is the whole reason the built-in constants
-         *     are not simply deleted once the table exists: they remain the seed, the fallback for an empty
-         *     table, and the thing the tests are written against.
-         */
-        OwnedTaxScale: {
-            effective_from: string;
-            /** @description `(upper_bound_annual_minor, rate_bps)`. `None` on the bound means "and above". */
-            brackets: [
-                number | null,
-                number
-            ][];
-            /** Format: int64 */
-            acc_levy_bps: number;
-            /** Format: int64 */
-            acc_income_cap_minor: number;
-            /** Format: int64 */
-            student_loan_threshold_minor: number;
-            /** Format: int64 */
-            student_loan_rate_bps: number;
-            esct_brackets: [
-                number | null,
-                number
-            ][];
-            /**
-             * Format: int64
-             * @description The compulsory employer contribution — see [`TaxScale::kiwisaver_employer_min_bps`].
-             */
-            kiwisaver_employer_min_bps: number;
-            /** Format: int64 */
-            kiwisaver_govt_match_bps: number;
-            /** Format: int64 */
-            kiwisaver_govt_max_minor: number;
-            /**
-             * Format: int64
-             * @description `None` for "no income test", which is what [`i64::MAX`] means internally — nobody wants to
-             *     see 9223372036854775807 in a settings field.
-             */
-            kiwisaver_govt_income_cap_minor?: number | null;
-        };
-        /**
          * @description Who an account belongs to. Every account has one — there is no unattributed state.
          *
          *     Stored as the `(accounts.ownership, accounts.person_id)` column pair and parsed into
@@ -7202,36 +6083,6 @@ export interface components {
             /** @enum {string} */
             kind: "joint";
         };
-        /**
-         * @description How often a stream pays.
-         *
-         *     The simulation steps in months, so this plus an anchor date is what puts a quarterly payment in
-         *     the month it actually lands in and gives a fortnightly payer three paydays in the months that
-         *     really have three.
-         * @enum {string}
-         */
-        PayFrequency: "weekly" | "fortnightly" | "four_weekly" | "semi_monthly" | "monthly" | "quarterly" | "annual";
-        /**
-         * @description Whether a stream's *amount* is knowable before the money arrives.
-         *
-         *     Orthogonal to [`IncomeBasis`], which says how the amount is taxed, and to [`PayFrequency`],
-         *     which stays meaningful either way — irregular pay still has a cycle, and that cycle is what
-         *     annualises a period's gross into a tax bracket.
-         * @enum {string}
-         */
-        PayPattern: "scheduled" | "variable";
-        /**
-         * @description How one arrival of this income is taxed: as an ordinary payslip, or as an IRD "extra pay".
-         *
-         *     An extra pay is a lump sum landing inside a regular pay run — a quarterly bonus, a back
-         *     payment. It shares the regular salary's deposit but not its arithmetic: tax is a slice across
-         *     the brackets sitting on top of the annualised regular pay, and student loan takes 12% of the
-         *     whole lump with no threshold (the regular pays consumed it). See [`crate::tax::extra_pay`].
-         *     A per-stream fact rather than a per-payment flag, because whether income is a bonus is a
-         *     property of the income.
-         * @enum {string}
-         */
-        PayTreatment: "regular" | "extra_pay";
         /** @description One member of the household. */
         Person: {
             /** Format: int64 */
@@ -7550,25 +6401,6 @@ export interface components {
              */
             ledger_sum_minor?: number | null;
         };
-        /** @description What a rematch pass did — the same summary the scheduled task logs. */
-        RematchSummary: {
-            /**
-             * Format: int64
-             * @description Matches whose transaction had been deleted (an undone import), reset to expected.
-             */
-            repaired: number;
-            /** @description Expected rows regenerated from the current schedules. */
-            generated: number;
-            /** @description Stray expected rows removed after a schedule edit. */
-            pruned: number;
-            /** @description Payments newly matched to a deposit. */
-            matched: number;
-            /**
-             * @description Already-settled payments whose stored payslip was re-derived because the stream's terms
-             *     moved under it — a backdated pay scale, or a changed contribution rate.
-             */
-            redecomposed: number;
-        };
         /**
          * @description How often a loan's contractual repayment is actually made. Weekly and fortnightly are
          *     the NZ norm; the forecast annualises them (×52/12, ×26/12) rather than treating them as
@@ -7585,13 +6417,13 @@ export interface components {
              * @description Zen expression evaluated against a transaction context; truthy => match.
              *     Fields available: `amount`, `amount_minor`, `abs_amount`, `is_income`,
              *     `is_expense`, `description`, `merchant`, `merchant_id`, `notes`, `currency`,
-             *     `account`, `account_kind`, `account_id`, `category_id`, `is_one_off`,
+             *     `account`, `account_kind`, `account_id`, `category_id`, `exclude_from_cashflow`,
              *     `counterparty_account_id`, `date`, `year`, `month`, `day`.
              */
             expression: string;
             /** Format: int64 */
             set_category_id?: number | null;
-            set_one_off?: boolean | null;
+            set_exclude_from_cashflow?: boolean | null;
             /**
              * Format: int64
              * @description Action: assign this custom merchant on match.
@@ -7640,8 +6472,8 @@ export interface components {
             prev_counterparty_account_id?: number | null;
             /** Format: int64 */
             new_counterparty_account_id?: number | null;
-            prev_one_off?: boolean | null;
-            new_one_off?: boolean | null;
+            prev_exclude_from_cashflow?: boolean | null;
+            new_exclude_from_cashflow?: boolean | null;
             reverted: boolean;
         };
         RulePreview: {
@@ -7686,6 +6518,7 @@ export interface components {
             currency: string;
             nodes: components["schemas"]["SankeyNode"][];
             links: components["schemas"]["SankeyLink"][];
+            months: components["schemas"]["CashflowMonth"][];
             /**
              * @description Currencies with no rate to `currency`; their transactions are left out of the graph
              *     rather than drawn at parity.
@@ -7701,16 +6534,11 @@ export interface components {
         SankeyNode: {
             /**
              * @description `center`, `savings`, `deficit`, `in:<category_id>` / `out:<category_id>` at any level
-             *     of the hierarchy (`0` being the uncategorised bucket), `gross:<person_id>`, one of the
-             *     four `ded:*` sinks, or `acct:<account_id>`. Treat it as an opaque key and read the
-             *     fields below rather than parsing it.
+             *     of the hierarchy (`0` being uncategorised), or an account crossing id.
              */
             id: string;
             label: string;
-            /**
-             * @description `income` | `center` | `expense` | `savings` | `deficit` | `gross` | `deduction` |
-             *     `account` | `crossing`.
-             */
+            /** @description `income` | `center` | `expense` | `savings` | `deficit` | `crossing`. */
             kind: string;
             /**
              * Format: int64
@@ -7721,7 +6549,7 @@ export interface components {
             /**
              * Format: int32
              * @description 0-based level within its own side (0 = top-level, adjacent to the hub); null for
-             *     the hub, the balance nodes and the pre-income layer.
+             *     the hub and balance nodes.
              */
             depth?: number | null;
             /**
@@ -7736,13 +6564,13 @@ export interface components {
              *
              *     Stated rather than left to be inferred from `kind`, because a crossing can be either —
              *     a mortgage repayment is an outflow and a loan drawdown an inflow. Null for the hub, the
-             *     balance nodes and the pre-income layer.
+             *     balance nodes.
              */
             side?: string | null;
             /**
              * Format: int64
-             * @description The balance-sheet account this node stands for — a perimeter crossing, or the account a
-             *     payslip deduction lands in. Null everywhere else.
+             * @description The balance-sheet account this node stands for — the account a cash movement reached.
+             *     Null everywhere else.
              */
             account_id?: number | null;
         };
@@ -7860,66 +6688,6 @@ export interface components {
             fee_minor?: number;
             kind?: components["schemas"]["LotKind"];
         };
-        /**
-         * @description Write body. `steps` is a **full replace**, like `SaveForecastAssumption` is a full-replace
-         *     upsert: the steps sent here *are* the schedule after the write, so deleting one is omitting it.
-         *     One body and one transaction, so a schedule can never be half-saved.
-         */
-        SaveIncomeStream: {
-            ownership?: null | components["schemas"]["Ownership"];
-            label: string;
-            employer?: string | null;
-            currency_code: string;
-            /** Format: int64 */
-            annual_amount_minor: number;
-            basis: components["schemas"]["IncomeBasis"];
-            pay_frequency: components["schemas"]["PayFrequency"];
-            first_payment_on: string;
-            starts_on: string;
-            ends_on?: string | null;
-            /** Format: int64 */
-            annual_increase_bps?: number;
-            /** Format: int64 */
-            kiwisaver_bps?: number;
-            /** Format: int64 */
-            employer_kiwisaver_bps?: number;
-            student_loan?: boolean;
-            /** Format: int64 */
-            take_home_bps?: number | null;
-            /** Format: int64 */
-            linked_category_id?: number | null;
-            /** Format: int64 */
-            kiwisaver_account_id?: number | null;
-            /** Format: int64 */
-            student_loan_account_id?: number | null;
-            /**
-             * @description Full replace, like `steps`: the targets sent here *are* the stream's targets after the
-             *     write, so removing one is omitting it and an empty list turns matching off.
-             */
-            match_targets?: components["schemas"]["SaveIncomeStreamMatchTarget"][];
-            pay_treatment?: components["schemas"]["PayTreatment"];
-            pay_pattern?: components["schemas"]["PayPattern"];
-            enabled?: boolean;
-            /** Format: int64 */
-            sort_order?: number;
-            notes?: string | null;
-            steps?: components["schemas"]["SaveIncomeStreamStep"][];
-        };
-        SaveIncomeStreamMatchTarget: {
-            /** Format: int64 */
-            account_id: number;
-            pattern: string;
-        };
-        SaveIncomeStreamStep: {
-            effective_on: string;
-            /** Format: int64 */
-            annual_amount_minor: number;
-            label?: string | null;
-            /** Format: int64 */
-            kiwisaver_bps?: number | null;
-            /** Format: int64 */
-            employer_kiwisaver_bps?: number | null;
-        };
         SaveMark: {
             as_of: string;
             /** Format: int64 */
@@ -7953,7 +6721,7 @@ export interface components {
             expression: string;
             /** Format: int64 */
             set_category_id?: number | null;
-            set_one_off?: boolean | null;
+            set_exclude_from_cashflow?: boolean | null;
             /** Format: int64 */
             set_merchant_id?: number | null;
             /** Format: int64 */
@@ -7963,10 +6731,6 @@ export interface components {
             /** Format: int64 */
             priority?: number;
             enabled?: boolean;
-        };
-        /** @description Write body for a tax scale. */
-        SaveTaxScale: components["schemas"]["OwnedTaxScale"] & {
-            source_note?: string | null;
         };
         SaveTransaction: {
             /** Format: int64 */
@@ -7984,7 +6748,7 @@ export interface components {
             notes?: string | null;
             /** Format: int64 */
             category_id?: number | null;
-            is_one_off?: boolean;
+            exclude_from_cashflow?: boolean;
             /**
              * Format: int64
              * @description The account on the other side; omit (or send `null`) for an ordinary payee.
@@ -8022,9 +6786,6 @@ export interface components {
         SetOwnershipBulk: {
             account_ids: number[];
             ownership: components["schemas"]["Ownership"];
-        };
-        SetPaymentStatus: {
-            status: components["schemas"]["IncomePaymentStatus"];
         };
         SetSecuredBy: {
             /**
@@ -8096,21 +6857,6 @@ export interface components {
             currency_code: string;
             /** @description When this row was fetched (ISO-8601 timestamp, UTC). */
             fetched_at: string;
-        };
-        /**
-         * @description A stored scale on the wire: the rules, plus the row identity needed to edit them.
-         *
-         *     Here rather than in `sure-dal` because it is wire vocabulary — the DAL has no `utoipa`, and that
-         *     missing dependency is the layering rule making itself felt rather than an oversight to paper over.
-         */
-        StoredTaxScale: components["schemas"]["OwnedTaxScale"] & {
-            /** Format: int64 */
-            id: number;
-            scale_id: components["schemas"]["TaxScaleId"];
-            /** @description Where these figures came from, so a future reader can check them rather than trust them. */
-            source_note?: string | null;
-            created_at: string;
-            updated_at: string;
         };
         /**
          * @description An income-contingent student loan: the IR/StudyLink shape, and its own profile rather
@@ -8195,26 +6941,6 @@ export interface components {
             payload?: string | null;
         };
         /**
-         * @description Where a stream's gross→net map came from.
-         *
-         *     An override wins, else it is computed.
-         *
-         *     There is deliberately **no** `Reconciled` variant. The reconciliation — this person's modelled
-         *     gross against the net actually observed in the linked income category — is reported *beside*
-         *     the projection as a check on it, not folded into the rate. Two reasons: the statutory scale
-         *     always resolves, so a reconciled rate would only ever be overriding a known-correct answer with
-         *     a measured one whose error bars nobody can see; and a diagnostic that silently changes the thing
-         *     it is diagnosing stops being a diagnostic. A variant that cannot be produced is worse than no
-         *     variant at all, so it is not carried "for later".
-         * @enum {string}
-         */
-        TakeHomeSource: "override" | "already_net" | "statutory";
-        /**
-         * @description Which deduction model applies to an income stream.
-         * @enum {string}
-         */
-        TaxScaleId: "nz_paye" | "none";
-        /**
          * @description How gains on a holding are taxed. Not stored for share/brokerage accounts, where it
          *     is derived from the account's `subtype` instead.
          * @enum {string}
@@ -8244,7 +6970,7 @@ export interface components {
             /** Format: int64 */
             category_id?: number | null;
             /** @description Excluded from regular reports when true. */
-            is_one_off: boolean;
+            exclude_from_cashflow: boolean;
             /**
              * Format: int64
              * @description The other side of a transfer, if linked.

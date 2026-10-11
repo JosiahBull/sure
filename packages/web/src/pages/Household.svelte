@@ -2,8 +2,6 @@
   import { onMount } from "svelte";
   import { api } from "../lib/api";
   import { people, refresh, personColor, initials, placeholders, type Person } from "../lib/people.svelte";
-  import IncomeSection from "./household/IncomeSection.svelte";
-  import PaymentsPanel from "./household/PaymentsPanel.svelte";
 
   let error = $state<string | null>(null);
   let loading = $state(true);
@@ -269,10 +267,6 @@
     {/if}
   </section>
 
-  {#if people.list.length > 0}
-    <IncomeSection />
-    <PaymentsPanel />
-  {/if}
 {/if}
 
 <style>

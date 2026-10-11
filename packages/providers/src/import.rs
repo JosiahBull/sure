@@ -64,7 +64,7 @@ impl ImportRegistryPort for ImportRegistry {
 }
 
 /// One parsed row in the shape the import pipeline writes.
-fn row(t: ProviderTransaction, is_one_off: bool) -> ImportRow {
+fn row(t: ProviderTransaction, exclude_from_cashflow: bool) -> ImportRow {
     ImportRow {
         external_id: t.external_id,
         posted_at: t.posted_at,
@@ -75,7 +75,7 @@ fn row(t: ProviderTransaction, is_one_off: bool) -> ImportRow {
         category_name: t.category.as_ref().map(|c| c.name.clone()),
         category_kind: t.category.as_ref().and_then(|c| c.kind),
         category_group: t.category.and_then(|c| c.group),
-        is_one_off,
+        exclude_from_cashflow,
     }
 }
 
@@ -527,7 +527,7 @@ Ledger Balance : 100.00 as of 20260803\r\n";
         let opening = item.opening_balance.as_ref().expect("an opening balance");
         assert_eq!(opening.amount_minor, 105_00);
         assert!(
-            opening.is_one_off,
+            opening.exclude_from_cashflow,
             "it moves value without being spend or income"
         );
     }

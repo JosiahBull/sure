@@ -111,7 +111,7 @@ pub struct Transaction {
     pub notes: Option<String>,
     pub category_id: Option<i64>,
     /// Excluded from regular reports when true.
-    pub is_one_off: bool,
+    pub exclude_from_cashflow: bool,
     /// The other side of a transfer, if linked.
     pub linked_transaction_id: Option<i64>,
     /// The account this money went to or came from, when the other side is an account rather
@@ -159,7 +159,7 @@ pub struct SaveTransaction {
     #[serde(default)]
     pub category_id: Option<i64>,
     #[serde(default)]
-    pub is_one_off: bool,
+    pub exclude_from_cashflow: bool,
     /// The account on the other side; omit (or send `null`) for an ordinary payee.
     #[serde(default)]
     pub counterparty_account_id: Option<i64>,
@@ -168,14 +168,17 @@ pub struct SaveTransaction {
 #[derive(Debug, Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
 pub struct TxQuery {
+    /// Restrict to an application-selected set before pagination (report drilldowns).
+    #[serde(skip)]
+    pub ids: Option<Vec<i64>>,
     pub account_id: Option<i64>,
     pub category_id: Option<i64>,
     /// Inclusive lower bound on the transaction date (ISO-8601).
     pub from: Option<String>,
     /// Inclusive upper bound on the transaction date (ISO-8601).
     pub to: Option<String>,
-    /// When false, one-off transactions are excluded. Defaults to true.
-    pub include_one_off: Option<bool>,
+    /// When false, transactions excluded from cashflow are excluded. Defaults to true.
+    pub include_excluded_from_cashflow: Option<bool>,
     /// Case-insensitive substring match on description/merchant/notes.
     pub search: Option<String>,
     /// `true` keeps only rows with no category, `false` only rows that have one; omitted
@@ -219,9 +222,9 @@ pub struct BulkUpdate {
     /// only ever sees what arrives after it.
     #[serde(default, deserialize_with = "double_option")]
     pub counterparty_account_id: Option<Option<i64>>,
-    /// Present → set the one-off flag; absent → leave unchanged.
+    /// Present → set the cashflow exclusion flag; absent → leave unchanged.
     #[serde(default)]
-    pub is_one_off: Option<bool>,
+    pub exclude_from_cashflow: Option<bool>,
     /// Present → override the attribution (or `null` to go back to following the account);
     /// absent → leave unchanged.
     #[serde(default, deserialize_with = "double_option")]
@@ -292,14 +295,14 @@ mod tests {
 
     fn bulk_update_json(ids: &[i64]) -> String {
         let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-        format!(r#"{{"ids":[{list}],"is_one_off":true}}"#)
+        format!(r#"{{"ids":[{list}],"exclude_from_cashflow":true}}"#)
     }
 
     #[test]
     fn an_ordinary_batch_is_accepted() {
         let parsed: BulkUpdate = serde_json::from_str(&bulk_update_json(&[7, 9])).unwrap();
         assert_eq!(parsed.ids.as_slice(), &[7, 9]);
-        assert_eq!(parsed.is_one_off, Some(true));
+        assert_eq!(parsed.exclude_from_cashflow, Some(true));
 
         let parsed: BulkDelete = serde_json::from_str(r#"{"ids":[7,9]}"#).unwrap();
         // The `Deref` is what lets the DAL and the repository port keep taking `&[i64]`: this

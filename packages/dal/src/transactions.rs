@@ -23,7 +23,7 @@ pub(crate) struct TransactionRow {
     pub(crate) merchant_id: Option<i64>,
     pub(crate) notes: Option<String>,
     pub(crate) category_id: Option<i64>,
-    pub(crate) is_one_off: bool,
+    pub(crate) exclude_from_cashflow: bool,
     pub(crate) linked_transaction_id: Option<i64>,
     pub(crate) counterparty_account_id: Option<i64>,
     pub(crate) provider: Option<String>,
@@ -67,7 +67,7 @@ impl TryFrom<TransactionRow> for Transaction {
             merchant_id: r.merchant_id,
             notes: r.notes,
             category_id: r.category_id,
-            is_one_off: r.is_one_off,
+            exclude_from_cashflow: r.exclude_from_cashflow,
             linked_transaction_id: r.linked_transaction_id,
             counterparty_account_id: r.counterparty_account_id,
             provider: r.provider,
@@ -125,7 +125,7 @@ pub async fn credits_since(
     sqlx::query_as!(
         TransactionRow,
         r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
-                  merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                  merchant, merchant_id, notes, category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
                   linked_transaction_id, counterparty_account_id,
                      provider, external_id, categorized_by_rule_id,
                   ownership, person_id, created_at, updated_at
@@ -155,6 +155,11 @@ pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
         "SELECT t.* FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE 1=1",
     );
+    if let Some(ids) = q.ids {
+        qb.push(" AND t.id IN (SELECT value FROM json_each(")
+            .push_bind(sqlx::types::Json(ids))
+            .push("))");
+    }
     if let Some(account_id) = q.account_id {
         qb.push(" AND t.account_id = ").push_bind(account_id);
     }
@@ -171,8 +176,8 @@ pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
             .push_bind(to.to_string())
             .push(")");
     }
-    if !q.include_one_off.unwrap_or(true) {
-        qb.push(" AND t.is_one_off = 0");
+    if !q.include_excluded_from_cashflow.unwrap_or(true) {
+        qb.push(" AND t.exclude_from_cashflow = 0");
     }
     if let Some(uncategorized) = q.uncategorized {
         qb.push(if uncategorized {
@@ -240,11 +245,11 @@ pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
         TransactionRow,
         r#"INSERT INTO transactions
               (account_id, posted_at, amount_minor, currency_code, description, merchant, notes,
-               category_id, is_one_off, merchant_id, ownership, person_id,
+               category_id, exclude_from_cashflow, merchant_id, ownership, person_id,
                counterparty_account_id)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
            RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
-                     merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                     merchant, merchant_id, notes, category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
                      linked_transaction_id, counterparty_account_id,
                      provider, external_id, categorized_by_rule_id,
                      ownership, person_id, created_at, updated_at"#,
@@ -256,7 +261,7 @@ pub async fn create(db: &Db, input: SaveTransaction) -> AppResult<Transaction> {
         input.merchant,
         input.notes,
         input.category_id,
-        input.is_one_off,
+        input.exclude_from_cashflow,
         input.merchant_id,
         ownership,
         person_id,
@@ -280,12 +285,12 @@ pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Trans
         TransactionRow,
         r#"UPDATE transactions SET account_id=?2, posted_at=?3, amount_minor=?4,
               currency_code=?5, description=?6, merchant=?7, notes=?8, category_id=?9,
-              is_one_off=?10, merchant_id=?11, ownership=?12, person_id=?13,
+              exclude_from_cashflow=?10, merchant_id=?11, ownership=?12, person_id=?13,
               counterparty_account_id=?14,
               categorized_by_rule_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE id=?1
            RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
-                     merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                     merchant, merchant_id, notes, category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
                      linked_transaction_id, counterparty_account_id,
                      provider, external_id, categorized_by_rule_id,
                      ownership, person_id, created_at, updated_at"#,
@@ -298,7 +303,7 @@ pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Trans
         input.merchant,
         input.notes,
         input.category_id,
-        input.is_one_off,
+        input.exclude_from_cashflow,
         input.merchant_id,
         ownership,
         person_id,
@@ -335,13 +340,13 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
         ids,
         category_id,
         merchant_id,
-        is_one_off,
+        exclude_from_cashflow,
         ownership,
         counterparty_account_id,
     } = input;
     if category_id.is_none()
         && merchant_id.is_none()
-        && is_one_off.is_none()
+        && exclude_from_cashflow.is_none()
         && ownership.is_none()
         && counterparty_account_id.is_none()
     {
@@ -373,9 +378,9 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
             set.push("merchant_id = ");
             set.push_bind_unseparated(mid);
         }
-        if let Some(one_off) = is_one_off {
-            set.push("is_one_off = ");
-            set.push_bind_unseparated(one_off);
+        if let Some(excluded_from_cashflow) = exclude_from_cashflow {
+            set.push("exclude_from_cashflow = ");
+            set.push_bind_unseparated(excluded_from_cashflow);
         }
         // No pre-flight check for the account the way `category_id` gets one: the column's FK
         // catches a stale id, and `map_fk` below turns it into the same named 422.
@@ -663,7 +668,7 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
               (account_id, posted_at, amount_minor, currency_code, description, category_id)
            VALUES (?1,?2,?3,?4,?5,?6)
            RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
-                     merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                     merchant, merchant_id, notes, category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
                      linked_transaction_id, counterparty_account_id,
                      provider, external_id, categorized_by_rule_id,
                      ownership, person_id, created_at, updated_at"#,
@@ -684,7 +689,7 @@ pub async fn create_transfer(db: &Db, req: TransferRequest) -> AppResult<Vec<Tra
                linked_transaction_id)
            VALUES (?1,?2,?3,?4,?5,?6,?7)
            RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
-                     merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                     merchant, merchant_id, notes, category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
                      linked_transaction_id, counterparty_account_id,
                      provider, external_id, categorized_by_rule_id,
                      ownership, person_id, created_at, updated_at"#,
@@ -826,7 +831,7 @@ async fn fetch(db: &Db, id: i64) -> AppResult<Transaction> {
     sqlx::query_as!(
         TransactionRow,
         r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
-                  merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                  merchant, merchant_id, notes, category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
                   linked_transaction_id, counterparty_account_id,
                      provider, external_id, categorized_by_rule_id,
                   ownership, person_id, created_at, updated_at
@@ -944,7 +949,7 @@ mod tests {
                 merchant: None,
                 notes: None,
                 category_id: None,
-                is_one_off: false,
+                exclude_from_cashflow: false,
                 merchant_id: None,
                 ownership: None,
                 counterparty_account_id: None,
@@ -1063,7 +1068,7 @@ mod tests {
                 ids: batch(vec![filed]),
                 category_id: Some(Some(groceries)),
                 merchant_id: None,
-                is_one_off: None,
+                exclude_from_cashflow: None,
                 ownership: None,
                 counterparty_account_id: None,
             },
@@ -1114,14 +1119,14 @@ mod tests {
         let b = tx(&db, acc, "2026-01-02", -200).await;
         let untouched = tx(&db, acc, "2026-01-03", -300).await;
 
-        // Set the category + one-off on two rows; leave merchant absent (unchanged).
+        // Set the category + cashflow exclusion on two rows; leave merchant absent (unchanged).
         let affected = bulk_update(
             &db,
             BulkUpdate {
                 ids: batch(vec![a, b]),
                 category_id: Some(Some(groceries)),
                 merchant_id: None,
-                is_one_off: Some(true),
+                exclude_from_cashflow: Some(true),
                 ownership: None,
                 counterparty_account_id: None,
             },
@@ -1133,12 +1138,12 @@ mod tests {
         for id in [a, b] {
             let t = fetch(&db, id).await.unwrap();
             assert_eq!(t.category_id, Some(groceries));
-            assert!(t.is_one_off);
+            assert!(t.exclude_from_cashflow);
         }
         // The row not in `ids` is left alone.
         let t = fetch(&db, untouched).await.unwrap();
         assert_eq!(t.category_id, None);
-        assert!(!t.is_one_off);
+        assert!(!t.exclude_from_cashflow);
     }
 
     #[tokio::test]
@@ -1153,7 +1158,7 @@ mod tests {
                 ids: batch(vec![a]),
                 category_id: Some(Some(groceries)),
                 merchant_id: None,
-                is_one_off: None,
+                exclude_from_cashflow: None,
                 ownership: None,
                 counterparty_account_id: None,
             },
@@ -1169,7 +1174,7 @@ mod tests {
                 ids: batch(vec![a]),
                 category_id: Some(None),
                 merchant_id: None,
-                is_one_off: None,
+                exclude_from_cashflow: None,
                 ownership: None,
                 counterparty_account_id: None,
             },
@@ -1194,7 +1199,7 @@ mod tests {
                     ids: batch(vec![a]),
                     category_id: None,
                     merchant_id: None,
-                    is_one_off: None,
+                    exclude_from_cashflow: None,
                     ownership: None,
                     counterparty_account_id: None,
                 }
@@ -1240,7 +1245,7 @@ mod tests {
                     ids: batch(ids.clone()),
                     category_id: None,
                     merchant_id: None,
-                    is_one_off: Some(true),
+                    exclude_from_cashflow: Some(true),
                     ownership: None,
                     counterparty_account_id: None,
                 }
@@ -1249,7 +1254,7 @@ mod tests {
             .unwrap(),
             1
         );
-        assert!(fetch(&db, real).await.unwrap().is_one_off);
+        assert!(fetch(&db, real).await.unwrap().exclude_from_cashflow);
         assert_eq!(bulk_delete(&db, &ids).await.unwrap(), 1);
     }
 
@@ -1377,7 +1382,7 @@ mod tests {
                 merchant: None,
                 notes: None,
                 category_id: None,
-                is_one_off: false,
+                exclude_from_cashflow: false,
                 merchant_id: None,
                 ownership,
                 counterparty_account_id: None,
@@ -1478,7 +1483,7 @@ mod tests {
             ids: batch(ids.clone()),
             category_id: None,
             merchant_id: None,
-            is_one_off: None,
+            exclude_from_cashflow: None,
             ownership: Some(Some(Ownership::Person { person_id: alex })),
             counterparty_account_id: None,
         };
@@ -1493,7 +1498,7 @@ mod tests {
             ids: batch(ids),
             category_id: None,
             merchant_id: None,
-            is_one_off: None,
+            exclude_from_cashflow: None,
             ownership: Some(None),
             counterparty_account_id: None,
         };
@@ -1516,7 +1521,7 @@ mod tests {
                 merchant: None,
                 notes: None,
                 category_id: None,
-                is_one_off: false,
+                exclude_from_cashflow: false,
                 merchant_id: None,
                 ownership: Some(Ownership::Person { person_id: 404 }),
                 counterparty_account_id: None,
@@ -1547,7 +1552,7 @@ mod tests {
                 category_name: None,
                 category_group: None,
                 category_kind: None,
-                is_one_off: false,
+                exclude_from_cashflow: false,
             })
             .collect();
         crate::providers::import_transactions(db, account_id, "NZD", tag, &rows)
@@ -1633,9 +1638,9 @@ mod tests {
     }
 
     /// An opening-balance row has to reach the balance reconstruction while staying out of
-    /// income, which is what `is_one_off` is for — so the importer must be able to set it.
+    /// income, which is what `exclude_from_cashflow` is for — so the importer must be able to set it.
     #[tokio::test]
-    async fn an_imported_row_can_be_marked_one_off() {
+    async fn an_imported_row_can_be_marked_excluded_from_cashflow() {
         let db = test_db().await;
         let acct = account(&db, "Chequing").await;
         crate::providers::import_transactions(
@@ -1654,7 +1659,7 @@ mod tests {
                     category_name: None,
                     category_group: None,
                     category_kind: None,
-                    is_one_off: true,
+                    exclude_from_cashflow: true,
                 },
                 crate::providers::ImportRow {
                     external_id: "ordinary".to_string(),
@@ -1666,7 +1671,7 @@ mod tests {
                     category_name: None,
                     category_group: None,
                     category_kind: None,
-                    is_one_off: false,
+                    exclude_from_cashflow: false,
                 },
             ],
         )
@@ -1676,9 +1681,9 @@ mod tests {
         let rows = list(&db, TxQuery::default()).await.unwrap();
         let by_desc: std::collections::HashMap<&str, &Transaction> =
             rows.iter().map(|t| (t.description.as_str(), t)).collect();
-        assert!(by_desc["Opening balance"].is_one_off);
+        assert!(by_desc["Opening balance"].exclude_from_cashflow);
         assert_eq!(by_desc["Opening balance"].amount_minor, 18_694_18);
-        assert!(!by_desc["Coffee"].is_one_off);
+        assert!(!by_desc["Coffee"].exclude_from_cashflow);
     }
 
     /// The durable memory a repeat upload routes itself by: the ids record which upstream

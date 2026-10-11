@@ -29,6 +29,7 @@
   //   ?range=<key>    apply a preset time range
   //   ?at=<id>        resume the scroll position around a transaction (written as the list scrolls)
   const params = new URLSearchParams(router.path.split("?")[1] ?? "");
+  if (params.get("cashflow") === "1" || params.has("cashflow_account")) filters.includeExcludedFromCashflow = params.get("include_excluded") === "1";
   const num = (v: string | null) => (v && Number.isFinite(Number(v)) ? Number(v) : null);
   const isRangeKey = (v: string | null): v is RangeKey => !!v && RANGES.some((r) => r.key === v);
   type TypeFilter = "" | "income" | "expense";
@@ -41,15 +42,12 @@
   const paramType = params.get("type");
   const paramRange = params.get("range");
   const paramAnchor = num(params.get("at"));
-  // Shareable-link params (mirroring the reference's q[start_date]/q[end_date]/q[categories]/
-  // per_page/page): an explicit start+end sets a custom window; page-size and page restore
-  // the exact paginated slice; the search text and tab round-trip too.
+  // Shareable links preserve the date window, page, search text and tab.
   const isDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
   const paramStart = params.get("start");
   const paramEnd = params.get("end");
   const paramSearch = params.get("q") ?? "";
   const paramPage = num(params.get("page"));
-  const paramPerPage = num(params.get("per_page"));
   const paramTab = params.get("tab");
 
   type Tx = Schemas["Transaction"];
@@ -77,6 +75,8 @@
   let error = $state<string | null>(null);
 
   let accountId = $state<number | "">(paramAccount ?? "");
+  let cashflowOnly = $state(params.get("cashflow") === "1");
+  let cashflowAccountId = $state<number | "">(num(params.get("cashflow_account")) ?? "");
   // Three states: "" is every category, "none" is only the rows that have no category at all
   // (the ones the list shows as "Uncategorised"), and an id is that category and its subtree.
   // "none" is a filter no category id can express — a row's `category_id` is null, not a
@@ -116,7 +116,7 @@
   }
   const sortLabel = (key: SortKey) =>
     sortKey !== key ? "not sorted" : sortDir === "asc" ? "sorted ascending" : "sorted descending";
-  // Time range / one-off are the header's shared filters (App.svelte), not page-local —
+  // Time range / cashflow exclusion are the header's shared filters (App.svelte), not page-local —
   // deep links still get to steer them, though: an explicit `?range=` wins, and a
   // deep-linked transaction/account (which implies "show me everything relevant", not
   // just whatever slice happens to be selected) widens to "all" if no range was given.
@@ -146,7 +146,7 @@
     description: "",
     category_id: "" as number | "",
     merchant_id: "" as number | "",
-    is_one_off: false,
+    exclude_from_cashflow: false,
   });
 
   const accountName = $derived(new Map(accounts.map((a) => [a.id, a.name])));
@@ -309,10 +309,8 @@
     return m;
   });
 
-  // Numbered pagination (matching the reference app) over the already-loaded, filtered/sorted
-  // set — rows per page is user-choosable, like the reference's page-size select.
-  const PAGE_SIZES = [10, 20, 30, 50, 100];
-  let pageSize = $state(paramPerPage && PAGE_SIZES.includes(paramPerPage) ? paramPerPage : 50);
+  // Fixed-size pagination over the filtered and sorted history.
+  const PAGE_SIZE = 1000;
   let page = $state(paramPage && paramPage > 0 ? paramPage : 1); // 1-indexed
   // A valuation is a *level*, not a movement, so it deliberately never reaches `sortedFiltered`
   // — which every sum on this page (`stats`, `dayGroups`, `statCurrency`) derives from. Merging
@@ -353,8 +351,8 @@
     });
   });
 
-  const pageCount = $derived(Math.max(1, Math.ceil(historyRows.length / pageSize)));
-  const paged = $derived(historyRows.slice((page - 1) * pageSize, page * pageSize));
+  const pageCount = $derived(Math.max(1, Math.ceil(historyRows.length / PAGE_SIZE)));
+  const paged = $derived(historyRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE));
   // The reference nests each day as its own two-tier card (a subtle outer wrapper holding a
   // brighter inner card of rows) — bucket the current page's rows into contiguous same-day runs
   // to render that. Only meaningful when `grouped` (paged is already date-desc, so same-day rows
@@ -384,10 +382,13 @@
   });
 
   // Reflect the whole filter/paging state into the hash query so the URL is a shareable link
-  // (the reference keeps its filters — categories, date window, page, per_page — in the URL for
+  // (the reference keeps its filters — categories, date window and page — in the URL for
   // exactly this reason). Kept in sync on every relevant change below.
   function syncUrl() {
     const p = new URLSearchParams();
+    if (cashflowOnly) p.set("cashflow", "1");
+    if (filters.includeExcludedFromCashflow) p.set("include_excluded", "1");
+    if (cashflowAccountId !== "") p.set("cashflow_account", String(cashflowAccountId));
     if (categoryId !== "") p.set("category", String(categoryId));
     if (accountId !== "") p.set("account", String(accountId));
     if (typeFilter) p.set("type", typeFilter);
@@ -402,7 +403,6 @@
     // produces a clean URL, and `?sort=amount` alone means "amount, the useful way round".
     if (sortKey !== "date") p.set("sort", sortKey);
     if (sortDir !== DEFAULT_DIR[sortKey]) p.set("dir", sortDir);
-    if (pageSize !== 50) p.set("per_page", String(pageSize));
     if (page > 1) p.set("page", String(page));
     // Still a transaction id: `?at=` is a shared-link contract, and the rules audit log
     // deep-links `?tx=` into the same resolution.
@@ -426,8 +426,12 @@
   // holds the last *navigated* value). Tracking `accountId` would make this effect re-run on
   // an in-page account change, read the stale URL, and put the old account straight back.
   $effect(() => {
-    const fromUrl = num(queryParams().get("account")) ?? "";
+    const query = queryParams();
+    const fromUrl = num(query.get("account")) ?? "";
     untrack(() => {
+      cashflowOnly = query.get("cashflow") === "1";
+      if (cashflowOnly || query.has("cashflow_account")) filters.includeExcludedFromCashflow = query.get("include_excluded") === "1";
+      cashflowAccountId = num(query.get("cashflow_account")) ?? "";
       if (fromUrl === accountId) return;
       accountId = fromUrl;
       page = 1;
@@ -451,24 +455,25 @@
     if (initial != null) {
       // Pagination is over the merged list now, so the index has to come from it.
       const idx = historyRows.findIndex((r) => r.kind === "tx" && r.tx.id === initial);
-      if (idx >= 0) page = Math.floor(idx / pageSize) + 1;
+      if (idx >= 0) page = Math.floor(idx / PAGE_SIZE) + 1;
     }
+    page = Math.min(page, pageCount);
   });
   // Persist the current page's leading transaction to `?at=` so a refresh resumes on the same
   // page. Guarded on didInitPage so this doesn't clobber a still-pending deep-link resolution.
   $effect(() => {
     // Depend on the full filter/paging surface so the shareable URL tracks every change.
     page;
-    void [categoryId, accountId, typeFilter, filters.custom?.from, filters.custom?.to, search, activeTab, pageSize, sortKey, sortDir];
+    void [categoryId, accountId, cashflowOnly, cashflowAccountId, typeFilter, filters.includeExcludedFromCashflow, filters.custom?.from, filters.custom?.to, search, activeTab, sortKey, sortDir];
     if (didInitPage) syncUrl();
   });
 
-  // Filters/sort/page-size changing what's in the list makes the current page meaningless —
+  // Filters or sorting changing what's in the list makes the current page meaningless —
   // jump back to page 1. (A reload with the same filters, e.g. after saving a row, is not a
   // change here, so the current page survives it.)
   let prevFilterSig: string | null = null;
   $effect(() => {
-    const sig = `${accountId}|${categoryId}|${typeFilter}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}|${pageSize}`;
+    const sig = `${accountId}|${cashflowOnly}|${cashflowAccountId}|${categoryId}|${typeFilter}|${search}|${filters.includeExcludedFromCashflow}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}`;
     if (prevFilterSig != null && sig !== prevFilterSig) {
       // The visible set changed, so a lingering selection could act on rows the user can
       // no longer see — clear it. (A same-filter reload, e.g. after a save, isn't a change.)
@@ -491,6 +496,13 @@
   type Chip = { key: string; icon?: keyof typeof ICONS; label: string; clear: () => void };
   const activeChips = $derived.by<Chip[]>(() => {
     const chips: Chip[] = [];
+    if (cashflowOnly)
+      chips.push({ key: "cashflow", label: "Cashflow only", clear: () => {
+        cashflowOnly = false;
+        cashflowAccountId = "";
+      } });
+    if (cashflowAccountId !== "")
+      chips.push({ key: "cashflow_account", label: `To/from ${accountName.get(cashflowAccountId) ?? "account"}`, clear: () => (cashflowAccountId = "") });
     if (filters.custom) {
       const { from, to } = filters.custom;
       chips.push({ key: "start", icon: "calendar", label: `on or after ${from}`, clear: () => (filters.custom = null) });
@@ -591,7 +603,9 @@
     loading = true;
     error = null;
     const { from, to } = activeRange();
-    const query: Record<string, unknown> = { from, to, include_one_off: filters.includeOneOff, limit: 2000 };
+    const query: Record<string, unknown> = { from, to, include_excluded_from_cashflow: filters.includeExcludedFromCashflow, limit: 2000 };
+    if (cashflowOnly && cashflowAccountId === "") query.cashflow_categories_only = true;
+    if (cashflowAccountId !== "") query.cashflow_account_id = cashflowAccountId;
     if (accountId !== "") query.account_id = accountId;
     // Category is filtered client-side (subtree-aware) in `sortedFiltered`, not on the server.
     const { data, error: e } = await api.GET("/api/transactions", { params: { query } });
@@ -606,7 +620,9 @@
   $effect(() => {
     // Category is filtered client-side, so it isn't a reload trigger.
     accountId;
-    filters.includeOneOff;
+    cashflowOnly;
+    cashflowAccountId;
+    filters.includeExcludedFromCashflow;
     filters.range;
     filters.custom;
     loadTx();
@@ -646,7 +662,7 @@
         description: form.description,
         category_id: form.category_id === "" ? null : form.category_id,
         merchant_id: form.merchant_id === "" ? null : form.merchant_id,
-        is_one_off: form.is_one_off,
+        exclude_from_cashflow: form.exclude_from_cashflow,
       },
     });
     if (e) {
@@ -682,7 +698,7 @@
         merchant_id: t.merchant_id,
         notes: t.notes,
         category_id: t.category_id,
-        is_one_off: t.is_one_off,
+        exclude_from_cashflow: t.exclude_from_cashflow,
         counterparty_account_id: t.counterparty_account_id,
         // Every field the row already has must be restated: this is a full-replace PUT, so
         // anything omitted is cleared. `ownership` especially — an omitted attribution
@@ -914,8 +930,8 @@
     </div>
     <div class="row spread" style="margin-top:12px">
       <label class="switch">
-        <input type="checkbox" bind:checked={form.is_one_off} /><span class="track"></span>
-        <span>One-off</span>
+        <input type="checkbox" bind:checked={form.exclude_from_cashflow} /><span class="track"></span>
+        <span>Exclude From Cashflow</span>
       </label>
       <button class="btn btn-primary" onclick={addTx}>Save transaction</button>
     </div>
@@ -1205,7 +1221,7 @@
           <div class="tx-main">
             <div class="tx-name-row">
               <span class="ell tx-name">{title}</span>
-              {#if t.is_one_off}<span class="badge">one-off</span>{/if}
+              {#if t.exclude_from_cashflow}<span class="badge">Exclude From Cashflow</span>{/if}
               {#if t.linked_transaction_id}<span class="badge">⇄ transfer</span>{/if}
               {#if people.list.length > 0}
                 {@const owner = ownerOf(t)}
@@ -1271,12 +1287,6 @@
     {/snippet}
 
     <div class="pagination row spread wrap">
-      <label class="row" style="gap:8px">
-        <span class="small faint">Rows per page</span>
-        <select class="select btn-sm" style="width:auto" bind:value={pageSize}>
-          {#each PAGE_SIZES as n}<option value={n}>{n}</option>{/each}
-        </select>
-      </label>
       <nav class="pager" aria-label="Pagination">
         <button class="pager-nav" disabled={page <= 1} onclick={() => (page = page - 1)} aria-label="Previous page">‹</button>
         <div class="pager-pill">
@@ -1340,8 +1350,8 @@
            the first as internal movement precisely because it was told so. -->
       {#each accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
     </select>
-    <button class="btn btn-sm" onclick={() => bulkPatch({ is_one_off: true })} disabled={bulkBusy}>Mark one-off</button>
-    <button class="btn btn-sm" onclick={() => bulkPatch({ is_one_off: false })} disabled={bulkBusy}>Clear one-off</button>
+    <button class="btn btn-sm" onclick={() => bulkPatch({ exclude_from_cashflow: true })} disabled={bulkBusy}>Exclude From Cashflow</button>
+    <button class="btn btn-sm" onclick={() => bulkPatch({ exclude_from_cashflow: false })} disabled={bulkBusy}>Include In Cashflow</button>
 
     <span class="sep" aria-hidden="true"></span>
     {#if confirmingDelete}

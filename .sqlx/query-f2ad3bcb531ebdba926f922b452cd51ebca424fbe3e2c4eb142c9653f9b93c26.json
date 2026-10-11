@@ -1,0 +1,182 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", name, description, expression, set_category_id,\n                  set_exclude_from_cashflow AS \"set_exclude_from_cashflow: bool\", set_merchant_id,\n                  set_counterparty_account_id,\n                  overwrite_manual AS \"overwrite_manual!: bool\",\n                  stop_on_match AS \"stop_on_match!: bool\", priority,\n                  enabled AS \"enabled!: bool\", created_at, updated_at\n                 FROM rules WHERE enabled=1 ORDER BY priority, id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "expression",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "expression"
+          }
+        }
+      },
+      {
+        "name": "set_category_id",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_category_id"
+          }
+        }
+      },
+      {
+        "name": "set_exclude_from_cashflow: bool",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_exclude_from_cashflow"
+          }
+        }
+      },
+      {
+        "name": "set_merchant_id",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_merchant_id"
+          }
+        }
+      },
+      {
+        "name": "set_counterparty_account_id",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_counterparty_account_id"
+          }
+        }
+      },
+      {
+        "name": "overwrite_manual!: bool",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "overwrite_manual"
+          }
+        }
+      },
+      {
+        "name": "stop_on_match!: bool",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "stop_on_match"
+          }
+        }
+      },
+      {
+        "name": "priority",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "priority"
+          }
+        }
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f2ad3bcb531ebdba926f922b452cd51ebca424fbe3e2c4eb142c9653f9b93c26"
+}

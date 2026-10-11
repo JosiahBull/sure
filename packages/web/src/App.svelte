@@ -18,7 +18,6 @@
   import Merchants from "./pages/Merchants.svelte";
   import Providers from "./pages/Providers.svelte";
   import Preferences from "./pages/Preferences.svelte";
-  import TaxRates from "./pages/TaxRates.svelte";
   import Appearance from "./pages/Appearance.svelte";
   import ScheduledAdjustments from "./pages/ScheduledAdjustments.svelte";
 
@@ -42,7 +41,6 @@
     "/settings/import": "Import",
     "/settings/household": "Household",
     "/settings/providers": "Bank sync",
-    "/settings/tax": "Tax rates",
     "/settings/preferences": "Preferences",
     "/settings/appearance": "Appearance",
     "/settings/scheduled": "Scheduled adjustments",
@@ -73,8 +71,6 @@
         return Merchants;
       case "/settings/providers":
         return Providers;
-      case "/settings/tax":
-        return TaxRates;
       case "/settings/preferences":
         return Preferences;
       case "/settings/appearance":
@@ -290,11 +286,13 @@
               {/each}
             </select>
           </div>
-          <label class="switch subbar-switch" title="Include one-off transactions">
-            <input type="checkbox" bind:checked={filters.includeOneOff} />
+          {#if activePath === "/transactions"}
+          <label class="switch subbar-switch" title="Include transactions marked Exclude From Cashflow">
+            <input type="checkbox" bind:checked={filters.includeExcludedFromCashflow} />
             <span class="track"></span>
-            <span>One-off</span>
+            <span>Forcibly Include All</span>
           </label>
+          {/if}
         {/if}
       </div>
     </div>
@@ -609,7 +607,7 @@
   .subbar-switch {
     flex: none;
   }
-  /* The breadcrumb and the three range/household/one-off controls do not fit side by side at
+  /* The breadcrumb and the three range/household/cashflow controls do not fit side by side at
      phone width, and none of them will shrink on their own (a `<select>` is sized by its
      longest option). They used to widen the *document* to ~712px, so the whole page scrolled
      sideways — and because the rail and this bar are sticky, scrolling the page then slid
@@ -619,7 +617,7 @@
   /* Two rows, arranged so nothing has to be abbreviated and the sticky bar costs no more of the
      screen than it must:
 
-         [▤]  Home › Dashboard              ( ) One-off
+         [▤]  Home › Dashboard              ( ) Forcibly Include All
          [ Last 12 months  ▾ ] [ Whole household ▾ ]
 
      The breadcrumb leaves ~230px spare on its row and the toggle wants ~100px, so the toggle

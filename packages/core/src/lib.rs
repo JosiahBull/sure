@@ -14,7 +14,6 @@ pub mod currencies;
 pub mod equity;
 pub mod error;
 pub mod import;
-pub mod income;
 pub mod iso_date;
 pub mod merchants;
 pub mod money;
@@ -23,7 +22,6 @@ pub mod providers;
 pub mod rules;
 pub mod settings;
 pub mod stock_prices;
-pub mod tax;
 pub mod transactions;
 pub mod types;
 pub mod valuations;
@@ -45,11 +43,6 @@ pub use import::{
     ImportItem, ImportMatch, ImportRecord, ImportResult, ImportSource, ImportUndoResult,
     MAX_UPLOAD_BYTES, Reconciliation,
 };
-pub use income::{
-    IncomeBasis, IncomePayment, IncomePaymentStatus, IncomeStream, IncomeStreamMatchTarget,
-    IncomeStreamStep, MatchedBy, PayFrequency, PayPattern, PayStep, PayTreatment, SaveIncomeStream,
-    SaveIncomeStreamMatchTarget, SaveIncomeStreamStep, TakeHome, TakeHomeSource,
-};
 pub use iso_date::IsoDate;
 pub use merchants::{Merchant, SaveMerchant};
 pub use money::{MAX_MONEY_MINOR, Money};
@@ -66,22 +59,14 @@ pub use rules::{
 };
 pub use settings::{McpMode, Settings, UpdateSettings};
 pub use stock_prices::StockPrice;
-pub use tax::{
-    ExtraPayInput, KIWISAVER_DEFAULT_BPS, KIWISAVER_EMPLOYEE_RATES_BPS, NZ_TAX_SCALES,
-    OwnedTaxScale, PayeBreakdown, PayeInput, PeriodPayeInput, ResolvedScale, SaveTaxScale,
-    StoredTaxScale, TaxScale, TaxScaleId, average_take_home_bps, builtin_scales, extra_pay,
-    govt_contribution_minor, latest_scale, marginal_take_home_bps, paye, paye_period,
-    reconstruct_extra_pay, reconstruct_period, scale_for,
-};
 pub use transactions::{
     BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,
     TxQuery,
 };
 pub use types::{
     Account, AccountClass, AccountKind, AccountMetadata, AreaUnit, BrokerageMeta, CryptoMeta,
-    DepositoryMeta, FlowBasis, GenericMeta, GroupBy, HousePricerLink, Interval, LoanMeta,
-    MileageUnit, MortgageMeta, PropertyMeta, RateType, RepaymentFrequency, SaveAccount,
-    SetExcludedFromNetWorth, SetSecuredBy, SharesMeta, StudentLoanMeta, TaxTreatment,
-    ValidationMode, VehicleMeta,
+    DepositoryMeta, GenericMeta, GroupBy, HousePricerLink, Interval, LoanMeta, MileageUnit,
+    MortgageMeta, PropertyMeta, RateType, RepaymentFrequency, SaveAccount, SetExcludedFromNetWorth,
+    SetSecuredBy, SharesMeta, StudentLoanMeta, TaxTreatment, ValidationMode, VehicleMeta,
 };
 pub use valuations::{NewValuation, Valuation, ValuationQuery, ValuationSource};

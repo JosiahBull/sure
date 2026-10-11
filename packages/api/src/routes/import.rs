@@ -47,7 +47,7 @@ pub struct ImportQuery {
     /// Parse and report, but write nothing. Defaults to committing.
     pub dry_run: Option<bool>,
     /// Whether to also record the opening balance an export implies — the account's value
-    /// immediately before its first row — as a one-off transaction. On by default: without it
+    /// immediately before its first row — as a transaction excluded from cashflow. On by default: without it
     /// the reconstructed history starts from nothing rather than from what the account held.
     /// Ignored by sources whose exports state no balance to work back from, and skipped anyway
     /// when the account already has a row from before that date.

@@ -62,7 +62,7 @@ export const FIELDS: FieldDef[] = [
   { key: "assigned_merchant", label: "Assigned merchant", type: "ref", zen: "merchant_id", ref: "merchant" },
   { key: "currency", label: "Currency", type: "enum", zen: "currency", enumSource: "currency" },
   { key: "notes", label: "Notes", type: "text", zen: "notes", placeholder: "e.g. reimburse" },
-  { key: "is_one_off", label: "One-off", type: "bool", zen: "is_one_off" },
+  { key: "exclude_from_cashflow", label: "Exclude From Cashflow", type: "bool", zen: "exclude_from_cashflow" },
   { key: "year", label: "Year", type: "int", zen: "year", placeholder: "2026" },
   { key: "month", label: "Month", type: "enum", zen: "month", enumSource: "month" },
   { key: "day", label: "Day of month", type: "int", zen: "day", placeholder: "1–31" },
@@ -474,10 +474,10 @@ class Parser {
         else throw new Error("unsupported negation");
         return cond;
       }
-      // `not contains(...)` → not_contains ; `not is_one_off` → is_false
+      // `not contains(...)` → not_contains ; `not exclude_from_cashflow` → is_false
       const cond = this.parseSimpleLeaf();
       if (cond.op === "contains" && cond.values.length === 1) cond.op = "not_contains";
-      else if (cond.field === "is_one_off" && cond.op === "is_true") cond.op = "is_false";
+      else if (cond.field === "exclude_from_cashflow" && cond.op === "is_true") cond.op = "is_false";
       else throw new Error("unsupported negation");
       return cond;
     }

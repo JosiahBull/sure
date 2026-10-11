@@ -167,9 +167,7 @@ const linkInto = (g: Graph, id: string) =>
   g.links.find((l) => (id.startsWith("in:") ? l.source === id : l.target === id))?.value_minor;
 
 // ---- sankey: the cash basis ------------------------------------------------
-// The graph answers one of two questions and says which. On `cash` every movement of the
-// household's liquid money counts, including the ones a transfer rule and a link would
-// otherwise hide; on `spending` none of them do.
+// Every actual cash movement counts, including transfers to non-cash accounts.
 
 test("the cash basis draws a mortgage payment as interest plus a labelled crossing", async ({ api }) => {
   // The shape ASB actually posts: interest charged to the facility the payment is drawn from,
@@ -208,11 +206,11 @@ test("the cash basis draws a mortgage payment as interest plus a labelled crossi
   expect(linked.response.status).toBe(200);
 
   const cash = (
-    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis: "cash" } } })
+    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW } } })
   ).data!;
   // The principal: one node named after the account it reached, never after the "Transfer"
   // category both legs carry.
-  expect(node(cash, `acct:${mortgage.id}`)).toMatchObject({
+  expect(node(cash, `acct:${mortgage.id}:expense`)).toMatchObject({
     kind: "crossing",
     label: "Home Mortgage",
     account_id: mortgage.id,
@@ -221,26 +219,18 @@ test("the cash basis draws a mortgage payment as interest plus a labelled crossi
     category_id: null,
   });
   expect(cash.links).toContainEqual(
-    expect.objectContaining({ source: "center", target: `acct:${mortgage.id}`, value_minor: 44_530 })
+    expect.objectContaining({ source: "center", target: `acct:${mortgage.id}:expense`, value_minor: 44_530 })
   );
   // …counted once. The loan's own row is the far leg, outside the perimeter.
-  expect(cash.links.filter((l) => l.target === `acct:${mortgage.id}`)).toHaveLength(1);
+  expect(cash.links.filter((l) => l.target === `acct:${mortgage.id}:expense`)).toHaveLength(1);
   // The interest stays the ordinary expense category it always was.
   expect(cash.links).toContainEqual(
     expect.objectContaining({ source: "center", target: `out:${interestCat.id}`, value_minor: 95_202 })
   );
 
-  // On the spending basis the principal is gone and the interest is untouched.
-  const spending = (
-    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis: "spending" } } })
-  ).data!;
-  expect(spending.nodes.some((n) => n.kind === "crossing")).toBe(false);
-  expect(spending.links).toContainEqual(
-    expect.objectContaining({ source: "center", target: `out:${interestCat.id}`, value_minor: 95_202 })
-  );
 });
 
-test("naming the loan on its interest rows splits the crossing into interest and principal", async ({
+test("a mortgage payment is one full cash outflow without principal or interest layers", async ({
   api,
 }) => {
   // The question the basis exists for: what does the mortgage cost? The bank charges interest to
@@ -279,70 +269,13 @@ test("naming the loan on its interest rows splits the crossing into interest and
   });
 
   const g = (
-    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis: "cash" } } })
+    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW } } })
   ).data!;
+  expect(g.nodes.some((n) => n.depth === 1 && n.account_id === mortgage.id)).toBe(false);
   // The whole payment crosses…
   expect(g.links).toContainEqual(
-    expect.objectContaining({ source: "center", target: `acct:${mortgage.id}`, value_minor: 139_732 })
+    expect.objectContaining({ source: "center", target: `acct:${mortgage.id}:expense`, value_minor: 139_732 })
   );
-  // …and splits by what the loan's own ledger says the balance did. Nothing read a rate or a memo.
-  expect(node(g, `acct:${mortgage.id}:cost`)).toMatchObject({ label: "Interest", depth: 1 });
-  expect(node(g, `acct:${mortgage.id}:rest`)).toMatchObject({ label: "Principal", depth: 1 });
-  expect(g.links).toContainEqual(
-    expect.objectContaining({
-      source: `acct:${mortgage.id}`,
-      target: `acct:${mortgage.id}:cost`,
-      value_minor: 95_202,
-    })
-  );
-});
-
-test("the net-worth basis keeps the interest and drops the principal", async ({ api }) => {
-  const jam = await createAccount(api, "The Jam", "revolving_credit");
-  const mortgage = await createAccount(api, "Home Mortgage", "mortgage");
-  const interestCat = await createCategory(api, "Interest charged", "expense");
-  const transferCat = await createCategory(api, "Transfer", "transfer");
-
-  await createTransaction(api, {
-    account_id: jam.id,
-    posted_at: "2026-01-10",
-    amount_minor: -95_202,
-    description: "LOAN REPAYMENT 006INTEREST",
-    category_id: interestCat.id,
-    counterparty_account_id: mortgage.id,
-  });
-  const out = await createTransaction(api, {
-    account_id: jam.id,
-    posted_at: "2026-01-10",
-    amount_minor: -44_530,
-    description: "LOAN REPAYMENT 006PRINCIPAL",
-    category_id: transferCat.id,
-  });
-  const inn = await createTransaction(api, {
-    account_id: mortgage.id,
-    posted_at: "2026-01-10",
-    amount_minor: 44_530,
-    description: "Principal payment",
-    category_id: transferCat.id,
-  });
-  await api.POST("/api/transactions/{id}/link", {
-    params: { path: { id: out.id } },
-    body: { linked_transaction_id: inn.id },
-  });
-
-  const g = (
-    await api.GET("/api/reports/sankey", {
-      params: { query: { ...SANKEY_WINDOW, basis: "net_worth" } },
-    })
-  ).data!;
-  // Repaying a loan is a net zero change: only the interest survives, and it says so.
-  expect(g.links).toContainEqual(
-    expect.objectContaining({ source: "center", target: `acct:${mortgage.id}`, value_minor: 95_202 })
-  );
-  expect(node(g, `acct:${mortgage.id}`)?.label).toBe("Interest — Home Mortgage");
-  expect(g.nodes.some((n) => n.id.endsWith(":rest")), "the principal is not drawn").toBe(false);
-  // The spine and the leftover name the question, so the two bases cannot be confused.
-  expect(node(g, "center")?.label).toBe("Net worth");
 });
 
 test("a rule can name the counterparty, and the run is undoable", async ({ api }) => {
@@ -382,7 +315,7 @@ test("a rule can name the counterparty, and the run is undoable", async ({ api }
   expect(reverted.data?.counterparty_account_id).toBeNull();
 });
 
-test("a transfer between two cash accounts is internal on every basis", async ({ api }) => {
+test("a transfer between two cash accounts is internal movement", async ({ api }) => {
   const everyday = await createAccount(api, "Everyday", "bank");
   const savings = await createAccount(api, "Savings", "savings");
   const transferred = await api.POST("/api/transfers", {
@@ -397,15 +330,15 @@ test("a transfer between two cash accounts is internal on every basis", async ({
   expect(transferred.response.status).toBe(201);
   await createTransaction(api, { account_id: everyday.id, posted_at: "2026-01-05", amount_minor: 500_000 });
 
-  for (const basis of ["cash", "spending"] as const) {
-    const g = (await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis } } })).data!;
-    expect(g.nodes.some((n) => n.kind === "crossing"), basis).toBe(false);
+  {
+    const g = (await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW } } })).data!;
+    expect(g.nodes.some((n) => n.kind === "crossing")).toBe(false);
     // Only the deposit survives, so the hub carries it and nothing else.
-    expect(g.links.filter((l) => l.target === "center").map((l) => l.value_minor), basis).toEqual([500_000]);
+    expect(g.links.filter((l) => l.target === "center").map((l) => l.value_minor)).toEqual([500_000]);
   }
 });
 
-test("an unlinked transfer-category row is cash but not spending", async ({ api }) => {
+test("an unlinked transfer-category row is actual cashflow", async ({ api }) => {
   // A student-loan living-cost drawdown: real money arriving, unlinked because the loan is
   // balance-only and has no opposite row to pair with.
   const acc = await createAccount(api, "Everyday", "bank");
@@ -419,14 +352,10 @@ test("an unlinked transfer-category row is cash but not spending", async ({ api 
   });
 
   const cash = (
-    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis: "cash" } } })
+    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW } } })
   ).data!;
   expect(linkInto(cash, `in:${drawdowns.id}`)).toBe(33_348);
 
-  const spending = (
-    await api.GET("/api/reports/sankey", { params: { query: { ...SANKEY_WINDOW, basis: "spending" } } })
-  ).data!;
-  expect(node(spending, `in:${drawdowns.id}`)).toBeUndefined();
 });
 
 test("a month that spent more than it earned draws a deficit into the hub", async ({ api }) => {
@@ -444,15 +373,6 @@ test("a month that spent more than it earned draws a deficit into the hub", asyn
   expect(g.nodes.some((n) => n.kind === "savings")).toBe(false);
 });
 
-test("an unrecognised basis is a bad request", async ({ api }) => {
-  const r = await api.GET("/api/reports/sankey", {
-    // The generated client types `basis` as the legal strings, which is the point — this is the
-    // untyped caller the 400 exists for.
-    params: { query: { ...SANKEY_WINDOW, basis: "networth" as "cash" } },
-  });
-  expect(r.response.status).toBe(400);
-  expect(r.error?.error.message).toContain("networth");
-});
 
 test("sankey fans a category chain out into one node per level", async ({ api }) => {
   const acc = await createAccount(api, "Everyday", "bank");
@@ -510,7 +430,7 @@ test("a category nested deeper than the cap rolls up into its deepest drawn ance
       { id: 1, name: "Everyday", kind: "bank", currency_code: "NZD", institution: "ASB", metadata: "{}", archived: false, sort_order: 0, created_at: ts, updated_at: ts },
     ],
     transactions: [
-      { id: 1, account_id: 1, posted_at: "2026-01-10", amount_minor: -40_000, currency_code: "NZD", description: "Power", merchant: null, merchant_id: null, notes: null, category_id: 4, is_one_off: false, linked_transaction_id: null, provider: null, external_id: null, categorized_by_rule_id: null, attributed_to: null, created_at: ts, updated_at: ts },
+      { id: 1, account_id: 1, posted_at: "2026-01-10", amount_minor: -40_000, currency_code: "NZD", description: "Power", merchant: null, merchant_id: null, notes: null, category_id: 4, exclude_from_cashflow: false, linked_transaction_id: null, provider: null, external_id: null, categorized_by_rule_id: null, attributed_to: null, created_at: ts, updated_at: ts },
     ],
     valuations: [],
     rules: [],
@@ -554,7 +474,7 @@ test("no parent link is ever narrower than the children feeding it", async ({ ap
   });
   const txn = (id: number, amount_minor: number, currency_code: string, category_id: number) => ({
     id, account_id: 1, posted_at: "2026-01-10", amount_minor, currency_code, description: "x", merchant: null,
-    merchant_id: null, notes: null, category_id, is_one_off: false, linked_transaction_id: null, provider: null,
+    merchant_id: null, notes: null, category_id, exclude_from_cashflow: false, linked_transaction_id: null, provider: null,
     external_id: null, categorized_by_rule_id: null, attributed_to: null, created_at: ts, updated_at: ts,
   });
   const snapshot = {
@@ -613,4 +533,102 @@ test("the sankey is byte-identical across identical requests", async ({ api }) =
 
   const [a, b] = [(await getSankey(api)).data, (await getSankey(api)).data];
   expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+});
+
+test("cashflow excludes flagged transactions by default and shows complete monthly liquidity totals", async ({ api }) => {
+  const bank = await createAccount(api, "Everyday", "bank");
+  await createTransaction(api, { account_id: bank.id, posted_at: "2026-01-05", amount_minor: 500_000 });
+  await createTransaction(api, { account_id: bank.id, posted_at: "2026-01-10", amount_minor: -100_000, exclude_from_cashflow: true });
+  await createTransaction(api, { account_id: bank.id, posted_at: "2026-03-10", amount_minor: -200_000 });
+  const g = (await api.GET("/api/reports/sankey", {
+    params: { query: { from: "2026-01-01", to: "2026-03-31" } },
+  })).data!;
+  expect(g.months).toEqual([
+    { month: "2026-01", inflow_minor: 500_000, outflow_minor: 0 },
+    { month: "2026-02", inflow_minor: 0, outflow_minor: 0 },
+    { month: "2026-03", inflow_minor: 0, outflow_minor: 200_000 },
+  ]);
+  expect(g.nodes.every((n) => !["gross", "deduction", "account"].includes(n.kind))).toBe(true);
+  const included = (await api.GET("/api/reports/sankey", {
+    params: { query: { from: "2026-01-01", to: "2026-03-31", include_excluded_from_cashflow: true } },
+  })).data!;
+  expect(included.months[0].outflow_minor).toBe(100_000);
+  for (const include_excluded_from_cashflow of [false, true]) {
+    const worth = (await api.GET("/api/reports/net-worth", {
+      params: { query: { from: "2026-01-01", to: "2026-03-31", include_excluded_from_cashflow } },
+    })).data!;
+    expect(worth.points.at(-1)!.net_worth_minor).toBe(200_000);
+  }
+});
+
+test("a student loan can send and receive cash without duplicate graph nodes", async ({ api }) => {
+  const bank = await createAccount(api, "Everyday", "bank");
+  const loan = await createAccount(api, "Student loan", "student_loan");
+  await createTransaction(api, {
+    account_id: bank.id, posted_at: "2026-01-05", amount_minor: 40_000,
+    counterparty_account_id: loan.id,
+  });
+  await createTransaction(api, {
+    account_id: bank.id, posted_at: "2026-01-15", amount_minor: -25_000,
+    counterparty_account_id: loan.id,
+  });
+  // Bookkeeping on the liability is not extra cash income.
+  await createTransaction(api, { account_id: loan.id, posted_at: "2026-01-15", amount_minor: 25_000 });
+  const g = (await getSankey(api)).data!;
+  expect(new Set(g.nodes.map((n) => n.id)).size).toBe(g.nodes.length);
+  expect(g.links).toContainEqual({ source: `acct:${loan.id}:income`, target: "center", value_minor: 40_000 });
+  expect(g.links).toContainEqual({ source: "center", target: `acct:${loan.id}:expense`, value_minor: 25_000 });
+  expect(g.months).toEqual([{ month: "2026-01", inflow_minor: 40_000, outflow_minor: 25_000 }]);
+});
+
+test("cashflow drilldowns exclude internal transfers before pagination", async ({ api }) => {
+  const bank = await createAccount(api, "Everyday", "bank");
+  const revolving = await createAccount(api, "Revolving", "revolving_credit");
+  const transfer = await createCategory(api, "Transfer", "transfer");
+  const purchase = await createTransaction(api, {
+    account_id: bank.id, posted_at: "2026-01-05", amount_minor: -2500,
+    description: "Farm purchase", category_id: transfer.id,
+  });
+  const internal = await api.POST("/api/transfers", { body: {
+    from_account_id: bank.id, to_account_id: revolving.id,
+    posted_at: "2026-01-10", from_amount_minor: 10000,
+    description: "Internal movement", category_id: transfer.id,
+  } });
+  expect(internal.response.status).toBe(201);
+  const mortgage = await createAccount(api, "Mortgage", "mortgage");
+  const crossing = await api.POST("/api/transfers", { body: {
+    from_account_id: bank.id, to_account_id: mortgage.id,
+    posted_at: "2026-01-15", from_amount_minor: 30000,
+    description: "Mortgage principal", category_id: transfer.id,
+  } });
+  expect(crossing.response.status).toBe(201);
+  const listed = await api.GET("/api/transactions", { params: { query: {
+    ...SANKEY_WINDOW, cashflow_categories_only: true, category_id: transfer.id, limit: 1,
+  } } });
+  expect(listed.response.status).toBe(200);
+  expect(listed.data?.map((t) => t.id)).toEqual([purchase.id]);
+});
+
+test("a mortgage drilldown shows outgoing cash rather than the mortgage ledger", async ({ api }) => {
+  const bank = await createAccount(api, "Everyday", "bank");
+  const mortgage = await createAccount(api, "Mortgage", "mortgage");
+  const principal = await createTransaction(api, {
+    account_id: bank.id, posted_at: "2026-01-05", amount_minor: -30000,
+  });
+  const ledger = await createTransaction(api, {
+    account_id: mortgage.id, posted_at: "2026-01-05", amount_minor: 30000,
+  });
+  await api.POST("/api/transactions/{id}/link", {
+    params: { path: { id: principal.id } }, body: { linked_transaction_id: ledger.id },
+  });
+  const interest = await createTransaction(api, {
+    account_id: bank.id, posted_at: "2026-01-05", amount_minor: -20000,
+    counterparty_account_id: mortgage.id,
+  });
+  const listed = await api.GET("/api/transactions", { params: { query: {
+    ...SANKEY_WINDOW, cashflow_account_id: mortgage.id,
+  } } });
+  expect(listed.response.status).toBe(200);
+  expect(listed.data?.map((t) => t.id).sort()).toEqual([principal.id, interest.id].sort());
+  expect(listed.data?.reduce((sum, t) => sum + t.amount_minor, 0)).toBe(-50000);
 });

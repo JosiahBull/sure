@@ -50,7 +50,7 @@ test("the dashboard's figures follow the same rule", async ({ page }) => {
   await goto(page, "/");
   // The pie legends are where the prefix was most obviously noise — a column of NZ$ down a card
   // whose every row is the same currency.
-  const legend = page.locator(".card", { hasText: "Where money went" }).locator(".legend-row");
+  const legend = page.getByRole("table", { name: "Monthly cashflow" }).locator("tbody tr");
   await expect(legend.first()).toBeVisible();
   const rows = (await legend.allInnerTexts()).join(" ");
   expect(rows).toMatch(/\$[\d,]/);

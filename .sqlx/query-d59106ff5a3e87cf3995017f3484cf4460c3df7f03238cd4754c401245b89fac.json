@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE transactions SET category_id=?2, categorized_by_rule_id=?3, exclude_from_cashflow=?4,\n                merchant_id=?5, counterparty_account_id=?6,\n                updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "d59106ff5a3e87cf3995017f3484cf4460c3df7f03238cd4754c401245b89fac"
+}

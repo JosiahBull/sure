@@ -590,7 +590,7 @@ test("a bank account's opening balance becomes its first transaction", async ({ 
   });
 
   // A valuation would freeze a cash-like account at this figure and ignore everything
-  // after it, so the balance has to arrive as a transaction — a one-off, to stay out of the
+  // after it, so the balance has to arrive as a transaction excluded from cashflow, to stay out of the
   // spend/income reports.
   const txns = await api.GET("/api/transactions", {
     params: { query: { account_id: acc.id } },
@@ -599,7 +599,7 @@ test("a bank account's opening balance becomes its first transaction", async ({ 
   expect(txns.data![0].posted_at).toBe("2024-03-01");
   expect(txns.data![0].amount_minor).toBe(250_000);
   expect(txns.data![0].description).toBe("Opening balance");
-  expect(txns.data![0].is_one_off).toBe(true);
+  expect(txns.data![0].exclude_from_cashflow).toBe(true);
 
   const balances = await api.GET("/api/reports/balances", {
     params: { query: { to: "2024-06-01" } },

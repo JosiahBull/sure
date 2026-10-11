@@ -38,9 +38,9 @@ pub struct SearchTransactionsParams {
     /// `false` returns only those that have one. Omitted returns both.
     #[serde(default)]
     pub uncategorized: Option<bool>,
-    /// Include one-off transactions (a house purchase, a tax refund). Default true.
+    /// Include transactions excluded from cashflow (a house purchase, a tax refund). Default true.
     #[serde(default)]
-    pub include_one_off: Option<bool>,
+    pub include_excluded_from_cashflow: Option<bool>,
     /// Whose transactions: "joint", or a household member's person id.
     #[serde(default)]
     pub attributed_to: Option<String>,
@@ -100,11 +100,12 @@ impl SureMcp {
             .state
             .transactions
             .list(TxQuery {
+                ids: None,
                 account_id: params.account_id,
                 category_id: params.category_id,
                 from,
                 to,
-                include_one_off: params.include_one_off,
+                include_excluded_from_cashflow: params.include_excluded_from_cashflow,
                 search: params.search,
                 uncategorized: params.uncategorized,
                 attributed_to,
@@ -145,7 +146,12 @@ impl SureMcp {
                         // question people actually ask, and an empty cell reads as missing
                         // data instead of as a fact about the row.
                         .unwrap_or_else(|| "(uncategorised)".to_string()),
-                    if t.is_one_off { "one-off" } else { "" }.to_string(),
+                    if t.exclude_from_cashflow {
+                        "Exclude From Cashflow"
+                    } else {
+                        ""
+                    }
+                    .to_string(),
                 ]
             })
             .collect();
@@ -204,7 +210,7 @@ impl SureMcp {
             "merchant_id": t.merchant_id,
             "category_id": t.category_id,
             "notes": t.notes,
-            "is_one_off": t.is_one_off,
+            "exclude_from_cashflow": t.exclude_from_cashflow,
             "linked_transaction_id": t.linked_transaction_id,
             "provider": t.provider,
             "external_id": t.external_id,

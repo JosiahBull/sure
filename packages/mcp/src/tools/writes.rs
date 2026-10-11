@@ -33,10 +33,10 @@ pub struct UpdateTransactionParams {
     /// Set the merchant. Pass null to clear it. Omit to leave it alone.
     #[serde(default, deserialize_with = "double_option")]
     pub merchant_id: Option<Option<i64>>,
-    /// Mark (or unmark) this as a one-off — something that should not count toward normal
-    /// spending patterns.
+    /// Set or clear cashflow exclusion for this transaction. This affects
+    /// spending summaries, while balances and net worth still count it.
     #[serde(default)]
-    pub is_one_off: Option<bool>,
+    pub exclude_from_cashflow: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -67,7 +67,7 @@ pub struct BulkCategorizeParams {
     #[serde(default)]
     pub merchant_id: Option<i64>,
     #[serde(default)]
-    pub is_one_off: Option<bool>,
+    pub exclude_from_cashflow: Option<bool>,
 
     /// Leave unset (or true) to see what would change without changing it. To actually
     /// write, pass false AND pass expect_count with the number the dry run reported.
@@ -97,7 +97,7 @@ pub struct CreateTransactionParams {
     #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
-    pub is_one_off: Option<bool>,
+    pub exclude_from_cashflow: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -152,7 +152,7 @@ pub struct SaveRuleParams {
     #[serde(default)]
     pub set_counterparty_account_id: Option<i64>,
     #[serde(default)]
-    pub set_one_off: Option<bool>,
+    pub set_exclude_from_cashflow: Option<bool>,
     /// Also re-file transactions somebody categorised by hand. Default false.
     #[serde(default)]
     pub overwrite_manual: Option<bool>,
@@ -184,7 +184,7 @@ impl SureMcp {
     /// Patch one transaction.
     #[tool(
         name = "update_transaction",
-        description = "Change one transaction's category, merchant, or one-off flag. Only the \
+        description = "Change one transaction's category, merchant, or cashflow exclusion flag. Only the \
                        fields you pass are touched; pass null to clear a category or \
                        merchant.",
         annotations(read_only_hint = false, idempotent_hint = true)
@@ -195,10 +195,10 @@ impl SureMcp {
     ) -> ToolResult<CallToolResult> {
         if params.category_id.is_none()
             && params.merchant_id.is_none()
-            && params.is_one_off.is_none()
+            && params.exclude_from_cashflow.is_none()
         {
             return Err(invalid_params(
-                "nothing to change: pass at least one of category_id, merchant_id or is_one_off",
+                "nothing to change: pass at least one of category_id, merchant_id or exclude_from_cashflow",
             ));
         }
         // A patch through `bulk_update` rather than `update`, which takes a whole
@@ -211,7 +211,7 @@ impl SureMcp {
                 ids: bulk_ids(vec![params.id])?,
                 category_id: params.category_id,
                 merchant_id: params.merchant_id,
-                is_one_off: params.is_one_off,
+                exclude_from_cashflow: params.exclude_from_cashflow,
                 ownership: None,
                 counterparty_account_id: None,
             })
@@ -223,7 +223,7 @@ impl SureMcp {
     /// File many transactions at once — after saying how many.
     #[tool(
         name = "bulk_categorize",
-        description = "Set the category, merchant or one-off flag on many transactions at \
+        description = "Set the category, merchant or cashflow exclusion flag on many transactions at \
                        once, chosen by id or by filter. Runs as a dry run unless you pass \
                        dry_run=false together with expect_count matching what the dry run \
                        reported.",
@@ -235,10 +235,10 @@ impl SureMcp {
     ) -> ToolResult<CallToolResult> {
         if params.category_id.is_none()
             && params.merchant_id.is_none()
-            && params.is_one_off.is_none()
+            && params.exclude_from_cashflow.is_none()
         {
             return Err(invalid_params(
-                "nothing to set: pass at least one of category_id, merchant_id or is_one_off",
+                "nothing to set: pass at least one of category_id, merchant_id or exclude_from_cashflow",
             ));
         }
 
@@ -317,7 +317,7 @@ impl SureMcp {
                 // one row at a time.
                 category_id: params.category_id.map(Some),
                 merchant_id: params.merchant_id.map(Some),
-                is_one_off: params.is_one_off,
+                exclude_from_cashflow: params.exclude_from_cashflow,
                 ownership: None,
                 counterparty_account_id: None,
             })
@@ -364,7 +364,7 @@ impl SureMcp {
                 ownership: None,
                 notes: params.notes,
                 category_id: params.category_id,
-                is_one_off: params.is_one_off.unwrap_or(false),
+                exclude_from_cashflow: params.exclude_from_cashflow.unwrap_or(false),
                 counterparty_account_id: None,
             })
             .await
@@ -506,7 +506,7 @@ impl SureMcp {
             description: params.description,
             expression: params.expression,
             set_category_id: params.set_category_id,
-            set_one_off: params.set_one_off,
+            set_exclude_from_cashflow: params.set_exclude_from_cashflow,
             set_merchant_id: params.set_merchant_id,
             set_counterparty_account_id: params.set_counterparty_account_id,
             overwrite_manual: params.overwrite_manual.unwrap_or(false),
@@ -603,11 +603,12 @@ impl SureMcp {
             .state
             .transactions
             .list(TxQuery {
+                ids: None,
                 account_id: params.account_id,
                 category_id: None,
                 from,
                 to,
-                include_one_off: None,
+                include_excluded_from_cashflow: None,
                 search: params.search.clone(),
                 uncategorized: params.uncategorized,
                 attributed_to: parse_attribution(params.attributed_to.as_deref())?,

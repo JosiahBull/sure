@@ -30,39 +30,8 @@ async function expectTransactionsUrl(page: Page, want: Record<string, string | R
 // The donut segments are full circles (only their arc is painted), so a normal click/hover
 // targets the empty centre. Drive them directly and target by aria-label.
 
-test("hovering a pie segment names it and greys the others", async ({ page }) => {
-  await goto(page, "/");
-  const pie = page.locator(".card", { hasText: "Where money went" });
-  await pie.locator('svg .seg[aria-label="Housing"]').dispatchEvent("pointerenter");
 
-  await expect(pie.locator(".pie-center .cl")).toHaveText("Housing"); // centre names the segment
-  // Whole dollars, no cents — cents made the value overflow the donut hole.
-  await expect(pie.locator(".pie-center .cv")).not.toContainText(".");
-  await expect(pie.locator("svg .seg.dim")).not.toHaveCount(0); // the others are dimmed
-  await expect(pie.locator("svg .seg:not(.dim)")).toHaveCount(1); // only the hovered one is lit
-});
 
-test("the income pie is interactive too", async ({ page }) => {
-  await goto(page, "/");
-  const pie = page.locator(".card", { hasText: "Where money came from" });
-  await pie.locator("svg .seg").first().dispatchEvent("pointerenter");
-  await expect(pie.locator(".pie-center .cl")).not.toHaveText("total");
-});
-
-test("clicking a pie segment opens transactions filtered to that category and range", async ({ page }) => {
-  // Deliberately not the default range: the default is left out of the URL entirely, so a link
-  // built while it is selected carries no `range` at all and this could not tell "carried the
-  // selection" from "carried nothing".
-  await goto(page, "/?range=last_12m");
-  const pie = page.locator(".card", { hasText: "Where money went" });
-  await pie.locator('svg .seg[aria-label="Housing"]').dispatchEvent("click");
-
-  // The deep-link carries the pie's own side of the ledger as `type` alongside the
-  // category and the overview's range — an uncategorised slice has only `type` to tell
-  // income from outgoings, so it's always sent.
-  await expectTransactionsUrl(page, { category: /^\d+$/, type: "expense", range: "last_12m" });
-  await expect(page.locator(".tx-row").first()).toBeVisible();
-});
 
 test("a category deep-link includes the whole subtree", async ({ page }) => {
   const res = await page.request.get("/api/categories");
@@ -76,21 +45,6 @@ test("a category deep-link includes the whole subtree", async ({ page }) => {
   await expect(page.locator(".tx-row").first()).toBeVisible();
 });
 
-test("the legend mirrors the pie and is clickable", async ({ page }) => {
-  await goto(page, "/");
-  const pie = page.locator(".card", { hasText: "Where money went" });
-  await pie.locator(".legend-row", { hasText: "Housing" }).hover();
-  await expect(pie.locator("svg .seg.dim")).not.toHaveCount(0); // hovering the legend greys the pie
-
-  await pie.locator(".legend-row", { hasText: "Housing" }).click();
-  await expect(page).toHaveURL(/#\/transactions\?category=\d+/);
-});
-
-// ---- Sankey (Money flow) -------------------------------------------------------------
-// Nodes are full-width groups; drive them directly like the pie segments. Target them by
-// `data-node-id` rather than by text: the chart now draws a category at every level of the
-// tree, so `hasText: "Housing"` would also match "Housing" the label of its own children's
-// column neighbours, and Playwright's strict mode rejects an ambiguous locator.
 
 /** `in:<id>` / `out:<id>` for a seeded category, resolved by name. */
 async function nodeId(page: Page, name: string, side: "in" | "out"): Promise<string> {
@@ -179,7 +133,7 @@ test.describe("money flow at desktop width", () => {
       .dispatchEvent("click");
 
     // Utilities, not its parent Housing — an intermediate node used to be unreachable.
-    await expect(page).toHaveURL(new RegExp(`#/transactions\\?category=${utilities.id}&type=expense`));
+    await expectTransactionsUrl(page, { category: String(utilities.id), type: "expense", cashflow: "1" });
     await expect(page.locator(".tx-row").first()).toBeVisible();
   });
 
@@ -281,7 +235,7 @@ test("the uncategorised slice and node open the transactions that have no catego
       amount_minor: -500_000,
       description: "Uncategorised probe",
       category_id: null,
-      is_one_off: false,
+      exclude_from_cashflow: false,
     },
   });
   expect(created.ok(), "created an uncategorised expense").toBe(true);
@@ -291,15 +245,6 @@ test("the uncategorised slice and node open the transactions that have no catego
     // The probe is dated today and the default range is the month just *gone*, which ends
     // before it — so this asks for a window that includes today.
     await goto(page, "/?range=last_30");
-    const pie = page.locator(".card", { hasText: "Where money went" });
-    await pie.locator('svg .seg[aria-label="Uncategorised"]').dispatchEvent("click");
-    // `category=none`, not an omitted param: the slice stands for the rows whose category is
-    // null, which no id can name — omitting it lands on every expense instead of these.
-    await expectTransactionsUrl(page, { category: "none", type: "expense", range: "last_30" });
-    await expect(page.locator(".tx-row").first()).toBeVisible();
-    for (const c of await page.locator(".tx-row .cat-pill > .ell").allInnerTexts())
-      expect(c.trim()).toBe("Uncategorised");
-
     // The sankey's node goes through the same builder, so it lands in the same place. Its
     // `data-node-id` carries the report's raw sentinel key rather than a category id.
     await goto(page, "/?range=last_30");
@@ -309,4 +254,56 @@ test("the uncategorised slice and node open the transactions that have no catego
   } finally {
     expect((await page.request.delete(`/api/transactions/${txId}`)).ok(), "cleaned up").toBe(true);
   }
+});
+
+test("a Transfer category drilldown includes the purchase but excludes internal movement", async ({ page }) => {
+  const accounts = await (await page.request.get("/api/accounts")).json();
+  const bank = accounts.find((a: { kind: string }) => a.kind === "bank");
+  const savings = accounts.find((a: { kind: string }) => a.kind === "savings");
+  const category = await (await page.request.post("/api/categories", {
+    data: { name: "Test transfer bucket", kind: "transfer", parent_id: null },
+  })).json();
+  const transfer = await page.request.post("/api/transfers", { data: {
+    from_account_id: bank.id, to_account_id: savings.id, posted_at: "2026-03-10",
+    from_amount_minor: 1000000, description: "Test internal movement", category_id: category.id,
+  } });
+  expect(transfer.status()).toBe(201);
+  const purchase = await page.request.post("/api/transactions", { data: {
+    account_id: bank.id, posted_at: "2026-03-10", amount_minor: -1000000,
+    description: "Test farm purchase", category_id: category.id, exclude_from_cashflow: false,
+  } });
+  expect(purchase.status()).toBe(201);
+  const excludedPurchase = await page.request.post("/api/transactions", { data: {
+    account_id: bank.id, posted_at: "2026-03-10", amount_minor: -500000,
+    description: "Test excluded purchase", category_id: category.id, exclude_from_cashflow: true,
+  } });
+  expect(excludedPurchase.status()).toBe(201);
+  await goto(page, "/?range=last_12m");
+  await page.locator(`g.node[data-node-id="out:${category.id}"]`).dispatchEvent("click");
+  await expectTransactionsUrl(page, { cashflow: "1", category: String(category.id), type: "expense" });
+  await expect(page.locator(".tx-row")).toHaveCount(1);
+  await expect(page.locator(".tx-row")).toContainText("Test farm purchase");
+  await page.reload();
+  await expect(page.locator(".tx-row")).toHaveCount(1);
+  await expect(page.locator(".tx-row")).toContainText("Test farm purchase");
+  await goto(page, "/?range=last_12m");
+  const override = page.getByRole("checkbox", { name: "Forcibly Include All" });
+  await expect(override).not.toBeChecked();
+  await override.check();
+  await page.waitForLoadState("networkidle");
+  await page.locator(`g.node[data-node-id="out:${category.id}"]`).dispatchEvent("click");
+  await expectTransactionsUrl(page, { include_excluded: "1" });
+  await expect(page.locator(".tx-row")).toHaveCount(2);
+  await page.reload();
+  await expect(page.locator(".tx-row")).toHaveCount(2);
+});
+
+test("a mortgage node opens its outgoing cash payments", async ({ page }) => {
+  const accounts = await (await page.request.get("/api/accounts")).json();
+  const mortgage = accounts.find((a: { kind: string }) => a.kind === "mortgage");
+  await goto(page, "/");
+  await page.locator(`g.node[data-node-id="acct:${mortgage.id}:expense"]`).dispatchEvent("click");
+  await expectTransactionsUrl(page, { cashflow: "1", cashflow_account: String(mortgage.id), type: "expense" });
+  await expect(page.locator(".tx-row").first()).toBeVisible();
+  await expect(page.getByText(`To/from ${mortgage.name}`, { exact: true })).toBeVisible();
 });

@@ -156,7 +156,7 @@ export async function createTransaction(
     description?: string;
     category_id?: number | null;
     merchant_id?: number | null;
-    is_one_off?: boolean;
+    exclude_from_cashflow?: boolean;
     /** Attribution override; omitted means "follow the account's owner", as an import does. */
     ownership?: Schemas["Ownership"];
     /** The account on the other side, where it is one — a mortgage, the house a deposit bought. */
@@ -171,7 +171,7 @@ export async function createTransaction(
       description: input.description ?? "x",
       category_id: input.category_id ?? null,
       merchant_id: input.merchant_id ?? null,
-      is_one_off: input.is_one_off ?? false,
+      exclude_from_cashflow: input.exclude_from_cashflow ?? false,
       ownership: input.ownership ?? null,
       counterparty_account_id: input.counterparty_account_id ?? null,
     },
@@ -362,36 +362,5 @@ export async function createPerson(api: SureClient, name: string, color?: string
     body: { name, color, sort_order: 0 },
   });
   expect(response.status, "create person").toBe(201);
-  return data!;
-}
-
-/**
- * An income stream for `personId`.
- *
- * Defaults to a fortnightly gross NZ salary already running, because that is the shape almost
- * every case wants; anything a spec is actually asserting on it passes explicitly. Figures are
- * invented (CLAUDE.md rule 3 — a salary is personal data and `pii-scan` matches shapes, not
- * amounts, so this is a discipline the tooling cannot enforce).
- */
-export async function createIncomeStream(
-  api: SureClient,
-  personId: number,
-  over: Partial<Schemas["SaveIncomeStream"]> = {}
-) {
-  const body: Schemas["SaveIncomeStream"] = {
-    label: "Salary",
-    currency_code: "NZD",
-    annual_amount_minor: 88_000_00,
-    basis: "gross_nz_paye",
-    pay_frequency: "fortnightly",
-    first_payment_on: "2026-04-03",
-    starts_on: "2026-04-01",
-    ...over,
-  };
-  const { data, response } = await api.POST("/api/people/{person_id}/income-streams", {
-    params: { path: { person_id: personId } },
-    body,
-  });
-  expect(response.status, `create income stream: ${JSON.stringify(body)}`).toBe(201);
   return data!;
 }

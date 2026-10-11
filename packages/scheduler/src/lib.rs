@@ -50,7 +50,7 @@ const NUDGE_SETTLE: Duration = Duration::from_millis(250);
 /// rather than at its next interval.
 ///
 /// The interval is a floor on *staleness*, not a statement that nothing can happen sooner. A
-/// person who has just edited an income stream, finished an import, or recorded a share price is
+/// person who has just finished an import or recorded a share price is
 /// watching the screen, and waiting out five minutes for a derived figure to catch up reads as
 /// the app being broken — which is exactly how the manual "Rebuild history" button came to
 /// exist. The point of nudging is that the button should never have been the answer.

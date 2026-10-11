@@ -935,7 +935,7 @@ impl AsbExport {
     /// actually held. It also makes the ledger self-consistent — every row plus this one sums
     /// to the balance ASB states.
     ///
-    /// A one-off, so it counts towards balances and net worth but never towards income; a
+    /// Excluded from cashflow, so it counts towards balances and net worth but never towards income; a
     /// valuation would be the wrong instrument entirely, because the reconstruction returns
     /// the most recent valuation on or before a date *directly*, which would freeze the
     /// account at its opening figure for every date after it.

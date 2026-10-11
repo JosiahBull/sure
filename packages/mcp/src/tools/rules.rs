@@ -42,7 +42,7 @@ impl SureMcp {
                        transaction; truthy means match. Fields: amount, amount_minor, \
                        abs_amount, is_income, is_expense, description, merchant, \
                        merchant_id, notes, currency, account, account_kind, account_id, \
-                       category_id, is_one_off, date, year, month, day. Example: \
+                       category_id, exclude_from_cashflow, date, year, month, day. Example: \
                        is_expense and contains(lower(description), 'countdown')",
         annotations(read_only_hint = true, idempotent_hint = true)
     )]
@@ -124,7 +124,9 @@ impl SureMcp {
                     r.expression.clone(),
                     r.set_category_id.map(|c| c.to_string()).unwrap_or_default(),
                     r.set_merchant_id.map(|m| m.to_string()).unwrap_or_default(),
-                    r.set_one_off.map(|b| b.to_string()).unwrap_or_default(),
+                    r.set_exclude_from_cashflow
+                        .map(|b| b.to_string())
+                        .unwrap_or_default(),
                     // Two flags that change what a run does to rows somebody already filed
                     // by hand; worth seeing before adding a rule beside them.
                     if r.overwrite_manual { "overwrite" } else { "" }.to_string(),
@@ -141,7 +143,7 @@ impl SureMcp {
                 "expression",
                 "set_category_id",
                 "set_merchant_id",
-                "set_one_off",
+                "set_exclude_from_cashflow",
                 "manual",
                 "chain",
                 "state",

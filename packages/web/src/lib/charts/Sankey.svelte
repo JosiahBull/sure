@@ -6,12 +6,12 @@
    */
   export type SankeyTarget =
     | { t: "category"; categoryId: number | null; kind: "income" | "expense" }
-    | { t: "account"; accountId: number };
+    | { t: "account"; accountId: number; kind: "income" | "expense" };
 </script>
 
 <script lang="ts">
   import { sankeyLinkHorizontal } from "d3-sankey";
-  import { categoryColor, colorFor, shade } from "../color";
+  import { categoryColor, shade } from "../color";
   import { resolvedTheme } from "../theme.svelte";
   import { layout, isCatKind, sideOf, NODE_W, type Link, type Node } from "./sankeyLayout";
 
@@ -50,8 +50,6 @@
   // so a branch reads as a unit and its levels stay apart. Uncategorised stays neutral
   // grey. Flows are drawn as a source→target gradient of these colours.
   const SPINE = "#10a861";
-  /** Statutory deductions: a muted brick red, hardcoded like SPINE and legible on both themes. */
-  const DEDUCTION = "#b35953";
   /** The surplus's opposite, and `--negative`'s light value the way SPINE is `--positive`'s.
    * Hot rather than muted on purpose: a household that spent more than it earned should not read
    * as one that saved. */
@@ -62,19 +60,9 @@
   const dark = $derived(resolvedTheme() === "dark");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function nodeColor(n: any): string {
-    // A routing waypoint is invisible; it exists only to give a long ribbon somewhere to pass
-    // through, so it takes the colour of the node that ribbon is heading for.
-    if (n.kind === "via") return nodeColor({ ...n, kind: n.via.colorKind });
     if (n.kind === "center" || n.kind === "savings") return SPINE;
     if (n.kind === "deficit") return DEFICIT;
-    if (n.kind === "deduction") return DEDUCTION;
-    // A crossing and the account it reaches read as one branch, the way a category and its child
-    // do — which is what `shade` already does for the category families.
-    if (n.kind === "crossing" || n.kind === "account")
-      return shade(CROSSING, n.level ?? 0, dark);
-    // A gross node's id is `gross:<person id>`; the id-derived palette is the same fallback
-    // `personColor` uses, without coupling the chart to the household store.
-    if (n.kind === "gross") return colorFor(Number(n.id.slice("gross:".length)) || 0);
+    if (n.kind === "crossing") return shade(CROSSING, n.level ?? 0, dark);
     return categoryColor({ rootId: n.root_id, rootColor: n.root_color, depth: n.level ?? 0, dark });
   }
 
@@ -110,23 +98,7 @@
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function labelPos(n: any): { x: number; y: number; anchor: "start" | "middle" | "end" } {
     if (n.kind === "center") return { x: (n.x0 + n.x1) / 2, y: n.y0 - 18, anchor: "middle" };
-    // The pre-income nodes label rightwards like income: gross sits in the leftmost column
-    // with only MARGIN_X to its left, and the deduction sinks share the income side's gaps.
-    // A deduction's destination account joins them, and must: it sits one column right of the
-    // deduction it came from, so labelling it leftwards drew its name back across the gap and
-    // straight over its own deduction's — two nodes that, being a sink and the account it
-    // feeds, carry the same name and the same figure ("Student Stadent loan").
-    //
-    // Everything else follows its side, which is the same rule stated once: an income-side
-    // crossing (a loan drawdown) would otherwise fall through to the `end` branch below and
-    // draw its label leftwards, into the strip the expense columns own.
-    if (
-      sideOf(n) === "income" ||
-      n.kind === "gross" ||
-      n.kind === "deduction" ||
-      n.kind === "account"
-    )
-      return { x: n.x1 + LABEL_PAD, y: (n.y0 + n.y1) / 2, anchor: "start" };
+    if (sideOf(n) === "income") return { x: n.x1 + LABEL_PAD, y: (n.y0 + n.y1) / 2, anchor: "start" };
     return { x: n.x0 - LABEL_PAD, y: (n.y0 + n.y1) / 2, anchor: "end" };
   }
 
@@ -205,7 +177,7 @@
   const emit = (n: any) =>
     onselect?.(
       n.kind === "crossing"
-        ? { t: "account", accountId: n.account_id }
+        ? { t: "account", accountId: n.account_id, kind: n.side as "income" | "expense" }
         : { t: "category", categoryId: n.category_id ?? null, kind: n.kind as "income" | "expense" },
     );
 
@@ -274,18 +246,15 @@
   function linkActive(l: any, i: number): boolean {
     if (!hovered) return true;
     if (hovered.t === "link") {
-      // A routed flow is drawn as several legs sharing one `origin`; highlighting one of them
-      // and not the rest would break the ribbon in half under the pointer.
-      const h = graph?.links[hovered.i];
-      return h?.origin && l.origin ? h.origin.chain === l.origin.chain : i === hovered.i;
+      return i === hovered.i;
     }
     const hid = hovered.id;
     return endsOf(l).some((id: string) => id === hid);
   }
-  /** A link's real endpoints: the flow's own, not the waypoints a long one was bent around. */
+  /** A link's endpoints. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const endsOf = (l: any): string[] =>
-    l.origin ? [l.origin.source, l.origin.target] : [l.source.id, l.target.id];
+    [l.source.id, l.target.id];
   /**
    * The endpoint a link should deep-link to: the more specific of its two ends. Income flows
    * child→parent and expense parent→child, so "more specific" is whichever end is a category
@@ -375,7 +344,7 @@
           onclick={() => cat && emit(cat)}
         />
       {/each}
-      {#each graph.nodes.filter((n: any) => n.kind !== "via") as n}
+      {#each graph.nodes as n}
         {@const clickable = isClickable(n)}
         {@const lp = labelPos(n)}
         {@const showLabel = !hiddenLabels.has(n.id) || (!!hovered && nodeActive(n))}

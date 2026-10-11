@@ -213,7 +213,7 @@ the ASB parser declines — with a message saying to import the archive on its o
 An imported history that starts from nothing is wrong: the balance reconstruction reads an account
 as 0 before its earliest transaction, so it would appear out of thin air at whatever its first
 day's movements leave behind. Where an export states a closing balance, the account's value
-immediately before the first row can be worked back from it, and is recorded as a one-off — it
+immediately before the first row can be worked back from it, and is recorded as excluded from cashflow — it
 moves the account's value without being money earned or spent, so balances count it and income
 reports don't.
 

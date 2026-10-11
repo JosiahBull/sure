@@ -39,30 +39,6 @@ pub struct Snapshot {
     pub dividends: Vec<DividendRow>,
     #[serde(default)]
     pub dividend_withholdings: Vec<DividendWithholdingRow>,
-    // Per-person income streams and their dated pay-scale steps — `#[serde(default)]` so a
-    // snapshot taken before 0021 still imports, as a household with no modelled income.
-    #[serde(default)]
-    pub income_streams: Vec<IncomeStreamRow>,
-    #[serde(default)]
-    pub income_stream_steps: Vec<IncomeStreamStepRow>,
-    /// Where the matcher looks for each stream's deposits (0048) — `#[serde(default)]` so a
-    /// snapshot taken before targets were rows still imports. One taken *before* 0048 carries
-    /// the pair it replaced on the stream row instead, and `restore` turns that into a target,
-    /// so matching survives the round trip either way.
-    #[serde(default)]
-    pub income_stream_match_targets: Vec<IncomeStreamMatchTargetRow>,
-    /// Expected/matched income payments (0037) — `#[serde(default)]` so an older snapshot
-    /// imports as a household whose schedule has simply not been generated yet; the matcher
-    /// rebuilds the expected rows on its next run, and only the human-settled statuses and
-    /// stored decompositions are actually irreplaceable.
-    #[serde(default)]
-    pub income_payments: Vec<IncomePaymentRow>,
-    /// Editable tax scales (0025/0029). `#[serde(default)]`, and — unlike every other table —
-    /// restored only when the snapshot carries some: the table is seeded rather than empty by
-    /// construction, so an older snapshot's silence means "before scales were exportable", not
-    /// "no scales", and wiping to empty on its say-so would erase edits for no reason.
-    #[serde(default)]
-    pub tax_scales: Vec<TaxScaleRow>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -176,7 +152,8 @@ pub struct TransactionRow {
     pub merchant: Option<String>,
     pub notes: Option<String>,
     pub category_id: Option<i64>,
-    pub is_one_off: bool,
+    #[serde(alias = "is_one_off")]
+    pub exclude_from_cashflow: bool,
     pub linked_transaction_id: Option<i64>,
     pub provider: Option<String>,
     pub external_id: Option<String>,
@@ -216,7 +193,8 @@ pub struct RuleRow {
     pub description: Option<String>,
     pub expression: String,
     pub set_category_id: Option<i64>,
-    pub set_one_off: Option<bool>,
+    #[serde(alias = "set_one_off")]
+    pub set_exclude_from_cashflow: Option<bool>,
     pub overwrite_manual: bool,
     pub stop_on_match: bool,
     pub priority: i64,
@@ -334,143 +312,6 @@ pub struct DividendWithholdingRow {
     pub currency_code: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct IncomeStreamRow {
-    pub id: i64,
-    /// Added by 0038 — `#[serde(default)]` reads as `'person'`, which is what every row in a
-    /// snapshot taken before joint income could exist actually was.
-    #[serde(default = "ownership_person")]
-    pub ownership: String,
-    /// Nullable from 0038: a joint stream has no person. Older snapshots always carry one.
-    pub person_id: Option<i64>,
-    pub label: String,
-    pub employer: Option<String>,
-    pub currency_code: String,
-    pub annual_amount_minor: i64,
-    pub basis: String,
-    pub pay_frequency: String,
-    pub first_payment_on: String,
-    pub starts_on: String,
-    pub ends_on: Option<String>,
-    pub annual_increase_bps: i64,
-    pub kiwisaver_bps: i64,
-    pub student_loan: bool,
-    pub take_home_bps: Option<i64>,
-    pub linked_category_id: Option<i64>,
-    pub enabled: bool,
-    pub sort_order: i64,
-    pub notes: Option<String>,
-    /// Added by 0023 — `#[serde(default)]` so a snapshot taken before contributions could be routed
-    /// still imports, with the money going nowhere exactly as it did then.
-    #[serde(default)]
-    pub employer_kiwisaver_bps: i64,
-    #[serde(default)]
-    pub kiwisaver_account_id: Option<i64>,
-    #[serde(default)]
-    pub student_loan_account_id: Option<i64>,
-    /// Added by 0037, replaced by `income_stream_match_targets` in 0048. **Deserialised only**:
-    /// the columns are gone, so nothing writes these, but a snapshot taken between those two
-    /// migrations carries a stream's one target here and `restore` promotes it rather than
-    /// dropping the household's matching on the floor. `skip_serializing` so a new export says
-    /// what the schema actually is.
-    #[serde(default, skip_serializing, rename = "match_account_id")]
-    pub legacy_match_account_id: Option<i64>,
-    #[serde(default, skip_serializing, rename = "match_pattern")]
-    pub legacy_match_pattern: Option<String>,
-    #[serde(default = "default_pay_treatment")]
-    pub pay_treatment: String,
-    /// Added by 0051 — `#[serde(default)]` so a snapshot from before variable pay imports with
-    /// every stream scheduled, which is what they all were.
-    #[serde(default = "default_pay_pattern")]
-    pub pay_pattern: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-/// What 0037 backfills existing rows to; `String::default()`'s `""` would fail the CHECK.
-fn default_pay_treatment() -> String {
-    "regular".into()
-}
-
-/// What 0051 backfills existing rows to. Same reason as above: `""` fails the CHECK, and every
-/// stream that existed before variable pay could be recorded had a schedule.
-fn default_pay_pattern() -> String {
-    "scheduled".into()
-}
-
-/// What 0038 backfills existing rows to. Same reason as above: `""` fails the CHECK, and every
-/// stream that existed before joint income could be recorded was one person's.
-fn ownership_person() -> String {
-    "person".into()
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct IncomeStreamStepRow {
-    pub id: i64,
-    pub income_stream_id: i64,
-    pub effective_on: String,
-    pub annual_amount_minor: i64,
-    pub label: Option<String>,
-    pub created_at: String,
-    /// Added by 0049 — `#[serde(default)]` so a snapshot from before dated contribution rates
-    /// imports with every step deferring to the stream's single rate, which is what it meant.
-    #[serde(default)]
-    pub kiwisaver_bps: Option<i64>,
-    #[serde(default)]
-    pub employer_kiwisaver_bps: Option<i64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct IncomeStreamMatchTargetRow {
-    pub id: i64,
-    pub income_stream_id: i64,
-    pub account_id: i64,
-    pub pattern: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct IncomePaymentRow {
-    pub id: i64,
-    pub income_stream_id: i64,
-    pub due_on: String,
-    pub status: String,
-    pub transaction_id: Option<i64>,
-    pub matched_by: Option<String>,
-    pub expected_net_minor: Option<i64>,
-    pub observed_net_minor: Option<i64>,
-    pub gross_minor: Option<i64>,
-    pub income_tax_minor: Option<i64>,
-    pub acc_levy_minor: Option<i64>,
-    pub kiwisaver_minor: Option<i64>,
-    pub student_loan_minor: Option<i64>,
-    pub employer_kiwisaver_minor: Option<i64>,
-    pub esct_minor: Option<i64>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TaxScaleRow {
-    pub id: i64,
-    pub scale_id: String,
-    pub effective_from: String,
-    /// JSON text, exactly as stored — the snapshot does not reinterpret it.
-    pub brackets: String,
-    pub acc_levy_bps: i64,
-    pub acc_income_cap_minor: i64,
-    pub student_loan_threshold_minor: i64,
-    pub student_loan_rate_bps: i64,
-    pub esct_brackets: String,
-    pub kiwisaver_govt_match_bps: i64,
-    pub kiwisaver_govt_max_minor: i64,
-    pub kiwisaver_govt_income_cap_minor: Option<i64>,
-    pub kiwisaver_employer_min_bps: i64,
-    pub source_note: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
 /// Serialising the snapshot cannot fail on the data (every field is a plain scalar), so an
 /// error here is a bug or a full disk on the way out to a `Vec`, not bad user input.
 fn ser_failed(e: serde_json::Error) -> AppError {
@@ -568,7 +409,7 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
         "transactions",
         TransactionRow,
         r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
-                  merchant, notes, category_id, is_one_off AS "is_one_off!: bool",
+                  merchant, notes, category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
                   linked_transaction_id, counterparty_account_id, provider, external_id,
                   categorized_by_rule_id,
                   merchant_id, ownership, person_id, created_at, updated_at
@@ -585,7 +426,7 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
         "rules",
         RuleRow,
         r#"SELECT id AS "id!", name, description, expression, set_category_id,
-                  set_one_off AS "set_one_off: bool",
+                  set_exclude_from_cashflow AS "set_exclude_from_cashflow: bool",
                   overwrite_manual AS "overwrite_manual!: bool",
                   stop_on_match AS "stop_on_match!: bool", priority, enabled AS "enabled!: bool",
                   set_merchant_id, set_counterparty_account_id, created_at, updated_at
@@ -641,51 +482,6 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
         r#"SELECT id AS "id!", dividend_id, owed_to, tax_amount_minor, tax_credit_minor,
                   currency_code
              FROM dividend_withholdings ORDER BY id"#
-    );
-    table!(
-        "income_streams",
-        IncomeStreamRow,
-        r#"SELECT id AS "id!", ownership, person_id, label, employer, currency_code,
-                  annual_amount_minor,
-                  basis, pay_frequency, first_payment_on, starts_on, ends_on,
-                  annual_increase_bps, kiwisaver_bps, student_loan AS "student_loan!: bool",
-                  take_home_bps, linked_category_id, enabled AS "enabled!: bool", sort_order,
-                  notes, employer_kiwisaver_bps, kiwisaver_account_id, student_loan_account_id,
-                  NULL AS "legacy_match_account_id: i64", NULL AS "legacy_match_pattern: String",
-                  pay_treatment, pay_pattern, created_at, updated_at
-             FROM income_streams ORDER BY id"#
-    );
-    table!(
-        "income_stream_steps",
-        IncomeStreamStepRow,
-        r#"SELECT id AS "id!", income_stream_id, effective_on, annual_amount_minor, label,
-                  created_at, kiwisaver_bps, employer_kiwisaver_bps
-             FROM income_stream_steps ORDER BY id"#
-    );
-    table!(
-        "income_stream_match_targets",
-        IncomeStreamMatchTargetRow,
-        r#"SELECT id AS "id!", income_stream_id, account_id, pattern, created_at
-             FROM income_stream_match_targets ORDER BY id"#
-    );
-    table!(
-        "income_payments",
-        IncomePaymentRow,
-        r#"SELECT id AS "id!", income_stream_id, due_on, status, transaction_id, matched_by,
-                  expected_net_minor, observed_net_minor, gross_minor, income_tax_minor,
-                  acc_levy_minor, kiwisaver_minor, student_loan_minor, employer_kiwisaver_minor,
-                  esct_minor, created_at, updated_at
-             FROM income_payments ORDER BY id"#
-    );
-    table!(
-        "tax_scales",
-        TaxScaleRow,
-        r#"SELECT id AS "id!", scale_id, effective_from, brackets, acc_levy_bps,
-                  acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,
-                  esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
-                  kiwisaver_govt_income_cap_minor, kiwisaver_employer_min_bps, source_note,
-                  created_at, updated_at
-             FROM tax_scales ORDER BY id"#
     );
 
     map.end().map_err(ser_failed)?;
@@ -760,7 +556,7 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
             TransactionRow,
             r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code,
                       description, merchant, notes, category_id,
-                      is_one_off AS "is_one_off!: bool", linked_transaction_id,
+                      exclude_from_cashflow AS "exclude_from_cashflow!: bool", linked_transaction_id,
                       counterparty_account_id, provider,
                       external_id, categorized_by_rule_id, merchant_id, ownership, person_id,
                       created_at, updated_at
@@ -779,7 +575,7 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         rules: sqlx::query_as!(
             RuleRow,
             r#"SELECT id AS "id!", name, description, expression, set_category_id,
-                      set_one_off AS "set_one_off: bool",
+                      set_exclude_from_cashflow AS "set_exclude_from_cashflow: bool",
                       overwrite_manual AS "overwrite_manual!: bool",
                       stop_on_match AS "stop_on_match!: bool", priority,
                       enabled AS "enabled!: bool", set_merchant_id,
@@ -847,57 +643,6 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         )
         .fetch_all(db)
         .await?,
-        income_streams: sqlx::query_as!(
-            IncomeStreamRow,
-            r#"SELECT id AS "id!", ownership, person_id, label, employer, currency_code,
-                      annual_amount_minor, basis, pay_frequency, first_payment_on, starts_on,
-                      ends_on, annual_increase_bps, kiwisaver_bps,
-                      student_loan AS "student_loan!: bool", take_home_bps, linked_category_id,
-                      enabled AS "enabled!: bool", sort_order, notes, employer_kiwisaver_bps,
-                      kiwisaver_account_id, student_loan_account_id,
-                      NULL AS "legacy_match_account_id: i64",
-                      NULL AS "legacy_match_pattern: String",
-                      pay_treatment, pay_pattern, created_at, updated_at
-                 FROM income_streams ORDER BY id"#
-        )
-        .fetch_all(db)
-        .await?,
-        income_stream_steps: sqlx::query_as!(
-            IncomeStreamStepRow,
-            r#"SELECT id AS "id!", income_stream_id, effective_on, annual_amount_minor, label,
-                      created_at, kiwisaver_bps, employer_kiwisaver_bps
-                 FROM income_stream_steps ORDER BY id"#
-        )
-        .fetch_all(db)
-        .await?,
-        income_stream_match_targets: sqlx::query_as!(
-            IncomeStreamMatchTargetRow,
-            r#"SELECT id AS "id!", income_stream_id, account_id, pattern, created_at
-                 FROM income_stream_match_targets ORDER BY id"#
-        )
-        .fetch_all(db)
-        .await?,
-        income_payments: sqlx::query_as!(
-            IncomePaymentRow,
-            r#"SELECT id AS "id!", income_stream_id, due_on, status, transaction_id, matched_by,
-                      expected_net_minor, observed_net_minor, gross_minor, income_tax_minor,
-                      acc_levy_minor, kiwisaver_minor, student_loan_minor,
-                      employer_kiwisaver_minor, esct_minor, created_at, updated_at
-                 FROM income_payments ORDER BY id"#
-        )
-        .fetch_all(db)
-        .await?,
-        tax_scales: sqlx::query_as!(
-            TaxScaleRow,
-            r#"SELECT id AS "id!", scale_id, effective_from, brackets, acc_levy_bps,
-                      acc_income_cap_minor, student_loan_threshold_minor, student_loan_rate_bps,
-                      esct_brackets, kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
-                      kiwisaver_govt_income_cap_minor, kiwisaver_employer_min_bps, source_note,
-                      created_at, updated_at
-                 FROM tax_scales ORDER BY id"#
-        )
-        .fetch_all(db)
-        .await?,
     })
 }
 
@@ -928,11 +673,6 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         // Audit, like the four above: a log of actions taken against *this* database, so it is
         // cleared and not restored. Re-inserting another database's log would be a false history.
         "DELETE FROM imports",
-        // Before both tables it references (income_streams, transactions).
-        "DELETE FROM income_payments",
-        "DELETE FROM income_stream_steps",
-        "DELETE FROM income_stream_match_targets",
-        "DELETE FROM income_streams",
         "DELETE FROM dividend_withholdings",
         "DELETE FROM dividends",
         "DELETE FROM holdings",
@@ -1091,7 +831,7 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         sqlx::query!(
             "INSERT INTO transactions
                 (id, account_id, posted_at, amount_minor, currency_code, description, merchant,
-                 notes, category_id, is_one_off, linked_transaction_id, provider, external_id,
+                 notes, category_id, exclude_from_cashflow, linked_transaction_id, provider, external_id,
                  categorized_by_rule_id, merchant_id, ownership, person_id, created_at,
                  updated_at, counterparty_account_id)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
@@ -1104,7 +844,7 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             t.merchant,
             t.notes,
             t.category_id,
-            t.is_one_off,
+            t.exclude_from_cashflow,
             t.linked_transaction_id,
             t.provider,
             t.external_id,
@@ -1139,16 +879,16 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
     for r in &snap.rules {
         sqlx::query!(
             "INSERT INTO rules
-                (id, name, description, expression, set_category_id, set_one_off,
+                (id, name, description, expression, set_category_id, set_exclude_from_cashflow,
                  overwrite_manual, stop_on_match, priority, enabled, set_merchant_id, created_at,
                  updated_at, set_counterparty_account_id)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             r.id,
             r.name,
             r.description,
-            r.expression,
+            r.expression.replace("is_one_off", "exclude_from_cashflow"),
             r.set_category_id,
-            r.set_one_off,
+            r.set_exclude_from_cashflow,
             r.overwrite_manual,
             r.stop_on_match,
             r.priority,
@@ -1306,169 +1046,6 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         .execute(&mut *txn)
         .await?;
     }
-    for s in &snap.income_streams {
-        sqlx::query!(
-            "INSERT INTO income_streams
-                (id, person_id, label, employer, currency_code, annual_amount_minor, basis,
-                 pay_frequency, first_payment_on, starts_on, ends_on, annual_increase_bps,
-                 kiwisaver_bps, student_loan, take_home_bps, linked_category_id, enabled,
-                 sort_order, notes, created_at, updated_at, employer_kiwisaver_bps,
-                 kiwisaver_account_id, student_loan_account_id,
-                 pay_treatment, ownership, pay_pattern)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
-             ?22,?23,?24,?25,?26,?27)",
-            s.id,
-            s.person_id,
-            s.label,
-            s.employer,
-            s.currency_code,
-            s.annual_amount_minor,
-            s.basis,
-            s.pay_frequency,
-            s.first_payment_on,
-            s.starts_on,
-            s.ends_on,
-            s.annual_increase_bps,
-            s.kiwisaver_bps,
-            s.student_loan,
-            s.take_home_bps,
-            s.linked_category_id,
-            s.enabled,
-            s.sort_order,
-            s.notes,
-            s.created_at,
-            s.updated_at,
-            s.employer_kiwisaver_bps,
-            s.kiwisaver_account_id,
-            s.student_loan_account_id,
-            s.pay_treatment,
-            s.ownership,
-            s.pay_pattern
-        )
-        .execute(&mut *txn)
-        .await?;
-    }
-    for s in &snap.income_stream_steps {
-        sqlx::query!(
-            "INSERT INTO income_stream_steps
-                (id, income_stream_id, effective_on, annual_amount_minor, label, created_at,
-                 kiwisaver_bps, employer_kiwisaver_bps)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-            s.id,
-            s.income_stream_id,
-            s.effective_on,
-            s.annual_amount_minor,
-            s.label,
-            s.created_at,
-            s.kiwisaver_bps,
-            s.employer_kiwisaver_bps
-        )
-        .execute(&mut *txn)
-        .await?;
-    }
-    for t in &snap.income_stream_match_targets {
-        sqlx::query!(
-            "INSERT INTO income_stream_match_targets
-                (id, income_stream_id, account_id, pattern, created_at)
-             VALUES (?1,?2,?3,?4,?5)",
-            t.id,
-            t.income_stream_id,
-            t.account_id,
-            t.pattern,
-            t.created_at
-        )
-        .execute(&mut *txn)
-        .await?;
-    }
-    // A snapshot from before 0048 has no target rows at all and carries each stream's single
-    // target on the stream itself. Promote those, and only those — a snapshot that *did* carry
-    // targets has already restored them above, and its legacy fields are `None` by construction.
-    for s in &snap.income_streams {
-        let (Some(account_id), Some(pattern)) =
-            (s.legacy_match_account_id, s.legacy_match_pattern.as_deref())
-        else {
-            continue;
-        };
-        let pattern = pattern.trim();
-        if pattern.is_empty() {
-            continue; // matching was off; the 0048 CHECK would refuse it anyway
-        }
-        sqlx::query!(
-            "INSERT INTO income_stream_match_targets (income_stream_id, account_id, pattern)
-             VALUES (?1,?2,?3)",
-            s.id,
-            account_id,
-            pattern
-        )
-        .execute(&mut *txn)
-        .await?;
-    }
-    for p in &snap.income_payments {
-        sqlx::query!(
-            "INSERT INTO income_payments
-                (id, income_stream_id, due_on, status, transaction_id, matched_by,
-                 expected_net_minor, observed_net_minor, gross_minor, income_tax_minor,
-                 acc_levy_minor, kiwisaver_minor, student_loan_minor, employer_kiwisaver_minor,
-                 esct_minor, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
-            p.id,
-            p.income_stream_id,
-            p.due_on,
-            p.status,
-            p.transaction_id,
-            p.matched_by,
-            p.expected_net_minor,
-            p.observed_net_minor,
-            p.gross_minor,
-            p.income_tax_minor,
-            p.acc_levy_minor,
-            p.kiwisaver_minor,
-            p.student_loan_minor,
-            p.employer_kiwisaver_minor,
-            p.esct_minor,
-            p.created_at,
-            p.updated_at
-        )
-        .execute(&mut *txn)
-        .await?;
-    }
-    // Restored only when the snapshot carries some (see the field's comment): the table is
-    // seeded rather than empty by construction, so an older snapshot's silence must leave the
-    // current scales standing rather than wipe them.
-    if !snap.tax_scales.is_empty() {
-        sqlx::query!("DELETE FROM tax_scales")
-            .execute(&mut *txn)
-            .await?;
-        for t in &snap.tax_scales {
-            sqlx::query!(
-                "INSERT INTO tax_scales
-                    (id, scale_id, effective_from, brackets, acc_levy_bps, acc_income_cap_minor,
-                     student_loan_threshold_minor, student_loan_rate_bps, esct_brackets,
-                     kiwisaver_govt_match_bps, kiwisaver_govt_max_minor,
-                     kiwisaver_govt_income_cap_minor, kiwisaver_employer_min_bps, source_note,
-                     created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
-                t.id,
-                t.scale_id,
-                t.effective_from,
-                t.brackets,
-                t.acc_levy_bps,
-                t.acc_income_cap_minor,
-                t.student_loan_threshold_minor,
-                t.student_loan_rate_bps,
-                t.esct_brackets,
-                t.kiwisaver_govt_match_bps,
-                t.kiwisaver_govt_max_minor,
-                t.kiwisaver_govt_income_cap_minor,
-                t.kiwisaver_employer_min_bps,
-                t.source_note,
-                t.created_at,
-                t.updated_at
-            )
-            .execute(&mut *txn)
-            .await?;
-        }
-    }
     for r in &snap.exchange_rates {
         sqlx::query!(
             "INSERT INTO exchange_rates (base_code, quote_code, as_of, rate) VALUES (?1,?2,?3,?4)",
@@ -1501,11 +1078,6 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             "holdings": snap.holdings.len(),
             "dividends": snap.dividends.len(),
             "dividend_withholdings": snap.dividend_withholdings.len(),
-            "income_streams": snap.income_streams.len(),
-            "income_stream_steps": snap.income_stream_steps.len(),
-            "income_stream_match_targets": snap.income_stream_match_targets.len(),
-            "income_payments": snap.income_payments.len(),
-            "tax_scales": snap.tax_scales.len(),
         }
     }))
 }
