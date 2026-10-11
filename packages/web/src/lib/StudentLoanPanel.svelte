@@ -26,11 +26,11 @@
   let newest = $state<string | null>(null);
 
   async function load() {
-    // `include_one_off: false` drops the "Opening balance" row every account is seeded with —
+    // `include_excluded_from_cashflow: false` drops the "Opening balance" row every account is seeded with —
     // counting it would make a brand-new loan claim it already has a ledger.
     const { data } = await api.GET("/api/transactions", {
       params: {
-        query: { account_id: accountId, limit: LEDGER_LIMIT, include_one_off: false },
+        query: { account_id: accountId, limit: LEDGER_LIMIT, include_excluded_from_cashflow: false },
       },
     });
     const rows = data ?? [];

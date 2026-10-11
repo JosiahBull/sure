@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                      merchant, merchant_id, notes, category_id, is_one_off AS \"is_one_off!: bool\",\n                      linked_transaction_id, counterparty_account_id,\n                      provider, external_id, categorized_by_rule_id,\n                      ownership, person_id, created_at, updated_at\n                 FROM transactions WHERE external_id = ?1",
+  "query": "SELECT id AS \"id!\", account_id, posted_at, amount_minor, currency_code,\n                      description, merchant, notes, category_id,\n                      exclude_from_cashflow AS \"exclude_from_cashflow!: bool\", linked_transaction_id,\n                      counterparty_account_id, provider,\n                      external_id, categorized_by_rule_id, merchant_id, ownership, person_id,\n                      created_at, updated_at\n                 FROM transactions ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -81,19 +81,8 @@
         }
       },
       {
-        "name": "merchant_id",
-        "ordinal": 7,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "merchant_id"
-          }
-        }
-      },
-      {
         "name": "notes",
-        "ordinal": 8,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +93,7 @@
       },
       {
         "name": "category_id",
-        "ordinal": 9,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -114,19 +103,19 @@
         }
       },
       {
-        "name": "is_one_off!: bool",
-        "ordinal": 10,
+        "name": "exclude_from_cashflow!: bool",
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "is_one_off"
+            "name": "exclude_from_cashflow"
           }
         }
       },
       {
         "name": "linked_transaction_id",
-        "ordinal": 11,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -137,7 +126,7 @@
       },
       {
         "name": "counterparty_account_id",
-        "ordinal": 12,
+        "ordinal": 11,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -148,7 +137,7 @@
       },
       {
         "name": "provider",
-        "ordinal": 13,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -159,7 +148,7 @@
       },
       {
         "name": "external_id",
-        "ordinal": 14,
+        "ordinal": 13,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -170,12 +159,23 @@
       },
       {
         "name": "categorized_by_rule_id",
-        "ordinal": 15,
+        "ordinal": 14,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
             "name": "categorized_by_rule_id"
+          }
+        }
+      },
+      {
+        "name": "merchant_id",
+        "ordinal": 15,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "merchant_id"
           }
         }
       },
@@ -225,7 +225,7 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 0
     },
     "nullable": [
       false,
@@ -237,8 +237,8 @@
       true,
       true,
       true,
-      true,
       false,
+      true,
       true,
       true,
       true,
@@ -250,5 +250,5 @@
       false
     ]
   },
-  "hash": "4757a14c7b4b5c71697d7c53d3ddcd56dcd1b8304bbb1b0445755706fe621493"
+  "hash": "e84a487aa610eadbcf806dbfac15f8c336de9ea55d92f479ce443fb80fd823d5"
 }

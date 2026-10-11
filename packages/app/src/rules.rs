@@ -38,7 +38,7 @@ pub trait AutoCategorize: Send + Sync {
 struct Current {
     category_id: Option<i64>,
     categorized_by_rule_id: Option<i64>,
-    is_one_off: bool,
+    exclude_from_cashflow: bool,
     merchant_id: Option<i64>,
     counterparty_account_id: Option<i64>,
 }
@@ -48,7 +48,7 @@ impl Current {
         Current {
             category_id: row.category_id,
             categorized_by_rule_id: row.categorized_by_rule_id,
-            is_one_off: row.is_one_off,
+            exclude_from_cashflow: row.exclude_from_cashflow,
             merchant_id: row.merchant_id,
             counterparty_account_id: row.counterparty_account_id,
         }
@@ -324,13 +324,13 @@ fn plan_run(rules: &[Rule], rows: &[TxCtx]) -> (i64, Vec<PlannedApplication>) {
                 new_category = Some(target);
                 cat_changed = true;
             }
-            let mut new_one_off = cur.is_one_off;
-            let mut one_off_changed = false;
-            if let Some(v) = rule.set_one_off
-                && cur.is_one_off != v
+            let mut new_exclude_from_cashflow = cur.exclude_from_cashflow;
+            let mut excluded_from_cashflow_changed = false;
+            if let Some(v) = rule.set_exclude_from_cashflow
+                && cur.exclude_from_cashflow != v
             {
-                new_one_off = v;
-                one_off_changed = true;
+                new_exclude_from_cashflow = v;
+                excluded_from_cashflow_changed = true;
             }
             let mut new_merchant = cur.merchant_id;
             let mut merchant_changed = false;
@@ -353,7 +353,11 @@ fn plan_run(rules: &[Rule], rows: &[TxCtx]) -> (i64, Vec<PlannedApplication>) {
                 counterparty_changed = true;
             }
 
-            if cat_changed || one_off_changed || merchant_changed || counterparty_changed {
+            if cat_changed
+                || excluded_from_cashflow_changed
+                || merchant_changed
+                || counterparty_changed
+            {
                 let new_cat_by_rule = if cat_changed {
                     Some(rule.id)
                 } else {
@@ -366,8 +370,8 @@ fn plan_run(rules: &[Rule], rows: &[TxCtx]) -> (i64, Vec<PlannedApplication>) {
                     new_category_id: new_category,
                     prev_categorized_by_rule_id: cur.categorized_by_rule_id,
                     new_categorized_by_rule_id: new_cat_by_rule,
-                    prev_one_off: cur.is_one_off,
-                    new_one_off,
+                    prev_exclude_from_cashflow: cur.exclude_from_cashflow,
+                    new_exclude_from_cashflow,
                     prev_merchant_id: cur.merchant_id,
                     new_merchant_id: new_merchant,
                     prev_counterparty_account_id: cur.counterparty_account_id,
@@ -375,12 +379,12 @@ fn plan_run(rules: &[Rule], rows: &[TxCtx]) -> (i64, Vec<PlannedApplication>) {
                 });
                 cur.category_id = new_category;
                 cur.categorized_by_rule_id = new_cat_by_rule;
-                cur.is_one_off = new_one_off;
+                cur.exclude_from_cashflow = new_exclude_from_cashflow;
                 cur.merchant_id = new_merchant;
                 cur.counterparty_account_id = new_counterparty;
                 // The row's context is no longer rebuilt from `cur` on the next iteration,
                 // so the fields a rule can move have to be written back here — a later rule
-                // keying off `category_id`/`is_one_off`/`merchant_id` must see what this one
+                // keying off `category_id`/`exclude_from_cashflow`/`merchant_id` must see what this one
                 // just did, exactly as it did when every rule got a freshly built map.
                 write_current(&mut ctx, &cur);
             }
@@ -447,7 +451,10 @@ fn write_current(obj: &mut Map<String, Value>, cur: &Current) {
         "category_id".into(),
         cur.category_id.map(|v| json!(v)).unwrap_or(Value::Null),
     );
-    obj.insert("is_one_off".into(), json!(cur.is_one_off));
+    obj.insert(
+        "exclude_from_cashflow".into(),
+        json!(cur.exclude_from_cashflow),
+    );
     obj.insert(
         "counterparty_account_id".into(),
         cur.counterparty_account_id
@@ -547,7 +554,7 @@ pub fn validate_expression(expression: &str) -> AppResult<()> {
         "is_income": false, "is_expense": true,
         "description": "sample", "merchant": "sample", "merchant_id": null, "notes": "",
         "currency": "NZD", "account_id": 1, "account": "sample", "account_kind": "bank",
-        "category_id": null, "is_one_off": false,
+        "category_id": null, "exclude_from_cashflow": false,
         "date": "2026-01-01", "year": 2026, "month": 1, "day": 1
     });
     zen_expression::evaluate_expression(expression.trim(), sample.into())
@@ -575,7 +582,7 @@ mod tests {
             merchant_id: None,
             notes: None,
             category_id,
-            is_one_off: false,
+            exclude_from_cashflow: false,
             categorized_by_rule_id: None,
             account_name: "Everyday".to_string(),
             account_kind: AccountKind::Bank,
@@ -590,7 +597,7 @@ mod tests {
             description: None,
             expression: expression.to_string(),
             set_category_id: Some(set_category_id),
-            set_one_off: None,
+            set_exclude_from_cashflow: None,
             set_merchant_id: None,
             set_counterparty_account_id: None,
             overwrite_manual: false,
@@ -825,12 +832,12 @@ mod tests {
 
         let mut flag = rule(11, "category_id == 10", 0);
         flag.set_category_id = None;
-        flag.set_one_off = Some(true);
+        flag.set_exclude_from_cashflow = Some(true);
         flag.set_merchant_id = Some(5);
         flag.stop_on_match = false;
 
         // Only reachable if both of rule 11's writes are visible in the patched context.
-        let mut confirm = rule(12, "is_one_off and merchant_id == 5", 99);
+        let mut confirm = rule(12, "exclude_from_cashflow and merchant_id == 5", 99);
         confirm.stop_on_match = true;
 
         let (matched, apps) = plan_run(&[categorize, flag, confirm], &rows);
@@ -840,7 +847,7 @@ mod tests {
             "each rule must observe the previous rule's change"
         );
         assert_eq!(apps.len(), 3);
-        assert!(apps[1].new_one_off);
+        assert!(apps[1].new_exclude_from_cashflow);
         assert_eq!(apps[1].new_merchant_id, Some(5));
         assert_eq!(apps[2].new_category_id, Some(99));
     }

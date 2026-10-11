@@ -32,8 +32,8 @@ pub struct TxQueryParams {
     pub from: Option<String>,
     /// Inclusive upper bound on the transaction date (ISO-8601).
     pub to: Option<String>,
-    /// When false, one-off transactions are excluded. Defaults to true.
-    pub include_one_off: Option<bool>,
+    /// When false, transactions excluded from cashflow are excluded. Defaults to true.
+    pub include_excluded_from_cashflow: Option<bool>,
     /// Case-insensitive substring match on description/merchant/notes.
     pub search: Option<String>,
     /// `true` keeps only uncategorised rows, `false` only categorised ones; omitted means
@@ -62,7 +62,7 @@ impl TryFrom<TxQueryParams> for TxQuery {
             category_id: q.category_id,
             from: q.from,
             to: q.to,
-            include_one_off: q.include_one_off,
+            include_excluded_from_cashflow: q.include_excluded_from_cashflow,
             search: q.search,
             uncategorized: q.uncategorized,
             limit: q.limit,
@@ -108,7 +108,7 @@ pub async fn list(
                     &sure_app::reports::ReportQuery {
                         from: query.from.clone(),
                         to: query.to.clone(),
-                        include_one_off: query.include_one_off,
+                        include_excluded_from_cashflow: query.include_excluded_from_cashflow,
                         attributed_to: query.attributed_to,
                         ..Default::default()
                     },
@@ -203,7 +203,7 @@ pub async fn delete(State(st): State<AppState>, Path(id): Path<i64>) -> AppResul
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Apply a partial patch (category / merchant / one-off) to many transactions at once.
+/// Apply a partial patch (category / merchant / cashflow exclusion) to many transactions at once.
 /// Omitted fields are left untouched; an explicit `null` clears a category/merchant.
 #[utoipa::path(post, path = "/api/transactions/bulk-update", tag = "transactions",
     request_body = BulkUpdate,

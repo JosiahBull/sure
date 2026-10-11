@@ -276,7 +276,7 @@ impl BrokerageRepo for SqliteStore {
                 category_name: r.category_name.clone(),
                 category_group: r.category_group.clone(),
                 category_kind: r.category_kind,
-                is_one_off: r.is_one_off,
+                exclude_from_cashflow: r.exclude_from_cashflow,
             })
             .collect();
         let holdings: Vec<crate::brokerage::HoldingImport> = holdings
@@ -482,7 +482,7 @@ fn tx_ctx(r: crate::rules::TxCtx) -> TxCtx {
         merchant_id: r.merchant_id,
         notes: r.notes,
         category_id: r.category_id,
-        is_one_off: r.is_one_off,
+        exclude_from_cashflow: r.exclude_from_cashflow,
         categorized_by_rule_id: r.categorized_by_rule_id,
         account_name: r.account_name,
         account_kind: r.account_kind, // already `sure_core::AccountKind`, parsed in the DAL
@@ -524,8 +524,8 @@ impl RuleRepo for SqliteStore {
                 new_category_id: a.new_category_id,
                 prev_categorized_by_rule_id: a.prev_categorized_by_rule_id,
                 new_categorized_by_rule_id: a.new_categorized_by_rule_id,
-                prev_one_off: a.prev_one_off,
-                new_one_off: a.new_one_off,
+                prev_exclude_from_cashflow: a.prev_exclude_from_cashflow,
+                new_exclude_from_cashflow: a.new_exclude_from_cashflow,
                 prev_merchant_id: a.prev_merchant_id,
                 new_merchant_id: a.new_merchant_id,
                 prev_counterparty_account_id: a.prev_counterparty_account_id,
@@ -646,7 +646,7 @@ impl ReportRepo for SqliteStore {
                 amount_minor: t.amount_minor,
                 currency_code: t.currency_code,
                 category_id: t.category_id,
-                is_one_off: t.is_one_off,
+                exclude_from_cashflow: t.exclude_from_cashflow,
                 linked_transaction_id: t.linked_transaction_id,
                 account_id: t.account_id,
                 account_name: t.account_name,
@@ -767,7 +767,7 @@ impl ProviderRepo for SqliteStore {
                 category_name: r.category_name.clone(),
                 category_group: r.category_group.clone(),
                 category_kind: r.category_kind,
-                is_one_off: r.is_one_off,
+                exclude_from_cashflow: r.exclude_from_cashflow,
             })
             .collect();
         crate::providers::import_transactions(

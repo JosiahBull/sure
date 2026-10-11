@@ -33,8 +33,8 @@ pub struct ReportQuery {
     pub from: Option<String>,
     /// Inclusive end date (ISO-8601). Defaults to today.
     pub to: Option<String>,
-    /// Include one-off transactions (default false).
-    pub include_one_off: Option<bool>,
+    /// Include transactions excluded from cashflow (default false).
+    pub include_excluded_from_cashflow: Option<bool>,
     /// Report currency; defaults to the configured base currency.
     pub currency: Option<String>,
     /// Restrict to one household member's spending, or to the joint bucket. Matches on a
@@ -584,7 +584,7 @@ pub(crate) fn sample_dates(from: NaiveDate, to: NaiveDate, interval: Interval) -
 /// Mortgage, student-loan and brokerage accounts carry the instrument's own bookkeeping —
 /// loan drawdowns/amortisation/repayments, trades/FX — not household income or spending.
 /// Unlike `credit_card`/`revolving_credit`, which are everyday transaction accounts, these
-/// kinds should never feed the income/expense report, one-off toggle or not.
+/// kinds should never feed the income/expense report, cashflow exclusion override or not.
 ///
 /// A student loan is the sharpest case: on a liability a repayment is a *positive* amount
 /// (it moves the negative balance towards zero), so leaving it in would report years of
@@ -851,7 +851,7 @@ fn keeps(basis: FlowBasis, t: &SpendTransaction, cats: &Categories) -> bool {
 
 /// Load the transactions a money-flow report is built from, on the given basis.
 ///
-/// Attribution, the one-off switch and the window apply on both bases; what differs is which
+/// Attribution, the cashflow exclusion override and the window apply on both bases; what differs is which
 /// movements count at all — see [`keeps`].
 async fn load_spend(
     reports: &dyn ReportRepo,
@@ -859,7 +859,7 @@ async fn load_spend(
     basis: FlowBasis,
     from: NaiveDate,
     to: NaiveDate,
-    include_one_off: bool,
+    include_excluded_from_cashflow: bool,
     attributed_to: Option<Ownership>,
 ) -> AppResult<Vec<SpendTransaction>> {
     let rows = reports.spend_transactions(from, to).await?;
@@ -868,7 +868,7 @@ async fn load_spend(
         if !in_window(&t, from, to) {
             continue;
         }
-        if !include_one_off && t.is_one_off {
+        if !include_excluded_from_cashflow && t.exclude_from_cashflow {
             continue;
         }
         // Whose spending this is was resolved by the loader (override, else account).
@@ -1483,7 +1483,7 @@ impl ReportService {
             FlowBasis::Spending,
             from,
             to,
-            q.include_one_off.unwrap_or(false),
+            q.include_excluded_from_cashflow.unwrap_or(false),
             q.attributed_to,
         )
         .await?;
@@ -1722,7 +1722,7 @@ impl ReportService {
             FlowBasis::Cash,
             from,
             to,
-            q.include_one_off.unwrap_or(true),
+            q.include_excluded_from_cashflow.unwrap_or(false),
             q.attributed_to,
         )
         .await?;
@@ -2778,7 +2778,7 @@ mod tests {
                 amount_minor,
                 currency_code: "NZD".to_string(),
                 category_id: Some(category_id),
-                is_one_off: false,
+                exclude_from_cashflow: false,
                 linked_transaction_id: None,
                 account_id: 1,
                 account_name: "Bank".to_string(),
@@ -3405,7 +3405,7 @@ mod tests {
                 amount_minor,
                 currency_code: currency_code.to_string(),
                 category_id,
-                is_one_off: false,
+                exclude_from_cashflow: false,
                 linked_transaction_id: None,
                 account_id,
                 account_name: account_name.to_string(),
@@ -3692,7 +3692,7 @@ mod tests {
                 amount_minor,
                 currency_code: "NZD".to_string(),
                 category_id,
-                is_one_off: false,
+                exclude_from_cashflow: false,
                 linked_transaction_id: linked.map(|_| id + 1000),
                 account_id: match account_kind {
                     AccountKind::CreditCard => CARD,

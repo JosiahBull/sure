@@ -441,7 +441,7 @@ impl SyncService {
                 category_name: None,
                 category_group: None,
                 category_kind: None,
-                is_one_off: false,
+                exclude_from_cashflow: false,
             })
             .collect();
         crate::detect::drawdown_original_amount(&movements, account.balance_minor)
@@ -667,7 +667,7 @@ impl SyncService {
                 category_name: t.category.as_ref().map(|c| c.name.clone()),
                 category_kind: t.category.as_ref().and_then(|c| c.kind),
                 category_group: t.category.and_then(|c| c.group),
-                is_one_off: false,
+                exclude_from_cashflow: false,
             })
             .collect();
 

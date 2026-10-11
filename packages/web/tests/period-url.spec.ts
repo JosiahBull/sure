@@ -121,6 +121,6 @@ for (const [today, from, to] of [
     const query = new URL((await request).url()).searchParams;
     expect(query.get("from")).toBe(from);
     expect(query.get("to")).toBe(to);
-    expect(query.get("include_one_off")).toBe("true");
+    expect(query.get("include_excluded_from_cashflow")).toBe("false");
   });
 }

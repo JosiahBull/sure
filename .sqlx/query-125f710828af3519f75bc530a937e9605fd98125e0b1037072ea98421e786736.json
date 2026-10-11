@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "UPDATE transactions SET account_id=?2, posted_at=?3, amount_minor=?4,\n              currency_code=?5, description=?6, merchant=?7, notes=?8, category_id=?9,\n              is_one_off=?10, merchant_id=?11, ownership=?12, person_id=?13,\n              counterparty_account_id=?14,\n              categorized_by_rule_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           WHERE id=?1\n           RETURNING id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                     merchant, merchant_id, notes, category_id, is_one_off AS \"is_one_off!: bool\",\n                     linked_transaction_id, counterparty_account_id,\n                     provider, external_id, categorized_by_rule_id,\n                     ownership, person_id, created_at, updated_at",
+  "query": "SELECT t.id AS \"id!\", t.account_id, t.posted_at, t.amount_minor, t.currency_code,\n                  cur.decimal_places, t.description, t.merchant, t.merchant_id, t.notes,\n                  t.category_id, t.exclude_from_cashflow AS \"exclude_from_cashflow!: bool\", t.categorized_by_rule_id,\n                  t.counterparty_account_id,\n                  a.name AS account_name, a.kind AS account_kind\n             FROM transactions t\n             JOIN accounts a ON a.id = t.account_id\n             JOIN currencies cur ON cur.code = t.currency_code",
   "describe": {
     "columns": [
       {
@@ -59,8 +59,19 @@
         }
       },
       {
-        "name": "description",
+        "name": "decimal_places",
         "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "currencies",
+            "name": "decimal_places"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "merchant",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "merchant_id",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "notes",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "category_id",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -114,63 +125,19 @@
         }
       },
       {
-        "name": "is_one_off!: bool",
-        "ordinal": 10,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "is_one_off"
-          }
-        }
-      },
-      {
-        "name": "linked_transaction_id",
+        "name": "exclude_from_cashflow!: bool",
         "ordinal": 11,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "linked_transaction_id"
-          }
-        }
-      },
-      {
-        "name": "counterparty_account_id",
-        "ordinal": 12,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "counterparty_account_id"
-          }
-        }
-      },
-      {
-        "name": "provider",
-        "ordinal": 13,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "provider"
-          }
-        }
-      },
-      {
-        "name": "external_id",
-        "ordinal": 14,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "external_id"
+            "name": "exclude_from_cashflow"
           }
         }
       },
       {
         "name": "categorized_by_rule_id",
-        "ordinal": 15,
+        "ordinal": 12,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -180,75 +147,60 @@
         }
       },
       {
-        "name": "ownership",
-        "ordinal": 16,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "ownership"
-          }
-        }
-      },
-      {
-        "name": "person_id",
-        "ordinal": 17,
+        "name": "counterparty_account_id",
+        "ordinal": 13,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "person_id"
+            "name": "counterparty_account_id"
           }
         }
       },
       {
-        "name": "created_at",
-        "ordinal": 18,
+        "name": "account_name",
+        "ordinal": 14,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "transactions",
-            "name": "created_at"
+            "table": "accounts",
+            "name": "name"
           }
         }
       },
       {
-        "name": "updated_at",
-        "ordinal": 19,
+        "name": "account_kind",
+        "ordinal": 15,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "transactions",
-            "name": "updated_at"
+            "table": "accounts",
+            "name": "kind"
           }
         }
       }
     ],
     "parameters": {
-      "Right": 14
+      "Right": 0
     },
     "nullable": [
-      null,
       false,
       false,
       false,
       false,
       false,
-      true,
-      true,
-      true,
-      true,
+      false,
       false,
       true,
       true,
       true,
       true,
-      true,
+      false,
       true,
       true,
       false,
       false
     ]
   },
-  "hash": "d4b04fad2c8acebf5b193da7d5a67a71f994b3bfc7e8b147b51cbc56fd040a17"
+  "hash": "125f710828af3519f75bc530a937e9605fd98125e0b1037072ea98421e786736"
 }

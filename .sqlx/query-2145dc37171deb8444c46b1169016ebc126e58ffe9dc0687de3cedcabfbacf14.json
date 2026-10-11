@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT t.id AS \"id!\", t.account_id, t.posted_at, t.amount_minor, t.currency_code,\n                  cur.decimal_places, t.description, t.merchant, t.merchant_id, t.notes,\n                  t.category_id, t.is_one_off AS \"is_one_off!: bool\", t.categorized_by_rule_id,\n                  t.counterparty_account_id,\n                  a.name AS account_name, a.kind AS account_kind\n             FROM transactions t\n             JOIN accounts a ON a.id = t.account_id\n             JOIN currencies cur ON cur.code = t.currency_code",
+  "query": "SELECT id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                  merchant, notes, category_id, exclude_from_cashflow AS \"exclude_from_cashflow!: bool\",\n                  linked_transaction_id, counterparty_account_id, provider, external_id,\n                  categorized_by_rule_id,\n                  merchant_id, ownership, person_id, created_at, updated_at\n             FROM transactions ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -59,19 +59,8 @@
         }
       },
       {
-        "name": "decimal_places",
-        "ordinal": 5,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "currencies",
-            "name": "decimal_places"
-          }
-        }
-      },
-      {
         "name": "description",
-        "ordinal": 6,
+        "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -82,7 +71,7 @@
       },
       {
         "name": "merchant",
-        "ordinal": 7,
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -92,19 +81,8 @@
         }
       },
       {
-        "name": "merchant_id",
-        "ordinal": 8,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "merchant_id"
-          }
-        }
-      },
-      {
         "name": "notes",
-        "ordinal": 9,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,7 +93,7 @@
       },
       {
         "name": "category_id",
-        "ordinal": 10,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -125,30 +103,30 @@
         }
       },
       {
-        "name": "is_one_off!: bool",
-        "ordinal": 11,
+        "name": "exclude_from_cashflow!: bool",
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "is_one_off"
+            "name": "exclude_from_cashflow"
           }
         }
       },
       {
-        "name": "categorized_by_rule_id",
-        "ordinal": 12,
+        "name": "linked_transaction_id",
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "categorized_by_rule_id"
+            "name": "linked_transaction_id"
           }
         }
       },
       {
         "name": "counterparty_account_id",
-        "ordinal": 13,
+        "ordinal": 11,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -158,24 +136,90 @@
         }
       },
       {
-        "name": "account_name",
-        "ordinal": 14,
+        "name": "provider",
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "accounts",
-            "name": "name"
+            "table": "transactions",
+            "name": "provider"
           }
         }
       },
       {
-        "name": "account_kind",
-        "ordinal": 15,
+        "name": "external_id",
+        "ordinal": 13,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "accounts",
-            "name": "kind"
+            "table": "transactions",
+            "name": "external_id"
+          }
+        }
+      },
+      {
+        "name": "categorized_by_rule_id",
+        "ordinal": 14,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "categorized_by_rule_id"
+          }
+        }
+      },
+      {
+        "name": "merchant_id",
+        "ordinal": 15,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "merchant_id"
+          }
+        }
+      },
+      {
+        "name": "ownership",
+        "ordinal": 16,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "ownership"
+          }
+        }
+      },
+      {
+        "name": "person_id",
+        "ordinal": 17,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "person_id"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 18,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 19,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "updated_at"
           }
         }
       }
@@ -190,17 +234,21 @@
       false,
       false,
       false,
+      true,
+      true,
+      true,
       false,
       true,
       true,
       true,
       true,
-      false,
+      true,
+      true,
       true,
       true,
       false,
       false
     ]
   },
-  "hash": "244bdb861492243ffddebbf5a3380d949f916cbb75ee842e49f8369a43ccd6f9"
+  "hash": "2145dc37171deb8444c46b1169016ebc126e58ffe9dc0687de3cedcabfbacf14"
 }

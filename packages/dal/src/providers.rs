@@ -110,7 +110,7 @@ pub struct ImportRow {
     /// Excluded from spend/income reports, but still counted towards balances and net
     /// worth. What an opening-balance row needs: it moves the account's value without
     /// being money earned or spent.
-    pub is_one_off: bool,
+    pub exclude_from_cashflow: bool,
     /// Flow direction for a newly-created category; `None` defaults to expense (most
     /// enrichment is spend-side). Only affects creation — an existing category keeps
     /// its kind.
@@ -471,7 +471,7 @@ async fn insert_chunk(
     let mut builder = sqlx::QueryBuilder::new(
         "INSERT OR IGNORE INTO transactions
             (account_id, posted_at, amount_minor, currency_code, description, merchant,
-             merchant_id, category_id, provider, external_id, is_one_off) ",
+             merchant_id, category_id, provider, external_id, exclude_from_cashflow) ",
     );
     builder.push_values(chunk.iter().zip(resolved), |mut row, (t, r)| {
         row.push_bind(account_id)
@@ -484,7 +484,7 @@ async fn insert_chunk(
             .push_bind(r.category_id)
             .push_bind(provider_tag)
             .push_bind(t.external_id.as_str())
-            .push_bind(t.is_one_off);
+            .push_bind(t.exclude_from_cashflow);
     });
     let inserted = builder.build().execute(&mut *tx).await?.rows_affected();
     tx.commit().await?;
@@ -1104,7 +1104,7 @@ mod tests {
         sqlx::query_as!(
             crate::transactions::TransactionRow,
             r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
-                      merchant, merchant_id, notes, category_id, is_one_off AS "is_one_off!: bool",
+                      merchant, merchant_id, notes, category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
                       linked_transaction_id, counterparty_account_id,
                       provider, external_id, categorized_by_rule_id,
                       ownership, person_id, created_at, updated_at
@@ -1129,7 +1129,7 @@ mod tests {
             category_name: Some(category.to_string()),
             category_group: Some(group.to_string()),
             category_kind: None,
-            is_one_off: false,
+            exclude_from_cashflow: false,
         }
     }
 
@@ -1216,7 +1216,7 @@ mod tests {
                 category_name: Some("Cafes And Restaurants".to_string()),
                 category_group: None,
                 category_kind: None,
-                is_one_off: false,
+                exclude_from_cashflow: false,
             }],
         )
         .await
@@ -1254,7 +1254,7 @@ mod tests {
             category_name: None,
             category_group: None,
             category_kind: None,
-            is_one_off: false,
+            exclude_from_cashflow: false,
         }
     }
 

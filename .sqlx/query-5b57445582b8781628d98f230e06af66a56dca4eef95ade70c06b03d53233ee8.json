@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rules\n                (id, name, description, expression, set_category_id, set_exclude_from_cashflow,\n                 overwrite_manual, stop_on_match, priority, enabled, set_merchant_id, created_at,\n                 updated_at, set_counterparty_account_id)\n             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 14
+    },
+    "nullable": []
+  },
+  "hash": "5b57445582b8781628d98f230e06af66a56dca4eef95ade70c06b03d53233ee8"
+}

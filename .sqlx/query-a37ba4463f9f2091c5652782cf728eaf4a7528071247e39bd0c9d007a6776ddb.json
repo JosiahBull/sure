@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "UPDATE rules SET name=?2, description=?3, expression=?4, set_category_id=?5,\n              set_one_off=?6, overwrite_manual=?7, stop_on_match=?8, priority=?9, enabled=?10,\n              set_merchant_id=?11, set_counterparty_account_id=?12,\n              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           WHERE id=?1\n           RETURNING id AS \"id!\", name, description, expression,\n                     set_category_id AS \"set_category_id?\",\n                     set_one_off AS \"set_one_off: bool\", set_merchant_id AS \"set_merchant_id?\",\n                     set_counterparty_account_id AS \"set_counterparty_account_id?\",\n                     overwrite_manual AS \"overwrite_manual!: bool\",\n                     stop_on_match AS \"stop_on_match!: bool\", priority,\n                     enabled AS \"enabled!: bool\", created_at, updated_at",
+  "query": "SELECT id AS \"id!\", name, description, expression, set_category_id,\n                      set_exclude_from_cashflow AS \"set_exclude_from_cashflow: bool\",\n                      overwrite_manual AS \"overwrite_manual!: bool\",\n                      stop_on_match AS \"stop_on_match!: bool\", priority,\n                      enabled AS \"enabled!: bool\", set_merchant_id,\n                      set_counterparty_account_id, created_at, updated_at\n                 FROM rules ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -48,7 +48,7 @@
         }
       },
       {
-        "name": "set_category_id?",
+        "name": "set_category_id",
         "ordinal": 4,
         "type_info": "Integer",
         "origin": {
@@ -59,41 +59,19 @@
         }
       },
       {
-        "name": "set_one_off: bool",
+        "name": "set_exclude_from_cashflow: bool",
         "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "rules",
-            "name": "set_one_off"
-          }
-        }
-      },
-      {
-        "name": "set_merchant_id?",
-        "ordinal": 6,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "rules",
-            "name": "set_merchant_id"
-          }
-        }
-      },
-      {
-        "name": "set_counterparty_account_id?",
-        "ordinal": 7,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "rules",
-            "name": "set_counterparty_account_id"
+            "name": "set_exclude_from_cashflow"
           }
         }
       },
       {
         "name": "overwrite_manual!: bool",
-        "ordinal": 8,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -104,7 +82,7 @@
       },
       {
         "name": "stop_on_match!: bool",
-        "ordinal": 9,
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -115,7 +93,7 @@
       },
       {
         "name": "priority",
-        "ordinal": 10,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -126,12 +104,34 @@
       },
       {
         "name": "enabled!: bool",
-        "ordinal": 11,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "rules",
             "name": "enabled"
+          }
+        }
+      },
+      {
+        "name": "set_merchant_id",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_merchant_id"
+          }
+        }
+      },
+      {
+        "name": "set_counterparty_account_id",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "set_counterparty_account_id"
           }
         }
       },
@@ -159,24 +159,24 @@
       }
     ],
     "parameters": {
-      "Right": 12
+      "Right": 0
     },
     "nullable": [
       false,
       false,
       true,
       false,
-      false,
+      true,
       true,
       false,
       false,
       false,
       false,
-      false,
-      false,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "73288a4e760b9e11a75e1eb228425f7dedf58aa771264dcc9ddf10cf1726756b"
+  "hash": "a37ba4463f9f2091c5652782cf728eaf4a7528071247e39bd0c9d007a6776ddb"
 }

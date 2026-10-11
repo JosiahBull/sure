@@ -289,7 +289,7 @@ async function main() {
     // entertainment: a three-deep leaf plus spend kept on its parent
     await tx(card, monthsAgo(m, 15), -1999, "Netflix", streaming);
     await tx(card, monthsAgo(m, 17), -(2200 + (m % 3) * 600), pick(merchants[fun], m), fun);
-    // occasional one-off
+    // occasionally exclude a transaction from cashflow
     if (m === 3) await txOneOff(card, monthsAgo(m, 18), -145_000, "Dishwasher");
   }
 
@@ -484,7 +484,7 @@ async function main() {
     await post("/api/transactions", { account_id, posted_at, amount_minor, description, category_id });
   }
   async function txOneOff(account_id, posted_at, amount_minor, description) {
-    await post("/api/transactions", { account_id, posted_at, amount_minor, description, is_one_off: true });
+    await post("/api/transactions", { account_id, posted_at, amount_minor, description, exclude_from_cashflow: true });
   }
 }
 

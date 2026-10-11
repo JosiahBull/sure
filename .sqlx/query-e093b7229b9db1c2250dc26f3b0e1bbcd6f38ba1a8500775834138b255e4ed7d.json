@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                  merchant, merchant_id, notes, category_id, is_one_off AS \"is_one_off!: bool\",\n                  linked_transaction_id, counterparty_account_id,\n                     provider, external_id, categorized_by_rule_id,\n                  ownership, person_id, created_at, updated_at\n             FROM transactions WHERE id = ?1",
+  "query": "SELECT id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                  merchant, merchant_id, notes, category_id, exclude_from_cashflow AS \"exclude_from_cashflow!: bool\",\n                  linked_transaction_id, counterparty_account_id,\n                     provider, external_id, categorized_by_rule_id,\n                  ownership, person_id, created_at, updated_at\n             FROM transactions WHERE id = ?1",
   "describe": {
     "columns": [
       {
@@ -114,13 +114,13 @@
         }
       },
       {
-        "name": "is_one_off!: bool",
+        "name": "exclude_from_cashflow!: bool",
         "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "is_one_off"
+            "name": "exclude_from_cashflow"
           }
         }
       },
@@ -250,5 +250,5 @@
       false
     ]
   },
-  "hash": "9ee13a492e3f50b870e063ac5574565a22d0ed6ce950132c5e9131fd3fc743d9"
+  "hash": "e093b7229b9db1c2250dc26f3b0e1bbcd6f38ba1a8500775834138b255e4ed7d"
 }

@@ -23,7 +23,7 @@ async function goto(page: Page, route: string) {
 /** The two labels the removed selects used, either of which means the filter is back. */
 const FILTER_LABELS = ["Whose money", "Filter by who it belongs to"];
 
-test("the cashflow header offers a period, while only transactions can hide one-offs", async ({
+test("the cashflow header offers a period, while transactions can include excluded rows", async ({
   page,
 }) => {
   await goto(page, "/");

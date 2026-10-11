@@ -235,7 +235,7 @@ test("the uncategorised slice and node open the transactions that have no catego
       amount_minor: -500_000,
       description: "Uncategorised probe",
       category_id: null,
-      is_one_off: false,
+      exclude_from_cashflow: false,
     },
   });
   expect(created.ok(), "created an uncategorised expense").toBe(true);
@@ -270,9 +270,14 @@ test("a Transfer category drilldown includes the purchase but excludes internal 
   expect(transfer.status()).toBe(201);
   const purchase = await page.request.post("/api/transactions", { data: {
     account_id: bank.id, posted_at: "2026-03-10", amount_minor: -1000000,
-    description: "Test farm purchase", category_id: category.id, is_one_off: true,
+    description: "Test farm purchase", category_id: category.id, exclude_from_cashflow: false,
   } });
   expect(purchase.status()).toBe(201);
+  const excludedPurchase = await page.request.post("/api/transactions", { data: {
+    account_id: bank.id, posted_at: "2026-03-10", amount_minor: -500000,
+    description: "Test excluded purchase", category_id: category.id, exclude_from_cashflow: true,
+  } });
+  expect(excludedPurchase.status()).toBe(201);
   await goto(page, "/?range=last_12m");
   await page.locator(`g.node[data-node-id="out:${category.id}"]`).dispatchEvent("click");
   await expectTransactionsUrl(page, { cashflow: "1", category: String(category.id), type: "expense" });
@@ -281,6 +286,16 @@ test("a Transfer category drilldown includes the purchase but excludes internal 
   await page.reload();
   await expect(page.locator(".tx-row")).toHaveCount(1);
   await expect(page.locator(".tx-row")).toContainText("Test farm purchase");
+  await goto(page, "/?range=last_12m");
+  const override = page.getByRole("checkbox", { name: "Forcibly Include All" });
+  await expect(override).not.toBeChecked();
+  await override.check();
+  await page.waitForLoadState("networkidle");
+  await page.locator(`g.node[data-node-id="out:${category.id}"]`).dispatchEvent("click");
+  await expectTransactionsUrl(page, { include_excluded: "1" });
+  await expect(page.locator(".tx-row")).toHaveCount(2);
+  await page.reload();
+  await expect(page.locator(".tx-row")).toHaveCount(2);
 });
 
 test("a mortgage node opens its outgoing cash payments", async ({ page }) => {

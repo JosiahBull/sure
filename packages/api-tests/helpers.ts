@@ -156,7 +156,7 @@ export async function createTransaction(
     description?: string;
     category_id?: number | null;
     merchant_id?: number | null;
-    is_one_off?: boolean;
+    exclude_from_cashflow?: boolean;
     /** Attribution override; omitted means "follow the account's owner", as an import does. */
     ownership?: Schemas["Ownership"];
     /** The account on the other side, where it is one — a mortgage, the house a deposit bought. */
@@ -171,7 +171,7 @@ export async function createTransaction(
       description: input.description ?? "x",
       category_id: input.category_id ?? null,
       merchant_id: input.merchant_id ?? null,
-      is_one_off: input.is_one_off ?? false,
+      exclude_from_cashflow: input.exclude_from_cashflow ?? false,
       ownership: input.ownership ?? null,
       counterparty_account_id: input.counterparty_account_id ?? null,
     },

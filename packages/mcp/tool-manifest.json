@@ -17,7 +17,7 @@
   {
     "name": "bulk_categorize",
     "tier": "write",
-    "description": "Set the category, merchant or one-off flag on many transactions at once, chosen by id or by filter. Runs as a dry run unless you pass dry_run=false together with expect_count matching what the dry run reported.",
+    "description": "Set the category, merchant or cashflow exclusion flag on many transactions at once, chosen by id or by filter. Runs as a dry run unless you pass dry_run=false together with expect_count matching what the dry run reported.",
     "read_only": false,
     "destructive": true,
     "idempotent": null,
@@ -26,10 +26,10 @@
       "attributed_to",
       "category_id",
       "dry_run",
+      "exclude_from_cashflow",
       "expect_count",
       "from",
       "ids",
-      "is_one_off",
       "merchant_id",
       "range",
       "search",
@@ -83,7 +83,7 @@
       "category_id",
       "currency_code",
       "description",
-      "is_one_off",
+      "exclude_from_cashflow",
       "merchant_id",
       "notes",
       "posted_at"
@@ -162,7 +162,7 @@
       "attributed_to",
       "currency",
       "from",
-      "include_one_off",
+      "include_excluded_from_cashflow",
       "range",
       "to"
     ],
@@ -188,7 +188,7 @@
   {
     "name": "preview_rule",
     "tier": "read",
-    "description": "Evaluate a rule expression against the whole ledger and report how many transactions it matches, with a sample. Changes nothing. Always do this before saving a rule. The expression is a Zen expression (gorules.io) evaluated per transaction; truthy means match. Fields: amount, amount_minor, abs_amount, is_income, is_expense, description, merchant, merchant_id, notes, currency, account, account_kind, account_id, category_id, is_one_off, date, year, month, day. Example: is_expense and contains(lower(description), 'countdown')",
+    "description": "Evaluate a rule expression against the whole ledger and report how many transactions it matches, with a sample. Changes nothing. Always do this before saving a rule. The expression is a Zen expression (gorules.io) evaluated per transaction; truthy means match. Fields: amount, amount_minor, abs_amount, is_income, is_expense, description, merchant, merchant_id, notes, currency, account, account_kind, account_id, category_id, exclude_from_cashflow, date, year, month, day. Example: is_expense and contains(lower(description), 'countdown')",
     "read_only": true,
     "destructive": null,
     "idempotent": true,
@@ -248,8 +248,8 @@
       "priority",
       "set_category_id",
       "set_counterparty_account_id",
+      "set_exclude_from_cashflow",
       "set_merchant_id",
-      "set_one_off",
       "stop_on_match"
     ],
     "required": [
@@ -269,7 +269,7 @@
       "attributed_to",
       "category_id",
       "from",
-      "include_one_off",
+      "include_excluded_from_cashflow",
       "limit",
       "offset",
       "range",
@@ -292,7 +292,7 @@
       "direction",
       "from",
       "group_by",
-      "include_one_off",
+      "include_excluded_from_cashflow",
       "range",
       "to",
       "top_n"
@@ -318,14 +318,14 @@
   {
     "name": "update_transaction",
     "tier": "write",
-    "description": "Change one transaction's category, merchant, or one-off flag. Only the fields you pass are touched; pass null to clear a category or merchant.",
+    "description": "Change one transaction's category, merchant, or cashflow exclusion flag. Only the fields you pass are touched; pass null to clear a category or merchant.",
     "read_only": false,
     "destructive": null,
     "idempotent": true,
     "arguments": [
       "category_id",
+      "exclude_from_cashflow",
       "id",
-      "is_one_off",
       "merchant_id"
     ],
     "required": [

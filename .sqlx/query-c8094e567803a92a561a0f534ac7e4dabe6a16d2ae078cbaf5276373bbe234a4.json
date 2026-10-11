@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                  merchant, merchant_id, notes, category_id, is_one_off AS \"is_one_off!: bool\",\n                  linked_transaction_id, counterparty_account_id,\n                     provider, external_id, categorized_by_rule_id,\n                  ownership, person_id, created_at, updated_at\n             FROM transactions\n            WHERE amount_minor > 0\n              AND linked_transaction_id IS NULL\n              AND date(posted_at) >= date(?1)\n              AND (?2 IS NULL OR account_id = ?2)\n            ORDER BY date(posted_at), id",
+  "query": "UPDATE transactions SET account_id=?2, posted_at=?3, amount_minor=?4,\n              currency_code=?5, description=?6, merchant=?7, notes=?8, category_id=?9,\n              exclude_from_cashflow=?10, merchant_id=?11, ownership=?12, person_id=?13,\n              counterparty_account_id=?14,\n              categorized_by_rule_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           WHERE id=?1\n           RETURNING id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                     merchant, merchant_id, notes, category_id, exclude_from_cashflow AS \"exclude_from_cashflow!: bool\",\n                     linked_transaction_id, counterparty_account_id,\n                     provider, external_id, categorized_by_rule_id,\n                     ownership, person_id, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -114,13 +114,13 @@
         }
       },
       {
-        "name": "is_one_off!: bool",
+        "name": "exclude_from_cashflow!: bool",
         "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "is_one_off"
+            "name": "exclude_from_cashflow"
           }
         }
       },
@@ -225,10 +225,10 @@
       }
     ],
     "parameters": {
-      "Right": 2
+      "Right": 14
     },
     "nullable": [
-      false,
+      null,
       false,
       false,
       false,
@@ -250,5 +250,5 @@
       false
     ]
   },
-  "hash": "bb6315208b18a641b246adbc784df3bee41f73e4735cb724909b04313934c798"
+  "hash": "c8094e567803a92a561a0f534ac7e4dabe6a16d2ae078cbaf5276373bbe234a4"
 }

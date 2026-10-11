@@ -31,8 +31,8 @@ pub struct RuleApplication {
     pub prev_category_id: Option<i64>,
     pub new_category_id: Option<i64>,
     pub prev_categorized_by_rule_id: Option<i64>,
-    pub prev_one_off: Option<bool>,
-    pub new_one_off: Option<bool>,
+    pub prev_exclude_from_cashflow: Option<bool>,
+    pub new_exclude_from_cashflow: Option<bool>,
     pub prev_merchant_id: Option<i64>,
     pub new_merchant_id: Option<i64>,
     pub prev_counterparty_account_id: Option<i64>,
@@ -55,7 +55,7 @@ struct TxCtxRow {
     merchant_id: Option<i64>,
     notes: Option<String>,
     category_id: Option<i64>,
-    is_one_off: bool,
+    exclude_from_cashflow: bool,
     categorized_by_rule_id: Option<i64>,
     account_name: String,
     account_kind: String,
@@ -77,7 +77,7 @@ pub struct TxCtx {
     pub merchant_id: Option<i64>,
     pub notes: Option<String>,
     pub category_id: Option<i64>,
-    pub is_one_off: bool,
+    pub exclude_from_cashflow: bool,
     pub categorized_by_rule_id: Option<i64>,
     pub account_name: String,
     pub account_kind: AccountKind,
@@ -107,7 +107,7 @@ impl TryFrom<TxCtxRow> for TxCtx {
             merchant_id: r.merchant_id,
             notes: r.notes,
             category_id: r.category_id,
-            is_one_off: r.is_one_off,
+            exclude_from_cashflow: r.exclude_from_cashflow,
             categorized_by_rule_id: r.categorized_by_rule_id,
             counterparty_account_id: r.counterparty_account_id,
             account_name: r.account_name,
@@ -125,8 +125,8 @@ pub struct PlannedApplication {
     pub new_category_id: Option<i64>,
     pub prev_categorized_by_rule_id: Option<i64>,
     pub new_categorized_by_rule_id: Option<i64>,
-    pub prev_one_off: bool,
-    pub new_one_off: bool,
+    pub prev_exclude_from_cashflow: bool,
+    pub new_exclude_from_cashflow: bool,
     pub prev_merchant_id: Option<i64>,
     pub new_merchant_id: Option<i64>,
     pub prev_counterparty_account_id: Option<i64>,
@@ -140,7 +140,7 @@ struct RuleRow {
     description: Option<String>,
     expression: String,
     set_category_id: Option<i64>,
-    set_one_off: Option<bool>,
+    set_exclude_from_cashflow: Option<bool>,
     set_merchant_id: Option<i64>,
     set_counterparty_account_id: Option<i64>,
     overwrite_manual: bool,
@@ -159,7 +159,7 @@ impl From<RuleRow> for Rule {
             description: r.description,
             expression: r.expression,
             set_category_id: r.set_category_id,
-            set_one_off: r.set_one_off,
+            set_exclude_from_cashflow: r.set_exclude_from_cashflow,
             set_merchant_id: r.set_merchant_id,
             set_counterparty_account_id: r.set_counterparty_account_id,
             overwrite_manual: r.overwrite_manual,
@@ -180,7 +180,7 @@ pub async fn list(db: &Db) -> AppResult<Vec<Rule>> {
     Ok(sqlx::query_as!(
         RuleRow,
         r#"SELECT id AS "id!", name, description, expression, set_category_id,
-                  set_one_off AS "set_one_off: bool", set_merchant_id,
+                  set_exclude_from_cashflow AS "set_exclude_from_cashflow: bool", set_merchant_id,
                   set_counterparty_account_id,
                   overwrite_manual AS "overwrite_manual!: bool",
                   stop_on_match AS "stop_on_match!: bool", priority,
@@ -200,7 +200,7 @@ pub async fn enabled_rules(db: &Db) -> AppResult<Vec<Rule>> {
     Ok(sqlx::query_as!(
         RuleRow,
         r#"SELECT id AS "id!", name, description, expression, set_category_id,
-                  set_one_off AS "set_one_off: bool", set_merchant_id,
+                  set_exclude_from_cashflow AS "set_exclude_from_cashflow: bool", set_merchant_id,
                   set_counterparty_account_id,
                   overwrite_manual AS "overwrite_manual!: bool",
                   stop_on_match AS "stop_on_match!: bool", priority,
@@ -219,7 +219,7 @@ pub async fn get(db: &Db, id: i64) -> AppResult<Rule> {
     Ok(sqlx::query_as!(
         RuleRow,
         r#"SELECT id AS "id!", name, description, expression, set_category_id,
-                  set_one_off AS "set_one_off: bool", set_merchant_id,
+                  set_exclude_from_cashflow AS "set_exclude_from_cashflow: bool", set_merchant_id,
                   set_counterparty_account_id,
                   overwrite_manual AS "overwrite_manual!: bool",
                   stop_on_match AS "stop_on_match!: bool", priority,
@@ -240,13 +240,13 @@ pub async fn create(db: &Db, input: SaveRule) -> AppResult<Rule> {
     Ok(sqlx::query_as!(
         RuleRow,
         r#"INSERT INTO rules
-              (name, description, expression, set_category_id, set_one_off, overwrite_manual,
+              (name, description, expression, set_category_id, set_exclude_from_cashflow, overwrite_manual,
                stop_on_match, priority, enabled, set_merchant_id,
                set_counterparty_account_id)
            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
            RETURNING id AS "id!", name, description, expression,
                      set_category_id AS "set_category_id?",
-                     set_one_off AS "set_one_off: bool", set_merchant_id AS "set_merchant_id?",
+                     set_exclude_from_cashflow AS "set_exclude_from_cashflow: bool", set_merchant_id AS "set_merchant_id?",
                      set_counterparty_account_id AS "set_counterparty_account_id?",
                      overwrite_manual AS "overwrite_manual!: bool",
                      stop_on_match AS "stop_on_match!: bool", priority,
@@ -255,7 +255,7 @@ pub async fn create(db: &Db, input: SaveRule) -> AppResult<Rule> {
         input.description,
         expression,
         input.set_category_id,
-        input.set_one_off,
+        input.set_exclude_from_cashflow,
         input.overwrite_manual,
         input.stop_on_match,
         input.priority,
@@ -275,13 +275,13 @@ pub async fn update(db: &Db, id: i64, input: SaveRule) -> AppResult<Rule> {
     Ok(sqlx::query_as!(
         RuleRow,
         r#"UPDATE rules SET name=?2, description=?3, expression=?4, set_category_id=?5,
-              set_one_off=?6, overwrite_manual=?7, stop_on_match=?8, priority=?9, enabled=?10,
+              set_exclude_from_cashflow=?6, overwrite_manual=?7, stop_on_match=?8, priority=?9, enabled=?10,
               set_merchant_id=?11, set_counterparty_account_id=?12,
               updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE id=?1
            RETURNING id AS "id!", name, description, expression,
                      set_category_id AS "set_category_id?",
-                     set_one_off AS "set_one_off: bool", set_merchant_id AS "set_merchant_id?",
+                     set_exclude_from_cashflow AS "set_exclude_from_cashflow: bool", set_merchant_id AS "set_merchant_id?",
                      set_counterparty_account_id AS "set_counterparty_account_id?",
                      overwrite_manual AS "overwrite_manual!: bool",
                      stop_on_match AS "stop_on_match!: bool", priority,
@@ -291,7 +291,7 @@ pub async fn update(db: &Db, id: i64, input: SaveRule) -> AppResult<Rule> {
         input.description,
         expression,
         input.set_category_id,
-        input.set_one_off,
+        input.set_exclude_from_cashflow,
         input.overwrite_manual,
         input.stop_on_match,
         input.priority,
@@ -328,7 +328,7 @@ pub async fn load_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
         TxCtxRow,
         r#"SELECT t.id AS "id!", t.account_id, t.posted_at, t.amount_minor, t.currency_code,
                   cur.decimal_places, t.description, t.merchant, t.merchant_id, t.notes,
-                  t.category_id, t.is_one_off AS "is_one_off!: bool", t.categorized_by_rule_id,
+                  t.category_id, t.exclude_from_cashflow AS "exclude_from_cashflow!: bool", t.categorized_by_rule_id,
                   t.counterparty_account_id,
                   a.name AS account_name, a.kind AS account_kind
              FROM transactions t
@@ -370,7 +370,7 @@ pub async fn load_uncategorized_contexts(db: &Db) -> AppResult<Vec<TxCtx>> {
         TxCtxRow,
         r#"SELECT t.id AS "id!", t.account_id, t.posted_at, t.amount_minor, t.currency_code,
                   cur.decimal_places, t.description, t.merchant, t.merchant_id, t.notes,
-                  t.category_id, t.is_one_off AS "is_one_off!: bool", t.categorized_by_rule_id,
+                  t.category_id, t.exclude_from_cashflow AS "exclude_from_cashflow!: bool", t.categorized_by_rule_id,
                   t.counterparty_account_id,
                   a.name AS account_name, a.kind AS account_kind
              FROM transactions t
@@ -411,13 +411,13 @@ pub async fn persist_run(
     let changed = applications.len() as i64;
     for a in &applications {
         sqlx::query!(
-            "UPDATE transactions SET category_id=?2, categorized_by_rule_id=?3, is_one_off=?4,
+            "UPDATE transactions SET category_id=?2, categorized_by_rule_id=?3, exclude_from_cashflow=?4,
                 merchant_id=?5, counterparty_account_id=?6,
                 updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
             a.transaction_id,
             a.new_category_id,
             a.new_categorized_by_rule_id,
-            a.new_one_off,
+            a.new_exclude_from_cashflow,
             a.new_merchant_id,
             a.new_counterparty_account_id
         )
@@ -426,7 +426,7 @@ pub async fn persist_run(
         sqlx::query!(
             "INSERT INTO rule_applications
                 (rule_run_id, rule_id, transaction_id, prev_category_id, new_category_id,
-                 prev_categorized_by_rule_id, prev_one_off, new_one_off,
+                 prev_categorized_by_rule_id, prev_exclude_from_cashflow, new_exclude_from_cashflow,
                  prev_merchant_id, new_merchant_id,
                  prev_counterparty_account_id, new_counterparty_account_id)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
@@ -436,8 +436,8 @@ pub async fn persist_run(
             a.prev_category_id,
             a.new_category_id,
             a.prev_categorized_by_rule_id,
-            a.prev_one_off,
-            a.new_one_off,
+            a.prev_exclude_from_cashflow,
+            a.new_exclude_from_cashflow,
             a.prev_merchant_id,
             a.new_merchant_id,
             a.prev_counterparty_account_id,
@@ -505,8 +505,8 @@ struct RuleApplicationDetailRow {
     new_merchant_id: Option<i64>,
     prev_counterparty_account_id: Option<i64>,
     new_counterparty_account_id: Option<i64>,
-    prev_one_off: Option<bool>,
-    new_one_off: Option<bool>,
+    prev_exclude_from_cashflow: Option<bool>,
+    new_exclude_from_cashflow: Option<bool>,
     reverted: bool,
 }
 
@@ -525,8 +525,8 @@ impl From<RuleApplicationDetailRow> for RuleApplicationDetail {
             new_merchant_id: r.new_merchant_id,
             prev_counterparty_account_id: r.prev_counterparty_account_id,
             new_counterparty_account_id: r.new_counterparty_account_id,
-            prev_one_off: r.prev_one_off,
-            new_one_off: r.new_one_off,
+            prev_exclude_from_cashflow: r.prev_exclude_from_cashflow,
+            new_exclude_from_cashflow: r.new_exclude_from_cashflow,
             reverted: r.reverted,
         }
     }
@@ -558,8 +558,8 @@ pub async fn run_applications(db: &Db, run_id: i64) -> AppResult<Vec<RuleApplica
         r#"SELECT a.id AS "id!", a.transaction_id, t.posted_at, t.description, t.amount_minor,
                   t.currency_code, a.prev_category_id, a.new_category_id, a.prev_merchant_id,
                   a.new_merchant_id, a.prev_counterparty_account_id,
-                  a.new_counterparty_account_id, a.prev_one_off AS "prev_one_off: bool",
-                  a.new_one_off AS "new_one_off: bool", a.reverted AS "reverted!: bool"
+                  a.new_counterparty_account_id, a.prev_exclude_from_cashflow AS "prev_exclude_from_cashflow: bool",
+                  a.new_exclude_from_cashflow AS "new_exclude_from_cashflow: bool", a.reverted AS "reverted!: bool"
              FROM rule_applications a
              JOIN transactions t ON t.id = a.transaction_id
             WHERE a.rule_run_id = ?1
@@ -588,7 +588,7 @@ pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<RunResult> {
         RuleApplication,
         r#"SELECT id AS "id!", rule_run_id, rule_id, transaction_id, prev_category_id,
                   new_category_id, prev_categorized_by_rule_id,
-                  prev_one_off AS "prev_one_off: bool", new_one_off AS "new_one_off: bool",
+                  prev_exclude_from_cashflow AS "prev_exclude_from_cashflow: bool", new_exclude_from_cashflow AS "new_exclude_from_cashflow: bool",
                   prev_merchant_id, new_merchant_id,
                   prev_counterparty_account_id, new_counterparty_account_id,
                   reverted AS "reverted!: bool", created_at
@@ -604,17 +604,17 @@ pub async fn undo_run(db: &Db, run_id: i64) -> AppResult<RunResult> {
         // Only revert if the transaction is still in the state this run left it in.
         let res = sqlx::query!(
             "UPDATE transactions
-             SET category_id=?2, categorized_by_rule_id=?3, is_one_off=?4, merchant_id=?7,
+             SET category_id=?2, categorized_by_rule_id=?3, exclude_from_cashflow=?4, merchant_id=?7,
                  counterparty_account_id=?9,
                  updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-             WHERE id=?1 AND category_id IS ?5 AND is_one_off = ?6 AND merchant_id IS ?8
+             WHERE id=?1 AND category_id IS ?5 AND exclude_from_cashflow = ?6 AND merchant_id IS ?8
                AND counterparty_account_id IS ?10",
             app.transaction_id,
             app.prev_category_id,
             app.prev_categorized_by_rule_id,
-            app.prev_one_off,
+            app.prev_exclude_from_cashflow,
             app.new_category_id,
-            app.new_one_off,
+            app.new_exclude_from_cashflow,
             app.prev_merchant_id,
             app.new_merchant_id,
             app.prev_counterparty_account_id,

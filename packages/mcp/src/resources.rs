@@ -57,9 +57,9 @@ A tree, up to three levels. Tools report a category by its full path (`Food > Gr
 A transaction may have no category at all — that is a real state, shown as
 `(uncategorised)`, and `search_transactions` can filter for exactly those rows.
 
-## One-offs
-A transaction flagged one-off (a house purchase, a tax refund) is excluded from spending
-summaries by default, because leaving it in swamps every ordinary pattern.
+## Cashflow exclusions
+A transaction marked `exclude_from_cashflow` (a house purchase, a tax refund) is excluded from spending
+summaries by default. It still contributes to account balances and net worth.
 ";
 
 impl SureMcp {

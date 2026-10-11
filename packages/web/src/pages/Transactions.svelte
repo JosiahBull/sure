@@ -29,7 +29,7 @@
   //   ?range=<key>    apply a preset time range
   //   ?at=<id>        resume the scroll position around a transaction (written as the list scrolls)
   const params = new URLSearchParams(router.path.split("?")[1] ?? "");
-  if (params.get("cashflow") === "1" || params.has("cashflow_account")) filters.includeOneOff = true;
+  if (params.get("cashflow") === "1" || params.has("cashflow_account")) filters.includeExcludedFromCashflow = params.get("include_excluded") === "1";
   const num = (v: string | null) => (v && Number.isFinite(Number(v)) ? Number(v) : null);
   const isRangeKey = (v: string | null): v is RangeKey => !!v && RANGES.some((r) => r.key === v);
   type TypeFilter = "" | "income" | "expense";
@@ -116,7 +116,7 @@
   }
   const sortLabel = (key: SortKey) =>
     sortKey !== key ? "not sorted" : sortDir === "asc" ? "sorted ascending" : "sorted descending";
-  // Time range / one-off are the header's shared filters (App.svelte), not page-local —
+  // Time range / cashflow exclusion are the header's shared filters (App.svelte), not page-local —
   // deep links still get to steer them, though: an explicit `?range=` wins, and a
   // deep-linked transaction/account (which implies "show me everything relevant", not
   // just whatever slice happens to be selected) widens to "all" if no range was given.
@@ -146,7 +146,7 @@
     description: "",
     category_id: "" as number | "",
     merchant_id: "" as number | "",
-    is_one_off: false,
+    exclude_from_cashflow: false,
   });
 
   const accountName = $derived(new Map(accounts.map((a) => [a.id, a.name])));
@@ -387,6 +387,7 @@
   function syncUrl() {
     const p = new URLSearchParams();
     if (cashflowOnly) p.set("cashflow", "1");
+    if (filters.includeExcludedFromCashflow) p.set("include_excluded", "1");
     if (cashflowAccountId !== "") p.set("cashflow_account", String(cashflowAccountId));
     if (categoryId !== "") p.set("category", String(categoryId));
     if (accountId !== "") p.set("account", String(accountId));
@@ -429,6 +430,7 @@
     const fromUrl = num(query.get("account")) ?? "";
     untrack(() => {
       cashflowOnly = query.get("cashflow") === "1";
+      if (cashflowOnly || query.has("cashflow_account")) filters.includeExcludedFromCashflow = query.get("include_excluded") === "1";
       cashflowAccountId = num(query.get("cashflow_account")) ?? "";
       if (fromUrl === accountId) return;
       accountId = fromUrl;
@@ -462,7 +464,7 @@
   $effect(() => {
     // Depend on the full filter/paging surface so the shareable URL tracks every change.
     page;
-    void [categoryId, accountId, cashflowOnly, cashflowAccountId, typeFilter, filters.custom?.from, filters.custom?.to, search, activeTab, sortKey, sortDir];
+    void [categoryId, accountId, cashflowOnly, cashflowAccountId, typeFilter, filters.includeExcludedFromCashflow, filters.custom?.from, filters.custom?.to, search, activeTab, sortKey, sortDir];
     if (didInitPage) syncUrl();
   });
 
@@ -471,7 +473,7 @@
   // change here, so the current page survives it.)
   let prevFilterSig: string | null = null;
   $effect(() => {
-    const sig = `${accountId}|${cashflowOnly}|${cashflowAccountId}|${categoryId}|${typeFilter}|${search}|${filters.includeOneOff}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}`;
+    const sig = `${accountId}|${cashflowOnly}|${cashflowAccountId}|${categoryId}|${typeFilter}|${search}|${filters.includeExcludedFromCashflow}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}`;
     if (prevFilterSig != null && sig !== prevFilterSig) {
       // The visible set changed, so a lingering selection could act on rows the user can
       // no longer see — clear it. (A same-filter reload, e.g. after a save, isn't a change.)
@@ -601,7 +603,7 @@
     loading = true;
     error = null;
     const { from, to } = activeRange();
-    const query: Record<string, unknown> = { from, to, include_one_off: filters.includeOneOff, limit: 2000 };
+    const query: Record<string, unknown> = { from, to, include_excluded_from_cashflow: filters.includeExcludedFromCashflow, limit: 2000 };
     if (cashflowOnly && cashflowAccountId === "") query.cashflow_categories_only = true;
     if (cashflowAccountId !== "") query.cashflow_account_id = cashflowAccountId;
     if (accountId !== "") query.account_id = accountId;
@@ -620,7 +622,7 @@
     accountId;
     cashflowOnly;
     cashflowAccountId;
-    filters.includeOneOff;
+    filters.includeExcludedFromCashflow;
     filters.range;
     filters.custom;
     loadTx();
@@ -660,7 +662,7 @@
         description: form.description,
         category_id: form.category_id === "" ? null : form.category_id,
         merchant_id: form.merchant_id === "" ? null : form.merchant_id,
-        is_one_off: form.is_one_off,
+        exclude_from_cashflow: form.exclude_from_cashflow,
       },
     });
     if (e) {
@@ -696,7 +698,7 @@
         merchant_id: t.merchant_id,
         notes: t.notes,
         category_id: t.category_id,
-        is_one_off: t.is_one_off,
+        exclude_from_cashflow: t.exclude_from_cashflow,
         counterparty_account_id: t.counterparty_account_id,
         // Every field the row already has must be restated: this is a full-replace PUT, so
         // anything omitted is cleared. `ownership` especially — an omitted attribution
@@ -928,8 +930,8 @@
     </div>
     <div class="row spread" style="margin-top:12px">
       <label class="switch">
-        <input type="checkbox" bind:checked={form.is_one_off} /><span class="track"></span>
-        <span>One-off</span>
+        <input type="checkbox" bind:checked={form.exclude_from_cashflow} /><span class="track"></span>
+        <span>Exclude From Cashflow</span>
       </label>
       <button class="btn btn-primary" onclick={addTx}>Save transaction</button>
     </div>
@@ -1219,7 +1221,7 @@
           <div class="tx-main">
             <div class="tx-name-row">
               <span class="ell tx-name">{title}</span>
-              {#if t.is_one_off}<span class="badge">one-off</span>{/if}
+              {#if t.exclude_from_cashflow}<span class="badge">Exclude From Cashflow</span>{/if}
               {#if t.linked_transaction_id}<span class="badge">⇄ transfer</span>{/if}
               {#if people.list.length > 0}
                 {@const owner = ownerOf(t)}
@@ -1348,8 +1350,8 @@
            the first as internal movement precisely because it was told so. -->
       {#each accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
     </select>
-    <button class="btn btn-sm" onclick={() => bulkPatch({ is_one_off: true })} disabled={bulkBusy}>Mark one-off</button>
-    <button class="btn btn-sm" onclick={() => bulkPatch({ is_one_off: false })} disabled={bulkBusy}>Clear one-off</button>
+    <button class="btn btn-sm" onclick={() => bulkPatch({ exclude_from_cashflow: true })} disabled={bulkBusy}>Exclude From Cashflow</button>
+    <button class="btn btn-sm" onclick={() => bulkPatch({ exclude_from_cashflow: false })} disabled={bulkBusy}>Include In Cashflow</button>
 
     <span class="sep" aria-hidden="true"></span>
     {#if confirmingDelete}

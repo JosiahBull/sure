@@ -13,6 +13,7 @@
   let nw = $state<Schemas["NetWorthSeries"] | null>(null);
   let sankey = $state<Schemas["SankeyGraph"] | null>(null);
   let flowExpanded = $state(false);
+  let forciblyIncludeAll = $state(false);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
@@ -34,7 +35,7 @@
     try {
       const [a, b] = await Promise.all([
         api.GET("/api/reports/net-worth", { params: { query: { from, to, interval } } }),
-        api.GET("/api/reports/sankey", { params: { query: { from, to, include_one_off: true } } }),
+        api.GET("/api/reports/sankey", { params: { query: { from, to, include_excluded_from_cashflow: forciblyIncludeAll } } }),
       ]);
       nw = a.data ?? null;
       sankey = b.data ?? null;
@@ -50,6 +51,7 @@
     // Reload whenever the global filters change (preset or brush window).
     filters.range;
     filters.custom;
+    forciblyIncludeAll;
     load();
   });
 
@@ -100,9 +102,10 @@
   const sankeyLinks = $derived((sankey?.links ?? []).map((l) => ({ ...l, value: l.value_minor })));
 
   function goToCategory(categoryId: number | null, kind?: "income" | "expense") {
-    filters.includeOneOff = true;
+    filters.includeExcludedFromCashflow = forciblyIncludeAll;
     const p = new URLSearchParams(periodLinkParams());
     p.set("cashflow", "1");
+    if (forciblyIncludeAll) p.set("include_excluded", "1");
     p.set("category", categoryId == null ? "none" : String(categoryId));
     if (kind) p.set("type", kind);
     navigate(`/transactions?${p.toString()}`);
@@ -110,10 +113,11 @@
 
   /** Keep the chart period when opening an account, including the default period. */
   function goToAccountInPeriod(accountId: number, kind?: "income" | "expense") {
-    filters.includeOneOff = true;
+    filters.includeExcludedFromCashflow = forciblyIncludeAll;
     const p = new URLSearchParams(periodLinkParams());
     if (!p.has("range") && !p.has("start")) p.set("range", filters.range);
     p.set("cashflow", "1");
+    if (forciblyIncludeAll) p.set("include_excluded", "1");
     p.set("cashflow_account", String(accountId));
     if (kind) p.set("type", kind);
     navigate(`/transactions?${p.toString()}`);
@@ -175,7 +179,7 @@
       <div class="card-title">
         <h2>Money flow</h2>
         <div class="row" style="gap:10px">
-          <span class="muted small">Cash in and out of our accounts</span>
+          <label class="row small"><input type="checkbox" bind:checked={forciblyIncludeAll} /> Forcibly Include All</label>
           <!-- The chart shows as many category levels as the width can render legibly, so a
                narrow card gets fewer. This is where the rest of them live. -->
           <button type="button" class="btn btn-sm" onclick={() => (flowExpanded = true)}>Expand</button>

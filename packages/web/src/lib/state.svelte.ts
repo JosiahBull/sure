@@ -1,4 +1,4 @@
-// Global, reactive report filters shared across pages (time range + one-off toggle).
+// Global, reactive report filters shared across pages (time range + cashflow exclusion override).
 //
 // Deliberately *not* here: whose money a report describes. Accounts and transactions still
 // carry an owner, and the app still labels and groups by it — but every view is the whole
@@ -41,7 +41,7 @@ export const DEFAULT_RANGE: RangeKey = "last_3m";
 
 export const filters = $state({
   range: DEFAULT_RANGE as RangeKey,
-  includeOneOff: false,
+  includeExcludedFromCashflow: false,
   /** Brush-selected window (Grafana-style zoom) that overrides `range` while set. */
   custom: null as { from: string; to: string } | null,
 });

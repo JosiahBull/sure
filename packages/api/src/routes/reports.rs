@@ -33,8 +33,8 @@ pub struct ReportQuery {
     pub from: Option<String>,
     /// Inclusive end date (ISO-8601). Defaults to today.
     pub to: Option<String>,
-    /// Include one-off transactions (default false).
-    pub include_one_off: Option<bool>,
+    /// Include transactions excluded from cashflow (default false).
+    pub include_excluded_from_cashflow: Option<bool>,
     /// Report currency; defaults to the configured base currency. A code that isn't in the
     /// `currencies` table is a 400, not a report denominated in a currency that doesn't exist
     /// with every account listed as `unconverted` — see `sure_app::reports`'s
@@ -53,7 +53,7 @@ impl TryFrom<&ReportQuery> for sure_app::reports::ReportQuery {
             attributed_to: parse_attribution(q.attributed_to.as_deref())?,
             from: q.from.clone(),
             to: q.to.clone(),
-            include_one_off: q.include_one_off,
+            include_excluded_from_cashflow: q.include_excluded_from_cashflow,
             currency: q.currency.clone(),
         })
     }

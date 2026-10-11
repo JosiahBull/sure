@@ -70,10 +70,10 @@ pub struct SummarizeSpendingParams {
     /// Report currency. Defaults to the household's base currency.
     #[serde(default)]
     pub currency: Option<String>,
-    /// Include one-off transactions. Default false — a house purchase in the middle of a
+    /// Include transactions excluded from cashflow. Default false — a house purchase in the middle of a
     /// spending summary swamps everything else.
     #[serde(default)]
-    pub include_one_off: Option<bool>,
+    pub include_excluded_from_cashflow: Option<bool>,
     /// Whose spending: "joint", or a household member's person id.
     #[serde(default)]
     pub attributed_to: Option<String>,
@@ -112,7 +112,7 @@ pub struct MoneyFlowParams {
     #[serde(default)]
     pub currency: Option<String>,
     #[serde(default)]
-    pub include_one_off: Option<bool>,
+    pub include_excluded_from_cashflow: Option<bool>,
     #[serde(default)]
     pub attributed_to: Option<String>,
 }
@@ -139,7 +139,7 @@ impl SureMcp {
             params.from,
             params.to,
             params.currency,
-            params.include_one_off,
+            params.include_excluded_from_cashflow,
             params.attributed_to,
         )?;
 
@@ -307,7 +307,7 @@ impl SureMcp {
             params.from,
             params.to,
             params.currency,
-            params.include_one_off,
+            params.include_excluded_from_cashflow,
             params.attributed_to,
         )?;
         let graph = self.state.reports.sankey(&query).await.map_err(to_mcp)?;
@@ -347,7 +347,7 @@ impl SureMcp {
         from: Option<String>,
         to: Option<String>,
         currency: Option<String>,
-        include_one_off: Option<bool>,
+        include_excluded_from_cashflow: Option<bool>,
         attributed_to: Option<String>,
     ) -> ToolResult<ReportQuery> {
         let today = chrono::Utc::now().date_naive();
@@ -355,7 +355,7 @@ impl SureMcp {
         Ok(ReportQuery {
             from,
             to,
-            include_one_off,
+            include_excluded_from_cashflow,
             currency,
             attributed_to: parse_attribution(attributed_to.as_deref())?,
         })

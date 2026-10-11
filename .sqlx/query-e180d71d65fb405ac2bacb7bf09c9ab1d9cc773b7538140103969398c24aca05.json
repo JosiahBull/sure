@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT t.id AS \"id!\", t.posted_at, t.amount_minor, t.currency_code, t.category_id,\n                  t.is_one_off AS \"is_one_off!: bool\", t.linked_transaction_id,\n                  t.account_id, a.name AS account_name,\n                  a.kind AS account_kind,\n                  -- The account on the other side, with the row's own answer winning over the\n                  -- one its link implies. Resolved here, once, rather than in each reader:\n                  -- `counterparty_account_id` exists precisely because the far side often has no\n                  -- transaction to link to (a property has no ledger at all; a loan's interest\n                  -- is charged to the facility rather than to the loan), so the two are a\n                  -- fallback chain and not alternatives.\n                  COALESCE(t.counterparty_account_id, lt.account_id)\n                      AS \"counterparty_account_id?\",\n                  ca.kind AS \"counterparty_account_kind?: String\",\n                  ca.name AS \"counterparty_account_name?: String\",\n                  t.merchant_id,\n                  -- `COALESCE` over two nullable columns describes as having no type at\n                  -- all, so the decode type has to be named; `?` keeps it nullable, which\n                  -- it genuinely is when a row carries neither a merchant nor payee text.\n                  COALESCE(m.name, t.merchant) AS \"merchant?: String\",\n                  t.ownership AS tx_ownership,\n                  t.person_id AS tx_person_id, a.ownership AS account_ownership,\n                  a.person_id AS account_person_id\n             FROM transactions t\n             JOIN accounts a ON a.id = t.account_id\n             LEFT JOIN merchants m ON m.id = t.merchant_id\n             LEFT JOIN transactions lt ON lt.id = t.linked_transaction_id\n             LEFT JOIN accounts ca\n                    ON ca.id = COALESCE(t.counterparty_account_id, lt.account_id)\n            WHERE t.posted_at >= ?1 AND t.posted_at < ?2",
+  "query": "SELECT t.id AS \"id!\", t.posted_at, t.amount_minor, t.currency_code, t.category_id,\n                  t.exclude_from_cashflow AS \"exclude_from_cashflow!: bool\", t.linked_transaction_id,\n                  t.account_id, a.name AS account_name,\n                  a.kind AS account_kind,\n                  -- The account on the other side, with the row's own answer winning over the\n                  -- one its link implies. Resolved here, once, rather than in each reader:\n                  -- `counterparty_account_id` exists precisely because the far side often has no\n                  -- transaction to link to (a property has no ledger at all; a loan's interest\n                  -- is charged to the facility rather than to the loan), so the two are a\n                  -- fallback chain and not alternatives.\n                  COALESCE(t.counterparty_account_id, lt.account_id)\n                      AS \"counterparty_account_id?\",\n                  ca.kind AS \"counterparty_account_kind?: String\",\n                  ca.name AS \"counterparty_account_name?: String\",\n                  t.merchant_id,\n                  -- `COALESCE` over two nullable columns describes as having no type at\n                  -- all, so the decode type has to be named; `?` keeps it nullable, which\n                  -- it genuinely is when a row carries neither a merchant nor payee text.\n                  COALESCE(m.name, t.merchant) AS \"merchant?: String\",\n                  t.ownership AS tx_ownership,\n                  t.person_id AS tx_person_id, a.ownership AS account_ownership,\n                  a.person_id AS account_person_id\n             FROM transactions t\n             JOIN accounts a ON a.id = t.account_id\n             LEFT JOIN merchants m ON m.id = t.merchant_id\n             LEFT JOIN transactions lt ON lt.id = t.linked_transaction_id\n             LEFT JOIN accounts ca\n                    ON ca.id = COALESCE(t.counterparty_account_id, lt.account_id)\n            WHERE t.posted_at >= ?1 AND t.posted_at < ?2",
   "describe": {
     "columns": [
       {
@@ -59,13 +59,13 @@
         }
       },
       {
-        "name": "is_one_off!: bool",
+        "name": "exclude_from_cashflow!: bool",
         "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "is_one_off"
+            "name": "exclude_from_cashflow"
           }
         }
       },
@@ -228,5 +228,5 @@
       true
     ]
   },
-  "hash": "135663ea0655c850a1ebb14c71cd84f9195d27086e5bd2822b05ecd0023adba0"
+  "hash": "e180d71d65fb405ac2bacb7bf09c9ab1d9cc773b7538140103969398c24aca05"
 }

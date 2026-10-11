@@ -70,8 +70,8 @@ eq(E.emit(G("and", [C("category", "none_of", ["3"])])), "not (category_id in [3]
 eq(E.emit(G("and", [C("category", "is_set", [])])), "category_id != null", "category is_set");
 eq(E.emit(G("and", [C("account_kind", "any_of", ["bank", "credit_card"])])), "account_kind in ['bank', 'credit_card']", "account_kind any_of");
 eq(E.emit(G("and", [C("month", "any_of", ["12"])])), "month in [12]", "month any_of numeric");
-eq(E.emit(G("and", [C("is_one_off", "is_true", [])])), "is_one_off", "bool is_true");
-eq(E.emit(G("and", [C("is_one_off", "is_false", [])])), "not is_one_off", "bool is_false");
+eq(E.emit(G("and", [C("exclude_from_cashflow", "is_true", [])])), "exclude_from_cashflow", "bool is_true");
+eq(E.emit(G("and", [C("exclude_from_cashflow", "is_false", [])])), "not exclude_from_cashflow", "bool is_false");
 eq(E.emit(G("and", [C("description", "equals", ["Rent"])])), "lower(description) in ['rent']", "text equals lowercases");
 eq(E.emit(G("and", [C("description", "not_equals", ["a", "b"])])), "not (lower(description) in ['a', 'b'])", "text not_equals");
 eq(E.emit(G("and", [C("description", "empty", [])])), "description == ''", "text empty");

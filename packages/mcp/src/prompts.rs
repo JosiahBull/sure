@@ -91,7 +91,7 @@ Review last month's money.
 Then tell me:
 - What the month cost in total, and how that compares to the twelve-month pattern.
 - Which categories moved most against their usual level, and by how much.
-- Anything that looks like a one-off wrongly counted as ordinary spending, or the reverse.
+- Anything that should be excluded from cashflow but is counted as ordinary spending, or the reverse.
 
 Use the figures as given — they are already decimal amounts in the base currency. If any
 result carries an INCOMPLETE note about unconverted currencies, say so explicitly.";
@@ -108,7 +108,7 @@ Then, for the groups worth automating:
   matches — the exact count, not the size of the sample.
 - Show me each proposed rule and what it would catch, and wait for me to say yes.
 
-Do not save or run any rule before I have seen its preview. For one-off rows that no rule
+Do not save or run any rule before I have seen its preview. For cashflow-excluded rows that no rule
 would sensibly cover, just list them with a suggested category and let me decide.";
 
 fn explain_account_text(account_id: i64) -> String {

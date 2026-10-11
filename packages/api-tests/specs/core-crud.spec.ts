@@ -101,13 +101,13 @@ test("categories nest at most three levels deep", async ({ api }) => {
   expect(movedLeaf.response.status).toBe(200);
 });
 
-test("transaction filters and the one-off toggle", async ({ api }) => {
+test("transaction filters and cashflow exclusion", async ({ api }) => {
   const acc = await createAccount(api, "Everyday", "bank");
   const groceries = await createCategory(api, "Groceries");
 
   await createTransaction(api, { account_id: acc.id, posted_at: "2026-01-10", amount_minor: -5000, category_id: groceries.id });
   await createTransaction(api, { account_id: acc.id, posted_at: "2026-02-10", amount_minor: -8000, category_id: groceries.id });
-  await createTransaction(api, { account_id: acc.id, posted_at: "2026-02-20", amount_minor: -100000, is_one_off: true });
+  await createTransaction(api, { account_id: acc.id, posted_at: "2026-02-20", amount_minor: -100000, exclude_from_cashflow: true });
 
   const feb = await api.GET("/api/transactions", { params: { query: { from: "2026-02-01", to: "2026-02-28" } } });
   expect(feb.data?.length).toBe(2);
@@ -115,7 +115,7 @@ test("transaction filters and the one-off toggle", async ({ api }) => {
   const grocery = await api.GET("/api/transactions", { params: { query: { category_id: groceries.id } } });
   expect(grocery.data?.length).toBe(2);
 
-  const withoutOneOff = await api.GET("/api/transactions", { params: { query: { include_one_off: false } } });
+  const withoutOneOff = await api.GET("/api/transactions", { params: { query: { include_excluded_from_cashflow: false } } });
   expect(withoutOneOff.data?.length).toBe(2);
   const all = await api.GET("/api/transactions", {});
   expect(all.data?.length).toBe(3);
@@ -130,9 +130,9 @@ test("bulk update patches, clears, and leaves untouched fields alone", async ({ 
   const b = await createTransaction(api, { account_id: acc.id, posted_at: "2026-01-02", amount_minor: -200 });
   const c = await createTransaction(api, { account_id: acc.id, posted_at: "2026-01-03", amount_minor: -300 });
 
-  // Set category + merchant + one-off on a and b; c is left out and must not change.
+  // Set category + merchant + cashflow exclusion on a and b; c is left out and must not change.
   const patch = await api.POST("/api/transactions/bulk-update", {
-    body: { ids: [a.id, b.id], category_id: groceries.id, merchant_id: merchant.id, is_one_off: true },
+    body: { ids: [a.id, b.id], category_id: groceries.id, merchant_id: merchant.id, exclude_from_cashflow: true },
   });
   expect(patch.response.status).toBe(200);
   expect(patch.data?.affected).toBe(2);
@@ -140,11 +140,11 @@ test("bulk update patches, clears, and leaves untouched fields alone", async ({ 
     const t = await getTransaction(api, id);
     expect(t.category_id).toBe(groceries.id);
     expect(t.merchant_id).toBe(merchant.id);
-    expect(t.is_one_off).toBe(true);
+    expect(t.exclude_from_cashflow).toBe(true);
   }
   const untouched = await getTransaction(api, c.id);
   expect(untouched.category_id).toBeNull();
-  expect(untouched.is_one_off).toBe(false);
+  expect(untouched.exclude_from_cashflow).toBe(false);
 
   // An explicit null clears the category; omitting merchant leaves it as-is.
   const cleared = await api.POST("/api/transactions/bulk-update", {

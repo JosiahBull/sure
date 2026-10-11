@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", rule_run_id, rule_id, transaction_id, prev_category_id,\n                  new_category_id, prev_categorized_by_rule_id,\n                  prev_one_off AS \"prev_one_off: bool\", new_one_off AS \"new_one_off: bool\",\n                  prev_merchant_id, new_merchant_id,\n                  prev_counterparty_account_id, new_counterparty_account_id,\n                  reverted AS \"reverted!: bool\", created_at\n             FROM rule_applications WHERE rule_run_id=?1 AND reverted=0",
+  "query": "SELECT a.id AS \"id!\", a.transaction_id, t.posted_at, t.description, t.amount_minor,\n                  t.currency_code, a.prev_category_id, a.new_category_id, a.prev_merchant_id,\n                  a.new_merchant_id, a.prev_counterparty_account_id,\n                  a.new_counterparty_account_id, a.prev_exclude_from_cashflow AS \"prev_exclude_from_cashflow: bool\",\n                  a.new_exclude_from_cashflow AS \"new_exclude_from_cashflow: bool\", a.reverted AS \"reverted!: bool\"\n             FROM rule_applications a\n             JOIN transactions t ON t.id = a.transaction_id\n            WHERE a.rule_run_id = ?1\n            ORDER BY a.id",
   "describe": {
     "columns": [
       {
@@ -15,30 +15,8 @@
         }
       },
       {
-        "name": "rule_run_id",
-        "ordinal": 1,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "rule_applications",
-            "name": "rule_run_id"
-          }
-        }
-      },
-      {
-        "name": "rule_id",
-        "ordinal": 2,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "rule_applications",
-            "name": "rule_id"
-          }
-        }
-      },
-      {
         "name": "transaction_id",
-        "ordinal": 3,
+        "ordinal": 1,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -48,8 +26,52 @@
         }
       },
       {
-        "name": "prev_category_id",
+        "name": "posted_at",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "posted_at"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "amount_minor",
         "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "amount_minor"
+          }
+        }
+      },
+      {
+        "name": "currency_code",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "currency_code"
+          }
+        }
+      },
+      {
+        "name": "prev_category_id",
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +82,7 @@
       },
       {
         "name": "new_category_id",
-        "ordinal": 5,
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -70,41 +92,8 @@
         }
       },
       {
-        "name": "prev_categorized_by_rule_id",
-        "ordinal": 6,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "rule_applications",
-            "name": "prev_categorized_by_rule_id"
-          }
-        }
-      },
-      {
-        "name": "prev_one_off: bool",
-        "ordinal": 7,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "rule_applications",
-            "name": "prev_one_off"
-          }
-        }
-      },
-      {
-        "name": "new_one_off: bool",
-        "ordinal": 8,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "rule_applications",
-            "name": "new_one_off"
-          }
-        }
-      },
-      {
         "name": "prev_merchant_id",
-        "ordinal": 9,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -115,7 +104,7 @@
       },
       {
         "name": "new_merchant_id",
-        "ordinal": 10,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -126,7 +115,7 @@
       },
       {
         "name": "prev_counterparty_account_id",
-        "ordinal": 11,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -137,7 +126,7 @@
       },
       {
         "name": "new_counterparty_account_id",
-        "ordinal": 12,
+        "ordinal": 11,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -147,24 +136,35 @@
         }
       },
       {
-        "name": "reverted!: bool",
+        "name": "prev_exclude_from_cashflow: bool",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rule_applications",
+            "name": "prev_exclude_from_cashflow"
+          }
+        }
+      },
+      {
+        "name": "new_exclude_from_cashflow: bool",
         "ordinal": 13,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "rule_applications",
-            "name": "reverted"
+            "name": "new_exclude_from_cashflow"
           }
         }
       },
       {
-        "name": "created_at",
+        "name": "reverted!: bool",
         "ordinal": 14,
-        "type_info": "Text",
+        "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "rule_applications",
-            "name": "created_at"
+            "name": "reverted"
           }
         }
       }
@@ -175,7 +175,9 @@
     "nullable": [
       false,
       false,
-      true,
+      false,
+      false,
+      false,
       false,
       true,
       true,
@@ -185,10 +187,8 @@
       true,
       true,
       true,
-      true,
-      false,
       false
     ]
   },
-  "hash": "97ba48d2f7037dc013de667645d0ac7f2170beee0da369c201fc446c0fac49de"
+  "hash": "8a4807210963f396cde808e75b77a0c505055e2b715e77cb21b398cb595664a2"
 }

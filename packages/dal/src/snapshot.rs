@@ -152,7 +152,8 @@ pub struct TransactionRow {
     pub merchant: Option<String>,
     pub notes: Option<String>,
     pub category_id: Option<i64>,
-    pub is_one_off: bool,
+    #[serde(alias = "is_one_off")]
+    pub exclude_from_cashflow: bool,
     pub linked_transaction_id: Option<i64>,
     pub provider: Option<String>,
     pub external_id: Option<String>,
@@ -192,7 +193,8 @@ pub struct RuleRow {
     pub description: Option<String>,
     pub expression: String,
     pub set_category_id: Option<i64>,
-    pub set_one_off: Option<bool>,
+    #[serde(alias = "set_one_off")]
+    pub set_exclude_from_cashflow: Option<bool>,
     pub overwrite_manual: bool,
     pub stop_on_match: bool,
     pub priority: i64,
@@ -407,7 +409,7 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
         "transactions",
         TransactionRow,
         r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
-                  merchant, notes, category_id, is_one_off AS "is_one_off!: bool",
+                  merchant, notes, category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
                   linked_transaction_id, counterparty_account_id, provider, external_id,
                   categorized_by_rule_id,
                   merchant_id, ownership, person_id, created_at, updated_at
@@ -424,7 +426,7 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
         "rules",
         RuleRow,
         r#"SELECT id AS "id!", name, description, expression, set_category_id,
-                  set_one_off AS "set_one_off: bool",
+                  set_exclude_from_cashflow AS "set_exclude_from_cashflow: bool",
                   overwrite_manual AS "overwrite_manual!: bool",
                   stop_on_match AS "stop_on_match!: bool", priority, enabled AS "enabled!: bool",
                   set_merchant_id, set_counterparty_account_id, created_at, updated_at
@@ -554,7 +556,7 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
             TransactionRow,
             r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code,
                       description, merchant, notes, category_id,
-                      is_one_off AS "is_one_off!: bool", linked_transaction_id,
+                      exclude_from_cashflow AS "exclude_from_cashflow!: bool", linked_transaction_id,
                       counterparty_account_id, provider,
                       external_id, categorized_by_rule_id, merchant_id, ownership, person_id,
                       created_at, updated_at
@@ -573,7 +575,7 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         rules: sqlx::query_as!(
             RuleRow,
             r#"SELECT id AS "id!", name, description, expression, set_category_id,
-                      set_one_off AS "set_one_off: bool",
+                      set_exclude_from_cashflow AS "set_exclude_from_cashflow: bool",
                       overwrite_manual AS "overwrite_manual!: bool",
                       stop_on_match AS "stop_on_match!: bool", priority,
                       enabled AS "enabled!: bool", set_merchant_id,
@@ -829,7 +831,7 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         sqlx::query!(
             "INSERT INTO transactions
                 (id, account_id, posted_at, amount_minor, currency_code, description, merchant,
-                 notes, category_id, is_one_off, linked_transaction_id, provider, external_id,
+                 notes, category_id, exclude_from_cashflow, linked_transaction_id, provider, external_id,
                  categorized_by_rule_id, merchant_id, ownership, person_id, created_at,
                  updated_at, counterparty_account_id)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
@@ -842,7 +844,7 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             t.merchant,
             t.notes,
             t.category_id,
-            t.is_one_off,
+            t.exclude_from_cashflow,
             t.linked_transaction_id,
             t.provider,
             t.external_id,
@@ -877,16 +879,16 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
     for r in &snap.rules {
         sqlx::query!(
             "INSERT INTO rules
-                (id, name, description, expression, set_category_id, set_one_off,
+                (id, name, description, expression, set_category_id, set_exclude_from_cashflow,
                  overwrite_manual, stop_on_match, priority, enabled, set_merchant_id, created_at,
                  updated_at, set_counterparty_account_id)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             r.id,
             r.name,
             r.description,
-            r.expression,
+            r.expression.replace("is_one_off", "exclude_from_cashflow"),
             r.set_category_id,
-            r.set_one_off,
+            r.set_exclude_from_cashflow,
             r.overwrite_manual,
             r.stop_on_match,
             r.priority,

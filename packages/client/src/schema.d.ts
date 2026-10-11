@@ -800,8 +800,8 @@ export interface paths {
                     from?: string;
                     /** @description Inclusive end date (ISO-8601). Defaults to today. */
                     to?: string;
-                    /** @description Include one-off transactions (default false). */
-                    include_one_off?: boolean;
+                    /** @description Include transactions excluded from cashflow (default false). */
+                    include_excluded_from_cashflow?: boolean;
                     /**
                      * @description Report currency; defaults to the configured base currency. A code that isn't in the
                      *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
@@ -2558,7 +2558,7 @@ export interface paths {
                     dry_run?: boolean;
                     /**
                      * @description Whether to also record the opening balance an export implies — the account's value
-                     *     immediately before its first row — as a one-off transaction. On by default: without it
+                     *     immediately before its first row — as a transaction excluded from cashflow. On by default: without it
                      *     the reconstructed history starts from nothing rather than from what the account held.
                      *     Ignored by sources whose exports state no balance to work back from, and skipped anyway
                      *     when the account already has a row from before that date.
@@ -3597,8 +3597,8 @@ export interface paths {
                     from?: string;
                     /** @description Inclusive end date (ISO-8601). Defaults to today. */
                     to?: string;
-                    /** @description Include one-off transactions (default false). */
-                    include_one_off?: boolean;
+                    /** @description Include transactions excluded from cashflow (default false). */
+                    include_excluded_from_cashflow?: boolean;
                     /**
                      * @description Report currency; defaults to the configured base currency. A code that isn't in the
                      *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
@@ -3660,8 +3660,8 @@ export interface paths {
                     from?: string;
                     /** @description Inclusive end date (ISO-8601). Defaults to today. */
                     to?: string;
-                    /** @description Include one-off transactions (default false). */
-                    include_one_off?: boolean;
+                    /** @description Include transactions excluded from cashflow (default false). */
+                    include_excluded_from_cashflow?: boolean;
                     /**
                      * @description Report currency; defaults to the configured base currency. A code that isn't in the
                      *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
@@ -3806,8 +3806,8 @@ export interface paths {
                     from?: string;
                     /** @description Inclusive end date (ISO-8601). Defaults to today. */
                     to?: string;
-                    /** @description Include one-off transactions (default false). */
-                    include_one_off?: boolean;
+                    /** @description Include transactions excluded from cashflow (default false). */
+                    include_excluded_from_cashflow?: boolean;
                     /**
                      * @description Report currency; defaults to the configured base currency. A code that isn't in the
                      *     `currencies` table is a 400, not a report denominated in a currency that doesn't exist
@@ -4379,8 +4379,8 @@ export interface paths {
                     from?: string;
                     /** @description Inclusive upper bound on the transaction date (ISO-8601). */
                     to?: string;
-                    /** @description When false, one-off transactions are excluded. Defaults to true. */
-                    include_one_off?: boolean;
+                    /** @description When false, transactions excluded from cashflow are excluded. Defaults to true. */
+                    include_excluded_from_cashflow?: boolean;
                     /** @description Case-insensitive substring match on description/merchant/notes. */
                     search?: string;
                     /**
@@ -4508,7 +4508,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Apply a partial patch (category / merchant / one-off) to many transactions at once.
+         * Apply a partial patch (category / merchant / cashflow exclusion) to many transactions at once.
          *     Omitted fields are left untouched; an explicit `null` clears a category/merchant.
          */
         post: {
@@ -5180,8 +5180,8 @@ export interface components {
              *     only ever sees what arrives after it.
              */
             counterparty_account_id?: number | null;
-            /** @description Present → set the one-off flag; absent → leave unchanged. */
-            is_one_off?: boolean | null;
+            /** @description Present → set the cashflow exclusion flag; absent → leave unchanged. */
+            exclude_from_cashflow?: boolean | null;
             ownership?: null | components["schemas"]["Ownership"];
         };
         CashflowMonth: {
@@ -6417,13 +6417,13 @@ export interface components {
              * @description Zen expression evaluated against a transaction context; truthy => match.
              *     Fields available: `amount`, `amount_minor`, `abs_amount`, `is_income`,
              *     `is_expense`, `description`, `merchant`, `merchant_id`, `notes`, `currency`,
-             *     `account`, `account_kind`, `account_id`, `category_id`, `is_one_off`,
+             *     `account`, `account_kind`, `account_id`, `category_id`, `exclude_from_cashflow`,
              *     `counterparty_account_id`, `date`, `year`, `month`, `day`.
              */
             expression: string;
             /** Format: int64 */
             set_category_id?: number | null;
-            set_one_off?: boolean | null;
+            set_exclude_from_cashflow?: boolean | null;
             /**
              * Format: int64
              * @description Action: assign this custom merchant on match.
@@ -6472,8 +6472,8 @@ export interface components {
             prev_counterparty_account_id?: number | null;
             /** Format: int64 */
             new_counterparty_account_id?: number | null;
-            prev_one_off?: boolean | null;
-            new_one_off?: boolean | null;
+            prev_exclude_from_cashflow?: boolean | null;
+            new_exclude_from_cashflow?: boolean | null;
             reverted: boolean;
         };
         RulePreview: {
@@ -6721,7 +6721,7 @@ export interface components {
             expression: string;
             /** Format: int64 */
             set_category_id?: number | null;
-            set_one_off?: boolean | null;
+            set_exclude_from_cashflow?: boolean | null;
             /** Format: int64 */
             set_merchant_id?: number | null;
             /** Format: int64 */
@@ -6748,7 +6748,7 @@ export interface components {
             notes?: string | null;
             /** Format: int64 */
             category_id?: number | null;
-            is_one_off?: boolean;
+            exclude_from_cashflow?: boolean;
             /**
              * Format: int64
              * @description The account on the other side; omit (or send `null`) for an ordinary payee.
@@ -6970,7 +6970,7 @@ export interface components {
             /** Format: int64 */
             category_id?: number | null;
             /** @description Excluded from regular reports when true. */
-            is_one_off: boolean;
+            exclude_from_cashflow: boolean;
             /**
              * Format: int64
              * @description The other side of a transfer, if linked.

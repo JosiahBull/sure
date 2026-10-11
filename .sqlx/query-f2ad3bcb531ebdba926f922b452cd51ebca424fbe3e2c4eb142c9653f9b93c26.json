@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name, description, expression, set_category_id,\n                  set_one_off AS \"set_one_off: bool\", set_merchant_id,\n                  set_counterparty_account_id,\n                  overwrite_manual AS \"overwrite_manual!: bool\",\n                  stop_on_match AS \"stop_on_match!: bool\", priority,\n                  enabled AS \"enabled!: bool\", created_at, updated_at\n                 FROM rules WHERE enabled=1 ORDER BY priority, id",
+  "query": "SELECT id AS \"id!\", name, description, expression, set_category_id,\n                  set_exclude_from_cashflow AS \"set_exclude_from_cashflow: bool\", set_merchant_id,\n                  set_counterparty_account_id,\n                  overwrite_manual AS \"overwrite_manual!: bool\",\n                  stop_on_match AS \"stop_on_match!: bool\", priority,\n                  enabled AS \"enabled!: bool\", created_at, updated_at\n                 FROM rules WHERE enabled=1 ORDER BY priority, id",
   "describe": {
     "columns": [
       {
@@ -59,13 +59,13 @@
         }
       },
       {
-        "name": "set_one_off: bool",
+        "name": "set_exclude_from_cashflow: bool",
         "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "rules",
-            "name": "set_one_off"
+            "name": "set_exclude_from_cashflow"
           }
         }
       },
@@ -178,5 +178,5 @@
       false
     ]
   },
-  "hash": "a4bc7079a5064fb771471e6d78ce5341c58f10b56374598d15d51be9673237db"
+  "hash": "f2ad3bcb531ebdba926f922b452cd51ebca424fbe3e2c4eb142c9653f9b93c26"
 }

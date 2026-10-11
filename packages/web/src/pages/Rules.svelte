@@ -45,7 +45,7 @@
     set_category_id: "" as number | "",
     set_merchant_id: "" as number | "",
     set_counterparty_account_id: "" as number | "",
-    set_one_off: "" as "" | "true" | "false",
+    set_exclude_from_cashflow: "" as "" | "true" | "false",
     overwrite_manual: false,
     stop_on_match: false,
     enabled: true,
@@ -130,7 +130,7 @@
   function openCreate() {
     editId = null;
     form = {
-      name: "", set_category_id: "", set_merchant_id: "", set_counterparty_account_id: "", set_one_off: "",
+      name: "", set_category_id: "", set_merchant_id: "", set_counterparty_account_id: "", set_exclude_from_cashflow: "",
       overwrite_manual: false, stop_on_match: false, enabled: true, priority: 0,
     };
     root = emptyRoot();
@@ -147,7 +147,7 @@
       set_category_id: r.set_category_id ?? "",
       set_merchant_id: r.set_merchant_id ?? "",
       set_counterparty_account_id: r.set_counterparty_account_id ?? "",
-      set_one_off: r.set_one_off == null ? "" : r.set_one_off ? "true" : "false",
+      set_exclude_from_cashflow: r.set_exclude_from_cashflow == null ? "" : r.set_exclude_from_cashflow ? "true" : "false",
       overwrite_manual: r.overwrite_manual,
       stop_on_match: r.stop_on_match,
       enabled: r.enabled,
@@ -173,7 +173,7 @@
     set_category_id: r.set_category_id ?? null,
     set_merchant_id: r.set_merchant_id ?? null,
     set_counterparty_account_id: r.set_counterparty_account_id ?? null,
-    set_one_off: r.set_one_off ?? null,
+    set_exclude_from_cashflow: r.set_exclude_from_cashflow ?? null,
     overwrite_manual: r.overwrite_manual,
     stop_on_match: r.stop_on_match,
     priority: r.priority,
@@ -198,7 +198,7 @@
       set_merchant_id: form.set_merchant_id === "" ? null : Number(form.set_merchant_id),
       set_counterparty_account_id:
         form.set_counterparty_account_id === "" ? null : Number(form.set_counterparty_account_id),
-      set_one_off: form.set_one_off === "" ? null : form.set_one_off === "true",
+      set_exclude_from_cashflow: form.set_exclude_from_cashflow === "" ? null : form.set_exclude_from_cashflow === "true",
       overwrite_manual: form.overwrite_manual,
       stop_on_match: form.stop_on_match,
       priority: form.priority,
@@ -336,11 +336,11 @@
           {#each accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
         </select>
       </label>
-      <label class="field">One-off
-        <select class="select" bind:value={form.set_one_off}>
+      <label class="field">Exclude From Cashflow
+        <select class="select" bind:value={form.set_exclude_from_cashflow}>
           <option value="">— leave as is —</option>
-          <option value="true">Mark as one-off</option>
-          <option value="false">Clear one-off</option>
+          <option value="true">Exclude From Cashflow</option>
+          <option value="false">Include In Cashflow</option>
         </select>
       </label>
     </div>
@@ -366,7 +366,7 @@
             {#if r.set_category_id}<span class="badge" style="margin-left:6px">→ {catLabel(r.set_category_id)}</span>{/if}
             {#if r.set_merchant_id}<span class="badge" style="margin-left:6px">merchant: {merchName.get(r.set_merchant_id) ?? "?"}</span>{/if}
             {#if r.set_counterparty_account_id}<span class="badge" style="margin-left:6px">→ {acctName.get(r.set_counterparty_account_id) ?? "?"}</span>{/if}
-            {#if r.set_one_off != null}<span class="badge" style="margin-left:6px">{r.set_one_off ? "mark one-off" : "clear one-off"}</span>{/if}
+            {#if r.set_exclude_from_cashflow != null}<span class="badge" style="margin-left:6px">{r.set_exclude_from_cashflow ? "exclude from cashflow" : "include in cashflow"}</span>{/if}
             {#if !r.enabled}<span class="badge" style="margin-left:6px">disabled</span>{/if}
           </div>
           <div class="row rule-actions" style="gap:6px">
@@ -463,8 +463,8 @@
                           {#if a.prev_merchant_id !== a.new_merchant_id}
                             <span class="txn-diff">Merchant <b>{merchLabel(a.prev_merchant_id)}</b> → <b>{merchLabel(a.new_merchant_id)}</b></span>
                           {/if}
-                          {#if a.prev_one_off !== a.new_one_off}
-                            <span class="txn-diff">One-off <b>{a.prev_one_off ? "yes" : "no"}</b> → <b>{a.new_one_off ? "yes" : "no"}</b></span>
+                          {#if a.prev_exclude_from_cashflow !== a.new_exclude_from_cashflow}
+                            <span class="txn-diff">Exclude From Cashflow <b>{a.prev_exclude_from_cashflow ? "yes" : "no"}</b> → <b>{a.new_exclude_from_cashflow ? "yes" : "no"}</b></span>
                           {/if}
                           {#if a.reverted}<span class="badge">reverted</span>{/if}
                         </div>

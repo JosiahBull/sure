@@ -430,7 +430,7 @@ test("a category nested deeper than the cap rolls up into its deepest drawn ance
       { id: 1, name: "Everyday", kind: "bank", currency_code: "NZD", institution: "ASB", metadata: "{}", archived: false, sort_order: 0, created_at: ts, updated_at: ts },
     ],
     transactions: [
-      { id: 1, account_id: 1, posted_at: "2026-01-10", amount_minor: -40_000, currency_code: "NZD", description: "Power", merchant: null, merchant_id: null, notes: null, category_id: 4, is_one_off: false, linked_transaction_id: null, provider: null, external_id: null, categorized_by_rule_id: null, attributed_to: null, created_at: ts, updated_at: ts },
+      { id: 1, account_id: 1, posted_at: "2026-01-10", amount_minor: -40_000, currency_code: "NZD", description: "Power", merchant: null, merchant_id: null, notes: null, category_id: 4, exclude_from_cashflow: false, linked_transaction_id: null, provider: null, external_id: null, categorized_by_rule_id: null, attributed_to: null, created_at: ts, updated_at: ts },
     ],
     valuations: [],
     rules: [],
@@ -474,7 +474,7 @@ test("no parent link is ever narrower than the children feeding it", async ({ ap
   });
   const txn = (id: number, amount_minor: number, currency_code: string, category_id: number) => ({
     id, account_id: 1, posted_at: "2026-01-10", amount_minor, currency_code, description: "x", merchant: null,
-    merchant_id: null, notes: null, category_id, is_one_off: false, linked_transaction_id: null, provider: null,
+    merchant_id: null, notes: null, category_id, exclude_from_cashflow: false, linked_transaction_id: null, provider: null,
     external_id: null, categorized_by_rule_id: null, attributed_to: null, created_at: ts, updated_at: ts,
   });
   const snapshot = {
@@ -535,20 +535,30 @@ test("the sankey is byte-identical across identical requests", async ({ api }) =
   expect(JSON.stringify(a)).toBe(JSON.stringify(b));
 });
 
-test("cashflow includes one-offs and shows complete monthly liquidity totals", async ({ api }) => {
+test("cashflow excludes flagged transactions by default and shows complete monthly liquidity totals", async ({ api }) => {
   const bank = await createAccount(api, "Everyday", "bank");
   await createTransaction(api, { account_id: bank.id, posted_at: "2026-01-05", amount_minor: 500_000 });
-  await createTransaction(api, { account_id: bank.id, posted_at: "2026-01-10", amount_minor: -100_000, is_one_off: true });
+  await createTransaction(api, { account_id: bank.id, posted_at: "2026-01-10", amount_minor: -100_000, exclude_from_cashflow: true });
   await createTransaction(api, { account_id: bank.id, posted_at: "2026-03-10", amount_minor: -200_000 });
   const g = (await api.GET("/api/reports/sankey", {
     params: { query: { from: "2026-01-01", to: "2026-03-31" } },
   })).data!;
   expect(g.months).toEqual([
-    { month: "2026-01", inflow_minor: 500_000, outflow_minor: 100_000 },
+    { month: "2026-01", inflow_minor: 500_000, outflow_minor: 0 },
     { month: "2026-02", inflow_minor: 0, outflow_minor: 0 },
     { month: "2026-03", inflow_minor: 0, outflow_minor: 200_000 },
   ]);
   expect(g.nodes.every((n) => !["gross", "deduction", "account"].includes(n.kind))).toBe(true);
+  const included = (await api.GET("/api/reports/sankey", {
+    params: { query: { from: "2026-01-01", to: "2026-03-31", include_excluded_from_cashflow: true } },
+  })).data!;
+  expect(included.months[0].outflow_minor).toBe(100_000);
+  for (const include_excluded_from_cashflow of [false, true]) {
+    const worth = (await api.GET("/api/reports/net-worth", {
+      params: { query: { from: "2026-01-01", to: "2026-03-31", include_excluded_from_cashflow } },
+    })).data!;
+    expect(worth.points.at(-1)!.net_worth_minor).toBe(200_000);
+  }
 });
 
 test("a student loan can send and receive cash without duplicate graph nodes", async ({ api }) => {

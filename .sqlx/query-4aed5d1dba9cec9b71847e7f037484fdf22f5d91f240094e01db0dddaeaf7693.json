@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO transactions\n              (account_id, posted_at, amount_minor, currency_code, description, category_id)\n           VALUES (?1,?2,?3,?4,?5,?6)\n           RETURNING id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                     merchant, merchant_id, notes, category_id, is_one_off AS \"is_one_off!: bool\",\n                     linked_transaction_id, counterparty_account_id,\n                     provider, external_id, categorized_by_rule_id,\n                     ownership, person_id, created_at, updated_at",
+  "query": "SELECT id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                      merchant, merchant_id, notes, category_id, exclude_from_cashflow AS \"exclude_from_cashflow!: bool\",\n                      linked_transaction_id, counterparty_account_id,\n                      provider, external_id, categorized_by_rule_id,\n                      ownership, person_id, created_at, updated_at\n                 FROM transactions WHERE external_id = ?1",
   "describe": {
     "columns": [
       {
@@ -114,13 +114,13 @@
         }
       },
       {
-        "name": "is_one_off!: bool",
+        "name": "exclude_from_cashflow!: bool",
         "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "is_one_off"
+            "name": "exclude_from_cashflow"
           }
         }
       },
@@ -225,10 +225,10 @@
       }
     ],
     "parameters": {
-      "Right": 6
+      "Right": 1
     },
     "nullable": [
-      null,
+      false,
       false,
       false,
       false,
@@ -250,5 +250,5 @@
       false
     ]
   },
-  "hash": "d903c993ccf48a2d63488c9f0b7ade3667e4b75bfe8ece7c912aa2cef08e63f5"
+  "hash": "4aed5d1dba9cec9b71847e7f037484fdf22f5d91f240094e01db0dddaeaf7693"
 }

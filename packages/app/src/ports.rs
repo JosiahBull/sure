@@ -555,7 +555,7 @@ pub struct SpendTransaction {
     pub amount_minor: i64,
     pub currency_code: String,
     pub category_id: Option<i64>,
-    pub is_one_off: bool,
+    pub exclude_from_cashflow: bool,
     pub linked_transaction_id: Option<i64>,
     pub account_id: i64,
     pub account_name: String,
@@ -595,7 +595,7 @@ pub struct TxCtx {
     pub merchant_id: Option<i64>,
     pub notes: Option<String>,
     pub category_id: Option<i64>,
-    pub is_one_off: bool,
+    pub exclude_from_cashflow: bool,
     pub categorized_by_rule_id: Option<i64>,
     pub account_name: String,
     pub account_kind: AccountKind,
@@ -613,8 +613,8 @@ pub struct PlannedApplication {
     pub new_category_id: Option<i64>,
     pub prev_categorized_by_rule_id: Option<i64>,
     pub new_categorized_by_rule_id: Option<i64>,
-    pub prev_one_off: bool,
-    pub new_one_off: bool,
+    pub prev_exclude_from_cashflow: bool,
+    pub new_exclude_from_cashflow: bool,
     pub prev_merchant_id: Option<i64>,
     pub new_merchant_id: Option<i64>,
     pub prev_counterparty_account_id: Option<i64>,
@@ -636,7 +636,7 @@ pub struct ImportRow {
     /// Excluded from spend/income reports, but still counted towards balances and net worth
     /// (see `sure_app::reports::load_ledger_window`, which filters nothing). What an opening-balance
     /// row needs: it moves the account's value without being money earned or spent.
-    pub is_one_off: bool,
+    pub exclude_from_cashflow: bool,
 }
 
 /// A parsed holding lot ready to persist (e.g. from a Sharesies export).

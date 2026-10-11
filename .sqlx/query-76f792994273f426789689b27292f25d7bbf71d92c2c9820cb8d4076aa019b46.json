@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO transactions\n              (account_id, posted_at, amount_minor, currency_code, description, merchant, notes,\n               category_id, is_one_off, merchant_id, ownership, person_id,\n               counterparty_account_id)\n           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)\n           RETURNING id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                     merchant, merchant_id, notes, category_id, is_one_off AS \"is_one_off!: bool\",\n                     linked_transaction_id, counterparty_account_id,\n                     provider, external_id, categorized_by_rule_id,\n                     ownership, person_id, created_at, updated_at",
+  "query": "INSERT INTO transactions\n              (account_id, posted_at, amount_minor, currency_code, description, category_id)\n           VALUES (?1,?2,?3,?4,?5,?6)\n           RETURNING id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                     merchant, merchant_id, notes, category_id, exclude_from_cashflow AS \"exclude_from_cashflow!: bool\",\n                     linked_transaction_id, counterparty_account_id,\n                     provider, external_id, categorized_by_rule_id,\n                     ownership, person_id, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -114,13 +114,13 @@
         }
       },
       {
-        "name": "is_one_off!: bool",
+        "name": "exclude_from_cashflow!: bool",
         "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "is_one_off"
+            "name": "exclude_from_cashflow"
           }
         }
       },
@@ -225,7 +225,7 @@
       }
     ],
     "parameters": {
-      "Right": 13
+      "Right": 6
     },
     "nullable": [
       null,
@@ -250,5 +250,5 @@
       false
     ]
   },
-  "hash": "d756cad707bb052e88bf619b69b14c6cd0e2cbfca9a2d354be0527e76e7deb4d"
+  "hash": "76f792994273f426789689b27292f25d7bbf71d92c2c9820cb8d4076aa019b46"
 }
