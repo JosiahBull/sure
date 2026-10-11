@@ -23,17 +23,19 @@ async function goto(page: Page, route: string) {
 /** The two labels the removed selects used, either of which means the filter is back. */
 const FILTER_LABELS = ["Whose money", "Filter by who it belongs to"];
 
-test("the header bar offers a period and a one-off toggle, and nothing about people", async ({
+test("the cashflow header offers a period, while only transactions can hide one-offs", async ({
   page,
 }) => {
   await goto(page, "/");
   const subbar = page.locator(".subbar");
   await expect(subbar.locator("select")).toHaveCount(1);
   await expect(subbar.locator('select[aria-label="Time range"]')).toBeVisible();
-  await expect(subbar.locator(".switch")).toBeVisible();
+  await expect(subbar.locator(".switch")).toHaveCount(0);
   for (const label of FILTER_LABELS) {
     await expect(subbar.locator(`select[aria-label="${label}"]`)).toHaveCount(0);
   }
+  await goto(page, "/transactions");
+  await expect(subbar.locator(".switch")).toBeVisible();
 });
 
 test("the transactions filter panel offers no owner filter", async ({ page }) => {

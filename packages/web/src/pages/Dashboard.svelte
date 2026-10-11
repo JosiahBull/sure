@@ -1,56 +1,20 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, formatMoney, formatDate, colorFor, type Schemas } from "../lib/api";
+  import { api, formatMoney, formatDate, type Schemas } from "../lib/api";
   import { activeRange, filters, periodLinkParams } from "../lib/state.svelte";
-  import { navigate, queryParams, setQueryParams } from "../lib/router.svelte";
-  import { untrack } from "svelte";
+  import { navigate } from "../lib/router.svelte";
   import { Tween } from "svelte/motion";
   import { cubicOut } from "svelte/easing";
   import LineChart from "../lib/charts/LineChart.svelte";
-  import PieChart from "../lib/charts/PieChart.svelte";
   import Sankey, { type SankeyTarget } from "../lib/charts/Sankey.svelte";
-  import WeightBar from "../lib/charts/WeightBar.svelte";
-  import { balances, refresh as refreshBalances } from "../lib/balances.svelte";
-  import { groupByKind } from "../lib/balanceGroups";
-  // Disabled with the "Net worth by person" card below — re-add `groupByOwner` and
-  // `people` here if that card comes back.
-  // import { groupByOwner } from "../lib/balanceGroups";
-  // import { people } from "../lib/people.svelte";
-  import Icon from "../lib/Icon.svelte";
   import FxNotice from "../lib/FxNotice.svelte";
   import StaleFeedNotice from "../lib/StaleFeedNotice.svelte";
 
   let nw = $state<Schemas["NetWorthSeries"] | null>(null);
-  let breakdown = $state<Schemas["CategoryBreakdown"] | null>(null);
   let sankey = $state<Schemas["SankeyGraph"] | null>(null);
   let flowExpanded = $state(false);
   let loading = $state(true);
   let error = $state<string | null>(null);
-
-  /**
-   * Which question the money-flow chart answers.
-   *
-   * Local to this page rather than in the shared `filters`, deliberately. A basis means nothing
-   * on Transactions, Accounts or Settings — and `filters` is what `periodLinkParams()` feeds into
-   * every drill-down link, so putting it there would start sending `basis=` to a page that has no
-   * concept of one. `setQueryParams` only touches the keys it is handed, so a page-owned `basis=`
-   * and the shell-owned `range=`/`start=`/`end=` compose in the same query string.
-   */
-  type Basis = "cash" | "net_worth";
-  const BASES: { key: Basis; label: string; caption: string }[] = [
-    { key: "cash", label: "Cashflow", caption: "every dollar our accounts actually moved" },
-    {
-      key: "net_worth",
-      label: "Net Worth",
-      caption: "only what left us better or worse off — repaying a loan is neither",
-    },
-  ];
-  const DEFAULT_BASIS: Basis = "cash";
-  const isBasis = (v: string | null): v is Basis => BASES.some((b) => b.key === v);
-  // Read once: the page remounts on a route change, so there is nothing to keep in sync
-  // afterwards — only to write, below.
-  const urlBasis = queryParams().get("basis");
-  let basis = $state<Basis>(isBasis(urlBasis) ? urlBasis : DEFAULT_BASIS);
 
   /** Sample finer as the window narrows so a zoomed-in range stays legible. */
   function intervalFor(from?: string, to?: string): "day" | "week" | "month" {
@@ -69,17 +33,11 @@
     const interval = intervalFor(from, to);
     try {
       const [a, b] = await Promise.all([
-        api.GET("/api/reports/net-worth", {
-          params: { query: { from, to, interval } },
-        }),
-        api.GET("/api/reports/category-breakdown", {
-          params: {
-            query: { from, to, include_one_off: filters.includeOneOff },
-          },
-        }),
+        api.GET("/api/reports/net-worth", { params: { query: { from, to, interval } } }),
+        api.GET("/api/reports/sankey", { params: { query: { from, to, include_one_off: true } } }),
       ]);
       nw = a.data ?? null;
-      breakdown = b.data ?? null;
+      sankey = b.data ?? null;
       if (a.error || b.error) error = "Failed to load reports.";
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -88,68 +46,14 @@
     }
   }
 
-  /**
-   * The money-flow chart alone, because it is the only report the basis changes.
-   *
-   * Separate from `load` so flipping the basis does not re-request net worth and the pies — and
-   * does not set `loading`, which swaps the whole page for a spinner and drops the net-worth
-   * hover.
-   */
-  async function loadSankey() {
-    const { from, to } = activeRange();
-    const s = await api.GET("/api/reports/sankey", {
-      params: { query: { from, to, include_one_off: filters.includeOneOff, basis } },
-    });
-    sankey = s.data ?? null;
-    if (s.error) error = "Failed to load reports.";
-  }
-
   $effect(() => {
-    // Reload whenever the global filters change (preset, one-off, or brush window).
+    // Reload whenever the global filters change (preset or brush window).
     filters.range;
-    filters.includeOneOff;
     filters.custom;
     load();
   });
 
-  $effect(() => {
-    filters.range;
-    filters.includeOneOff;
-    filters.custom;
-    basis;
-    loadSankey();
-  });
-
-  // basis → URL, in the shape `periodParams` uses: the default appears as nothing at all, and
-  // the write is a replace so flipping between bases leaves one entry to go back from rather
-  // than one per click.
-  $effect(() => {
-    const wanted = basis === DEFAULT_BASIS ? null : basis;
-    untrack(() => {
-      if ((queryParams().get("basis") ?? null) !== wanted) {
-        setQueryParams({ basis: wanted }, { replace: true });
-      }
-    });
-  });
-
-  // Balance Sheet / Investments show today's balances, not the date-range report — loaded
-  // once (shared with the account panel, which may already have triggered this).
-  onMount(() => {
-    if (!balances.data) refreshBalances();
-  });
-
-  /**
-   * Bank connections, for the stale-feed notice below the header.
-   *
-   * Every figure on this page is built from account balances, and a retired connection leaves
-   * one of those frozen at whatever it last was — no gap, no zero, nothing that reads as wrong.
-   * The Bank sync page knows, but nobody visits it unprompted, so the totals that are quietly
-   * wrong are the right place to say so.
-   *
-   * Fetched here rather than inside `load()` on purpose: `load()` re-runs on every change to the
-   * range, the one-off toggle and the attribution filter, and none of those change whether a
-   * bank is connected. One request per visit, not one per interaction.
-   */
+  /** Bank connections whose stale balances affect both reports. */
   let providers = $state<Schemas["Provider"][]>([]);
   onMount(async () => {
     // Silent on failure: this is a footnote about the page, and a household with no connections
@@ -158,208 +62,7 @@
     const { data } = await api.GET("/api/providers", {});
     providers = data ?? [];
   });
-  let expandedBSKinds = $state(new Set<string>());
-  function toggleBSKind(kind: string) {
-    const next = new Set(expandedBSKinds);
-    if (next.has(kind)) next.delete(kind);
-    else next.add(kind);
-    expandedBSKinds = next;
-  }
-
-  /**
-   * Per-account balances as at the start of the active period, so the balance-sheet rows can
-   * say what moved rather than only what is there.
-   *
-   * A separate request from the balances the card is built on: those are *today's*, shared with
-   * the account panel and loaded once, while this one changes with the range. The same pair the
-   * sidebar already fetches — see AccountPanel — and the same `to: from` trick, which asks the
-   * balances report for the state of the world on the period's first day.
-   */
-  let bsBaseline = $state<Map<number, number>>(new Map());
-  $effect(() => {
-    const { from } = activeRange();
-    if (!from) {
-      // "All time" starts before any history, so every account began at nothing and the change
-      // would restate the balance. Nothing to compare against; the rows show no percentage.
-      bsBaseline = new Map();
-      return;
-    }
-    let cancelled = false;
-    api.GET("/api/reports/balances", { params: { query: { to: from } } }).then(({ data }) => {
-      if (cancelled) return;
-      bsBaseline = new Map((data?.accounts ?? []).map((a) => [a.account_id, a.value_minor]));
-    });
-    return () => (cancelled = true);
-  });
-
-  const assetsGrouped = $derived(groupByKind(balances.data?.accounts ?? [], "assets", bsBaseline));
-  const liabilitiesGrouped = $derived(groupByKind(balances.data?.accounts ?? [], "debts", bsBaseline));
-
-  /**
-   * What clicking a slice of the weight bar does.
-   *
-   * A kind holding one account has an unambiguous answer — that account's transactions, the same
-   * place the sidebar's account rows go. A kind holding several has no single filter to offer:
-   * the transactions list takes one `account_id`, not a set, so the honest move is to open the
-   * group and let the accounts underneath be the links. Both end at a filtered list; one takes a
-   * second click.
-   */
-  function drillIntoKind(kind: string) {
-    const group = [...assetsGrouped.groups, ...liabilitiesGrouped.groups].find((g) => g.kind === kind);
-    if (!group) return;
-    if (group.accounts.length === 1) goToAccount(group.accounts[0].account_id);
-    else if (!expandedBSKinds.has(kind)) toggleBSKind(kind);
-  }
-  function goToAccount(accountId: number) {
-    const p = new URLSearchParams(periodLinkParams());
-    p.set("account", String(accountId));
-    navigate(`/transactions?${p.toString()}`);
-  }
-
-  /** The date the change figures are measured from, for their title text. */
-  const periodStartLabel = $derived.by(() => {
-    const { from } = activeRange();
-    return from ? formatDate(from) : "the start of the period";
-  });
-
-  /** A signed, one-decimal percentage, or null when there is nothing to compare against. */
-  function changeLabel(pct: number | null): string | null {
-    if (pct === null || !Number.isFinite(pct)) return null;
-    // Rounds to "0.0%" either way, so a sign on it would claim a direction the figure does not
-    // have. Anything that does round away from zero keeps its sign.
-    const rounded = Math.abs(pct) < 0.05 ? 0 : pct;
-    // A plain hyphen, matching every other negative figure in the app (the sidebar's own change
-    // column, and `formatMoney`), rather than a typographic minus that would be the one place
-    // the character differs.
-    return `${rounded > 0 ? "+" : rounded < 0 ? "-" : ""}${Math.abs(rounded).toFixed(1)}%`;
-  }
-
-  /** Segments for one panel's weight bar, carrying everything its tooltip shows. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function barSegments(grouped: { groups: any[] }) {
-    return grouped.groups.map((g) => {
-      const change = changeLabel(g.changePct);
-      return {
-        key: g.kind,
-        label: g.label,
-        color: colorFor(g.kind),
-        weightPct: g.weightPct,
-        value: formatMoney(g.totalMinor, balances.data?.currency),
-        change: change && g.changeMinor !== 0 ? { text: change, positive: g.changeMinor > 0 } : null,
-        action:
-          g.accounts.length === 1
-            ? `Click for ${g.accounts[0].name}'s transactions`
-            : `Click to list ${g.accounts.length} accounts`,
-      };
-    });
-  }
-
-  /**
-   * Net worth split by owner. Account-level, so it comes off the same balances response the
-   * cards above use — and it is deliberately *not* driven by the header's "whose money"
-   * filter: this card's whole job is the side-by-side comparison, which filtering to one
-   * person would collapse.
-   *
-   * Disabled 2026-08-06: the side-by-side comparison frames a household's finances as two
-   * scores to compare, which is not how we want to think about a relationship. Kept rather
-   * than deleted in case it earns a place back — `groupByOwner` in lib/balanceGroups.ts is
-   * still exported and tested, so this is the only thing to un-comment (plus the markup and
-   * the .owner-* CSS, both marked below).
-   */
-  // const byOwner = $derived(groupByOwner(balances.data?.accounts ?? [], "all"));
-  const investmentAccounts = $derived(
-    (balances.data?.accounts ?? []).filter((a) => a.class === "investment")
-  );
-  const investmentTotal = $derived(investmentAccounts.reduce((s, a) => s + a.value_minor, 0));
-
-  // Per-account brokerage snapshots (positions + 30d activity), fetched in parallel once the
-  // balances store identifies the investment-class accounts.
-  //
-  // Narrowed to the kinds that keep their quantities as `holdings` lots, rather than every
-  // investment-class account: the endpoint answers 422 for the others, so a `shares_private` or
-  // `crypto` account meant one wasted request and one console error per dashboard render. The
-  // failure was invisible because the result is filtered on `r.data` below, which is exactly
-  // what let it sit here.
-  //
-  // Kept in step with `ensure_holdings_account` in `api/routes/brokerage.rs` — the two lists are
-  // the same set, and narrowing this one further would silently drop a listed single holding's
-  // position out of the dashboard while its account page still showed it.
-  const HOLDS_LOTS: Schemas["AccountKind"][] = ["brokerage", "shares_nz", "shares_us"];
-  let snapshots = $state<Record<number, Schemas["BrokerageSnapshot"]>>({});
-  $effect(() => {
-    const ids = investmentAccounts
-      .filter((a) => HOLDS_LOTS.includes(a.kind))
-      .map((a) => a.account_id);
-    if (ids.length === 0) {
-      snapshots = {};
-      return;
-    }
-    Promise.all(
-      ids.map((id) => api.GET("/api/accounts/{id}/brokerage", { params: { path: { id } } }))
-    ).then((results) => {
-      const next: Record<number, Schemas["BrokerageSnapshot"]> = {};
-      results.forEach((r, i) => {
-        if (r.data) next[ids[i]] = r.data;
-      });
-      snapshots = next;
-    });
-  });
-
-  // Every position across every investment account, largest first. Market value stays in each
-  // position's own trading currency (matching the per-row native-currency convention used in the
-  // account panel), so weight% is a naive share of the summed minor units.
-  const holdings = $derived(
-    Object.values(snapshots)
-      .flatMap((s) => s.positions)
-      .sort((a, b) => (b.market_value_minor ?? 0) - (a.market_value_minor ?? 0))
-  );
-  const holdingsValueMinor = $derived(
-    holdings.reduce((s, p) => s + (p.market_value_minor ?? 0), 0)
-  );
-
-  // Aggregate return over holdings that carry a cost basis; a holding without one is skipped
-  // rather than blanking the whole figure. Estimated (average-cost) — see the return-column note.
-  const costed = $derived(
-    holdings.filter((p) => p.cost_basis_minor != null && p.market_value_minor != null)
-  );
-  const totalCostMinor = $derived(costed.reduce((s, p) => s + (p.cost_basis_minor ?? 0), 0));
-  const totalReturnMinor = $derived(
-    costed.reduce((s, p) => s + (p.market_value_minor ?? 0), 0) - totalCostMinor
-  );
-  const totalReturnPct = $derived(
-    totalCostMinor > 0 ? (totalReturnMinor / totalCostMinor) * 100 : null
-  );
-
-  // Combined 30-day cash-movement summary across every investment account.
-  const activity = $derived(
-    Object.values(snapshots).reduce(
-      (acc, s) => ({
-        contributions_minor: acc.contributions_minor + s.activity_30d.contributions_minor,
-        withdrawals_minor: acc.withdrawals_minor + s.activity_30d.withdrawals_minor,
-        trades: acc.trades + s.activity_30d.trades,
-      }),
-      { contributions_minor: 0, withdrawals_minor: 0, trades: 0 }
-    )
-  );
-  const hasSnapshots = $derived(Object.keys(snapshots).length > 0);
-
-  // Currencies missing from the snapshots' own totals, deduped across accounts, plus the
-  // oldest rate date any of them used — the pessimistic one, since a single stale account is
-  // enough to make the combined figures stale.
-  const snapshotList = $derived(Object.values(snapshots));
-  const holdingsUnconverted = $derived([
-    ...new Set(snapshotList.flatMap((s) => s.unconverted)),
-  ]);
-  const holdingsRatesAsOf = $derived(
-    snapshotList
-      .map((s) => s.rates_as_of)
-      .filter((d): d is string => d != null)
-      .sort()[0] ?? null
-  );
-
-  const currency = $derived(breakdown?.currency ?? nw?.currency ?? "NZD");
-  // Whole-dollar money (no cents) — keeps the donut centre from overflowing on hover.
-  const money0 = (v: number) => formatMoney(v, currency).replace(/\.\d+$/, "");
+  const currency = $derived(sankey?.currency ?? nw?.currency ?? "NZD");
   const points = $derived((nw?.points ?? []).map((p) => ({ x: p.as_of, y: p.net_worth_minor })));
   const latest = $derived(nw?.points.at(-1) ?? null);
   const first = $derived(nw?.points[0] ?? null);
@@ -392,75 +95,21 @@
     primed = true;
   });
 
-  const toSlice = (c: Schemas["CategoryTotal"]) => ({
-    label: c.name,
-    value: c.total_minor,
-    color: c.color ?? colorFor(c.category_id ?? c.name),
-    categoryId: c.category_id ?? null,
-  });
-  const expenseSlices = $derived((breakdown?.expense ?? []).map(toSlice));
-  const incomeSlices = $derived((breakdown?.income ?? []).map(toSlice));
-  const totalExpense = $derived(expenseSlices.reduce((s, c) => s + c.value, 0));
-  const totalIncome = $derived(incomeSlices.reduce((s, c) => s + c.value, 0));
+  const cashIn = $derived((sankey?.links ?? []).filter((l) => l.target === "center" && l.source !== "deficit").reduce((sum, l) => sum + l.value_minor, 0));
+  const cashOut = $derived((sankey?.links ?? []).filter((l) => l.source === "center" && l.target !== "savings").reduce((sum, l) => sum + l.value_minor, 0));
   const sankeyLinks = $derived((sankey?.links ?? []).map((l) => ({ ...l, value: l.value_minor })));
 
-  // Hovered slice per pie ([expense, income]) — shared between the donut and its legend.
-  let hovered = $state<(number | null)[]>([null, null]);
-
-  /**
-   * How wide the donut-and-legend row actually is, and the donut size that leaves the legend
-   * enough of it.
-   *
-   * The donut is drawn at a pixel size and the legend's rows are "● Name  $16,744.00" — a
-   * fixed-width amount plus a name that ellipsises. Held at 150px, the legend got whatever was
-   * left, which on a phone was 64px of name: "Housing" rendered as "Housi…", and the category
-   * a slice belongs to is the one thing its legend row exists to say. So the donut yields
-   * instead, down to a floor where it is still a readable chart.
-   *
-   * LEGEND_FLOOR was measured from the widest seeded row while the base currency still printed
-   * a "NZ$" prefix: a 10px dot, two 8px gaps, ~70px of name and an 88px amount. The prefix is
-   * gone now, so the amount is ~20px narrower and the floor is that much more generous than it
-   * needs to be — which costs the donut a few pixels and nothing else. Above roughly a 360px row
-   * the donut is back at full size, so the desktop two-column layout is unaffected either way.
-   */
-  const LEGEND_FLOOR = 190;
-  const PIE_MAX = 150;
-  const PIE_MIN = 104;
-  let pieRowW = $state(0);
-  const pieSize = $derived(
-    pieRowW === 0 ? PIE_MAX : Math.max(PIE_MIN, Math.min(PIE_MAX, pieRowW - 18 - LEGEND_FLOOR)),
-  );
-  // The ring scales with the circle, or a small donut reads as a thick washer.
-  const pieThickness = $derived(Math.round((pieSize * 26) / PIE_MAX));
-
-  // Jump to the transactions page filtered to this category (its whole subtree) over the
-  // overview's current range. Shared by the pie arcs, their legend rows and the Sankey, so
-  // all three open the same slice the same way.
-  //
-  // A null id is the uncategorised bucket — every source of one means that specific slice,
-  // never "no category filter" (`reports.rs` gives it the sentinel key 0 and the API renders
-  // that back as `category_id: null`). So it maps to the transactions page's own `none`
-  // filter, not to an omitted param, which would land on *every* transaction instead of the
-  // handful the user clicked. `kind` still narrows it to income or outgoings, since a null
-  // category alone can't tell an uncategorised income transaction from an expense one.
   function goToCategory(categoryId: number | null, kind?: "income" | "expense") {
+    filters.includeOneOff = true;
     const p = new URLSearchParams(periodLinkParams());
     p.set("category", categoryId == null ? "none" : String(categoryId));
     if (kind) p.set("type", kind);
     navigate(`/transactions?${p.toString()}`);
   }
 
-  /**
-   * Jump to one account's transactions, keeping the range on screen.
-   *
-   * Distinct from `goToAccount`, which the balance sheet uses, in exactly one way: the range is
-   * named explicitly even when it is the default, which `periodLinkParams` would otherwise leave
-   * out. A bare `?account=` link makes the transactions page widen to all time — right when you
-   * open an account from the balance sheet, because its history is usually older than the
-   * selected window, and wrong when you click a bar that means "$1,336 of mortgage, in August".
-   * Naming the period is what opts out of that.
-   */
+  /** Keep the chart period when opening an account, including the default period. */
   function goToAccountInPeriod(accountId: number) {
+    filters.includeOneOff = true;
     const p = new URLSearchParams(periodLinkParams());
     if (!p.has("range") && !p.has("start")) p.set("range", filters.range);
     p.set("account", String(accountId));
@@ -475,10 +124,6 @@
   <div class="error-banner" style="margin-bottom:16px">{error}</div>
 {/if}
 
-<!-- Above the cards, because it is about all of them: net worth, the balance sheet and every
-     chart below are built from balances a retired connection has stopped updating. Named here,
-     unlike on the Bank sync page, since there is no list of connections in front of the reader
-     to match a count against. -->
 <StaleFeedNotice {providers} href="#/settings/providers" />
 
 <svelte:window
@@ -522,96 +167,52 @@
     <FxNotice unconverted={nw?.unconverted ?? []} ratesAsOf={nw?.rates_as_of} {currency} />
   </section>
 
-  <div class="grid two">
-    {#each [{ title: "Where money went", slices: expenseSlices, total: totalExpense }, { title: "Where money came from", slices: incomeSlices, total: totalIncome }] as panel, pi}
-      <section class="card">
-        <h2>{panel.title}</h2>
-        {#if panel.slices.length === 0}
-          <div class="empty">Nothing here yet.</div>
-        {:else}
-          <!-- Both pies share one measurement: the two cards are the same width in every
-               layout this has (side by side, or stacked one per row), so measuring each
-               separately would buy nothing and let them disagree by a rounding. -->
-          <div class="row pie-row" style="gap:18px;align-items:flex-start" bind:clientWidth={pieRowW}>
-            <PieChart
-              slices={panel.slices}
-              size={pieSize}
-              thickness={pieThickness}
-              centerValue={money0(panel.total)}
-              centerLabel="total"
-              active={hovered[pi]}
-              onhover={(i) => (hovered[pi] = i)}
-              onselect={(i) => goToCategory(panel.slices[i].categoryId, pi === 0 ? "expense" : "income")}
-              format={money0}
-            />
-            <ul class="legend grow">
-              {#each panel.slices.slice(0, 6) as s, si}
-                <li>
-                  <button
-                    type="button"
-                    class="legend-row"
-                    class:dim={hovered[pi] !== null && hovered[pi] !== si}
-                    onpointerenter={() => (hovered[pi] = si)}
-                    onpointerleave={() => (hovered[pi] = null)}
-                    onfocus={() => (hovered[pi] = si)}
-                    onblur={() => (hovered[pi] = null)}
-                    onclick={() => goToCategory(s.categoryId, pi === 0 ? "expense" : "income")}
-                    title="View {s.label} transactions"
-                  >
-                    <span class="row" style="gap:8px;min-width:0">
-                      <span class="dot" style="background:{s.color}"></span>
-                      <span class="ell">{s.label}</span>
-                    </span>
-                    <span class="tabular">{formatMoney(s.value, currency)}</span>
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
-      </section>
-    {/each}
-  </div>
-
-  {#if sankey && sankey.links.length}
+  {#if sankey}
     <section class="card">
       <div class="card-title">
         <h2>Money flow</h2>
         <div class="row" style="gap:10px">
-          <!-- The caption is basis-specific, so it moves with the toggle rather than making a
-               claim that is only true on one of them. -->
-          <span class="muted small">{BASES.find((b) => b.key === basis)?.caption}</span>
-          <div class="segmented" role="group" aria-label="Money-flow basis">
-            {#each BASES as b (b.key)}
-              <button
-                type="button"
-                class="seg"
-                class:active={basis === b.key}
-                aria-pressed={basis === b.key}
-                onclick={() => (basis = b.key)}
-              >
-                {b.label}
-              </button>
-            {/each}
-          </div>
+          <span class="muted small">Cash in and out of our accounts</span>
           <!-- The chart shows as many category levels as the width can render legibly, so a
                narrow card gets fewer. This is where the rest of them live. -->
           <button type="button" class="btn btn-sm" onclick={() => (flowExpanded = true)}>Expand</button>
         </div>
       </div>
+      <div class="cash-summary">
+        <span>Cash in <strong>{formatMoney(cashIn, currency)}</strong></span>
+        <span>Cash out <strong>{formatMoney(cashOut, currency)}</strong></span>
+        <span class:pos={cashIn >= cashOut} class:neg={cashIn < cashOut}>
+          {cashIn >= cashOut ? "Cash left over" : "Cash shortfall"}
+          <strong>{formatMoney(Math.abs(cashIn - cashOut), currency)}</strong>
+        </span>
+      </div>
+      <table aria-label="Monthly cashflow">
+        <thead><tr><th>Month</th><th>Cash in</th><th>Cash out</th><th>Left over / shortfall</th></tr></thead>
+        <tbody>
+          {#each sankey.months as m}
+            <tr>
+              <td>{m.month}</td>
+              <td>{formatMoney(m.inflow_minor, currency)}</td>
+              <td>{formatMoney(m.outflow_minor, currency)}</td>
+              <td class:pos={m.inflow_minor >= m.outflow_minor} class:neg={m.inflow_minor < m.outflow_minor}>
+                {formatMoney(m.inflow_minor - m.outflow_minor, currency)}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      {#if sankey.links.length}
       <Sankey
         nodes={sankey.nodes}
         links={sankeyLinks}
         format={(v) => formatMoney(v, currency)}
         onselect={openFlow}
       />
+      {:else}<p class="muted">No cash movements in this period.</p>{/if}
       <FxNotice unconverted={sankey.unconverted ?? []} currency={sankey.currency} />
     </section>
   {/if}
 
-  <!-- Three category levels per side is up to seven columns, which is tight inside a card.
-       The same chart, given a window to breathe in — the previous app had the same escape
-       hatch. -->
   {#if flowExpanded && sankey}
     <div
       class="overlay"
@@ -624,21 +225,6 @@
         <div class="card-title">
           <h2>Money flow</h2>
           <div class="row" style="gap:10px">
-            <!-- Bound to the same variable as the card's: one basis, two controls, never out of
-                 step with each other or with what is drawn. -->
-            <div class="segmented" role="group" aria-label="Money-flow basis">
-              {#each BASES as b (b.key)}
-                <button
-                  type="button"
-                  class="seg"
-                  class:active={basis === b.key}
-                  aria-pressed={basis === b.key}
-                  onclick={() => (basis = b.key)}
-                >
-                  {b.label}
-                </button>
-              {/each}
-            </div>
             <button type="button" class="btn btn-sm" onclick={() => (flowExpanded = false)}>Close</button>
           </div>
         </div>
@@ -656,225 +242,7 @@
     </div>
   {/if}
 
-  <!-- "Net worth by person" — disabled 2026-08-06, see the byOwner note in the script block.
-       Un-commenting this needs the byOwner derived, the groupByOwner/people imports, and the
-       .owner-* CSS restored too.
-  {#if balances.data && people.list.length > 1 && byOwner.groups.length > 1}
-    <section class="card">
-      <div class="card-title">
-        <h2>Net worth by person</h2>
-        <span class="muted small tabular">
-          {formatMoney(byOwner.totalMinor, balances.data.currency)}
-        </span>
-      </div>
-      <div class="owner-cards">
-        {#each byOwner.groups as g (g.key)}
-          <div class="owner-card" style={g.color ? `--owner:${g.color}` : undefined}>
-            <span class="owner-name">{g.label}</span>
-            <span class="owner-total tabular" class:neg={g.totalMinor < 0}>
-              {formatMoney(g.totalMinor, balances.data.currency)}
-            </span>
-            <span class="muted small">
-              {g.accounts.length} account{g.accounts.length === 1 ? "" : "s"}
-            </span>
-          </div>
-        {/each}
-      </div>
-      <p class="muted small" style="margin:10px 2px 0">
-        Joint accounts are their own column rather than split in half — nothing in the data
-        says what the split is.
-      </p>
-    </section>
-  {/if}
-  -->
 
-  {#if balances.data && (assetsGrouped.groups.length || liabilitiesGrouped.groups.length)}
-    <div class="grid two">
-      {#each [{ title: "Assets", grouped: assetsGrouped }, { title: "Liabilities", grouped: liabilitiesGrouped }] as panel}
-        <section class="card">
-          <div class="card-title">
-            <h2>{panel.title}</h2>
-            <span class="muted small tabular">
-              {formatMoney(panel.grouped.totalMinor, balances.data?.currency)}
-            </span>
-          </div>
-          {#if panel.grouped.groups.length === 0}
-            <div class="empty">Nothing here yet.</div>
-          {:else}
-            <WeightBar segments={barSegments(panel.grouped)} onselect={drillIntoKind} />
-            <ul class="legend" style="margin-top:12px">
-              {#each panel.grouped.groups as g (g.kind)}
-                {@const change = changeLabel(g.changePct)}
-                <li>
-                  <button type="button" class="legend-row" onclick={() => toggleBSKind(g.kind)}>
-                    <span class="row" style="gap:6px;min-width:0">
-                      <Icon name={expandedBSKinds.has(g.kind) ? "chevron-down" : "chevron-right"} size={14} />
-                      <span class="dot" style="background:{colorFor(g.kind)}"></span>
-                      <span class="ell">{g.label}</span>
-                    </span>
-                    <span class="row" style="gap:8px">
-                      <!-- Movement over the selected period, beside the share of the panel it is
-                           a share of. Green is "better off" on both panels: a liability is held
-                           negative, so paying one down moves it toward zero and reads positive,
-                           exactly as an asset gaining value does. -->
-                      {#if change}
-                        <span
-                          class="small tabular bs-change"
-                          class:pos={g.changeMinor > 0}
-                          class:neg={g.changeMinor < 0}
-                          title="Change since {periodStartLabel}"
-                        >{change}</span>
-                      {/if}
-                      <span class="small faint tabular">{g.weightPct.toFixed(1)}%</span>
-                      <span class="tabular">{formatMoney(g.totalMinor, balances.data?.currency)}</span>
-                    </span>
-                  </button>
-                  {#if expandedBSKinds.has(g.kind)}
-                    <ul class="sub-list">
-                      {#each g.accounts as a (a.account_id)}
-                        <li>
-                          <!-- The accounts are the drill-down a multi-account kind cannot offer
-                               from the bar itself, so each one is its own link. -->
-                          <button
-                            type="button"
-                            class="sub-row"
-                            onclick={() => goToAccount(a.account_id)}
-                            title="View {a.name}'s transactions"
-                          >
-                            <span class="ell muted">{a.name}</span>
-                            <span class="tabular">{formatMoney(a.value_minor, a.currency_code)}</span>
-                          </button>
-                        </li>
-                      {/each}
-                    </ul>
-                  {/if}
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </section>
-      {/each}
-    </div>
-  {/if}
-
-  {#if investmentAccounts.length > 0}
-    <section class="card">
-      <div class="card-title">
-        <h2>Investments</h2>
-      </div>
-      <div class="stat" style="margin-bottom:4px">
-        <div class="value tabular">{formatMoney(investmentTotal, balances.data?.currency)}</div>
-      </div>
-      <!-- A holding priced in a currency with no rate is listed below in its own currency but
-           is not inside any account total — the same figure `revalue` refuses to persist. -->
-      <FxNotice
-        unconverted={holdingsUnconverted}
-        ratesAsOf={holdingsRatesAsOf}
-        currency={balances.data?.currency}
-      />
-      {#if totalReturnPct != null}
-        <div class="small" style="margin-bottom:14px">
-          <span class="muted">Total return:</span>
-          <span
-            class="tabular"
-            class:pos={totalReturnMinor >= 0}
-            class:neg={totalReturnMinor < 0}
-            style="font-weight:620"
-            title="Estimated — average cost basis"
-          >
-            {formatMoney(totalReturnMinor, balances.data?.currency)}
-            ({totalReturnPct >= 0 ? "+" : ""}{totalReturnPct.toFixed(1)}%)
-          </span>
-        </div>
-      {/if}
-
-      {#if holdings.length > 0}
-        <table class="table holdings">
-          <thead>
-            <tr>
-              <th>Holding</th>
-              <th class="num">Weight</th>
-              <th class="num">Value</th>
-              <th class="num" title="Estimated — average cost basis">Return</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each holdings as p (p.exchange + ":" + p.ticker)}
-              <tr>
-                <td>
-                  <span class="row" style="gap:10px;min-width:0">
-                    <span class="avatar">{p.ticker.slice(0, 2).toUpperCase()}</span>
-                    <span class="hold-name">
-                      <span class="ell" style="font-weight:560">{p.ticker}</span>
-                      <span class="ell small faint">{p.name ?? p.exchange}</span>
-                    </span>
-                  </span>
-                </td>
-                <td class="num tabular faint">
-                  {holdingsValueMinor > 0 && p.market_value_minor != null
-                    ? ((p.market_value_minor / holdingsValueMinor) * 100).toFixed(1) + "%"
-                    : "—"}
-                </td>
-                <td class="num tabular">
-                  {p.market_value_minor != null
-                    ? formatMoney(p.market_value_minor, p.currency_code)
-                    : "—"}
-                </td>
-                <td
-                  class="num tabular"
-                  class:pos={p.return_pct != null && p.return_pct >= 0}
-                  class:neg={p.return_pct != null && p.return_pct < 0}
-                >
-                  {p.return_pct != null
-                    ? (p.return_pct >= 0 ? "+" : "") + p.return_pct.toFixed(1) + "%"
-                    : "—"}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {:else}
-        <ul class="legend">
-          {#each investmentAccounts as a (a.account_id)}
-            <li>
-              <button
-                type="button"
-                class="legend-row"
-                onclick={() => navigate(`/transactions?account=${a.account_id}`)}
-              >
-                <span class="ell">{a.name}</span>
-                <span class="tabular">{formatMoney(a.value_minor, a.currency_code)}</span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-
-      {#if hasSnapshots}
-        <div class="activity">
-          <div class="activity-head faint">Last 30 days activity</div>
-          <div class="activity-stats">
-            <div class="astat">
-              <span class="faint small">Contributions</span>
-              <span class="tabular">
-                {formatMoney(activity.contributions_minor, balances.data?.currency)}
-              </span>
-            </div>
-            <div class="astat">
-              <span class="faint small">Withdrawals</span>
-              <span class="tabular">
-                {formatMoney(activity.withdrawals_minor, balances.data?.currency)}
-              </span>
-            </div>
-            <div class="astat">
-              <span class="faint small">Trades</span>
-              <span class="tabular">{activity.trades}</span>
-            </div>
-          </div>
-        </div>
-      {/if}
-    </section>
-  {/if}
 </div>
 
 {#if loading && !nw}
@@ -906,168 +274,15 @@
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
   }
 
-  /* Disabled with the "Net worth by person" card — kept so restoring it is one un-comment.
-     One column per household member, plus joint. Wraps rather than scrolls: a household is
-     two or three people, not a table.
-
-  .owner-cards {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-  .owner-card {
-    flex: 1 1 160px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 12px 14px;
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--owner, var(--border));
-    border-radius: var(--r);
-    background: var(--surface-2);
-  }
-  .owner-name {
-    font-size: 13px;
-    font-weight: 650;
-    color: var(--owner, var(--text));
-  }
-  .owner-total {
-    font-size: 18px;
-    font-weight: 600;
-  }
-  .owner-total.neg {
-    color: var(--negative);
-  }
-  */
-
-  .cards {
-    gap: 16px;
-  }
-  .two {
-    grid-template-columns: 1fr 1fr;
-  }
-  /* Against the content column, not the window: with the panel docked, a 1024px window leaves
-     638px here, and two 311px columns cannot hold a 150px donut beside its legend. The old
-     `@media (max-width: 720px)` was measuring the wrong box and let exactly that through. */
-  @container main (max-width: 760px) {
-    .two {
-      grid-template-columns: 1fr;
-    }
-  }
-  /* Donut beside its legend. The donut gives up width first (see `pieSize` in the script), and
-     `min-width: 0` lets the legend's names ellipsise rather than setting the row's floor
-     themselves — between them the row fits any width down to the one below, where the donut
-     has reached PIE_MIN and the legend goes underneath rather than beside. */
-  .pie-row :global(.pie) {
-    flex: none;
-  }
-  .pie-row .legend {
-    min-width: 0;
-  }
-  /* 360, measured: the legend gets `container − 28px of card padding − 168px of donut`, and
-     under about 124px of that a category name ellipsises to two letters. Above it, side by
-     side reads better than stacked. */
-  @container main (max-width: 360px) {
-    .pie-row {
-      flex-direction: column;
-      align-items: center !important;
-      gap: 12px !important;
-    }
-    .pie-row .legend {
-      width: 100%;
-    }
-  }
-  .legend {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    font-size: 13.5px;
-  }
-  .sub-list {
-    list-style: none;
-    margin: 2px 0 4px;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    font-size: 13px;
-  }
-  .sub-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    width: 100%;
-    padding: 4px 8px 4px 30px;
-    border: none;
-    border-radius: var(--r-sm);
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-  .sub-row:hover,
-  .sub-row:focus-visible {
-    background: var(--hover);
-  }
-  /* Grey for a standstill — a row that rounded to 0.0% has no direction to colour. A row with no
-     baseline at all shows nothing instead, since "did not exist yet" is not a change of zero. */
-  .bs-change {
-    color: var(--text-faint);
-    font-variant-numeric: tabular-nums;
-  }
-  .bs-change.pos {
-    color: var(--positive);
-  }
-  .bs-change.neg {
-    color: var(--negative);
-  }
-  .legend-row {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 5px 6px;
-    border: none;
-    border-radius: var(--r-sm);
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-    transition: opacity 0.15s ease, background 0.15s ease;
-  }
-  .legend-row:hover,
-  .legend-row:focus-visible {
-    background: var(--hover);
-  }
-  /* Every legend row is a link into a filtered transaction list — on a phone it is the primary
-     way into the data, not a caption beside the chart. */
-  @media (pointer: coarse) {
-    .legend-row {
-      min-height: 44px;
-      padding: 8px 6px;
-    }
-  }
-  .legend-row.dim {
-    opacity: 0.4;
-  }
-  .dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 3px;
-    flex: none;
-  }
-  .ell {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+  .cards { gap: 16px; }
+  .cash-summary { display: flex; flex-wrap: wrap; gap: 16px 32px; margin-bottom: 16px; }
+  .cash-summary strong { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  table { width: 100%; margin-bottom: 20px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .pos { color: var(--positive); }
+  .neg { color: var(--negative); }
+  @container main (max-width: 520px) { th, td { padding: 6px 3px; font-size: 11px; } }
 
   /* Headline stat + badge shift subtly while the chart is being inspected. */
   .badge {
@@ -1094,100 +309,4 @@
     font-weight: 600;
   }
 
-  /* Investments holdings table */
-  .holdings th.num,
-  .holdings td.num {
-    text-align: right;
-    white-space: nowrap;
-  }
-  .avatar {
-    flex: none;
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    background: var(--surface-2);
-    color: var(--text-muted);
-    font-size: 11px;
-    font-weight: 600;
-  }
-  .hold-name {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    line-height: 1.25;
-  }
-
-  /* Last-30-days activity strip */
-  .activity {
-    margin-top: 14px;
-    padding: 12px 14px;
-    border: 1px solid var(--border);
-    border-radius: var(--r-sm);
-    background: var(--surface-2);
-  }
-  .activity-head {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin-bottom: 10px;
-  }
-  .activity-stats {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-  }
-  .astat {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  /* Three money figures across a 374px card is ~115px each, and "$32,401.82" needs more. */
-  @container main (max-width: 520px) {
-    .activity-stats {
-      grid-template-columns: 1fr 1fr;
-    }
-  }
-  @container main (max-width: 340px) {
-    .activity-stats {
-      grid-template-columns: 1fr;
-    }
-  }
-  /* The money-flow basis switch. Same shape as the theme switch in Appearance, sized for a card
-     header rather than a settings page — two words a reader compares at a glance, where a
-     dropdown hides the alternative behind a click and reads as a filter rather than a choice
-     between two answers to the same question. */
-  .segmented {
-    display: inline-flex;
-    padding: 2px;
-    gap: 2px;
-    border-radius: var(--r-sm);
-    border: 1px solid var(--border);
-    background: var(--bg-elev);
-  }
-  .seg {
-    all: unset;
-    padding: 4px 11px;
-    border-radius: 6px;
-    color: var(--text-muted);
-    font-size: 13px;
-    font-weight: 550;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-  }
-  /* A basis is one tap on a phone and there is no second way to reach it, so the target has to
-     clear the 44px thumb minimum the rest of the app holds to. */
-  @media (pointer: coarse) {
-    .seg {
-      padding: 11px 14px;
-    }
-  }
-  .seg:hover:not(.active) {
-    color: var(--text);
-  }
-  .seg.active {
-    background: var(--surface);
-    color: var(--text);
-  }
 </style>

@@ -4,12 +4,9 @@
 #![allow(clippy::inconsistent_digit_grouping)]
 
 pub mod brokerage;
-pub mod dates;
 pub mod detect;
 pub mod fx;
 pub mod import;
-pub mod income;
-pub mod income_match;
 pub mod ports;
 pub mod reports;
 pub mod rules;

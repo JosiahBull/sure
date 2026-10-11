@@ -20,11 +20,8 @@ export interface Node {
   category_id?: number | null;
   root_id?: number | null;
   root_color?: string | null;
-  /** Which half of the graph this sits in; null for the hub, the balance nodes and the
-   * pre-income layer. A plain string, like `kind`, because that is what the wire carries — see
-   * {@link sideOf}, which is the only thing that should read it and which narrows it. */
-  side?: string | null;
-  /** The balance-sheet account a crossing or a deduction destination stands for. */
+    side?: string | null;
+  /** The account a cash movement reached. */
   account_id?: number | null;
 }
 export interface Link {
@@ -43,28 +40,11 @@ const MARGIN_X = 4;
 const MARGIN_TOP = 30;
 const MARGIN_BOTTOM = 14;
 
-/**
- * A routing waypoint: where a link that would otherwise reach across columns is bent.
- *
- * `column` is authoritative — `columnOf` returns it as-is — which leaves the node's `level`
- * free to carry something else, and it does: the colour. A waypoint is invisible, so it exists
- * only to be a place for a ribbon to pass through and to take the shading of the node the chain
- * is heading for.
- */
-export type Via = {
-  column: number;
-  /** Which way the chain is travelling, which is what tells the ordering pass its parent. */
-  side: "income" | "expense";
-  /** The kind of the node the chain is heading for, so the ribbon keeps one colour through it. */
-  colorKind: string;
-};
-
+/** A node at a visible category level. */
 export type Placed = Omit<Node, "depth"> & {
   level: number;
   /** True for a synthesised "Other" node — see {@link foldHairlines}. */
   aggregate?: boolean;
-  /** Set on a routing waypoint — see {@link routeSpans}. */
-  via?: Via;
 };
 export const placed = (n: Node): Placed => {
   const { depth, ...rest } = n;
@@ -73,57 +53,15 @@ export const placed = (n: Node): Placed => {
 
 export type Cols = { income: number; center: number; expenseBase: number; total: number };
 
-/**
- * How many columns each side needs, from the nodes actually being laid out.
- *
- * **The count has to be one a path can actually walk**, not merely one the levels imply. d3
- * sizes the chart at `max(node.depth) + 1` columns — the longest path in links — and clamps
- * anything past that, silently stacking two columns into one and drawing every link between
- * them at zero length inside a single column. So a column this asks for and no path traverses
- * is not slack; it is the last column of the chart collapsing onto its neighbour.
- *
- * Every column below is path-backed by construction except one. A category at level k reaches
- * the hub in exactly k+1 hops, so both sides' widths are what their deepest chain walks. The
- * exception is the gross column: it is only walked if some gross node has a link that carries on
- * past its deduction sinks — a take-home. Deductions are terminal, so a payslip whose take-home
- * leaf was folded away (or rounded to nothing) reaches column 1 and stops, and reserving column
- * 0 for it costs the expense side its deepest column. Hence `pre` asks the links, not the nodes.
- */
-function columnsOf(live: Placed[], links: Link[]): Cols {
-  const byId = new Map(live.map((n) => [n.id, n]));
+/** Each side occupies one column per category level. */
+function columnsOf(live: Placed[]): Cols {
   let income = 0;
   let expense = 0;
-  let anyGross = false;
-  let anyDeduction = false;
   for (const n of live) {
-    if (n.kind === "gross") {
-      anyGross = true;
-      continue;
-    }
-    if (n.kind === "deduction") {
-      anyDeduction = true;
-      continue;
-    }
-    // A waypoint's own level counts for nothing: every column one occupies is a gap between two
-    // columns a real node's level already claimed. `columnsOf` runs before routing, so this is
-    // belt and braces — but it keeps the invariant true by construction rather than by call order.
-    if (n.kind === "via") continue;
     const side = sideOf(n);
-    if (!side) continue; // the hub
-    // One rule for everything that hangs off the hub by a side and a depth: both category trees,
-    // a perimeter crossing, and the surplus or deficit. `savings` reaching `expense >= 1` and
-    // `deficit` reaching `income >= 1` fall out of it, which is what stops a graph that is only a
-    // deficit and some expenses from putting the deficit node on the spine.
     if (side === "income") income = Math.max(income, n.level + 1);
-    else expense = Math.max(expense, n.level + 1);
+    if (side === "expense") expense = Math.max(expense, n.level + 1);
   }
-  const walksOn = links.some(
-    (l) => byId.get(l.source)?.kind === "gross" && byId.get(l.target)?.kind !== "deduction",
-  );
-  if (anyGross && walksOn) income += 1;
-  // A payslip with no income categories at all still needs somewhere left of the hub to put its
-  // gross node and its sinks, or they land on the spine and their links have nowhere to go.
-  if (income === 0 && (anyGross || anyDeduction)) income = 1;
   return { income, center: income, expenseBase: income + 1, total: income + 1 + expense };
 }
 
@@ -147,28 +85,6 @@ function columnOf(n: Placed, c: Cols): number {
   switch (n.kind) {
     case "center":
       return c.center;
-    // The reconstructed payslips: gross pay on the far left, its deduction sinks pinned
-    // into the first income column (their natural d3 depth is 1, which is only the same
-    // thing while exactly one category level is drawn).
-    case "gross":
-      return 0;
-    case "deduction":
-      return Math.min(1, c.center);
-    // A balance-sheet account a deduction was routed into. One hop past its sink and
-    // immediately right of the deductions, *not* on the spine: falling through to the hub's
-    // column (which is what `default` used to do for it) made the ribbon span every income
-    // column in between, so it cut across the whole income fan to reach a node the width of
-    // a hairline. Clamped to the hub because a graph with no income categories has nothing
-    // between the two, and a column past the hub would put a payslip sink among the
-    // expenses.
-    //
-    // An account that is *also* a crossing states a side, so it never reaches this arm — it
-    // sits in its own fan and its deduction ribbon routes across to it instead.
-    case "account":
-      return Math.min(Math.min(1, c.center) + 1, c.total - 1);
-    // A routing waypoint carries its column outright — see `routeSpans`.
-    case "via":
-      return n.via!.column;
     default: {
       // Everything that hangs off the hub by a side and a depth, in one rule because they are
       // one shape: both category trees, a perimeter crossing (depth 0, so it lands beside the
@@ -182,47 +98,6 @@ function columnOf(n: Placed, c: Cols): number {
   }
 }
 
-/**
- * Vertical order for every column, computed before the layout runs.
- *
- * Two goals that look opposed and are not. Sorting each column purely by value reads
- * beautifully — every column ranks top to bottom by size — but it scatters each parent's
- * children across the column by their own magnitude, so a big leaf of a small branch sits
- * above a small leaf of a big one and its ribbon crosses the whole diagram to reach its
- * parent. Measured on this household's own graph that is 23-35 crossings; d3's own ordering
- * has none, but it minimises crossings *only*, so it puts a $700 category above an $18,000 one
- * whenever that shortens a ribbon and the eye cannot rank anything by position.
- *
- * The resolution is that this graph is a **tree**: every category has exactly one hub-ward
- * link, income flowing leaf→parent→hub and expense hub→parent→leaf. For a layered tree a
- * planar order always exists — group each column by parent, keep the groups in their parents'
- * order — and *within* a sibling group the order is free, so value ordering there costs
- * nothing. Sweeping outward from the hub and applying both rules gives zero crossings with
- * size ordering everywhere it is achievable.
- *
- * Why zero falls out: for two links p1→c1 and p2→c2 in one gap, either p1 and p2 are the same
- * node (siblings, consistently ordered) or they are not, in which case every child of the
- * earlier parent precedes every child of the later one. Neither case can invert.
- *
- * **That argument covers one gap at a time, so it says nothing about a link that spans two.**
- * One shape does: a take-home flowing to an income leaf that is not at the deepest level —
- * an uncategorised one sits at level 0, beside the hub, while the gross node it comes from is
- * pinned to column 0. Its ribbon crosses whatever lies in the column it passes through, and no
- * ordering of the columns at either end can help. Measured on the payslip graph below, that is
- * one crossing at the two widths where `fitToWidth` leaves exactly two income levels, and none
- * at the widths either side of them. Removing it means giving that link a node to land on
- * halfway, which is a question for whatever builds the graph rather than for this ordering.
- *
- * What is given up is *global* size order in the outer columns — a big grandchild of a small
- * root sits below a small grandchild of a big root. That is not a tuning choice: any
- * zero-crossing order must group by parent, so it is the price of the crossings going away.
- *
- * This has to be a pre-pass rather than a comparator. `computeNodeLayers` sorts each column
- * before any node has a y-position, so a parent's placement is unknowable from inside a
- * comparator. It is safe to decide the order here because supplying a comparator makes the
- * array order final: both relaxation directions skip their `column.sort(ascendingBreadth)`,
- * and `resolveCollisions` only pushes nodes apart in array order, never reorders them.
- */
 function outwardOrder(live: Placed[], links: Link[], cols: Cols): Map<string, number> {
   const byId = new Map(live.map((n) => [n.id, n]));
   const columnOfId = new Map(live.map((n) => [n.id, columnOf(n, cols)]));
@@ -238,23 +113,20 @@ function outwardOrder(live: Placed[], links: Link[], cols: Cols): Map<string, nu
   const valueOf = (id: string) => Math.max(inSum.get(id) ?? 0, outSum.get(id) ?? 0);
   const bigFirst = (a: string, b: string) => valueOf(b) - valueOf(a) || (a < b ? -1 : 1);
 
+  const kids = new Map<string, string[]>();
+  const inward = new Map<string, number>();
+
   // Hub-rooted child lists, using the same orientation trick `foldHairlines` uses: on the
   // income side the source is the child, on the expense side the target is. `center→savings`
   // lands in the expense case and makes savings an ordinary hub child.
   //
-  // A gross node's links are skipped entirely. They point *outward* from column 0 rather than
-  // hub-ward, so they are not tree edges — and following the `gross→center` fallback (used
-  // when a take-home leaf rounded away) would make the hub a child of a payslip.
-  const kids = new Map<string, string[]>();
-  const inward = new Map<string, number>();
   for (const l of links) {
     const s = byId.get(l.source);
     const t = byId.get(l.target);
-    if (!s || !t || s.kind === "gross") continue;
+    if (!s || !t) continue;
     // Which end is the child is "which end is further from the hub", which `sideOf` answers for
     // every kind — including a waypoint, whose own kind says nothing and whose chain's direction
     // says everything, and the deficit, whose link points *at* the hub: without this it would
-    // read as the hub's parent, which is the same fault the `gross` skip above guards against.
     const [child, parent] = sideOf(s) === "income" ? [s, t] : [t, s];
     kids.set(parent.id, [...(kids.get(parent.id) ?? []), child.id]);
     inward.set(child.id, l.value);
@@ -263,7 +135,6 @@ function outwardOrder(live: Placed[], links: Link[], cols: Cols): Map<string, nu
   // except that the hub's own children are two different things. Categories are money earned and
   // spent; a crossing is money that left the household's cash for an account, and interleaving
   // the two by size reads a mortgage repayment as a spending category. Crossings sink to the
-  // bottom of the fan as one band, the payslip layer's mirror image at the top. The surplus and
   // the deficit stay in the size order they have always had.
   const bandOf = (id: string) => (byId.get(id)!.kind === "crossing" ? 1 : 0);
   for (const list of kids.values()) {
@@ -281,58 +152,6 @@ function outwardOrder(live: Placed[], links: Link[], cols: Cols): Map<string, nu
     inColumn.set(c, [...(inColumn.get(c) ?? []), n.id]);
   }
 
-  /**
-   * The deductions' own top-to-bottom order, decided here rather than inside `layColumn`.
-   *
-   * A destination has to be ordered by the deduction it came from, and the two sit in
-   * different columns — laid on the *same* leftward sweep, with the destination's column
-   * reached first, so by the time the deductions are ordered it is already too late to ask.
-   * Both columns read this instead, which is also what keeps the two bands in step: the
-   * deduction that is second from the top has its account second from the top.
-   */
-  // The gross nodes' own order, for the same reason and with the same problem: their column is
-  // the last one the income sweep reaches, so nothing laid before it can ask where they ended up.
-  // Biggest payslip first.
-  const grossRank = new Map<string, number>();
-  live
-    .filter((n) => n.kind === "gross")
-    .map((n) => n.id)
-    .sort(bigFirst)
-    .forEach((id, i) => grossRank.set(id, i));
-
-  /**
-   * The deductions, grouped by the payslip they were taken from and then by size.
-   *
-   * Grouping first is the rule the category tree already follows, and it matters for the same
-   * reason: ordered by size alone, two earners' sinks interleave, and each earner's ribbons then
-   * have to thread past the other's to reach them. A household's sinks may be *shared* between
-   * earners — one "PAYE" fed by everyone — and no order untangles that, so a shared sink takes
-   * the rank of its earliest contributor and the rest is as good as it gets.
-   */
-  const dedParent = new Map<string, number>();
-  for (const l of links) {
-    if (byId.get(l.source)?.kind === "gross" && byId.get(l.target)?.kind === "deduction") {
-      const r = grossRank.get(l.source) ?? 0;
-      dedParent.set(l.target, Math.min(dedParent.get(l.target) ?? r, r));
-    }
-  }
-  const deductionRank = new Map<string, number>();
-  live
-    .filter((n) => n.kind === "deduction")
-    .map((n) => n.id)
-    .sort(
-      (a, b) => (dedParent.get(a) ?? Infinity) - (dedParent.get(b) ?? Infinity) || bigFirst(a, b),
-    )
-    .forEach((id, i) => deductionRank.set(id, i));
-
-  /** `dest:<account>` → the rank of the `ded:*` it hangs off, for the ordering above. */
-  const destParentRank = new Map<string, number>();
-  for (const l of links) {
-    if (byId.get(l.source)?.kind === "deduction" && byId.get(l.target)?.kind === "account") {
-      destParentRank.set(l.target, deductionRank.get(l.source) ?? 0);
-    }
-  }
-
   const rank = new Map<string, number>();
   function layColumn(c: number, prevIds: string[]): string[] {
     const here = inColumn.get(c) ?? [];
@@ -347,39 +166,9 @@ function outwardOrder(live: Placed[], links: Link[], cols: Cols): Map<string, nu
         }
       }
     };
-    // The payslip layer rides above the income it is taken out of, in every column it touches:
-    // the gross nodes, then their sinks one column right, then the accounts those were routed
-    // into one right again. All three bands have to agree, because a gross node left in the
-    // middle of its column sends its ribbons sweeping up across the whole income tree to reach
-    // sinks pinned to the top of the next one.
-    take(
-      here
-        .filter((id) => byId.get(id)!.kind === "gross")
-        .sort((a, b) => grossRank.get(a)! - grossRank.get(b)!),
-    );
-    // The deductions ride above the income they are taken out of, wherever that column lands —
-    // `columnOf` puts them in the deepest income column normally, but in the hub's own column
-    // when there are no income categories at all.
-    take(
-      here
-        .filter((id) => byId.get(id)!.kind === "deduction")
-        .sort((a, b) => deductionRank.get(a)! - deductionRank.get(b)!),
-    );
-    // And their destination accounts ride directly above the income in the *next* column, in
-    // the same order, so the payslip reads as one band across the top rather than a ribbon
-    // dropped through the middle of the income fan to reach a sink at the bottom.
-    take(
-      here
-        .filter((id) => byId.get(id)!.kind === "account")
-        .sort(
-          (a, b) =>
-            (destParentRank.get(a) ?? Infinity) - (destParentRank.get(b) ?? Infinity) ||
-            (a < b ? -1 : 1),
-        ),
-    );
     // The tree: each parent's children, in the parents' own order.
     for (const p of prevIds) take(kids.get(p) ?? []);
-    // The hub, the gross nodes, and anything with no hub-ward edge. `foldHairlines` takes a
+    // The hub, and anything with no hub-ward edge. `foldHairlines` takes a
     // folded node's whole subtree with it, so this is a safety net rather than a live path.
     take([...here].sort(bigFirst));
     out.forEach((id, i) => rank.set(id, i));
@@ -420,7 +209,7 @@ export const isCatKind = (kind: string) => kind === "income" || kind === "expens
  * carry no side — neither is income or spending, each *is* the difference between them — but
  * each has a half it must be drawn in: the surplus is a sink one column right of the hub, the
  * deficit a source one column left. Reusing one for the other sends a ribbon backwards through
- * the hub, which `routeSpans` would wave through and d3 would draw looping behind it.
+ * the hub, which d3 would draw looping behind it.
  *
  * The `kind` fallback beneath that is for a server older than `side`, and for the layout tests,
  * which write kinds and nothing else.
@@ -431,8 +220,7 @@ const SIDE_BY_KIND: Record<string, "income" | "expense"> = {
   savings: "expense",
   deficit: "income",
 };
-export const sideOf = (n: Pick<Placed, "kind" | "side" | "via">): "income" | "expense" | null => {
-  if (n.kind === "via") return n.via?.side ?? null;
+export const sideOf = (n: Pick<Placed, "kind" | "side">): "income" | "expense" | null => {
   // `SIDE_BY_KIND` first, then the wire's own word — narrowed rather than trusted, because
   // `side` is a plain string there and an unrecognised one has to land on the spine like an
   // unrecognised `kind` does, not be asserted into a column.
@@ -450,16 +238,16 @@ export const pitchOf = (cols: Cols, width: number) =>
  * node whose children are dropped simply becomes a leaf holding their total. The Expand
  * view, being far wider, keeps all of them.
  */
-function fitToWidth(all: Placed[], links: Link[], width: number): Placed[] {
+function fitToWidth(all: Placed[], width: number): Placed[] {
   // Keyed on *having a side*, which is exactly the set `columnOf` places by `(side, level)`.
   // The trimmable set and the side-placed set have to be the same set: if they diverge, a node
   // survives a cap that `columnsOf` has already shrunk the side past, `columnOf` returns a
   // column nobody allocated, and d3 silently clamps two columns into one — the invisible failure
-  // this module's `routeSpans` comment was written about. A depth-0 node (a crossing, the
+  // the column calculation guards against. A depth-0 node (a crossing, the
   // surplus, the deficit) is never trimmed, since `cap >= 0`.
   const keep = (cap: number) => all.filter((n) => sideOf(n) === null || n.level <= cap);
   let cap = all.reduce((m, n) => (sideOf(n) === null ? m : Math.max(m, n.level)), 0);
-  while (cap > 0 && pitchOf(columnsOf(keep(cap), links), width) < MIN_PITCH) cap--;
+  while (cap > 0 && pitchOf(columnsOf(keep(cap)), width) < MIN_PITCH) cap--;
   return keep(cap);
 }
 
@@ -502,17 +290,12 @@ function foldHairlines(nodes: Placed[], links: Link[], available: number): {
     const s = byId.get(l.source);
     const t = byId.get(l.target);
     if (!s || !t) continue;
-    // The pre-income layer never folds: a gross→category link would otherwise be read
-    // backwards as the category's hub-ward edge (clobbering its real value), and ACC
-    // vanishing into "Other (2)" is exactly what an itemised layer must not do.
-    if (s.kind === "gross" || t.kind === "deduction") continue;
     // Which end is the child is "which end is further from the hub", which `sideOf` answers for
     // every kind — including a waypoint, whose own kind says nothing and whose chain's direction
     // says everything.
     const [child, parent] = sideOf(s) === "income" ? [s, t] : [t, s];
     // Only categories fold. A crossing carries an account and a click target, and an itemised
     // perimeter that collapses into "Other (3)" is worse than not drawing it — the same argument
-    // the ACC note above makes for the deduction sinks.
     if (!isCatKind(child.kind)) continue;
     inward.set(child.id, { parent: parent.id, value: l.value });
     const key = groupKey(child.kind, parent.id);
@@ -591,91 +374,6 @@ function foldHairlines(nodes: Placed[], links: Link[], available: number): {
 }
 
 
-/** A link once routing has run: it may be one leg of a chain that stands in for a longer one. */
-export type RoutedLink = Link & {
-  /**
-   * The link this leg came from, when it is one. Every leg of a chain carries the same one, so
-   * the drawing can treat the chain as the single flow it represents — one tooltip, one
-   * highlight, one click target — while the layout sees only single-column hops.
-   */
-  origin?: { source: string; target: string; chain: string };
-};
-
-/**
- * Bend every link that would reach across more than one column so it passes through a waypoint
- * in each column on the way.
- *
- * **This is the fix for two problems that look unrelated and are the same one.**
- *
- * The visible one: `outwardOrder` guarantees planarity by arguing about one gap at a time, so a
- * ribbon spanning two columns is outside the argument entirely and crosses whatever happens to
- * lie in the column it passes through. No ordering of the columns at either end can help it,
- * because the trouble is in the column *between* them.
- *
- * The invisible one, and the worse of the two: d3 sizes the chart at `max(node.depth) + 1`
- * columns, where `depth` is the longest path *in links*. A layering that spans a column without
- * stopping in it needs more columns than the longest path has links — so d3 allocates too few
- * and `computeNodeLayers` **clamps** the overflow, quietly stacking two of our columns into one.
- * Every link between those two then has nowhere to go: it is drawn inside a single column, at
- * zero length, and the ribbons around it cross freely. Measured on 400 generated graphs before
- * this existed, 125 of them had at least one such link and 191 drew a crossing.
- *
- * A waypoint in every column the link passes through fixes both at once: the ordering pass can
- * place it like any other node (it is a child of whatever the chain heads for, which is what
- * `side` records), and the longest path now equals the column count, so nothing is clamped.
- *
- * The waypoints are invisible. Consecutive legs share an endpoint exactly, so the ribbon reads
- * as one — with a brief flattening where it passes through, which is what a Sankey that routes
- * long edges properly looks like.
- */
-function routeSpans(
-  live: Placed[],
-  links: Link[],
-  cols: Cols,
-): { nodes: Placed[]; links: RoutedLink[] } {
-  const byId = new Map(live.map((n) => [n.id, n]));
-  const columnAt = new Map(live.map((n) => [n.id, columnOf(n, cols)]));
-  const extra: Placed[] = [];
-  const out: RoutedLink[] = [];
-
-  for (const l of links) {
-    const s = byId.get(l.source);
-    const t = byId.get(l.target);
-    const from = s ? columnAt.get(s.id)! : 0;
-    const to = t ? columnAt.get(t.id)! : 0;
-    if (!s || !t || to - from <= 1) {
-      out.push(l);
-      continue;
-    }
-    // The chain travels toward the hub on whichever side it ends up; a link that starts left of
-    // the hub and finishes at or before it is an income-side one.
-    const side: "income" | "expense" = to <= cols.center ? "income" : "expense";
-    const chain = `${l.source}->${l.target}`;
-    const origin = { source: l.source, target: l.target, chain };
-    let prev = l.source;
-    for (let c = from + 1; c < to; c++) {
-      const id = `via:${chain}:${c}`;
-      extra.push({
-        id,
-        label: "",
-        kind: "via",
-        // The colour of the node the chain is heading for, so the ribbon does not change
-        // shade as it passes through. `level` is only ever read for colour on a waypoint —
-        // `columnOf` uses `via.column` instead.
-        level: t.level,
-        category_id: null,
-        root_id: t.root_id ?? null,
-        root_color: t.root_color ?? null,
-        via: { column: c, side, colorKind: t.kind },
-      });
-      out.push({ source: prev, target: id, value: l.value, origin });
-      prev = id;
-    }
-    out.push({ source: prev, target: l.target, value: l.value, origin });
-  }
-  return { nodes: [...live, ...extra], links: out };
-}
-
 /** A node once d3 has placed it. `any` because d3-sankey's own types stop at the generic. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type LaidNode = any;
@@ -707,7 +405,7 @@ export function layout(
   const usable = links.filter((l) => l.value > 0);
   if (!nodes.length || !usable.length) return null;
   const available = boxH - MARGIN_TOP - MARGIN_BOTTOM;
-  const depthFitted = fitToWidth(nodes.map(placed), usable, boxW);
+  const depthFitted = fitToWidth(nodes.map(placed), boxW);
   const withinIds = new Set(depthFitted.map((n) => n.id));
   const { nodes: within, links: kept } = foldHairlines(
     depthFitted,
@@ -723,21 +421,17 @@ export function layout(
     connected.add(l.target);
   }
   const connectedNodes = within.filter((n) => connected.has(n.id));
-  // The columns are decided before routing and unchanged by it: a waypoint's kind counts for
-  // nothing in `columnsOf`, and every column it occupies is one some real node's level already
-  // claimed — it is the gap between two of them that was never filled.
-  const cols = columnsOf(connectedNodes, kept);
-  const { nodes: live, links: routed } = routeSpans(connectedNodes, kept, cols);
+  const live = connectedNodes;
+  const cols = columnsOf(live);
   const index = new Map(live.map((n, i) => [n.id, i]));
   // d3 mutates the graph it is handed: it resolves each link's endpoints to the node objects
   // and fills their sourceLinks/targetLinks, so the input cannot be reused or shared.
   const build = () => ({
     nodes: live.map((n) => ({ ...n })),
-    links: routed.map((l) => ({
+    links: kept.map((l) => ({
       source: index.get(l.source)!,
       target: index.get(l.target)!,
       value: l.value,
-      origin: l.origin,
     })),
   });
   const gen = () =>
@@ -751,7 +445,7 @@ export function layout(
         [MARGIN_X, MARGIN_TOP],
         [boxW - MARGIN_X, boxH - MARGIN_BOTTOM],
       ]);
-  const rank = outwardOrder(live, routed, cols);
+  const rank = outwardOrder(live, kept, cols);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const order = (a: any, b: any) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0);
   /**
@@ -766,7 +460,7 @@ export function layout(
    * of getting the *node* order right can prevent.
    *
    * Ranking by the ordering pass instead makes the stack agree with the columns by construction,
-   * and it is well defined precisely because routing has already guaranteed every link spans
+   * and it is well defined precisely because each tree edge spans
    * exactly one column: all of a node's outgoing links land in the same column, so their targets'
    * ranks are comparable, and likewise for incoming. Supplying a comparator also stops d3
    * reordering during relaxation at all, so what is decided here is what is drawn.

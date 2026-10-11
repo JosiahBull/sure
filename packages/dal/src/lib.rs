@@ -38,8 +38,7 @@
 //!   So every nullable column returned by a `RETURNING` clause here that sqlx gets wrong
 //!   carries an explicit `?`: `accounts.person_id`/`secured_by_account_id`,
 //!   `categories.parent_id`, `merchants.category_id`, `rules.set_category_id`/`set_merchant_id`,
-//!   `tax_scales.kiwisaver_govt_income_cap_minor`, and `forecast_assumptions.annual_fee_bps`/
-//!   `annual_fixed_fee_minor`. The annotation is simply true of those columns, so it stays
+//!   and `accounts.excluded_from_net_worth`. The annotation is simply true of those columns, so it stays
 //!   correct (just redundant) if a later sqlx infers them properly — but **re-run the
 //!   cross-check when bumping sqlx**: compare each regenerated `.sqlx/` entry's `nullable`
 //!   flag against `PRAGMA table_info`, because the failure mode is a wrong value, not a
@@ -79,7 +78,6 @@ pub mod currencies;
 pub mod equity;
 pub mod exchange_rates;
 pub mod imports;
-pub mod income;
 pub mod merchants;
 pub mod people;
 pub mod providers;
@@ -90,7 +88,6 @@ pub mod settings;
 pub mod snapshot;
 pub mod stock_prices;
 pub mod store;
-pub mod tax_scales;
 pub mod transactions;
 pub mod valuations;
 
@@ -322,11 +319,6 @@ fn is_in_memory(database_url: &str) -> bool {
 pub async fn migrate(pool: &Db) -> anyhow::Result<()> {
     log_pending(pool).await;
     MIGRATOR.run(pool).await?;
-    // Seeding lives here rather than in an INSERT inside the migration so that
-    // `sure_core::tax`'s constants stay the only place those figures are written down — a second
-    // copy in SQL would be free to drift from the first, silently, forever. It fills an empty table
-    // and never overwrites, so an edited rate survives every future startup.
-    tax_scales::seed(pool).await?;
     Ok(())
 }
 

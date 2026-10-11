@@ -37,7 +37,6 @@ const ROUTES = [
   "/settings/import",
   "/settings/household",
   "/settings/providers",
-  "/settings/tax",
   "/settings/preferences",
   "/settings/appearance",
   "/settings/scheduled",

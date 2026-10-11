@@ -19,15 +19,13 @@ use serde_json::Value;
 use sure_core::{
     Account, AccountEquity, AccountKind, AppResult, BulkUpdate, Category, CategoryKind,
     CategoryNode, Cron, CronRun, CronRunResult, Currency, DividendDetail, EquityExercise,
-    EquityGrant, HoldingLot, HousePricerLink, ImportRecord, ImportSource, IncomePayment,
-    IncomePaymentStatus, IncomeStream, LinkProviderAccount, LinkProviderGroup, LinkRequest,
-    LotKind, MatchedBy, McpMode, Merchant, NewCurrency, NewValuation, Ownership, PayeBreakdown,
-    Person, Provider, ProviderAccount, ProviderKind, ProviderSync, Rule, RuleApplicationDetail,
-    RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron, SaveExercise, SaveGrant,
-    SaveHoldingLot, SaveIncomeStream, SaveMerchant, SavePerson, SaveProvider, SaveRule,
-    SaveTaxScale, SaveTransaction, Settings, StockPrice, StoredTaxScale, SyncOutcome, TaxScaleId,
-    Transaction, TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery,
-    VestingStatus,
+    EquityGrant, HoldingLot, HousePricerLink, ImportRecord, ImportSource, LinkProviderAccount,
+    LinkProviderGroup, LinkRequest, LotKind, McpMode, Merchant, NewCurrency, NewValuation,
+    Ownership, Person, Provider, ProviderAccount, ProviderKind, ProviderSync, Rule,
+    RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
+    SaveExercise, SaveGrant, SaveHoldingLot, SaveMerchant, SavePerson, SaveProvider, SaveRule,
+    SaveTransaction, Settings, StockPrice, SyncOutcome, Transaction, TransferRequest, TxQuery,
+    UpdateSettings, Valuation, ValuationQuery, VestingStatus,
 };
 pub use sure_core::{EquityEvent, EquityMark, RebuildResult, SaveMark};
 
@@ -1026,12 +1024,6 @@ pub trait ReportRepo: Send + Sync {
     /// `None` means the whole table.
     async fn valuations(&self, from: Option<NaiveDate>) -> AppResult<Vec<LedgerValuation>>;
     async fn categories(&self) -> AppResult<Vec<ReportCategory>>;
-    /// Every matched/confirmed income payment with a live transaction and a stored
-    /// decomposition — unwindowed; the sankey filters by the transaction ids it actually kept,
-    /// so date, attribution and one-off rules apply in exactly one place. On this port rather
-    /// than `IncomeRepo` because the report is its only reader, exactly like the rest of the
-    /// cross-table read queries here.
-    async fn matched_income_payments(&self) -> AppResult<Vec<MatchedIncomePayment>>;
     /// Transactions posted within `from ..= to`. A plain window: the spend reports total the
     /// movements inside the period and never look outside it. Implementations may return a
     /// superset — `sure_app::reports::load_spend` re-checks every parsed date.
@@ -1238,164 +1230,6 @@ pub trait CronRepo: Send + Sync {
     async fn run_one(&self, id: i64, to: Option<&str>) -> AppResult<CronRunResult>;
     async fn run_all(&self, to: Option<&str>) -> AppResult<CronRunResult>;
     async fn undo_run(&self, run_id: i64) -> AppResult<()>;
-}
-
-/// One matched income payment as a report consumes it: the reconstructed decomposition plus who
-/// earned it. Joined through the *live* transaction row on the DAL side, so a payment whose
-/// transaction was deleted (an undone import) is absent by construction, never ghost income.
-#[derive(Debug, Clone)]
-pub struct MatchedIncomePayment {
-    pub income_stream_id: i64,
-    pub stream_label: String,
-    /// `None` for a stream the household earns jointly, which has no person row to join to.
-    pub person_id: Option<i64>,
-    /// For the gross node's label — resolved in the same join, so the report needs no second
-    /// lookup. Absent exactly when `person_id` is.
-    pub person_name: Option<String>,
-    pub transaction_id: i64,
-    /// This stream's slice of the deposit; slices of a shared deposit sum to it.
-    pub observed_net_minor: i64,
-    pub gross_minor: i64,
-    pub income_tax_minor: i64,
-    pub acc_levy_minor: i64,
-    pub kiwisaver_minor: i64,
-    pub student_loan_minor: i64,
-    /// The accounts this stream's KiwiSaver contributions and student-loan repayments land in,
-    /// with the name to label them by — `None` when the stream names no account, which is what
-    /// keeps the deduction a terminal sink instead of routing it somewhere invented. Resolved in
-    /// the same join as the person, so the report needs no second lookup.
-    pub kiwisaver_account: Option<DeductionDestination>,
-    pub student_loan_account: Option<DeductionDestination>,
-}
-
-/// An account a payroll deduction lands in, as the sankey's pre-income layer labels it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeductionDestination {
-    pub account_id: i64,
-    pub name: String,
-}
-
-/// Per-person income: the streams someone earns, the tax scales that price them, and the
-/// materialized payments matching each expected payday to the deposit that satisfied it.
-///
-/// Extracted from `ForecastRepo` the day the trigger its comment named arrived: a household
-/// income *report* (the sankey's pre-income layer) and the payment matcher both read these, and
-/// neither has any business depending on assumptions, events and dividends.
-#[async_trait]
-pub trait IncomeRepo: Send + Sync {
-    /// Every stream with its dated pay-scale steps attached, by person then sort order.
-    async fn list_income_streams(&self) -> AppResult<Vec<IncomeStream>>;
-    async fn get_income_stream(&self, id: i64) -> AppResult<IncomeStream>;
-    /// Create the stream and its whole step schedule in one transaction.
-    async fn create_income_stream(
-        &self,
-        owner: sure_core::Ownership,
-        input: SaveIncomeStream,
-    ) -> AppResult<IncomeStream>;
-    /// Full replace, steps included — a step omitted from `input` is deleted.
-    async fn update_income_stream(
-        &self,
-        id: i64,
-        input: SaveIncomeStream,
-    ) -> AppResult<IncomeStream>;
-    /// Refused with a conflict naming the forecast changes whose effects target it.
-    async fn delete_income_stream(&self, id: i64) -> AppResult<()>;
-
-    /// Every stored tax scale, oldest first.
-    ///
-    /// The forecast reads these rather than `sure_core::tax`'s constants, which are now only a seed
-    /// and a fallback — otherwise editing a rate in settings would change nothing, which is the
-    /// whole point of storing them.
-    async fn list_tax_scales(&self) -> AppResult<Vec<StoredTaxScale>>;
-    async fn create_tax_scale(
-        &self,
-        scale_id: TaxScaleId,
-        input: SaveTaxScale,
-    ) -> AppResult<StoredTaxScale>;
-    async fn update_tax_scale(&self, id: i64, input: SaveTaxScale) -> AppResult<StoredTaxScale>;
-    /// Refused when it is the last one: an empty table taxes every gross salary at nothing.
-    async fn delete_tax_scale(&self, id: i64) -> AppResult<()>;
-    /// Throw the stored scales away and re-seed from the built-in figures.
-    async fn restore_tax_scales(&self) -> AppResult<Vec<StoredTaxScale>>;
-
-    /// Money *into* an account since `from`, for finding a salary already in the ledger — the
-    /// detector's evidence and the matcher's candidate pool.
-    ///
-    /// One narrow method here rather than a dependency on the whole `TransactionRepo`: both
-    /// callers want one query, and taking the twelve-method port for it would make every test
-    /// fake carry eleven `unreachable!()`s that say nothing.
-    async fn income_transactions(
-        &self,
-        from: &str,
-        account_id: Option<i64>,
-    ) -> AppResult<Vec<Transaction>>;
-
-    // ---- materialized payments ------------------------------------------------------
-    //
-    // One row per (stream, due date), unique — the `cron_runs` idempotence shape — claiming at
-    // most one transaction each; several rows may share a transaction (a bonus paid inside the
-    // salary run). The matcher owns the arithmetic; these methods store and retrieve it.
-
-    /// Payments, newest first, with every filter optional.
-    async fn list_income_payments(
-        &self,
-        from: Option<&str>,
-        to: Option<&str>,
-        person_id: Option<i64>,
-        status: Option<IncomePaymentStatus>,
-    ) -> AppResult<Vec<IncomePayment>>;
-    async fn get_income_payment(&self, id: i64) -> AppResult<IncomePayment>;
-    /// Ensure an `expected` row exists for `(stream, due_on)`, refreshing its predicted net;
-    /// settled rows are never touched, which is what makes regeneration idempotent.
-    async fn upsert_expected_payment(
-        &self,
-        stream_id: i64,
-        due_on: &str,
-        expected_net_minor: i64,
-    ) -> AppResult<()>;
-    /// The `expected` due dates of one stream — what regeneration diffs against the current
-    /// schedule to find strays after an edit.
-    async fn expected_payment_due_ons(&self, stream_id: i64) -> AppResult<Vec<String>>;
-    /// Delete one stray `expected` row; guarded on status so a race cannot delete history.
-    async fn delete_expected_payment(&self, stream_id: i64, due_on: &str) -> AppResult<()>;
-    /// Create a payment for a variable stream's deposit — see
-    /// `sure_dal::income::record_variable_match`. `Conflict` when a different deposit already
-    /// holds that stream's date.
-    async fn record_variable_match(
-        &self,
-        stream_id: i64,
-        due_on: &str,
-        transaction_id: i64,
-        observed_net_minor: i64,
-        breakdown: &PayeBreakdown,
-    ) -> AppResult<()>;
-    /// Claim a transaction for `(stream, due_on)` with its observed slice and reconstructed
-    /// decomposition.
-    #[allow(clippy::too_many_arguments)] // one write, one row — a struct would just move the field list
-    async fn record_payment_match(
-        &self,
-        stream_id: i64,
-        due_on: &str,
-        transaction_id: i64,
-        matched_by: MatchedBy,
-        status: IncomePaymentStatus,
-        observed_net_minor: i64,
-        breakdown: &PayeBreakdown,
-    ) -> AppResult<IncomePayment>;
-    /// Undo a match: back to `expected`, decomposition cleared, the transaction released.
-    async fn unlink_income_payment(&self, id: i64) -> AppResult<IncomePayment>;
-    /// Move a payment between the human-owned statuses; the matcher never calls this.
-    async fn set_income_payment_status(
-        &self,
-        id: i64,
-        status: IncomePaymentStatus,
-    ) -> AppResult<IncomePayment>;
-    /// Reset matches whose claimed transaction is gone (an undone import); returns the count.
-    async fn reset_orphaned_payments(&self) -> AppResult<u64>;
-    /// Transaction ids already claimed by any live match — the matcher's exclusion list.
-    async fn claimed_transaction_ids(&self) -> AppResult<Vec<i64>>;
-    /// The latest settled (non-`expected`) due date of a stream, where regeneration resumes.
-    async fn latest_settled_due_on(&self, stream_id: i64) -> AppResult<Option<String>>;
 }
 
 /// The config export/import blob is treated as opaque JSON at this boundary — its shape

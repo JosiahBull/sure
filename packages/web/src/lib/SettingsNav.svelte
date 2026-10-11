@@ -9,7 +9,6 @@
         { path: "/settings/import", label: "Import" },
         { path: "/settings/household", label: "Household" },
         { path: "/settings/providers", label: "Bank sync" },
-        { path: "/settings/tax", label: "Tax rates" },
       { path: "/settings/preferences", label: "Preferences" },
         { path: "/settings/appearance", label: "Appearance" },
         { path: "/settings/scheduled", label: "Scheduled adjustments" },

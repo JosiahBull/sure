@@ -21,11 +21,11 @@ async function goto(page: Page, route: string) {
 /** The hash, without the origin — what a shared link would actually carry. */
 const hash = (page: Page) => page.url().split("#")[1] ?? "";
 
-test("a visit with nothing selected starts on last month, and says nothing in the URL", async ({
+test("a visit with nothing selected starts on the last three complete months, and says nothing in the URL", async ({
   page,
 }) => {
   await goto(page, "/");
-  await expect(page.locator(RANGE)).toHaveValue("last_month");
+  await expect(page.locator(RANGE)).toHaveValue("last_3m");
   // The default is left out: a parameter that names the value you would have got by saying
   // nothing makes every plain link longer and reads as a choice nobody made.
   expect(hash(page)).toBe("/");
@@ -53,7 +53,7 @@ test("a period in the URL is adopted on arrival", async ({ page }) => {
 
 test("going back to the default takes the parameter out again", async ({ page }) => {
   await goto(page, "/?range=ytd");
-  await page.selectOption(RANGE, "last_month");
+  await page.selectOption(RANGE, "last_3m");
   await expect.poll(() => hash(page)).toBe("/");
 });
 
@@ -108,3 +108,19 @@ test("a brushed window round-trips as start and end", async ({ page }) => {
   await expect.poll(() => hash(page)).not.toContain("start=");
   await expect.poll(() => hash(page)).not.toContain("end=");
 });
+
+for (const [today, from, to] of [
+  ["2026-10-11T00:00:00Z", "2026-07-01", "2026-09-30"],
+  ["2026-01-31T00:00:00Z", "2025-10-01", "2025-12-31"],
+  ["2024-03-01T00:00:00Z", "2023-12-01", "2024-02-29"],
+]) {
+  test(`last three months excludes the partial month on ${today}`, async ({ page }) => {
+    await page.clock.setFixedTime(new Date(today));
+    const request = page.waitForRequest((r) => new URL(r.url()).pathname === "/api/reports/sankey");
+    await goto(page, "/");
+    const query = new URL((await request).url()).searchParams;
+    expect(query.get("from")).toBe(from);
+    expect(query.get("to")).toBe(to);
+    expect(query.get("include_one_off")).toBe("true");
+  });
+}

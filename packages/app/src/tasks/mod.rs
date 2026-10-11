@@ -4,7 +4,6 @@
 pub mod balance_delta;
 pub mod equity_rebuild;
 pub mod exchange_rates;
-pub mod income_match;
 pub mod property_estimates;
 pub mod provider_poll;
 pub mod transfer_link;
@@ -33,7 +32,6 @@ pub enum BackgroundTask {
     /// Pairs the two legs of an internal transfer. Local.
     TransferLink,
     /// Matches expected pays against the deposits that satisfied them. Local.
-    IncomeMatch,
     /// Rewrites an equity account's valuation history from its grants and price ledger. Local.
     EquityRebuild,
 }
@@ -47,7 +45,6 @@ impl BackgroundTask {
             BackgroundTask::StockPricePoll => "stock_price_poll",
             BackgroundTask::PropertyEstimatePoll => "property_estimate_poll",
             BackgroundTask::TransferLink => "transfer_link",
-            BackgroundTask::IncomeMatch => "income_match",
             BackgroundTask::EquityRebuild => "equity_rebuild",
         }
     }
@@ -61,7 +58,6 @@ impl BackgroundTask {
         match self {
             BackgroundTask::BalanceDelta
             | BackgroundTask::TransferLink
-            | BackgroundTask::IncomeMatch
             | BackgroundTask::EquityRebuild => true,
             BackgroundTask::ExchangeRatePoll
             | BackgroundTask::ProviderPoll
@@ -108,12 +104,9 @@ impl TaskNudge {
 /// transaction table and derives something from it, and all three are local, so running them
 /// again costs queries rather than anyone's rate limit. Ordered the way the scheduler registers
 /// them — the transfer linker first, so a payroll credit wrongly paired as a transfer is settled
-/// before the income matcher looks at it.
-pub const LEDGER_CHANGED: &[BackgroundTask] = &[
-    BackgroundTask::TransferLink,
-    BackgroundTask::BalanceDelta,
-    BackgroundTask::IncomeMatch,
-];
+/// before the next report reads it.
+pub const LEDGER_CHANGED: &[BackgroundTask] =
+    &[BackgroundTask::TransferLink, BackgroundTask::BalanceDelta];
 
 #[cfg(test)]
 mod tests {
@@ -134,7 +127,6 @@ mod tests {
                 "property_estimate_poll",
             ),
             (BackgroundTask::TransferLink, "transfer_link"),
-            (BackgroundTask::IncomeMatch, "income_match"),
             (BackgroundTask::EquityRebuild, "equity_rebuild"),
         ] {
             assert_eq!(task.as_str(), expected);

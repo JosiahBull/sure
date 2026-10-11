@@ -13,14 +13,17 @@ use std::sync::Arc;
 use chrono::{Datelike, NaiveDate};
 
 use sure_core::{
-    AccountClass, AccountKind, AppError, AppResult, CategoryKind, FlowBasis, GroupBy, Interval,
-    Ownership,
+    AccountClass, AccountKind, AppError, AppResult, CategoryKind, GroupBy, Interval, Ownership,
 };
 
 use crate::fx::Fx;
-use crate::ports::{
-    AccountCurrency, Clock, FxRatesRepo, MatchedIncomePayment, ReportRepo, SpendTransaction,
-};
+use crate::ports::{AccountCurrency, Clock, FxRatesRepo, ReportRepo, SpendTransaction};
+
+#[derive(Clone, Copy)]
+enum FlowBasis {
+    Cash,
+    Spending,
+}
 
 // ---- query params --------------------------------------------------------
 
@@ -38,11 +41,6 @@ pub struct ReportQuery {
     /// transaction's *effective* attribution — its own override, else its account's owner.
     /// `None` reports the whole household, which stays the default everywhere.
     pub attributed_to: Option<Ownership>,
-    /// Which question the money-flow graph answers; defaults to [`FlowBasis::Cash`]. Parsed at
-    /// the HTTP edge (`sure-api`'s `routes::reports`), so an unrecognised value never reaches
-    /// here. Read only by the sankey — the pies and `spend_by` are a spending view by
-    /// definition and stay on [`FlowBasis::Spending`].
-    pub basis: Option<FlowBasis>,
 }
 
 #[derive(Debug, Default)]
@@ -147,27 +145,6 @@ pub enum SankeyNodeKind {
     Center,
     Expense,
     Savings,
-    /// A person's reconstructed gross pay — the pre-income layer's source, one node per
-    /// earner, feeding the deduction sinks and the income categories their take-home lands in.
-    Gross,
-    /// A statutory deduction sink (PAYE, ACC, KiwiSaver, student loan): money that left the
-    /// payslip before the bank ever saw it, which is why it can only come from reconstruction
-    /// and never from a transaction.
-    Deduction,
-    /// A balance-sheet account outside the cash perimeter, drawn as one node however many
-    /// things reach it.
-    ///
-    /// Two quite different arrows can end here and they belong on one node, because they are one
-    /// account. A *deduction destination*: a student loan being repaid
-    /// ([`sure_core::IncomeStream::student_loan_account_id`]) or a KiwiSaver fund being added to
-    /// ([`sure_core::IncomeStream::kiwisaver_account_id`]) — money already counted once, in the
-    /// sink it came from, so it is a destination rather than a second flow. And a *crossing*
-    /// ([`SankeyNodeKind::Crossing`]'s job on the cash basis) — cash that genuinely left or
-    /// entered the household for that account. A student loan is routinely both at once: PAYE
-    /// repayments the bank never saw, and living-cost drawdowns that arrive as spendable money.
-    ///
-    /// PAYE and the ACC levy have no such node: that money genuinely leaves the household.
-    Account,
     /// Cash crossing the perimeter for an account that is not cash — a mortgage principal
     /// repayment, a loan drawdown, money in or out of a brokerage.
     ///
@@ -192,9 +169,6 @@ impl SankeyNodeKind {
             SankeyNodeKind::Center => "center",
             SankeyNodeKind::Expense => "expense",
             SankeyNodeKind::Savings => "savings",
-            SankeyNodeKind::Gross => "gross",
-            SankeyNodeKind::Deduction => "deduction",
-            SankeyNodeKind::Account => "account",
             SankeyNodeKind::Crossing => "crossing",
             SankeyNodeKind::Deficit => "deficit",
         }
@@ -239,11 +213,10 @@ pub struct SankeyNode {
     /// For a category the kind already said so, and the client derived the side from it. A
     /// crossing broke that: a mortgage repayment is an outflow and a loan drawdown an inflow,
     /// and both are `Crossing`. So the side is stated rather than inferred, for every node that
-    /// has one. `None` for the hub, the surplus/deficit and the pre-income layer, which sit on
+    /// has one. `None` for the hub, the surplus/deficit, which sit on
     /// the spine or in their own band.
     pub side: Option<FlowSide>,
-    /// The balance-sheet account this node stands for, for a crossing or a deduction
-    /// destination. `None` everywhere else. A client can open the account's transactions from
+    /// The balance-sheet account this node stands for, for a cash movement. `None` everywhere else. A client can open the account's transactions from
     /// it, the way `category_id` opens a category's.
     pub account_id: Option<i64>,
 }
@@ -256,10 +229,18 @@ pub struct SankeyLink {
 }
 
 #[derive(Debug)]
+pub struct CashflowMonth {
+    pub month: String,
+    pub inflow_minor: i64,
+    pub outflow_minor: i64,
+}
+
+#[derive(Debug)]
 pub struct SankeyGraph {
     pub currency: String,
     pub nodes: Vec<SankeyNode>,
     pub links: Vec<SankeyLink>,
+    pub months: Vec<CashflowMonth>,
     /// Currencies with no rate to `currency`; their transactions are left out of the graph
     /// rather than drawn at parity.
     ///
@@ -335,10 +316,6 @@ pub struct EquityPosition {
 /// rather than erroring, and a client typo is its own visible symptom (the window it asked
 /// for isn't the window it got). Leading-10 truncation is deliberate here so a UI that sends
 /// a full datetime still bounds correctly.
-pub(crate) fn parse_date_pub(s: &str) -> Option<NaiveDate> {
-    parse_date(s)
-}
-
 pub(crate) fn parse_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s.get(0..10).unwrap_or(s), "%Y-%m-%d").ok()
 }
@@ -431,10 +408,6 @@ pub(crate) fn sum_minor(
     amounts: impl Iterator<Item = i64>,
 ) -> i64 {
     narrow_minor(what, account_id, amounts.map(i128::from).sum::<i128>())
-}
-
-pub(crate) fn last_day_of_month_pub(year: i32, month: u32) -> NaiveDate {
-    last_day_of_month(year, month)
 }
 
 pub(crate) fn last_day_of_month(y: i32, m: u32) -> NaiveDate {
@@ -854,10 +827,8 @@ fn keeps(basis: FlowBasis, t: &SpendTransaction, cats: &Categories) -> bool {
             }
             true
         }
-        // Cash and net worth read the same rows: the perimeter decides, and a category never
-        // does. They part company at *emission*, where net worth keeps only the part of a
-        // crossing that bought nothing — see `emit_crossings`.
-        FlowBasis::Cash | FlowBasis::NetWorth => {
+        // Cashflow follows the liquid-account perimeter, regardless of category.
+        FlowBasis::Cash => {
             // Only the household's liquid money moves cash. A row *on* an instrument account is
             // either the far leg of a crossing, which is counted once on the perimeter side, or
             // the instrument's own bookkeeping — and nothing is lost by dropping the latter,
@@ -882,7 +853,7 @@ fn keeps(basis: FlowBasis, t: &SpendTransaction, cats: &Categories) -> bool {
 ///
 /// Attribution, the one-off switch and the window apply on both bases; what differs is which
 /// movements count at all — see [`keeps`].
-pub(crate) async fn load_spend(
+async fn load_spend(
     reports: &dyn ReportRepo,
     cats: &Categories,
     basis: FlowBasis,
@@ -891,78 +862,14 @@ pub(crate) async fn load_spend(
     include_one_off: bool,
     attributed_to: Option<Ownership>,
 ) -> AppResult<Vec<SpendTransaction>> {
-    Ok(load_flow(
-        reports,
-        cats,
-        basis,
-        from,
-        to,
-        include_one_off,
-        attributed_to,
-    )
-    .await?
-    .spend)
-}
-
-/// A non-perimeter account's own movement in the window, still in the currency it was written
-/// in — converting is the compute half's job, where the rate table is.
-#[derive(Debug, Clone)]
-pub struct LedgerMovement {
-    pub account_id: i64,
-    pub amount_minor: i64,
-    pub currency_code: String,
-}
-
-/// What a money-flow report reads: the rows that survived the basis, and what the cash which
-/// left the perimeter *did* once it arrived.
-pub struct FlowRows {
-    pub spend: Vec<SpendTransaction>,
-    /// Every row posted on an account outside the perimeter, which is the far side's own
-    /// account of itself. Summed per account it answers "of the $1,397.32 that went to the
-    /// mortgage, how much came off the balance" — and the rest is what the money bought
-    /// instead, which for a loan is the interest.
-    ///
-    /// Deliberately *not* filtered by [`keeps`]: these rows are excluded from the flow side
-    /// precisely so nothing is counted twice, and they are read here for a different purpose.
-    /// One-offs are excluded though — a drawdown that opened the account is not a movement of
-    /// the money being reported on.
-    pub ledger: Vec<LedgerMovement>,
-}
-
-/// Load a window once and split it into the two things a flow report needs.
-///
-/// The window goes to SQL as well as staying in the filter below: the repo is only asked for a
-/// superset (its bounds are inclusive of whole days and blind to a date it can't compare), and
-/// the per-row check here is what decides. So the surviving set is exactly what it was when this
-/// loaded the whole table — including a row whose stored date won't parse, which is dropped here
-/// as it always was.
-pub(crate) async fn load_flow(
-    reports: &dyn ReportRepo,
-    cats: &Categories,
-    basis: FlowBasis,
-    from: NaiveDate,
-    to: NaiveDate,
-    include_one_off: bool,
-    attributed_to: Option<Ownership>,
-) -> AppResult<FlowRows> {
     let rows = reports.spend_transactions(from, to).await?;
     let mut spend = Vec::new();
-    let mut ledger = Vec::new();
     for t in rows {
         if !in_window(&t, from, to) {
             continue;
         }
         if !include_one_off && t.is_one_off {
             continue;
-        }
-        if !t.account_kind.in_cash_perimeter() {
-            ledger.push(LedgerMovement {
-                account_id: t.account_id,
-                amount_minor: t.amount_minor,
-                currency_code: t.currency_code.clone(),
-            });
-            // Falls through: `keeps` decides separately whether it also belongs on the flow
-            // side, and on the cash basis it never does.
         }
         // Whose spending this is was resolved by the loader (override, else account).
         if attributed_to.is_some_and(|owner| t.attribution != owner) {
@@ -972,7 +879,7 @@ pub(crate) async fn load_flow(
             spend.push(t);
         }
     }
-    Ok(FlowRows { spend, ledger })
+    Ok(spend)
 }
 
 fn in_window(t: &SpendTransaction, from: NaiveDate, to: NaiveDate) -> bool {
@@ -1222,503 +1129,47 @@ fn crossing_of(t: &SpendTransaction) -> Option<(i64, &str, AccountKind)> {
 /// happens at emission — the same bargain [`FlowForest`] makes.
 type Crossings = BTreeMap<i64, (String, AccountKind, f64)>;
 
-/// What the hub is, on this basis.
-///
-/// The spine is the same node either way, but it stands for different things: on the cash basis
-/// every ribbon through it is money the household could actually get at, and on the net-worth one
-/// it is what they are worth. Naming it is most of what stops the two being confused.
-fn hub_label(basis: FlowBasis) -> &'static str {
-    match basis {
-        FlowBasis::Cash | FlowBasis::Spending => "Cash flow",
-        FlowBasis::NetWorth => "Net worth",
-    }
-}
-
-/// What the leftover is called when the two sides do not cancel: (surplus, shortfall).
-///
-/// On the cash basis it is money that piled up or was drawn down. On the net-worth basis nothing
-/// piled up anywhere — the household is simply worth more or less than it was.
-fn balance_labels(basis: FlowBasis) -> (&'static str, &'static str) {
-    match basis {
-        FlowBasis::Cash | FlowBasis::Spending => ("Savings", "Drawn from reserves"),
-        FlowBasis::NetWorth => ("Better off", "Worse off"),
-    }
-}
-
-/// What a crossing's two halves are called, for an account of this class.
-///
-/// The split is the same arithmetic whatever the account is — cash that arrived, less what it
-/// did to the balance — but the halves only mean something under a name, and the name depends on
-/// what was on the other end. Exhaustive (rule 2): a new class has to be given words here rather
-/// than inheriting somebody else's.
-fn split_labels(class: AccountClass) -> (&'static str, &'static str) {
-    match class {
-        // The case this exists for: part of a mortgage payment retires debt, and the rest is
-        // what the bank charged for the privilege.
-        AccountClass::Liability => ("Interest", "Principal"),
-        AccountClass::Investment => ("Fees", "Invested"),
-        // A crossing to a *cash* account is internal movement, which `keeps` has already
-        // dropped — so that arm is unreachable today, and shares the asset wording rather than
-        // inventing a third pair for a case that cannot arrive.
-        AccountClass::Asset | AccountClass::Cash => ("Costs", "Value"),
-    }
-}
-
-/// Emit one node per account the household moved cash to or from, adjacent to the hub.
-///
-/// Flat, unlike the category side: an account has no hierarchy to fan out into, so every
-/// crossing is a depth-0 node hanging directly off the hub. Returns the side's total in minor
-/// units, which the caller adds to the category roll-up's before working out the surplus.
-///
-/// Ordered biggest-first with a label tiebreak, for the reason [`flow_order`] documents: the map
-/// is ordered by account id, which would sort the mortgage above the brokerage purely because it
-/// was created first, and d3 seeds its vertical layout from node order.
-#[allow(clippy::too_many_arguments)] // every sankey emission helper has this shape
+/// Emit the full cash movement to or from each non-cash account, once.
 fn emit_crossings(
     crossings: &Crossings,
     side: FlowSide,
-    basis: FlowBasis,
-    ledger_major: &HashMap<i64, f64>,
     fx: &Fx,
     nodes: &mut Vec<SankeyNode>,
     links: &mut Vec<SankeyLink>,
 ) -> i64 {
-    // What a crossing draws, which is the one place the two bases genuinely disagree.
-    //
-    // On the cash basis it is the whole movement — that money really did leave the accounts —
-    // split into what it bought and what it cost. On the net-worth basis only the *cost* is
-    // drawn: a principal repayment buys equity, a drawdown is borrowed and a sale turns one asset
-    // into another, so none of them moves the household's worth, while the interest beside them
-    // is gone for good.
-    let drawn = |account_id: i64, name: &str, kind: AccountKind, cash_major: f64| match basis {
-        FlowBasis::Cash | FlowBasis::Spending => {
-            let minor = fx.base_minor(cash_major);
-            (minor > 0).then(|| (minor, name.to_string()))
-        }
-        FlowBasis::NetWorth => {
-            // An outflow only. A negative residue means the balance moved further than the cash
-            // explains — a revaluation, which this basis does not model yet and will not guess
-            // at, so it is left out rather than drawn as a gain nothing measured.
-            if side != FlowSide::Expense {
-                return None;
-            }
-            let minor = fx.base_minor(crossing_cost(account_id, side, cash_major, ledger_major));
-            // The cost word first, the account second. Both matter, but a card-width column clips
-            // the tail — and "Interest — Ho…" still tells a reader what they are looking at
-            // where "Home Loan — in…" does not.
-            let (cost_label, _) = split_labels(kind.class());
-            (minor > 0).then(|| (minor, format!("{cost_label} — {name}")))
-        }
-    };
-
-    let mut emitted: Vec<(i64, AccountKind, String, f64, i64)> = crossings
+    let mut emitted: Vec<_> = crossings
         .iter()
-        .filter_map(|(id, (name, kind, major))| {
-            drawn(*id, name, *kind, *major).map(|(minor, label)| (*id, *kind, label, *major, minor))
+        .filter_map(|(id, (name, _, major))| {
+            let minor = fx.base_minor(*major);
+            (minor > 0).then_some((*id, name, minor))
         })
         .collect();
     emitted.sort_by(|a, b| {
-        b.4.cmp(&a.4)
-            .then_with(|| a.2.cmp(&b.2))
+        b.2.cmp(&a.2)
+            .then_with(|| a.1.cmp(b.1))
             .then_with(|| a.0.cmp(&b.0))
     });
-
     sum_minor(
-        "sankey: side total across perimeter crossings",
+        "sankey: account cash movements",
         None,
-        emitted
-            .into_iter()
-            .map(|(account_id, kind, label, cash_major, minor)| {
-                let node_id = account_node_id(account_id);
-                nodes.push(SankeyNode {
-                    id: node_id.clone(),
-                    label,
-                    kind: SankeyNodeKind::Crossing,
-                    category_id: None,
-                    // Level with the top-level categories: a crossing is one of the things money
-                    // went to, not a subdivision of one.
-                    depth: Some(0),
-                    root_id: None,
-                    root_color: None,
-                    side: Some(side),
-                    account_id: Some(account_id),
-                });
-                links.push(side.link(node_id.clone(), CENTER, minor));
-                // Only the cash basis has two halves to show; on net worth the node *is* the
-                // cost, so splitting it would draw one figure twice.
-                if basis != FlowBasis::NetWorth {
-                    emit_crossing_split(
-                        account_id,
-                        kind,
-                        side,
-                        cash_major,
-                        minor,
-                        ledger_major,
-                        &node_id,
-                        fx,
-                        nodes,
-                        links,
-                    );
-                }
-                minor
-            }),
-    )
-}
-
-/// Of the cash that reached this account, how much bought nothing.
-///
-/// `cash_in` is signed against the side — money leaving the perimeter is positive and money
-/// arriving is negative — so a drawdown and a repayment inside one window net against each other
-/// rather than each looking like a cost of its own. Whatever the account's own ledger does not
-/// account for is what the money was spent on: for a loan, exactly the interest.
-fn crossing_cost(
-    account_id: i64,
-    side: FlowSide,
-    cash_major: f64,
-    ledger_major: &HashMap<i64, f64>,
-) -> f64 {
-    let signed_cash = match side {
-        FlowSide::Expense => cash_major,
-        FlowSide::Income => -cash_major,
-    };
-    signed_cash - ledger_major.get(&account_id).copied().unwrap_or(0.0)
-}
-
-/// Split a crossing into what it bought and what it cost, where the two differ.
-///
-/// The arithmetic is `cost = cash_in − ledger`: of the cash that reached this account, whatever
-/// did not move its balance bought something else. For a mortgage that residue is exactly the
-/// interest — a $1,397.32 payment against a $446.07 fall in the balance is $951.25 of interest,
-/// and no schedule, rate or memo had to be read to say so. Where the ledger already accounts for
-/// every cent (a brokerage settling its own wallet, a loan drawdown) the residue is zero and
-/// nothing is drawn.
-///
-/// Nothing is drawn unless *both* halves round to something. A split with a zero half says only
-/// what the crossing already said, at the price of a node.
-#[allow(clippy::too_many_arguments)] // every sankey emission helper has this shape
-fn emit_crossing_split(
-    account_id: i64,
-    kind: AccountKind,
-    side: FlowSide,
-    cash_major: f64,
-    cash_minor: i64,
-    ledger_major: &HashMap<i64, f64>,
-    node_id: &str,
-    fx: &Fx,
-    nodes: &mut Vec<SankeyNode>,
-    links: &mut Vec<SankeyLink>,
-) {
-    let cost_minor = fx.base_minor(crossing_cost(account_id, side, cash_major, ledger_major));
-    // Taken from the already-rounded parent rather than rounded on its own, so the two children
-    // are exactly the ribbon above them and d3 is not handed a third figure to reconcile.
-    let rest_minor = cash_minor - cost_minor;
-    if cost_minor <= 0 || rest_minor <= 0 {
-        return;
-    }
-    let (cost_label, rest_label) = split_labels(kind.class());
-    for (suffix, label, value) in [
-        ("cost", cost_label, cost_minor),
-        ("rest", rest_label, rest_minor),
-    ] {
-        let id = format!("{node_id}:{suffix}");
-        nodes.push(SankeyNode {
-            id: id.clone(),
-            label: label.to_string(),
-            kind: SankeyNodeKind::Crossing,
-            category_id: None,
-            // A child of the crossing, so it sits one column further out — exactly where a
-            // category's children sit.
-            depth: Some(1),
-            root_id: None,
-            root_color: None,
-            side: Some(side),
-            // No `account_id`: the halves are a reading of the account, not a second way to open
-            // it, and two clickable nodes for one account would be a puzzle.
-            account_id: None,
-        });
-        links.push(side.link(id, node_id, value));
-    }
-}
-
-/// The pre-income layer: the reconstructed payslips behind the deposits the matcher claimed.
-///
-/// **Additive.** The income forest still carries every deposit — category totals and the hub
-/// balance are exactly what they were — and this layer draws where each matched deposit's money
-/// was *before* the bank saw it: a gross node per earner fanning into the four statutory
-/// deduction sinks, with the take-home flowing into the category node the deposit already
-/// occupies (which also hands d3 a real upstream edge, extending the longest path — a
-/// deduction sink alone would not). Replacing the observed flow instead would force this
-/// modelled layer to balance the ledger, and the two only agree to the cent because the
-/// reconstruction is *defined* per slice; across FX conversion and independent rounding they
-/// would not.
-///
-/// Keyed by the spend rows that survived [`load_spend`] and the FX gate, so the window,
-/// attribution and one-off rules apply in exactly one place. A payment whose deposit fell to
-/// any of those filters contributes nothing here — including its gross.
-#[allow(clippy::too_many_arguments)] // the sankey emission helpers all share this shape
-fn emit_pre_income(
-    spend: &[SpendTransaction],
-    payments: &[MatchedIncomePayment],
-    cats: &Categories,
-    fx: &Fx,
-    nodes: &mut Vec<SankeyNode>,
-    links: &mut Vec<SankeyLink>,
-) {
-    if payments.is_empty() {
-        return;
-    }
-    let mut by_tx: HashMap<i64, Vec<&MatchedIncomePayment>> = HashMap::new();
-    for p in payments {
-        by_tx.entry(p.transaction_id).or_default().push(p);
-    }
-
-    /// One earner's accumulated flows, in base-currency major units — minor once, at emission,
-    /// like the forest.
-    ///
-    /// KiwiSaver and the student loan are kept *by destination* rather than as one figure
-    /// each, because the account is a property of the stream: someone with two jobs paying
-    /// into two funds is two flows, and rolling them up would have to pick one to name. The
-    /// `None` key is a stream that names no account, whose deduction stays a terminal sink.
-    #[derive(Default)]
-    struct PersonFlows {
-        label: String,
-        income_tax: f64,
-        acc: f64,
-        kiwisaver: BTreeMap<Option<i64>, f64>,
-        student_loan: BTreeMap<Option<i64>, f64>,
-        /// Take-home by the category node it lands in (the deposit's own, depth-capped).
-        take_home: BTreeMap<i64, f64>,
-    }
-    let mut people: BTreeMap<i64, PersonFlows> = BTreeMap::new();
-    // Every destination account seen, so each gets exactly one node however many streams and
-    // earners feed it — a household repaying two loans gets two nodes, a couple paying into
-    // one joint fund gets one.
-    let mut destinations: BTreeMap<i64, String> = BTreeMap::new();
-
-    for t in spend {
-        if t.amount_minor < 0 {
-            continue;
-        }
-        let Some(claims) = by_tx.get(&t.id) else {
-            continue;
-        };
-        // The same gate the forest applies: a row with no rate is outside the graph, so its
-        // whole payslip stays out too — anything else would draw gross above a deposit the
-        // chart is not counting.
-        if fx
-            .try_to_base_major(t.amount_minor, &t.currency_code)
-            .is_none()
-        {
-            continue;
-        }
-        let leaf = match t.category_id {
-            Some(cid) => cats
-                .chain_to_depth(cid, SANKEY_MAX_DEPTH)
-                .last()
-                .copied()
-                .unwrap_or(UNCATEGORISED),
-            None => UNCATEGORISED,
-        };
-        for p in claims {
-            // A joint stream has no earner to build a "— gross pay" node for, and being net it
-            // has no deductions to itemise either: every component below would be zero. It stays
-            // in the income column as the ordinary deposit it is, which is what rent from a
-            // flatmate should look like.
-            let (Some(person_id), Some(person_name)) = (p.person_id, p.person_name.as_ref()) else {
-                continue;
-            };
-            // Infallible after the gate above: every component is in the deposit's currency.
-            let conv = |minor: i64| fx.try_to_base_major(minor, &t.currency_code).unwrap_or(0.0);
-            let flows = people.entry(person_id).or_default();
-            if flows.label.is_empty() {
-                flows.label.clone_from(person_name);
-            }
-            flows.income_tax += conv(p.income_tax_minor);
-            flows.acc += conv(p.acc_levy_minor);
-            for (dest, minor, bucket) in [
-                (
-                    &p.kiwisaver_account,
-                    p.kiwisaver_minor,
-                    &mut flows.kiwisaver,
-                ),
-                (
-                    &p.student_loan_account,
-                    p.student_loan_minor,
-                    &mut flows.student_loan,
-                ),
-            ] {
-                let key = dest.as_ref().map(|d| d.account_id);
-                if let Some(d) = dest {
-                    destinations.insert(d.account_id, d.name.clone());
-                }
-                *bucket.entry(key).or_default() += conv(minor);
-            }
-            *flows.take_home.entry(leaf).or_default() += conv(p.observed_net_minor);
-        }
-    }
-
-    // The category nodes the forest actually emitted — a take-home link must not point at a
-    // node that rounded to nothing and was skipped.
-    let emitted: std::collections::HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
-
-    // (id, label, household total) for the four sinks, filled while walking the earners so the
-    // nodes can be pushed once, after every link into them exists.
-    let mut sinks = [
-        ("ded:paye", "PAYE", 0i64),
-        ("ded:acc", "ACC levy", 0i64),
-        ("ded:sl", "Student loan", 0i64),
-        ("ded:kiwisaver", "KiwiSaver", 0i64),
-    ];
-    // The second hop: `(sink slot, destination account) -> total`. Keyed by the sink as well as
-    // the account so a household that happens to point a KiwiSaver stream and a student-loan
-    // stream at one account still draws two ribbons rather than one that means neither.
-    let mut routed: BTreeMap<(usize, i64), i64> = BTreeMap::new();
-
-    for (person_id, flows) in &people {
-        let node_id = format!("gross:{person_id}");
-        // Each link is rounded independently, exactly like the forest's emission; the gross
-        // node's width is d3's max(in, out), so there is no second figure to reconcile.
-        let mut out_minor = 0i64;
-        let mut person_links = Vec::new();
-        // Held until the `out_minor` guard below has confirmed this payslip is drawn at all: a
-        // sink carrying a figure no link accounts for would lay out taller than its inflows.
-        let mut person_sinks = [0i64; 4];
-        let mut person_routed: Vec<((usize, i64), i64)> = Vec::new();
-        // Every deduction this earner had, as (sink slot, destination account, amount). PAYE and
-        // the ACC levy never name an account; the other two arrive already split by the account
-        // their stream pointed at, `None` for a stream that pointed at none.
-        let mut deductions: Vec<(usize, Option<i64>, f64)> =
-            vec![(0, None, flows.income_tax), (1, None, flows.acc)];
-        deductions.extend(flows.student_loan.iter().map(|(d, major)| (2, *d, *major)));
-        deductions.extend(flows.kiwisaver.iter().map(|(d, major)| (3, *d, *major)));
-        for (slot, dest, major) in deductions {
-            let minor = fx.base_minor(major);
-            if minor <= 0 {
-                continue;
-            }
-            person_sinks[slot] += minor;
-            out_minor += minor;
-            person_links.push(SankeyLink {
-                source: node_id.clone(),
-                target: sinks[slot].0.to_string(),
-                value_minor: minor,
-            });
-            // The second hop carries *this* rounded figure onward, so the sink's inflow and its
-            // outflow agree to the cent and d3's max(in, out) is not a third number.
-            if let Some(account_id) = dest {
-                person_routed.push(((slot, account_id), minor));
-            }
-        }
-        for (leaf, major) in &flows.take_home {
-            let minor = fx.base_minor(*major);
-            if minor <= 0 {
-                continue;
-            }
-            let leaf_id = format!("in:{leaf}");
-            out_minor += minor;
-            person_links.push(SankeyLink {
-                source: node_id.clone(),
-                // A leaf that rounded to nothing was never emitted; the take-home then flows
-                // straight to the hub rather than into a node that doesn't exist (drill-down
-                // is lost for that sliver, the money is not).
-                target: if emitted.contains(&leaf_id) {
-                    leaf_id
-                } else {
-                    CENTER.to_string()
-                },
-                value_minor: minor,
-            });
-        }
-        if out_minor <= 0 {
-            continue; // everything rounded to nothing at this currency's precision
-        }
-        for (slot, minor) in person_sinks.into_iter().enumerate() {
-            sinks[slot].2 += minor;
-        }
-        for (key, minor) in person_routed {
-            *routed.entry(key).or_default() += minor;
-        }
-        nodes.push(SankeyNode {
-            id: node_id,
-            label: format!("{} — gross pay", flows.label),
-            kind: SankeyNodeKind::Gross,
-            category_id: None,
-            depth: None,
-            root_id: None,
-            root_color: None,
-            side: None,
-            account_id: None,
-        });
-        links.extend(person_links);
-    }
-
-    for (id, label, total) in sinks {
-        if total > 0 {
+        emitted.into_iter().map(|(account_id, label, minor)| {
+            let id = format!("acct:{account_id}:{}", side.as_str());
             nodes.push(SankeyNode {
-                id: id.to_string(),
-                label: label.to_string(),
-                kind: SankeyNodeKind::Deduction,
+                id: id.clone(),
+                label: label.clone(),
+                kind: SankeyNodeKind::Crossing,
                 category_id: None,
-                depth: None,
+                depth: Some(0),
                 root_id: None,
                 root_color: None,
-                side: None,
-                account_id: None,
-            });
-        }
-    }
-
-    // The second hop, once every sink it can leave from exists. A sink's total is the sum of
-    // the per-earner figures these were taken from, so `routed` can never exceed it and a
-    // destination can never appear above a sink that was skipped.
-    let mut received: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    for ((slot, account_id), minor) in &routed {
-        if *minor <= 0 {
-            continue;
-        }
-        received.insert(*account_id);
-        links.push(SankeyLink {
-            source: sinks[*slot].0.to_string(),
-            target: account_node_id(*account_id),
-            value_minor: *minor,
-        });
-    }
-    for (account_id, name) in destinations {
-        let id = account_node_id(account_id);
-        // One node per account, whatever reaches it. On the cash basis the crossings were
-        // emitted first, so a student loan that both receives PAYE repayments and sends
-        // living-cost drawdowns already has its node — and pushing a second one with the same id
-        // would give d3 two nodes competing for one set of edges.
-        if received.contains(&account_id) && !nodes.iter().any(|n| n.id == id) {
-            nodes.push(SankeyNode {
-                id,
-                // The account's own name, which is also how the balance sheet lists it. Two
-                // accounts sharing a name draw two nodes reading the same, exactly as they
-                // already read the same there.
-                label: name,
-                kind: SankeyNodeKind::Account,
-                category_id: None,
-                depth: None,
-                root_id: None,
-                root_color: None,
-                // A node reached only by a deduction sits in the pre-income band rather than in
-                // either fan, and the client places it from its kind. A crossing gave it a side
-                // already, in which case this arm never runs.
-                side: None,
+                side: Some(side),
                 account_id: Some(account_id),
             });
-        }
-    }
+            links.push(side.link(id, CENTER, minor));
+            minor
+        }),
+    )
 }
-
-/// The node id for a balance-sheet account, shared by a deduction destination and a cash
-/// crossing so that one account is one node — see [`SankeyNodeKind::Account`].
-fn account_node_id(account_id: i64) -> String {
-    format!("{ACCOUNT_PREFIX}{account_id}")
-}
-
-/// Node-id prefix for a [`SankeyNodeKind::Account`].
-const ACCOUNT_PREFIX: &str = "acct:";
 
 // ---- loaded inputs: the boundary between awaiting and computing -------------
 
@@ -1783,16 +1234,8 @@ pub struct SankeyInputs {
     fx: Fx,
     cats: Categories,
     spend: Vec<SpendTransaction>,
-    /// Which question the graph answers. Carried into the compute half as well as the loading
-    /// one because the two bases read the same rows and differ in what they *draw*.
-    basis: FlowBasis,
-    /// Every movement on an account outside the cash perimeter, so a crossing can say what the
-    /// money did when it got there — see [`FlowRows::ledger`].
-    ledger: Vec<LedgerMovement>,
-    /// Matched income payments, unwindowed — [`Self::sankey_from`] keeps only the ones whose
-    /// transaction is in `spend`, so the window, attribution and one-off rules apply in
-    /// exactly one place (`load_spend`) instead of two that could disagree.
-    payments: Vec<MatchedIncomePayment>,
+    from: NaiveDate,
+    to: NaiveDate,
 }
 
 // ---- service ---------------------------------------------------------------
@@ -2034,9 +1477,6 @@ impl ReportService {
         let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let cats = Categories::load(self.reports.as_ref()).await?;
         let (from, to) = self.window(q.from.as_deref(), q.to.as_deref()).await?;
-        // Pinned to `Spending`, not `q.basis`: the pies and `spend_by` answer "what did we
-        // consume", and a mortgage principal repayment is not consumption however real the cash
-        // movement is. The money-flow graph is where the basis is a question.
         let spend = load_spend(
             self.reports.as_ref(),
             &cats,
@@ -2276,27 +1716,24 @@ impl ReportService {
         let (base, fx) = self.currency_and_fx(q.currency.as_deref()).await?;
         let cats = Categories::load(self.reports.as_ref()).await?;
         let (from, to) = self.window(q.from.as_deref(), q.to.as_deref()).await?;
-        let basis = q.basis.unwrap_or_default();
-        let FlowRows { spend, ledger } = load_flow(
+        let spend = load_spend(
             self.reports.as_ref(),
             &cats,
-            basis,
+            FlowBasis::Cash,
             from,
             to,
-            q.include_one_off.unwrap_or(false),
+            q.include_one_off.unwrap_or(true),
             q.attributed_to,
         )
         .await?;
-        let payments = self.reports.matched_income_payments().await?;
 
         Ok(SankeyInputs {
             base,
             fx,
             cats,
-            basis,
             spend,
-            ledger,
-            payments,
+            from,
+            to,
         })
     }
 
@@ -2315,22 +1752,17 @@ impl ReportService {
             base,
             fx,
             cats,
-            basis,
             spend,
-            ledger,
-            payments,
+            from,
+            to,
         } = inputs;
 
-        // What each non-perimeter account's own rows did to its balance, in base-currency major
-        // units. A row whose currency has no rate is dropped exactly as it is on the flow side,
-        // so a partly-convertible account simply declines to split rather than splitting wrongly.
-        let mut ledger_major: HashMap<i64, f64> = HashMap::new();
-        for m in &ledger {
-            if let Some(major) = fx.try_to_base_major(m.amount_minor, &m.currency_code) {
-                *ledger_major.entry(m.account_id).or_default() += major;
-            }
+        let mut monthly: BTreeMap<String, (f64, f64)> = BTreeMap::new();
+        let mut date = from.with_day(1).unwrap();
+        while date <= to {
+            monthly.insert(date.format("%Y-%m").to_string(), (0.0, 0.0));
+            date = last_day_of_month(date.year(), date.month()) + chrono::Duration::days(1);
         }
-
         let mut income = FlowForest::default();
         let mut expense = FlowForest::default();
         let mut income_crossings = Crossings::new();
@@ -2344,6 +1776,11 @@ impl ReportService {
             };
             // Sign of the amount, not the category's `kind` — see `FlowSide`.
             let side = FlowSide::of(t.amount_minor);
+            let month = monthly.entry(t.posted_at[..7].to_string()).or_default();
+            match side {
+                FlowSide::Income => month.0 += base_major,
+                FlowSide::Expense => month.1 += base_major,
+            }
             // A row that still carries a counterparty got past `keeps`, which means the two sides
             // are on opposite faces of the cash perimeter: this is money crossing it, and the
             // account it reached is what names it. On the spending basis no such row survives, so
@@ -2373,7 +1810,7 @@ impl ReportService {
 
         let mut nodes = vec![SankeyNode {
             id: CENTER.to_string(),
-            label: hub_label(basis).into(),
+            label: "Cash flow".into(),
             kind: SankeyNodeKind::Center,
             category_id: None,
             depth: None,
@@ -2403,8 +1840,6 @@ impl ReportService {
                     }),
             )
         };
-        // Crossings first, so `emit_pre_income` finds an account's node already there and adds
-        // its deduction ribbon to it rather than pushing a second node with the same id.
         let income_minor = sum_minor(
             "sankey: income side total",
             None,
@@ -2412,8 +1847,6 @@ impl ReportService {
                 emit_crossings(
                     &income_crossings,
                     FlowSide::Income,
-                    basis,
-                    &ledger_major,
                     &fx,
                     &mut nodes,
                     &mut links,
@@ -2429,8 +1862,6 @@ impl ReportService {
                 emit_crossings(
                     &expense_crossings,
                     FlowSide::Expense,
-                    basis,
-                    &ledger_major,
                     &fx,
                     &mut nodes,
                     &mut links,
@@ -2439,8 +1870,6 @@ impl ReportService {
             ]
             .into_iter(),
         );
-
-        emit_pre_income(&spend, &payments, &cats, &fx, &mut nodes, &mut links);
 
         // Whatever the two sides did not cancel. Taken from the emitted links rather than from a
         // separately-rounded `total_income - total_expense`, so the hub's inflow and outflow
@@ -2454,7 +1883,7 @@ impl ReportService {
         // that spent more than it earned left the hub visibly unbalanced with no node saying why.
         // On the cash basis that is the common case rather than the exception — a mortgage
         // principal repayment and a car both show up here.
-        let (surplus_label, deficit_label) = balance_labels(basis);
+        let (surplus_label, deficit_label) = ("Cash left over", "Drawn from reserves");
         let (id, label, kind, value) = match balance.signum() {
             1 => (
                 "savings",
@@ -2499,9 +1928,6 @@ impl ReportService {
                 | SankeyNodeKind::Income
                 | SankeyNodeKind::Center
                 | SankeyNodeKind::Expense
-                | SankeyNodeKind::Gross
-                | SankeyNodeKind::Deduction
-                | SankeyNodeKind::Account
                 | SankeyNodeKind::Crossing => SankeyLink {
                     source: CENTER.into(),
                     target: id.into(),
@@ -2514,6 +1940,14 @@ impl ReportService {
             currency: base,
             nodes,
             links,
+            months: monthly
+                .into_iter()
+                .map(|(month, (inflow, outflow))| CashflowMonth {
+                    month,
+                    inflow_minor: fx.base_minor(inflow),
+                    outflow_minor: fx.base_minor(outflow),
+                })
+                .collect(),
             unconverted: fx.unconverted(),
         }
     }
@@ -3096,13 +2530,6 @@ mod tests {
                 Ok(Vec::new())
             }
 
-            // No matched income payments in these fixtures — the pre-income layer has its own
-            // pure-compute tests over `sankey_from`.
-            async fn matched_income_payments(
-                &self,
-            ) -> AppResult<Vec<crate::ports::MatchedIncomePayment>> {
-                Ok(Vec::new())
-            }
             async fn transactions(&self, _from: Option<NaiveDate>) -> AppResult<Vec<LedgerTx>> {
                 Ok(Vec::new())
             }
@@ -3445,13 +2872,6 @@ mod tests {
                     .collect())
             }
 
-            // No matched income payments in these fixtures — the pre-income layer has its own
-            // pure-compute tests over `sankey_from`.
-            async fn matched_income_payments(
-                &self,
-            ) -> AppResult<Vec<crate::ports::MatchedIncomePayment>> {
-                Ok(Vec::new())
-            }
             async fn transactions(&self, from: Option<NaiveDate>) -> AppResult<Vec<LedgerTx>> {
                 Ok(match (self.mode, from) {
                     (Mode::Everything, _) | (Mode::Windowed, None) => self.txns.clone(),
@@ -4212,318 +3632,6 @@ mod tests {
         }
     }
 
-    /// The sankey's pre-income layer, on the pure compute path — invented figures throughout.
-    mod pre_income {
-        use super::*;
-        use crate::ports::{DeductionDestination, MatchedIncomePayment};
-
-        fn cats() -> Categories {
-            let mut c = Categories::default_for_test();
-            c.insert_for_test(20, None, "Salary", CategoryKind::Income);
-            c.insert_for_test(30, None, "Food", CategoryKind::Expense);
-            c
-        }
-
-        fn deposit(id: i64, amount_minor: i64, category_id: Option<i64>) -> SpendTransaction {
-            SpendTransaction {
-                id,
-                posted_at: "2026-06-14".to_string(),
-                amount_minor,
-                currency_code: "NZD".to_string(),
-                category_id,
-                is_one_off: false,
-                linked_transaction_id: None,
-                account_id: 1,
-                account_name: "Bank".to_string(),
-                account_kind: AccountKind::Bank,
-                counterparty_account_id: None,
-                counterparty_account_kind: None,
-                counterparty_account_name: None,
-                merchant_id: None,
-                merchant: None,
-                attribution: Ownership::Joint,
-            }
-        }
-
-        /// A payslip whose lines reconcile: 4,000 gross − 898.23 − 70.00 − 140.00 − 359.36
-        /// = 2,532.41 net (the sure-core worked example).
-        fn payment(transaction_id: i64) -> MatchedIncomePayment {
-            MatchedIncomePayment {
-                income_stream_id: 1,
-                stream_label: "Salary".to_string(),
-                person_id: Some(5),
-                person_name: Some("Rua".to_string()),
-                transaction_id,
-                observed_net_minor: 2_532_41,
-                gross_minor: 4_000_00,
-                income_tax_minor: 898_23,
-                acc_levy_minor: 70_00,
-                kiwisaver_minor: 140_00,
-                student_loan_minor: 359_36,
-                // Named per-test by `into`, because whether a deduction has somewhere to go is
-                // the property these tests are about.
-                kiwisaver_account: None,
-                student_loan_account: None,
-            }
-        }
-
-        /// The same payslip, with its two deduction destinations named.
-        fn into(
-            mut p: MatchedIncomePayment,
-            kiwisaver: Option<(i64, &str)>,
-            student_loan: Option<(i64, &str)>,
-        ) -> MatchedIncomePayment {
-            let dest = |(account_id, name): (i64, &str)| DeductionDestination {
-                account_id,
-                name: name.to_string(),
-            };
-            p.kiwisaver_account = kiwisaver.map(dest);
-            p.student_loan_account = student_loan.map(dest);
-            p
-        }
-
-        fn graph(spend: Vec<SpendTransaction>, payments: Vec<MatchedIncomePayment>) -> SankeyGraph {
-            ReportService::sankey_from(SankeyInputs {
-                base: "NZD".to_string(),
-                fx: Fx::parity("NZD"),
-                cats: cats(),
-                basis: FlowBasis::Cash,
-                spend,
-                ledger: vec![],
-                payments,
-            })
-        }
-
-        fn link<'g>(g: &'g SankeyGraph, source: &str, target: &str) -> Option<&'g SankeyLink> {
-            g.links
-                .iter()
-                .find(|l| l.source == source && l.target == target)
-        }
-
-        /// The layer is additive: the income category still carries the full deposit into the
-        /// hub, and the gross node fans into the four sinks plus the category the take-home
-        /// landed in.
-        #[test]
-        fn a_matched_deposit_grows_a_payslip_upstream_of_its_category() {
-            let g = graph(
-                vec![
-                    deposit(7, 2_532_41, Some(20)),
-                    deposit(8, -1_000_00, Some(30)),
-                ],
-                vec![payment(7)],
-            );
-            // The observed flow is untouched…
-            assert_eq!(link(&g, "in:20", "center").unwrap().value_minor, 2_532_41);
-            // …and the reconstructed one sits upstream of it.
-            assert_eq!(link(&g, "gross:5", "in:20").unwrap().value_minor, 2_532_41);
-            assert_eq!(link(&g, "gross:5", "ded:paye").unwrap().value_minor, 898_23);
-            assert_eq!(link(&g, "gross:5", "ded:acc").unwrap().value_minor, 70_00);
-            assert_eq!(link(&g, "gross:5", "ded:sl").unwrap().value_minor, 359_36);
-            assert_eq!(
-                link(&g, "gross:5", "ded:kiwisaver").unwrap().value_minor,
-                140_00
-            );
-            // The gross node's outflow is the whole payslip.
-            let out: i64 = g
-                .links
-                .iter()
-                .filter(|l| l.source == "gross:5")
-                .map(|l| l.value_minor)
-                .sum();
-            assert_eq!(out, 4_000_00);
-
-            let gross_node = g.nodes.iter().find(|n| n.id == "gross:5").unwrap();
-            assert_eq!(gross_node.kind, SankeyNodeKind::Gross);
-            assert_eq!(gross_node.label, "Rua — gross pay");
-            assert!(
-                g.nodes
-                    .iter()
-                    .filter(|n| n.kind == SankeyNodeKind::Deduction)
-                    .count()
-                    == 4
-            );
-
-            // The hub still balances: income in == expense + savings out.
-            let into_hub: i64 = g
-                .links
-                .iter()
-                .filter(|l| l.target == "center")
-                .map(|l| l.value_minor)
-                .sum();
-            let out_of_hub: i64 = g
-                .links
-                .iter()
-                .filter(|l| l.source == "center")
-                .map(|l| l.value_minor)
-                .sum();
-            assert_eq!(into_hub, 2_532_41);
-            assert_eq!(out_of_hub, 2_532_41); // 1,000 food + 1,532.41 savings
-        }
-
-        /// An unmatched deposit — or one whose match points at a transaction outside the
-        /// window's spend — grows nothing.
-        #[test]
-        fn an_unclaimed_deposit_has_no_payslip() {
-            let g = graph(vec![deposit(7, 2_532_41, Some(20))], vec![payment(99)]);
-            assert!(g.nodes.iter().all(|n| n.kind != SankeyNodeKind::Gross));
-            assert!(g.nodes.iter().all(|n| n.kind != SankeyNodeKind::Deduction));
-        }
-
-        /// Two slices of one deposit (salary + bonus, one earner) accumulate into one gross
-        /// node whose take-home into the category equals the whole deposit.
-        #[test]
-        fn shared_deposits_accumulate_per_person() {
-            let mut bonus = payment(7);
-            bonus.income_stream_id = 2;
-            bonus.stream_label = "Bonus".to_string();
-            bonus.observed_net_minor = 1_243_75;
-            bonus.gross_minor = 2_500_00;
-            bonus.income_tax_minor = 825_00;
-            bonus.acc_levy_minor = 43_75;
-            bonus.kiwisaver_minor = 87_50;
-            bonus.student_loan_minor = 300_00;
-            let g = graph(
-                vec![deposit(7, 2_532_41 + 1_243_75, Some(20))],
-                vec![payment(7), bonus],
-            );
-            assert_eq!(
-                link(&g, "gross:5", "in:20").unwrap().value_minor,
-                2_532_41 + 1_243_75
-            );
-            assert_eq!(
-                link(&g, "gross:5", "ded:sl").unwrap().value_minor,
-                359_36 + 300_00
-            );
-            assert_eq!(
-                g.nodes
-                    .iter()
-                    .filter(|n| n.kind == SankeyNodeKind::Gross)
-                    .count(),
-                1
-            );
-        }
-
-        /// A stream that names no account leaves both deductions terminal: the sinks are drawn,
-        /// and nothing leaves them.
-        #[test]
-        fn an_unnamed_destination_keeps_the_deduction_a_sink() {
-            let g = graph(vec![deposit(7, 2_532_41, Some(20))], vec![payment(7)]);
-            assert!(g.nodes.iter().all(|n| n.kind != SankeyNodeKind::Account));
-            assert!(
-                g.links
-                    .iter()
-                    .all(|l| !l.source.starts_with("ded:") && !l.target.starts_with("acct:"))
-            );
-        }
-
-        /// Naming an account routes that deduction onward at exactly the figure the sink
-        /// received, so the sink's inflow and outflow agree and d3's max(in, out) is not a
-        /// third number. PAYE and ACC stay terminal — that money leaves the household.
-        #[test]
-        fn a_named_destination_carries_the_deduction_onward() {
-            let g = graph(
-                vec![deposit(7, 2_532_41, Some(20))],
-                vec![into(
-                    payment(7),
-                    Some((41, "KiwiSaver")),
-                    Some((42, "Student loan")),
-                )],
-            );
-
-            assert_eq!(
-                link(&g, "ded:kiwisaver", "acct:41").unwrap().value_minor,
-                140_00
-            );
-            assert_eq!(link(&g, "ded:sl", "acct:42").unwrap().value_minor, 359_36);
-            assert!(link(&g, "ded:paye", "acct:41").is_none());
-            assert!(
-                g.links
-                    .iter()
-                    .all(|l| l.source != "ded:paye" && l.source != "ded:acc")
-            );
-
-            let dests: Vec<_> = g
-                .nodes
-                .iter()
-                .filter(|n| n.kind == SankeyNodeKind::Account)
-                .collect();
-            assert_eq!(dests.len(), 2);
-            assert_eq!(
-                dests.iter().find(|n| n.id == "acct:41").unwrap().label,
-                "KiwiSaver"
-            );
-            assert_eq!(
-                dests.iter().find(|n| n.id == "acct:42").unwrap().label,
-                "Student loan"
-            );
-            // The gross node still fans into the four sinks and nothing else changed upstream.
-            let out: i64 = g
-                .links
-                .iter()
-                .filter(|l| l.source == "gross:5")
-                .map(|l| l.value_minor)
-                .sum();
-            assert_eq!(out, 4_000_00);
-        }
-
-        /// Two earners paying into one fund draw one destination node fed by one ribbon
-        /// carrying both — the account is the node, not the payslip.
-        #[test]
-        fn one_fund_two_earners_is_one_node() {
-            let mut other = into(payment(8), Some((41, "KiwiSaver")), None);
-            other.income_stream_id = 2;
-            other.person_id = Some(6);
-            other.person_name = Some("Tama".to_string());
-            other.kiwisaver_minor = 60_00;
-            let g = graph(
-                vec![
-                    deposit(7, 2_532_41, Some(20)),
-                    deposit(8, 2_532_41, Some(20)),
-                ],
-                vec![into(payment(7), Some((41, "KiwiSaver")), None), other],
-            );
-            assert_eq!(
-                g.nodes
-                    .iter()
-                    .filter(|n| n.kind == SankeyNodeKind::Account)
-                    .count(),
-                1
-            );
-            assert_eq!(
-                link(&g, "ded:kiwisaver", "acct:41").unwrap().value_minor,
-                140_00 + 60_00
-            );
-        }
-
-        /// A student loan is both halves of the household's money at once: PAYE repayments the
-        /// bank never saw, and living-cost drawdowns that arrive as spendable cash. They are one
-        /// account, so they have to be one node — two nodes sharing an id would leave d3 with two
-        /// candidates for every edge that names it.
-        #[test]
-        fn one_account_is_one_node_however_many_things_reach_it() {
-            let mut drawdown = deposit(9, 333_48, Some(20));
-            drawdown.counterparty_account_id = Some(42);
-            drawdown.counterparty_account_kind = Some(AccountKind::StudentLoan);
-            drawdown.counterparty_account_name = Some("Student loan".to_string());
-
-            let g = graph(
-                vec![deposit(7, 2_532_41, Some(20)), drawdown],
-                vec![into(payment(7), None, Some((42, "Student loan")))],
-            );
-
-            let mine: Vec<_> = g.nodes.iter().filter(|n| n.id == "acct:42").collect();
-            assert_eq!(mine.len(), 1, "one account, one node: {mine:?}");
-            // The crossing wins the kind and the side, because it is the half that was drawn
-            // into a fan; the deduction ribbon then routes across to it.
-            assert_eq!(mine[0].kind, SankeyNodeKind::Crossing);
-            assert_eq!(mine[0].side, Some(FlowSide::Income));
-            assert_eq!(mine[0].account_id, Some(42));
-            // Both arrows land on it: the reconstructed repayment, and the cash it lent out.
-            assert_eq!(link(&g, "ded:sl", "acct:42").unwrap().value_minor, 359_36);
-            assert_eq!(link(&g, "acct:42", CENTER).unwrap().value_minor, 333_48);
-        }
-    }
-
     /// The cash basis: which movements count, how a crossing is labelled, and the hub balancing
     /// in both directions.
     ///
@@ -4628,20 +3736,19 @@ mod tests {
         }
 
         fn graph(spend: Vec<SpendTransaction>) -> SankeyGraph {
-            graph_with(spend, vec![])
+            graph_with(spend)
         }
 
         /// The same, plus what the far accounts' own rows did to their balances — which is what
         /// turns a crossing into "of this much cash, this much was interest".
-        fn graph_with(spend: Vec<SpendTransaction>, ledger: Vec<LedgerMovement>) -> SankeyGraph {
+        fn graph_with(spend: Vec<SpendTransaction>) -> SankeyGraph {
             ReportService::sankey_from(SankeyInputs {
                 base: "NZD".to_string(),
                 fx: Fx::parity("NZD"),
                 cats: cats(),
-                basis: FlowBasis::Cash,
                 spend,
-                ledger,
-                payments: vec![],
+                from: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                to: NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
             })
         }
 
@@ -4734,7 +3841,7 @@ mod tests {
             let node = g
                 .nodes
                 .iter()
-                .find(|n| n.id == "acct:10")
+                .find(|n| n.id == "acct:10:expense")
                 .expect("the mortgage has a node");
             assert_eq!(node.label, "Home Mortgage");
             assert_eq!(node.kind, SankeyNodeKind::Crossing);
@@ -4742,243 +3849,12 @@ mod tests {
             assert_eq!(node.side, Some(FlowSide::Expense));
             assert_eq!(node.depth, Some(0), "level with the top-level categories");
             assert_eq!(node.category_id, None, "an account is not a category");
-            assert_eq!(link(&g, CENTER, "acct:10").unwrap().value_minor, 44_530);
-            // …and the interest is still its own expense category, where it always was.
-            assert_eq!(link(&g, CENTER, "out:45").unwrap().value_minor, 95_202);
-        }
-
-        /// The question the whole change was for: what does the mortgage cost?
-        ///
-        /// Once the interest row names the loan as its counterparty, the crossing carries the
-        /// whole payment and splits into the part that retired debt and the part that did not.
-        /// Nothing reads a rate, a schedule or a memo to get there — the loan's own ledger says
-        /// how far the balance moved, and the rest is the answer.
-        #[test]
-        fn an_attributed_mortgage_payment_splits_into_interest_and_principal() {
-            let mut interest = row(1, AccountKind::RevolvingCredit, -95_202, Some(45), None);
-            interest.counterparty_account_id = Some(MORTGAGE);
-            interest.counterparty_account_kind = Some(AccountKind::Mortgage);
-            interest.counterparty_account_name = Some("Home Mortgage".to_string());
-            let principal = row(
-                2,
-                AccountKind::RevolvingCredit,
-                -44_530,
-                Some(67),
-                Some((MORTGAGE, AccountKind::Mortgage, "Home Mortgage")),
-            );
-
-            let g = graph_with(
-                vec![interest, principal],
-                // The mortgage's own row: the balance fell by the principal and by nothing else,
-                // because ASB charges the interest to the facility rather than to the loan.
-                vec![LedgerMovement {
-                    account_id: MORTGAGE,
-                    amount_minor: 44_530,
-                    currency_code: "NZD".to_string(),
-                }],
-            );
-
-            // The whole payment crosses, as one ribbon — written as its two parts because that
-            // is the claim ($1,397.32), and because `1_397_32` reads to the compiler as an `i32`
-            // suffix.
             assert_eq!(
-                link(&g, CENTER, "acct:10").unwrap().value_minor,
-                95_202 + 44_530
-            );
-            // …and splits, to the cent.
-            // Expense flows hub → node → child, so the crossing is the source of both halves.
-            assert_eq!(
-                link(&g, "acct:10", "acct:10:cost").unwrap().value_minor,
-                95_202
-            );
-            assert_eq!(
-                link(&g, "acct:10", "acct:10:rest").unwrap().value_minor,
+                link(&g, CENTER, "acct:10:expense").unwrap().value_minor,
                 44_530
             );
-            let named = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
-            assert_eq!(named("acct:10:cost").label, "Interest");
-            assert_eq!(named("acct:10:rest").label, "Principal");
-            assert_eq!(
-                named("acct:10:cost").depth,
-                Some(1),
-                "a child of its crossing"
-            );
-            assert_eq!(
-                named("acct:10:cost").account_id,
-                None,
-                "a half is a reading of the account, not a second way to open it"
-            );
-            // The interest is no longer *also* an expense category: it was attributed, so it is
-            // counted once, under the loan it paid for.
-            assert!(g.nodes.iter().all(|n| n.id != "out:45"));
-        }
-
-        /// Build the same graph on the net-worth basis.
-        fn net_worth(spend: Vec<SpendTransaction>, ledger: Vec<LedgerMovement>) -> SankeyGraph {
-            ReportService::sankey_from(SankeyInputs {
-                base: "NZD".to_string(),
-                fx: Fx::parity("NZD"),
-                cats: cats(),
-                basis: FlowBasis::NetWorth,
-                spend,
-                ledger,
-                payments: vec![],
-            })
-        }
-
-        /// Paying back a loan is a net zero change, which is the whole point of the basis: the
-        /// principal leaves the chart and the interest stays, because only one of the two left
-        /// the household worse off.
-        #[test]
-        fn net_worth_keeps_the_interest_and_drops_the_principal() {
-            let mut interest = row(1, AccountKind::RevolvingCredit, -95_202, Some(45), None);
-            interest.counterparty_account_id = Some(MORTGAGE);
-            interest.counterparty_account_kind = Some(AccountKind::Mortgage);
-            interest.counterparty_account_name = Some("Home Mortgage".to_string());
-            let principal = row(
-                2,
-                AccountKind::RevolvingCredit,
-                -44_530,
-                Some(67),
-                Some((MORTGAGE, AccountKind::Mortgage, "Home Mortgage")),
-            );
-            let spend = vec![interest, principal];
-            let ledger = vec![LedgerMovement {
-                account_id: MORTGAGE,
-                amount_minor: 44_530,
-                currency_code: "NZD".to_string(),
-            }];
-
-            let cash = graph_with(spend.clone(), ledger.clone());
-            assert_eq!(
-                link(&cash, CENTER, "acct:10").unwrap().value_minor,
-                95_202 + 44_530,
-                "on cash the whole payment left the accounts"
-            );
-
-            let nw = net_worth(spend, ledger);
-            assert_eq!(
-                link(&nw, CENTER, "acct:10").unwrap().value_minor,
-                95_202,
-                "on net worth only the interest is a cost"
-            );
-            assert_eq!(
-                nw.nodes.iter().find(|n| n.id == "acct:10").unwrap().label,
-                "Interest — Home Mortgage",
-                "with only one half drawn, the node has to say which half it is"
-            );
-            assert!(
-                nw.nodes.iter().all(|n| !n.id.ends_with(":rest")),
-                "the principal is not a smaller ribbon, it is no ribbon"
-            );
-        }
-
-        /// The other three shapes of "moved value between pockets": borrowing, and turning an
-        /// asset into cash. None changes what the household is worth, so none is drawn.
-        #[test]
-        fn net_worth_ignores_borrowing_and_selling() {
-            let mut drawdown = row(1, AccountKind::Bank, 33_348, Some(67), None);
-            drawdown.counterparty_account_id = Some(19);
-            drawdown.counterparty_account_kind = Some(AccountKind::StudentLoan);
-            drawdown.counterparty_account_name = Some("Student loan".to_string());
-            let mut sale = row(2, AccountKind::Bank, 15_000_00, Some(84), None);
-            sale.counterparty_account_id = Some(24);
-            sale.counterparty_account_kind = Some(AccountKind::Vehicle);
-            sale.counterparty_account_name = Some("Nissan Note".to_string());
-            let spend = vec![
-                drawdown,
-                sale,
-                row(3, AccountKind::Bank, -1_200_00, Some(45), None),
-            ];
-
-            let cash = graph_with(spend.clone(), vec![]);
-            assert_eq!(link(&cash, "acct:19", CENTER).unwrap().value_minor, 33_348);
-            assert_eq!(
-                link(&cash, "acct:24", CENTER).unwrap().value_minor,
-                15_000_00
-            );
-
-            let nw = net_worth(spend, vec![]);
-            assert!(
-                nw.nodes.iter().all(|n| n.account_id.is_none()),
-                "borrowing and selling move no net worth, so neither is drawn: {:?}",
-                nw.nodes.iter().map(|n| &n.label).collect::<Vec<_>>()
-            );
-            // The ordinary spending is untouched, and it is now the whole story.
-            assert_eq!(link(&nw, CENTER, "out:45").unwrap().value_minor, 1_200_00);
-            assert_eq!(
-                link(&nw, "deficit", CENTER).unwrap().value_minor,
-                1_200_00,
-                "nothing came in, so the household is that much worse off"
-            );
-        }
-
-        /// The spine and the leftover are named for the question being answered — the same node
-        /// standing for two different things is most of how the two bases get confused.
-        #[test]
-        fn each_basis_names_its_hub_and_its_leftover() {
-            let earned = vec![
-                row(1, AccountKind::Bank, 5_000_00, Some(84), None),
-                row(2, AccountKind::Bank, -1_200_00, Some(45), None),
-            ];
-            let cash = graph(earned.clone());
-            assert_eq!(cash.nodes[0].label, "Cash flow");
-            assert_eq!(
-                cash.nodes.iter().find(|n| n.id == "savings").unwrap().label,
-                "Savings"
-            );
-
-            let nw = net_worth(earned, vec![]);
-            assert_eq!(nw.nodes[0].label, "Net worth");
-            assert_eq!(
-                nw.nodes.iter().find(|n| n.id == "savings").unwrap().label,
-                "Better off"
-            );
-        }
-
-        /// A drawdown is cash arriving and a balance falling by the same amount, so there is no
-        /// residue and no split — the guard that stops every crossing growing two nodes that say
-        /// nothing.
-        #[test]
-        fn a_drawdown_has_no_cost_to_split_out() {
-            let mut drawn = row(1, AccountKind::Bank, 17_113_53, Some(67), None);
-            drawn.counterparty_account_id = Some(7);
-            drawn.counterparty_account_kind = Some(AccountKind::Loan);
-            drawn.counterparty_account_name = Some("Solar Panels".to_string());
-
-            let g = graph_with(
-                vec![drawn],
-                vec![LedgerMovement {
-                    account_id: 7,
-                    amount_minor: -17_113_53,
-                    currency_code: "NZD".to_string(),
-                }],
-            );
-            assert_eq!(link(&g, "acct:7", CENTER).unwrap().value_minor, 17_113_53);
-            assert!(
-                g.nodes.iter().all(|n| !n.id.ends_with(":cost")),
-                "nothing was spent, so nothing is drawn as spent"
-            );
-        }
-
-        /// An explicit counterparty beats the link, because it is the one somebody stated. The
-        /// fallback is only for the pairs the auto-linker found on its own.
-        #[test]
-        fn an_explicit_counterparty_is_what_a_crossing_is_named_by() {
-            let mut t = row(
-                1,
-                AccountKind::Bank,
-                -77_000_00,
-                Some(67),
-                // Resolved in SQL, so by the time a report sees the row there is one answer —
-                // this is that answer, and it is the house rather than whatever it was linked to.
-                Some((22, AccountKind::RealEstate, "Family Home")),
-            );
-            t.counterparty_account_id = Some(22);
-            let g = graph(vec![t]);
-            let node = g.nodes.iter().find(|n| n.id == "acct:22").unwrap();
-            assert_eq!(node.label, "Family Home");
-            assert_eq!(node.side, Some(FlowSide::Expense));
+            // …and the interest is still its own expense category, where it always was.
+            assert_eq!(link(&g, CENTER, "out:45").unwrap().value_minor, 95_202);
         }
 
         /// The hub has to balance in both directions. Only a surplus was ever drawn, so a month
@@ -5101,29 +3977,6 @@ mod tests {
                     .map(|l| l.value_minor)
                     .sum::<i64>();
             assert_eq!(hub_in - hub_out - balance_node, expected);
-        }
-
-        /// The spending basis is the report as it was before the basis existed. Anything that
-        /// moves here is a behaviour change nobody asked for.
-        #[test]
-        fn the_spending_basis_still_ignores_every_transfer() {
-            let g = ReportService::sankey_from(SankeyInputs {
-                base: "NZD".to_string(),
-                fx: Fx::parity("NZD"),
-                cats: cats(),
-                basis: FlowBasis::Spending,
-                spend: one_mortgage_payment()
-                    .into_iter()
-                    .filter(|t| keeps(FlowBasis::Spending, t, &cats()))
-                    .collect(),
-                ledger: vec![],
-                payments: vec![],
-            });
-            assert!(
-                g.nodes.iter().all(|n| n.account_id.is_none()),
-                "no crossing may appear on the spending basis"
-            );
-            assert_eq!(link(&g, CENTER, "out:45").unwrap().value_minor, 95_202);
         }
     }
 }

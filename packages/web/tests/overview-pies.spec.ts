@@ -30,39 +30,8 @@ async function expectTransactionsUrl(page: Page, want: Record<string, string | R
 // The donut segments are full circles (only their arc is painted), so a normal click/hover
 // targets the empty centre. Drive them directly and target by aria-label.
 
-test("hovering a pie segment names it and greys the others", async ({ page }) => {
-  await goto(page, "/");
-  const pie = page.locator(".card", { hasText: "Where money went" });
-  await pie.locator('svg .seg[aria-label="Housing"]').dispatchEvent("pointerenter");
 
-  await expect(pie.locator(".pie-center .cl")).toHaveText("Housing"); // centre names the segment
-  // Whole dollars, no cents — cents made the value overflow the donut hole.
-  await expect(pie.locator(".pie-center .cv")).not.toContainText(".");
-  await expect(pie.locator("svg .seg.dim")).not.toHaveCount(0); // the others are dimmed
-  await expect(pie.locator("svg .seg:not(.dim)")).toHaveCount(1); // only the hovered one is lit
-});
 
-test("the income pie is interactive too", async ({ page }) => {
-  await goto(page, "/");
-  const pie = page.locator(".card", { hasText: "Where money came from" });
-  await pie.locator("svg .seg").first().dispatchEvent("pointerenter");
-  await expect(pie.locator(".pie-center .cl")).not.toHaveText("total");
-});
-
-test("clicking a pie segment opens transactions filtered to that category and range", async ({ page }) => {
-  // Deliberately not the default range: the default is left out of the URL entirely, so a link
-  // built while it is selected carries no `range` at all and this could not tell "carried the
-  // selection" from "carried nothing".
-  await goto(page, "/?range=last_12m");
-  const pie = page.locator(".card", { hasText: "Where money went" });
-  await pie.locator('svg .seg[aria-label="Housing"]').dispatchEvent("click");
-
-  // The deep-link carries the pie's own side of the ledger as `type` alongside the
-  // category and the overview's range — an uncategorised slice has only `type` to tell
-  // income from outgoings, so it's always sent.
-  await expectTransactionsUrl(page, { category: /^\d+$/, type: "expense", range: "last_12m" });
-  await expect(page.locator(".tx-row").first()).toBeVisible();
-});
 
 test("a category deep-link includes the whole subtree", async ({ page }) => {
   const res = await page.request.get("/api/categories");
@@ -76,21 +45,6 @@ test("a category deep-link includes the whole subtree", async ({ page }) => {
   await expect(page.locator(".tx-row").first()).toBeVisible();
 });
 
-test("the legend mirrors the pie and is clickable", async ({ page }) => {
-  await goto(page, "/");
-  const pie = page.locator(".card", { hasText: "Where money went" });
-  await pie.locator(".legend-row", { hasText: "Housing" }).hover();
-  await expect(pie.locator("svg .seg.dim")).not.toHaveCount(0); // hovering the legend greys the pie
-
-  await pie.locator(".legend-row", { hasText: "Housing" }).click();
-  await expect(page).toHaveURL(/#\/transactions\?category=\d+/);
-});
-
-// ---- Sankey (Money flow) -------------------------------------------------------------
-// Nodes are full-width groups; drive them directly like the pie segments. Target them by
-// `data-node-id` rather than by text: the chart now draws a category at every level of the
-// tree, so `hasText: "Housing"` would also match "Housing" the label of its own children's
-// column neighbours, and Playwright's strict mode rejects an ambiguous locator.
 
 /** `in:<id>` / `out:<id>` for a seeded category, resolved by name. */
 async function nodeId(page: Page, name: string, side: "in" | "out"): Promise<string> {
@@ -291,15 +245,6 @@ test("the uncategorised slice and node open the transactions that have no catego
     // The probe is dated today and the default range is the month just *gone*, which ends
     // before it — so this asks for a window that includes today.
     await goto(page, "/?range=last_30");
-    const pie = page.locator(".card", { hasText: "Where money went" });
-    await pie.locator('svg .seg[aria-label="Uncategorised"]').dispatchEvent("click");
-    // `category=none`, not an omitted param: the slice stands for the rows whose category is
-    // null, which no id can name — omitting it lands on every expense instead of these.
-    await expectTransactionsUrl(page, { category: "none", type: "expense", range: "last_30" });
-    await expect(page.locator(".tx-row").first()).toBeVisible();
-    for (const c of await page.locator(".tx-row .cat-pill > .ell").allInnerTexts())
-      expect(c.trim()).toBe("Uncategorised");
-
     // The sankey's node goes through the same builder, so it lands in the same place. Its
     // `data-node-id` carries the report's raw sentinel key rather than a category id.
     await goto(page, "/?range=last_30");

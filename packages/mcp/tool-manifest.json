@@ -160,7 +160,6 @@
     "idempotent": true,
     "arguments": [
       "attributed_to",
-      "basis",
       "currency",
       "from",
       "include_one_off",

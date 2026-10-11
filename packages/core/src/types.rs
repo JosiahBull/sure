@@ -238,69 +238,6 @@ impl std::str::FromStr for Interval {
     }
 }
 
-/// Which question the money-flow chart answers.
-///
-/// The chart used to answer both of these at once and say which only by accident — whether a
-/// movement counted depended on how its row happened to be categorised. A mortgage payment was
-/// invisible (a linked transfer in a transfer-kind category) while the proceeds of a share sale
-/// were counted as income, though both are the same shape: cash moving without net worth moving.
-/// Naming the basis is what makes each one internally consistent.
-///
-/// Parsed at the HTTP edge from a query-string value, exactly like [`Interval`]; an unrecognised
-/// value is a 400, never a silent default.
-#[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum FlowBasis {
-    /// Every movement of the household's liquid money: spending, income, and every crossing of
-    /// the cash perimeter — a mortgage principal repayment, a loan drawdown, money in or out of a
-    /// brokerage. Internal movement between two cash accounts still nets out.
-    ///
-    /// The raw dollars the household can actually get at, and the basis that answers "what did
-    /// our accounts do".
-    #[default]
-    Cash,
-    /// Only the movements that left the household better or worse off.
-    ///
-    /// The same rows as [`Self::Cash`], less everything that merely moved value from one pocket
-    /// to another: a mortgage principal repayment buys equity, a loan drawdown is borrowed, a car
-    /// sale turns a car into cash, and none of the three changes what the household is worth by a
-    /// cent. What survives of a crossing is the part that bought *nothing* — the interest on a
-    /// debt, a broker's fee — because that money is simply gone.
-    ///
-    /// Not yet a complete account of net worth: an asset appreciating or a fund gaining in the
-    /// market moves it too, and neither carries a transaction to read. So this answers "what did
-    /// we do to our net worth", which is the half a household controls.
-    NetWorth,
-    /// Income and spending alone, with every transfer excluded. What the chart showed before the
-    /// basis existed, and what the category pies still are — see
-    /// `sure_app::reports::ReportService::category_breakdown_inputs`.
-    Spending,
-}
-
-impl FlowBasis {
-    /// The wire representation (snake_case) — matches `#[serde(rename_all = "snake_case")]`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            FlowBasis::Cash => "cash",
-            FlowBasis::NetWorth => "net_worth",
-            FlowBasis::Spending => "spending",
-        }
-    }
-}
-
-impl std::str::FromStr for FlowBasis {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "cash" => FlowBasis::Cash,
-            "net_worth" => FlowBasis::NetWorth,
-            "spending" => FlowBasis::Spending,
-            other => return Err(format!("unknown basis '{other}'")),
-        })
-    }
-}
-
 /// The axis a spending summary rolls up along (`sure_app::reports::ReportService::spend_by`).
 ///
 /// Sibling to [`Interval`], which chooses the *time* granularity of a series; this chooses
@@ -1534,18 +1471,5 @@ mod tests {
         assert!(AccountKind::CreditCard.in_cash_perimeter());
         assert_eq!(AccountKind::Mortgage.class(), AccountClass::Liability);
         assert!(!AccountKind::Mortgage.in_cash_perimeter());
-    }
-
-    #[test]
-    fn a_basis_round_trips_and_refuses_anything_else() {
-        for basis in [FlowBasis::Cash, FlowBasis::NetWorth, FlowBasis::Spending] {
-            assert_eq!(basis.as_str().parse::<FlowBasis>(), Ok(basis));
-        }
-        assert_eq!(FlowBasis::default(), FlowBasis::Cash);
-        let err = "networth".parse::<FlowBasis>().unwrap_err();
-        assert!(
-            err.contains("networth"),
-            "message must name the value: {err}"
-        );
     }
 }

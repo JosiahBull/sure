@@ -11,6 +11,7 @@ export type RangeKey =
   | "mtd"
   | "last_30"
   | "last_month"
+  | "last_3m"
   | "last_90"
   | "ytd"
   | "last_12m"
@@ -24,6 +25,7 @@ export const RANGES: { key: RangeKey; label: string }[] = [
   { key: "mtd", label: "Month to date (MTD)" },
   { key: "last_30", label: "Last 30 days" },
   { key: "last_month", label: "Last month" },
+  { key: "last_3m", label: "Last 3 months" },
   { key: "last_90", label: "Last 90 days" },
   { key: "ytd", label: "Year to date" },
   { key: "last_12m", label: "Last 12 months" },
@@ -33,11 +35,9 @@ export const RANGES: { key: RangeKey; label: string }[] = [
 /**
  * The period a visit starts on when nothing says otherwise.
  *
- * The month just gone: a closed window, the one most questions about spending are actually
- * about, and small enough that the charts say something specific rather than averaging a year
- * into a flat line.
+ * The last three complete calendar months, excluding the current partial month.
  */
-export const DEFAULT_RANGE: RangeKey = "last_month";
+export const DEFAULT_RANGE: RangeKey = "last_3m";
 
 export const filters = $state({
   range: DEFAULT_RANGE as RangeKey,
@@ -67,10 +67,11 @@ export function rangeDates(range: RangeKey = filters.range): { from?: string; to
     // The previous *calendar* month: a closed window that ends before today, which is what
     // "last month" means when you say it out loud ("what did August cost?"). The rolling
     // month-back window it used to mean is "Last 30 days", below.
+    case "last_3m":
     case "last_month": {
       const start = new Date(now);
       start.setDate(1);
-      start.setMonth(start.getMonth() - 1);
+      start.setMonth(start.getMonth() - (range === "last_3m" ? 3 : 1));
       const end = new Date(now);
       end.setDate(0);
       return { from: iso(start), to: iso(end) };
