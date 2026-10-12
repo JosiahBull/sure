@@ -331,4 +331,18 @@
     border: 1px solid var(--border);
     color: var(--text-muted);
   }
+  @container equity (max-width: 520px) {
+    .value-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 14px;
+    }
+    .value-form .field, .value-form .input {
+      min-width: 0;
+      width: 100%;
+    }
+    .value-form .btn {
+      min-height: 44px;
+    }
+  }
 </style>

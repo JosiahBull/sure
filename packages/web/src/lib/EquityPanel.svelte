@@ -309,6 +309,7 @@
   {#if equity}
     <header class="head">
       <div class="totals">
+        <div class="small muted">Current value</div>
         <div class="tabular total">{formatMoney(equity.total_value_minor, ccy)}</div>
         <!-- The product, then its two factors, with the operator shown. An exercise moves value
              from the right figure to the left while changing neither the units held nor the
@@ -340,23 +341,6 @@
           </div>
         {/if}
       </div>
-
-      <div class="head-acts">
-        <span class="eyebrow">Writes net-worth history</span>
-        <div class="row btn-row">
-          <button
-            class="btn btn-sm"
-            onclick={revalue}
-            disabled={busy}
-            title="Write one valuation dated today, from the units held now at the current price."
-            >Record today</button
-          >
-        </div>
-        <span class="small faint">
-          History is rebuilt for you whenever a grant, exercise or price changes — this is only
-          for pinning today's value between those.
-        </span>
-      </div>
     </header>
 
     <InvestmentTabs
@@ -382,10 +366,16 @@
             >
           </div>
 
-          <!-- One muted line for everything the grant *is*: who issued it and the schedule it
-               vests on. Separating the issuer onto its own row spent a line on the fact four
-               grants have in common. -->
-          <div class="small muted terms">{termsLine(g)}</div>
+          <div class="small muted terms">
+            {g.company}
+            {#if terms[g.grant_id]}
+              <span> · strike {formatMoney(terms[g.grant_id]!.strike_minor, g.currency_code)}</span>
+            {/if}
+          </div>
+          <details class="grant-terms">
+            <summary>Vesting schedule</summary>
+            <p class="small muted">{termsLine(g)}</p>
+          </details>
 
           <div class="progress">
             <!-- The two filled segments are the first two figures below, in the same order and
@@ -408,15 +398,18 @@
             <div class="figures">
               <span class="figure">
                 <i class="swatch owned"></i>
-                <span class="tabular">{g.owned.toLocaleString()}</span> owned
+                <span class="tabular">{g.owned.toLocaleString()}</span>
+                <span class="figure-label">owned</span>
               </span>
               <span class="figure">
                 <i class="swatch exercisable"></i>
-                <span class="tabular">{g.vested_unexercised.toLocaleString()}</span> exercisable
+                <span class="tabular">{g.vested_unexercised.toLocaleString()}</span>
+                <span class="figure-label">exercisable</span>
               </span>
               <span class="figure">
                 <i class="swatch unvested"></i>
-                <span class="tabular">{g.unvested.toLocaleString()}</span> unvested
+                <span class="tabular">{g.unvested.toLocaleString()}</span>
+                <span class="figure-label">unvested</span>
               </span>
             </div>
             <div class="row acts">
@@ -451,12 +444,17 @@
                 </label>
                 <label class="field">
                   <span class="small muted">Units</span>
-                  <input class="input tabular" bind:value={exerciseForm.quantity} />
-                </label>
-                <label class="field">
-                  <span class="small muted">Price paid</span>
                   <input
                     class="input tabular"
+                    inputmode="numeric"
+                    bind:value={exerciseForm.quantity}
+                  />
+                </label>
+                <label class="field">
+                  <span class="small muted">Price paid per unit</span>
+                  <input
+                    class="input tabular"
+                    inputmode="decimal"
                     placeholder="0.01"
                     bind:value={exerciseForm.price}
                   />
@@ -485,8 +483,7 @@
         <div class="sub">
           <div class="sub-title">{editingGrant !== null ? "Edit grant" : "Add a grant"}</div>
           <p class="small muted sub-intro">
-            Vesting runs from the date below, not the date the deed was signed — the two often
-            differ. Cliff 0 vests from the first month. The share price is set under Valuations.
+            Use the vesting start date from your deed. Set the share price under Valuations.
           </p>
           <div class="form-grid">
             <label class="field">
@@ -499,26 +496,37 @@
             </label>
             <label class="field">
               <span class="small muted">Units granted</span>
-              <input class="input tabular" bind:value={grantForm.quantity} />
+              <input class="input tabular" inputmode="numeric" bind:value={grantForm.quantity} />
             </label>
             <label class="field">
-              <span class="small muted">Strike</span>
-              <input class="input tabular" placeholder="0.00" bind:value={grantForm.strike} />
+              <span class="small muted">Strike price</span>
+              <input
+                class="input tabular"
+                inputmode="decimal"
+                placeholder="0.00"
+                bind:value={grantForm.strike}
+              />
             </label>
             <label class="field">
-              <span class="small muted">Vest months</span>
-              <input class="input tabular" bind:value={grantForm.vest_months} />
+              <span class="small muted">Vesting (months)</span>
+              <input class="input tabular" inputmode="numeric" bind:value={grantForm.vest_months} />
             </label>
             <label class="field">
-              <span class="small muted">Cliff months</span>
-              <input class="input tabular" placeholder="0" bind:value={grantForm.cliff_months} />
+              <span class="small muted">Cliff (months)</span>
+              <input
+                class="input tabular"
+                inputmode="numeric"
+                placeholder="0"
+                bind:value={grantForm.cliff_months}
+              />
+              <span class="small muted">0 means no cliff.</span>
             </label>
           </div>
           <label class="field note-field">
-            <span class="small muted">Note — what tells this grant from the others</span>
+            <span class="small muted">Grant label (optional)</span>
             <input
               class="input"
-              placeholder="e.g. offer #4, deed 5 Aug 2026, expires 2036"
+              placeholder="e.g. Initial grant"
               bind:value={grantForm.note}
             />
           </label>
@@ -530,14 +538,13 @@
           </div>
         </div>
       {:else}
-        <button class="btn btn-sm add" onclick={startAddGrant}>+ Grant</button>
+        <button class="btn btn-sm add" onclick={startAddGrant}>Add grant</button>
       {/if}
     {/if}
 
     {#if tab === "activity"}
       <p class="small muted lede">
-        Every change in what this account holds. Vesting is computed from each grant's schedule —
-        it isn't entered, it's what the deed already says happens.
+        Vesting and exercises, grouped by month.
       </p>
       {#if events.length}
         <div class="log-scroll">
@@ -585,6 +592,7 @@
                       >{e.grant_label ?? ""}{e.note ? ` · ${e.note}` : ""}</td
                     >
                     <td class="c-value num tabular small">
+                      <span class="mobile-value-label">Value then </span>
                       {#if e.unit_value_minor != null}
                         {formatMoney(e.quantity * e.unit_value_minor, ccy)}
                       {:else}
@@ -612,15 +620,18 @@
           >
         </div>
         <p class="small muted vsec-lede">
-          What one unit is worth, from each date until the next. An unlisted company has no price
-          feed, so these come from funding rounds or internal revaluations — and the account's
-          value on any date is this price times the units held then.
+          Set a price from a funding round or internal valuation. It applies until the next price.
         </p>
         <div class="box">
           <div class="row wrap mark-form">
             <label class="field f-value">
               <span class="small muted">Value per unit</span>
-              <input class="input tabular" placeholder="29.37" bind:value={markForm.unit_value} />
+              <input
+                class="input tabular"
+                inputmode="decimal"
+                placeholder="29.37"
+                bind:value={markForm.unit_value}
+              />
             </label>
             <label class="field">
               <span class="small muted">From</span>
@@ -630,7 +641,7 @@
               <span class="small muted">Note (optional)</span>
               <input
                 class="input"
-                placeholder="e.g. Series B, US$500m post"
+                placeholder="e.g. Series B funding round"
                 bind:value={markForm.note}
               />
             </label>
@@ -682,14 +693,21 @@
       </section>
 
       <section class="vsec">
-        <div class="vsec-head"><h3>Recorded values</h3></div>
+        <div class="vsec-head">
+          <h3>Recorded values</h3>
+          <button class="btn btn-sm" onclick={revalue} disabled={busy}>Record today</button>
+        </div>
         <p class="small muted vsec-lede">
-          What went into net-worth history. One per date the value changed, written for you from
-          the grants and prices above, and they start hidden — tick <em>Show synced &amp; scheduled</em> to see them. A value
-          you set by hand overrides the computed one from its date until the next, which is the way
-          to record something the grants and prices can't know: a tender offer, or a mark you'd
-          rather not restate the whole history with.
+          History updates automatically when grants, exercises or prices change. Record today to
+          save a value between changes.
         </p>
+        <details class="history-help">
+          <summary>About recorded values</summary>
+          <p class="small muted">
+            Enable Show synced &amp; scheduled to see computed values. A value you set by hand
+            overrides the computed value from its date until the next recorded value.
+          </p>
+        </details>
         <ValuationPanel
           {accountId}
           accountClass="investment"
@@ -721,7 +739,7 @@
     /* The panel is the query container: it renders both above a full-width ledger and inside a
        row on the accounts page, so its own width — not the viewport's — is what decides whether
        the activity table has room for five columns. */
-    container-type: inline-size;
+    container: equity / inline-size;
     background: var(--bg-elev);
     border: 1px solid var(--border);
     border-radius: var(--r);
@@ -770,24 +788,6 @@
     font-size: 14px;
     font-weight: 600;
     color: var(--text-faint);
-  }
-  .head-acts {
-    display: flex;
-    flex-direction: column;
-    /* Left-aligned inside a block that sits at the right end of the header: the caption stays
-       readable whether the block is beside the totals or wrapped under them. */
-    align-items: flex-start;
-    gap: 6px;
-  }
-  .eyebrow {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--text-faint);
-  }
-  .btn-row {
-    gap: 8px;
-    flex-wrap: wrap;
   }
   .warn-line {
     margin-top: 4px;
@@ -848,7 +848,23 @@
     white-space: nowrap;
   }
   .terms {
-    margin-top: 2px;
+    margin-top: 4px;
+    overflow-wrap: anywhere;
+  }
+  .grant-terms, .history-help {
+    margin: 8px 0 12px;
+    font-size: 13px;
+  }
+  summary {
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 8px 0;
+  }
+  details p {
+    margin: 4px 0 0;
+  }
+  .mobile-value-label {
+    display: none;
   }
   .progress {
     display: flex;
@@ -945,13 +961,13 @@
   }
   .form-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
   }
   /* The note is the field with the most to say, so it takes the rest of its row rather than
      sharing a 140px cell with the numbers. */
   .form-grid .wide {
-    grid-column: span 2;
+    grid-column: 1 / -1;
   }
   .note-field {
     margin-top: 10px;
@@ -1048,12 +1064,83 @@
     font-weight: 550;
   }
 
-  /* Five columns need about 520px. Below that the ledger becomes two lines per event — when and
-     what on the first, which grant and what it was worth on the second — rather than a table
-     scrolled sideways with a 60px grant column breaking one word per line.
+  /* Five columns need about 520px. Below that each event stacks its date, units, grant and
+     historical value, rather than squeezing the grant into a narrow column or scrolling
+     the table sideways.
      Keyed on the *panel*, not the viewport: this component also renders inside an account row on
      the accounts page, where the viewport says nothing about how much room it has. */
   @container (max-width: 520px) {
+    .head, .totals, .grant-foot {
+      width: 100%;
+    }
+    .grant-top {
+      display: grid;
+      gap: 4px;
+    }
+    .grant-name {
+      overflow-wrap: anywhere;
+    }
+    .grant-value {
+      margin-left: 0;
+      font-size: 18px;
+    }
+    .progress {
+      display: grid;
+      gap: 8px;
+    }
+    .bar {
+      width: 100%;
+      max-width: none;
+      height: 8px;
+    }
+    .figures {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      width: 100%;
+      margin: 4px 0 8px;
+    }
+    .figure {
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr);
+      gap: 4px;
+      white-space: normal;
+    }
+    .figure .tabular {
+      font-size: 16px;
+      overflow-wrap: anywhere;
+    }
+    .swatch {
+      align-self: center;
+    }
+    .figure-label {
+      grid-column: 1 / -1;
+      font-size: 12px;
+    }
+    .form-grid, .mark-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 14px;
+    }
+    .mark-form .f-value, .mark-form .f-note, .field {
+      min-width: 0;
+    }
+    .field .input {
+      width: 100%;
+      min-width: 0;
+    }
+    .acts .btn, .form-acts .btn, .add, .mark-act .btn, .vsec-head .btn,
+    .mark-form .btn {
+      min-height: 44px;
+    }
+    .form-acts .btn-primary, .mark-form .btn {
+      flex: 1;
+    }
+    .band {
+      flex-wrap: wrap;
+      gap: 2px;
+    }
+
     .log,
     .log tbody,
     .log tr.month,
@@ -1066,7 +1153,7 @@
     }
     .log tbody tr {
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: minmax(0, 1fr) auto;
       column-gap: 8px;
       row-gap: 1px;
       padding: 7px 0;
@@ -1089,17 +1176,23 @@
       visibility: visible;
     }
     .log .c-kind {
-      grid-area: 1 / 2;
+      grid-area: 2 / 1;
     }
     .log .c-units {
-      grid-area: 1 / 3;
+      grid-area: 2 / 2;
     }
     .log .c-grant {
-      grid-area: 2 / 1 / 2 / 3;
+      grid-area: 3 / 1 / 4 / -1;
+      overflow-wrap: anywhere;
       white-space: normal;
     }
     .log .c-value {
-      grid-area: 2 / 3;
+      grid-area: 4 / 1 / 5 / -1;
+      text-align: left;
+      color: var(--text-muted);
+    }
+    .mobile-value-label {
+      display: inline;
     }
     .log tr.month th {
       /* Its colspan is gone with `display: block`, so the band spans the row by being one. */
