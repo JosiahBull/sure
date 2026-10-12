@@ -1,4 +1,5 @@
 <script lang="ts">
+  import OptionalNote from "./OptionalNote.svelte";
   import { onMount } from "svelte";
   import { api, formatMoney, formatDate, type Schemas } from "./api";
 
@@ -35,6 +36,7 @@
   let amount = $state("");
   let asOf = $state(new Date().toISOString().slice(0, 10));
   let note = $state("");
+  let noteOpen = $state(false);
   let busy = $state(false);
   let error = $state<string | null>(null);
   let confirmingDelete = $state<number | null>(null);
@@ -79,6 +81,7 @@
     amount = String(Math.abs(v.value_minor) / 100);
     asOf = v.as_of;
     note = v.note ?? "";
+    noteOpen = !!note;
     error = null;
   }
 
@@ -86,6 +89,7 @@
     editingId = null;
     amount = "";
     note = "";
+    noteOpen = false;
     asOf = new Date().toISOString().slice(0, 10);
     error = null;
   }
@@ -146,10 +150,7 @@
       <span class="small muted">As of</span>
       <input class="input" type="date" aria-label="Value as of" bind:value={asOf} />
     </label>
-    <label class="field f-note">
-      <span class="small muted">Note (optional)</span>
-      <input class="input" placeholder="e.g. opening balance from the IR letter" bind:value={note} />
-    </label>
+    <OptionalNote bind:value={note} bind:open={noteOpen} placeholder="e.g. opening balance from the IR letter" />
     <button class="btn btn-sm btn-primary" onclick={save} disabled={busy || !amount.trim()}>
       {editing ? "Save changes" : `Set ${isLiability ? "balance" : "value"}`}
     </button>
@@ -262,18 +263,11 @@
     align-items: flex-end;
     gap: 10px;
   }
-  /* Floors, not just grow weights: a flex row shrinks its items before it wraps, so without
-     these the note input was squeezed to a clipped "e.g. op" on a phone — the width this app
-     actually targets — instead of dropping to a line of its own. */
+  /* Keep the amount input readable before the flex row wraps. */
   .value-form .f-amount {
     flex: 1 1 130px;
     min-width: 120px;
   }
-  .value-form .f-note {
-    flex: 4 1 180px;
-    min-width: 160px;
-  }
-
   .hint {
     margin: 6px 0 0;
     color: var(--text-muted);
@@ -330,5 +324,19 @@
     background: var(--inset);
     border: 1px solid var(--border);
     color: var(--text-muted);
+  }
+  @container equity (max-width: 520px) {
+    .value-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 14px;
+    }
+    .value-form .field, .value-form .input {
+      min-width: 0;
+      width: 100%;
+    }
+    .value-form .btn {
+      min-height: 44px;
+    }
   }
 </style>

@@ -73,4 +73,14 @@
     font-size: 0.75rem;
     font-weight: 550;
   }
+  @container (max-width: 360px) {
+    .tab {
+      flex: 1;
+      padding: 12px 6px;
+      font-size: 13px;
+    }
+    .count {
+      display: none;
+    }
+  }
 </style>
