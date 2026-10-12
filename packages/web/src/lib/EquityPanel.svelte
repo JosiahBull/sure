@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { api, formatMoney, formatDate, type Schemas } from "./api";
+  import Icon from "./Icon.svelte";
   import InvestmentTabs from "./InvestmentTabs.svelte";
   import ValuationPanel from "./ValuationPanel.svelte";
 
@@ -22,6 +23,43 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
+  let openGrantMenu = $state<number | null>(null);
+
+  async function toggleGrantMenu(grantId: number) {
+    openGrantMenu = openGrantMenu === grantId ? null : grantId;
+    if (openGrantMenu !== null) {
+      await tick();
+      document.getElementById(`grant-menu-${accountId}-${grantId}`)
+        ?.querySelector<HTMLButtonElement>("button")?.focus();
+    }
+  }
+
+  function closeGrantMenu(event: MouseEvent | FocusEvent) {
+    if (!(event.target instanceof Element) || !event.target.closest(".grant-menu")) {
+      openGrantMenu = null;
+    }
+  }
+
+  function menuKeys(event: KeyboardEvent) {
+    const menu = event.currentTarget as HTMLElement;
+    const buttons = [...menu.querySelectorAll<HTMLButtonElement>("button")];
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    let next: number;
+    if (event.key === "ArrowDown") next = (index + 1) % buttons.length;
+    else if (event.key === "ArrowUp") next = (index + buttons.length - 1) % buttons.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = buttons.length - 1;
+    else return;
+    event.preventDefault();
+    buttons[next]?.focus();
+  }
+
+  function dismissGrantMenu(event: KeyboardEvent) {
+    if (event.key === "Escape" && openGrantMenu !== null) {
+      document.getElementById(`grant-actions-${accountId}-${openGrantMenu}`)?.focus();
+      openGrantMenu = null;
+    }
+  }
 
   const ccy = $derived(equity?.currency_code ?? "NZD");
 
@@ -305,11 +343,13 @@
 
 </script>
 
+<svelte:window onclick={closeGrantMenu} onkeydown={dismissGrantMenu} />
+<svelte:document onfocusin={closeGrantMenu} />
+
 <div class="equity">
   {#if equity}
     <header class="head">
       <div class="totals">
-        <div class="small muted">Current value</div>
         <div class="tabular total">{formatMoney(equity.total_value_minor, ccy)}</div>
         <!-- The product, then its two factors, with the operator shown. An exercise moves value
              from the right figure to the left while changing neither the units held nor the
@@ -326,20 +366,6 @@
             <span class="half-label">exercisable options</span>
           </span>
         </div>
-        {#if equity.unit_value_minor != null}
-          <div class="small muted">
-            at <span class="tabular">{formatMoney(equity.unit_value_minor, ccy)}</span> a unit{equity.unit_value_as_of
-              ? `, set ${formatDate(equity.unit_value_as_of)}`
-              : ""}
-          </div>
-        {:else}
-          <!-- Framed rather than coloured red: `--warn` fails contrast as small text, so it
-               carries the frame and the words stay at full ink. -->
-          <div class="small warn-line">
-            No price set — units are tracked exactly, but this values at zero until you add one
-            under Valuations.
-          </div>
-        {/if}
       </div>
     </header>
 
@@ -350,7 +376,10 @@
         { id: "valuations", label: "Valuations", count: marks.length },
       ]}
       active={tab}
-      onselect={(id) => (tab = id as typeof tab)}
+      onselect={(id) => {
+        tab = id as typeof tab;
+        openGrantMenu = null;
+      }}
     />
 
     {#if error}<div class="error-banner banner">{error}</div>{/if}
@@ -366,16 +395,46 @@
             >
           </div>
 
-          <div class="small muted terms">
-            {g.company}
-            {#if terms[g.grant_id]}
-              <span> · strike {formatMoney(terms[g.grant_id]!.strike_minor, g.currency_code)}</span>
-            {/if}
+          <div class="grant-tools">
+            <details class="grant-terms">
+              <summary>Vesting schedule</summary>
+              <p class="small muted">{termsLine(g)}</p>
+            </details>
+            <div class="grant-menu">
+              <button
+                id="grant-actions-{accountId}-{g.grant_id}"
+                class="btn btn-sm menu-trigger"
+                aria-label="Actions for {grantTitle(g)}"
+                aria-haspopup="menu"
+                aria-expanded={openGrantMenu === g.grant_id}
+                aria-controls="grant-menu-{accountId}-{g.grant_id}"
+                onclick={() => toggleGrantMenu(g.grant_id)}
+              ><Icon name="more-horizontal" size={20} /></button>
+              {#if openGrantMenu === g.grant_id}
+                <div
+                  id="grant-menu-{accountId}-{g.grant_id}"
+                  class="grant-actions"
+                  role="menu"
+                  tabindex="-1"
+                  aria-label="Grant actions"
+                  onkeydown={menuKeys}
+                >
+                  <button role="menuitem" onclick={() => {
+                    openGrantMenu = null;
+                    startExercise(g.grant_id);
+                  }}>Exercise</button>
+                  <button role="menuitem" onclick={() => {
+                    openGrantMenu = null;
+                    startEditGrant(g.grant_id);
+                  }}>Edit</button>
+                  <button role="menuitem" class="delete-action" onclick={() => {
+                    openGrantMenu = null;
+                    confirmDeleteGrant = g.grant_id;
+                  }}>Delete</button>
+                </div>
+              {/if}
+            </div>
           </div>
-          <details class="grant-terms">
-            <summary>Vesting schedule</summary>
-            <p class="small muted">{termsLine(g)}</p>
-          </details>
 
           <div class="progress">
             <!-- The two filled segments are the first two figures below, in the same order and
@@ -412,23 +471,16 @@
                 <span class="figure-label">unvested</span>
               </span>
             </div>
-            <div class="row acts">
-              <button class="btn btn-sm" onclick={() => startExercise(g.grant_id)}>Exercise</button>
-              <button class="btn btn-sm" onclick={() => startEditGrant(g.grant_id)}>Edit</button>
-              {#if confirmDeleteGrant === g.grant_id}
-                <button class="btn btn-sm btn-danger" onclick={() => deleteGrant(g.grant_id)}
-                  >Delete grant and its history?</button
-                >
-                <button class="btn btn-sm" onclick={() => (confirmDeleteGrant = null)}>Keep</button>
-              {:else}
-                <button
-                  class="btn btn-sm"
-                  aria-label="Delete {grantTitle(g)}"
-                  onclick={() => (confirmDeleteGrant = g.grant_id)}>✕</button
-                >
-              {/if}
-            </div>
           </div>
+          {#if confirmDeleteGrant === g.grant_id}
+            <div class="sub">
+              <p class="small sub-intro">Delete {grantTitle(g)} and its vesting history? This can't be undone.</p>
+              <div class="row form-acts">
+                <button class="btn btn-sm btn-danger" onclick={() => deleteGrant(g.grant_id)} disabled={busy}>Delete grant</button>
+                <button class="btn btn-sm" onclick={() => (confirmDeleteGrant = null)}>Keep grant</button>
+              </div>
+            </div>
+          {/if}
 
           {#if exerciseFor === g.grant_id}
             <div class="sub">
@@ -538,7 +590,11 @@
           </div>
         </div>
       {:else}
-        <button class="btn btn-sm add" onclick={startAddGrant}>Add grant</button>
+        <div class="add-grant">
+          <button class="btn btn-primary add" onclick={startAddGrant}>
+            <Icon name="plus" size={18} /> Add grant
+          </button>
+        </div>
       {/if}
     {/if}
 
@@ -758,8 +814,10 @@
   }
   .totals {
     min-width: 0;
+    width: 100%;
   }
   .total {
+    text-align: right;
     font-size: 1.5rem;
     font-weight: 680;
     letter-spacing: -0.02em;
@@ -789,16 +847,6 @@
     font-weight: 600;
     color: var(--text-faint);
   }
-  .warn-line {
-    margin-top: 4px;
-    padding: 6px 9px;
-    border-radius: var(--r-sm);
-    background: color-mix(in srgb, var(--warn) 14%, transparent);
-    border: 1px solid color-mix(in srgb, var(--warn) 42%, transparent);
-    color: var(--text);
-    max-width: 46ch;
-  }
-
   .banner {
     margin-bottom: 10px;
   }
@@ -828,28 +876,76 @@
     border-top: 1px solid var(--border);
   }
   .grant-top {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: baseline;
-    gap: 2px 12px;
+    gap: 8px;
   }
-  /* A basis rather than `1fr`: on a phone the longer grant names run to four lines, and a value
-     pinned beside line one of four reads as belonging to that line. Past this width the value
-     drops to its own line instead. */
   .grant-name {
-    flex: 1 1 220px;
     font-size: 15px;
     font-weight: 620;
+    overflow-wrap: anywhere;
   }
   .grant-value {
-    margin-left: auto;
     font-size: 15px;
     font-weight: 600;
     white-space: nowrap;
   }
-  .terms {
+  .grant-tools {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
     margin-top: 4px;
-    overflow-wrap: anywhere;
+  }
+  .grant-tools .grant-terms {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+  }
+  .grant-menu {
+    position: relative;
+    flex: none;
+  }
+  .menu-trigger {
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-color: transparent;
+    background: transparent;
+  }
+  .grant-actions {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 10;
+    width: 160px;
+    padding: 4px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-sm);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+  .grant-actions button {
+    display: block;
+    width: 100%;
+    min-height: 44px;
+    text-align: left;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: var(--r-sm);
+    font: inherit;
+    font-size: 14px;
+    color: var(--text);
+    background: transparent;
+    cursor: pointer;
+  }
+  .grant-actions button:hover, .grant-actions button:focus-visible {
+    background: var(--hover);
+  }
+  .grant-actions .delete-action {
+    color: var(--negative);
   }
   .grant-terms, .history-help {
     margin: 8px 0 12px;
@@ -935,12 +1031,16 @@
   .swatch.unvested {
     background: var(--seg-unvested);
   }
-  .acts {
-    gap: 6px;
-    flex-wrap: wrap;
+  .add-grant {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
   }
   .add {
-    margin-top: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
   }
 
   /* ---- inset forms -------------------------------------------------------- */
@@ -1073,17 +1173,6 @@
     .head, .totals, .grant-foot {
       width: 100%;
     }
-    .grant-top {
-      display: grid;
-      gap: 4px;
-    }
-    .grant-name {
-      overflow-wrap: anywhere;
-    }
-    .grant-value {
-      margin-left: 0;
-      font-size: 18px;
-    }
     .progress {
       display: grid;
       gap: 8px;
@@ -1129,7 +1218,7 @@
       width: 100%;
       min-width: 0;
     }
-    .acts .btn, .form-acts .btn, .add, .mark-act .btn, .vsec-head .btn,
+    .form-acts .btn, .add, .mark-act .btn, .vsec-head .btn,
     .mark-form .btn {
       min-height: 44px;
     }
