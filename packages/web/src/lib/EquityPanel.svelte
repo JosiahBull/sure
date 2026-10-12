@@ -83,6 +83,8 @@
   }
 
   const minorOf = (s: string) => Math.round(parseFloat(s.replace(/[^0-9.-]/g, "")) * 100);
+  // Native number inputs accept exponent notation too; convert their actual numeric value.
+  const nativeMinorOf = (s: string) => Math.round(Number(s) * 100);
   const majorOf = (minor: number) => String(minor / 100);
 
   // ---- grants: the quantity side ---------------------------------------------------
@@ -98,10 +100,14 @@
   let showGrantForm = $state(false);
   let editingGrant = $state<number | null>(null);
   let grantForm = $state(blankGrant());
+  let grantNoteOpen = $state(false);
 
   function startAddGrant() {
+    exerciseFor = null;
+    confirmDeleteGrant = null;
     editingGrant = null;
     grantForm = blankGrant();
+    grantNoteOpen = false;
     showGrantForm = true;
     error = null;
   }
@@ -109,6 +115,8 @@
   function startEditGrant(grantId: number) {
     const row = terms[grantId];
     if (!row) return;
+    exerciseFor = null;
+    confirmDeleteGrant = null;
     editingGrant = grantId;
     grantForm = {
       company: row.company,
@@ -119,22 +127,23 @@
       cliff_months: String(row.cliff_months),
       note: row.note ?? "",
     };
+    grantNoteOpen = !!row.note;
     showGrantForm = true;
     error = null;
   }
 
   async function saveGrant() {
-    const quantity = parseInt(grantForm.quantity.replace(/[^0-9]/g, ""), 10);
+    const quantity = Number(grantForm.quantity);
     if (!grantForm.company.trim() || !quantity) return;
-    const cliff = parseInt(grantForm.cliff_months, 10);
+    const cliff = Number(grantForm.cliff_months);
     const body = {
       company: grantForm.company.trim(),
       grant_date: grantForm.grant_date,
       quantity,
-      strike_minor: grantForm.strike.trim() ? minorOf(grantForm.strike) : 0,
+      strike_minor: grantForm.strike.trim() ? nativeMinorOf(grantForm.strike) : 0,
       // No unit value: price lives in the Valuations tab. Sending one here would write a mark
       // dated at the grant, which is rarely what someone editing vesting terms means.
-      vest_months: parseInt(grantForm.vest_months, 10) || 48,
+      vest_months: Number(grantForm.vest_months),
       // Not `|| 0`-guarded: zero is the common case (only the first grant in a series usually
       // carries a cliff), and falsy-coalescing would turn "no cliff" into twelve months.
       cliff_months: Number.isFinite(cliff) ? cliff : 0,
@@ -185,16 +194,21 @@
     note: "",
   });
   let exerciseForm = $state(blankExercise());
+  let exerciseNoteOpen = $state(false);
 
   function startExercise(grantId: number) {
+    showGrantForm = false;
+    editingGrant = null;
+    confirmDeleteGrant = null;
     exerciseFor = grantId;
     exerciseForm = blankExercise();
+    exerciseNoteOpen = false;
     error = null;
   }
 
   async function saveExercise() {
     if (exerciseFor === null) return;
-    const quantity = parseInt(exerciseForm.quantity.replace(/[^0-9]/g, ""), 10);
+    const quantity = Number(exerciseForm.quantity);
     if (!quantity) return;
     busy = true;
     error = null;
@@ -203,7 +217,7 @@
       body: {
         exercise_date: exerciseForm.exercise_date,
         quantity,
-        price_minor: exerciseForm.price.trim() ? minorOf(exerciseForm.price) : 0,
+        price_minor: exerciseForm.price.trim() ? nativeMinorOf(exerciseForm.price) : 0,
         note: exerciseForm.note.trim() || null,
       },
     });
@@ -295,51 +309,12 @@
     return bits.join(" · ");
   }
 
-  // Exhaustive by type: adding an `EquityEventKind` variant is a compile error here. One map
-  // rather than three parallel ones, so a new kind cannot pick up a label while silently
-  // inheriting some other kind's weight or its effect on the running total.
-  //
-  // `adds` is the honest distinction the list has to draw: vesting and the cliff release units,
-  // while an exercise moves the same units from exercisable to owned. Summing all three into a
-  // month's total would double-count every exercise.
-  const EVENT: Record<
-    Schemas["EquityEventKind"],
-    { label: string; tone: "quiet" | "mark" | "strong"; adds: boolean }
-  > = {
-    // Monthly vesting is most of any ledger here, so it is the one kind that gets no chip:
-    // badging the ordinary case is what buries the two that matter.
-    vest: { label: "vested", tone: "quiet", adds: true },
-    cliff: { label: "cliff", tone: "mark", adds: true },
-    exercise: { label: "exercised", tone: "strong", adds: false },
+  // Exhaustive by type: a new event kind must get a readable record label.
+  const EVENT: Record<Schemas["EquityEventKind"], string> = {
+    vest: "Vested",
+    cliff: "Cliff vested",
+    exercise: "Exercised",
   };
-
-  type Month = { key: string; label: string; released: number; rows: Event[] };
-
-  // A four-year grant is around fifty near-identical rows, which is unreadable flat. The cadence
-  // they actually have is monthly, so the month is the grouping — and its heading carries what
-  // the month did, which no individual row can say.
-  const months = $derived.by(() => {
-    const by = new Map<string, Month>();
-    for (const e of events) {
-      const key = e.date.slice(0, 7);
-      let m = by.get(key);
-      if (!m) {
-        m = { key, label: monthLabel(e.date), released: 0, rows: [] };
-        by.set(key, m);
-      }
-      m.rows.push(e);
-      if (EVENT[e.kind].adds) m.released += e.quantity;
-    }
-    return [...by.values()];
-  });
-
-  // Same local-midnight guard as `formatDate`: an ISO day string parsed as UTC lands in the
-  // previous month for half the world.
-  function monthLabel(iso: string): string {
-    const d = new Date(`${iso.slice(0, 10)}T00:00:00`);
-    if (isNaN(d.getTime())) return iso;
-    return d.toLocaleDateString("en-NZ", { month: "long", year: "numeric" });
-  }
 
 </script>
 
@@ -389,17 +364,10 @@
       {#each equity.grants as g (g.grant_id)}
         <article class="grant">
           <div class="grant-top">
-            <strong class="grant-name">{grantTitle(g)}</strong>
-            <span class="tabular grant-value"
-              >{formatMoney(g.total_value_minor, g.currency_code)}</span
-            >
-          </div>
-
-          <div class="grant-tools">
-            <details class="grant-terms">
-              <summary>Vesting schedule</summary>
-              <p class="small muted">{termsLine(g)}</p>
-            </details>
+            <div class="grant-heading">
+              <strong class="grant-name">{grantTitle(g)}</strong>
+              <span class="tabular grant-value">{formatMoney(g.total_value_minor, g.currency_code)}</span>
+            </div>
             <div class="grant-menu">
               <button
                 id="grant-actions-{accountId}-{g.grant_id}"
@@ -409,7 +377,7 @@
                 aria-expanded={openGrantMenu === g.grant_id}
                 aria-controls="grant-menu-{accountId}-{g.grant_id}"
                 onclick={() => toggleGrantMenu(g.grant_id)}
-              ><Icon name="more-horizontal" size={20} /></button>
+              ><Icon name="more-vertical" size={20} /></button>
               {#if openGrantMenu === g.grant_id}
                 <div
                   id="grant-menu-{accountId}-{g.grant_id}"
@@ -429,11 +397,17 @@
                   }}>Edit</button>
                   <button role="menuitem" class="delete-action" onclick={() => {
                     openGrantMenu = null;
+                    showGrantForm = false;
+                    exerciseFor = null;
                     confirmDeleteGrant = g.grant_id;
                   }}>Delete</button>
                 </div>
               {/if}
             </div>
+            <details class="grant-terms">
+              <summary>Vesting schedule</summary>
+              <p class="small muted">{termsLine(g)}</p>
+            </details>
           </div>
 
           <div class="progress">
@@ -483,46 +457,58 @@
           {/if}
 
           {#if exerciseFor === g.grant_id}
-            <div class="sub">
-              <div class="sub-title">Record an exercise · {grantTitle(g)}</div>
+            <form class="sub equity-form" onsubmit={(event) => { event.preventDefault(); saveExercise(); }}>
+              <div class="sub-title">Record an exercise</div>
               <p class="small muted sub-intro">
-                Only what had vested by the date below can be exercised —
-                {g.vested_unexercised.toLocaleString()} available today.
+                {g.vested_unexercised.toLocaleString()} units available today. Availability depends on the exercise date.
               </p>
               <div class="form-grid">
-                <label class="field">
+                <label class="field wide">
                   <span class="small muted">Date</span>
-                  <input class="input" type="date" bind:value={exerciseForm.exercise_date} />
+                  <input class="input" type="date" required bind:value={exerciseForm.exercise_date} />
                 </label>
                 <label class="field">
                   <span class="small muted">Units</span>
                   <input
                     class="input tabular"
+                    type="number"
                     inputmode="numeric"
-                    bind:value={exerciseForm.quantity}
+                    min="1"
+                    step="1"
+                    required
+                    value={exerciseForm.quantity}
+                    oninput={(event) => (exerciseForm.quantity = event.currentTarget.value)}
                   />
                 </label>
                 <label class="field">
-                  <span class="small muted">Price paid per unit</span>
+                  <span class="small muted">Price paid per unit <span aria-hidden="true">({g.currency_code})</span></span>
                   <input
                     class="input tabular"
+                    aria-label="Price paid per unit"
+                    type="number"
                     inputmode="decimal"
+                    min="0"
+                    step="0.01"
                     placeholder="0.01"
-                    bind:value={exerciseForm.price}
+                    value={exerciseForm.price}
+                    oninput={(event) => (exerciseForm.price = event.currentTarget.value)}
                   />
                 </label>
-                <label class="field wide">
-                  <span class="small muted">Note (optional)</span>
+              </div>
+              <details class="form-optional" bind:open={exerciseNoteOpen}>
+                <summary>Note (optional)</summary>
+                <label class="field">
+                  <span class="sr-only">Note (optional)</span>
                   <input class="input" bind:value={exerciseForm.note} />
                 </label>
-              </div>
+              </details>
               <div class="row form-acts">
-                <button class="btn btn-sm btn-primary" onclick={saveExercise} disabled={busy}
+                <button class="btn btn-sm btn-primary" type="submit" disabled={busy}
                   >Record exercise</button
                 >
-                <button class="btn btn-sm" onclick={() => (exerciseFor = null)}>Cancel</button>
+                <button class="btn btn-sm" type="button" onclick={() => (exerciseFor = null)}>Cancel</button>
               </div>
-            </div>
+            </form>
           {/if}
         </article>
       {/each}
@@ -532,63 +518,71 @@
       {/if}
 
       {#if showGrantForm}
-        <div class="sub">
+        <form class="sub equity-form" onsubmit={(event) => { event.preventDefault(); saveGrant(); }}>
           <div class="sub-title">{editingGrant !== null ? "Edit grant" : "Add a grant"}</div>
           <p class="small muted sub-intro">
-            Use the vesting start date from your deed. Set the share price under Valuations.
+            Use the vesting terms from your grant deed.
           </p>
           <div class="form-grid">
-            <label class="field">
+            <label class="field wide">
               <span class="small muted">Company</span>
-              <input class="input" bind:value={grantForm.company} />
+              <input class="input" autocomplete="organization" required bind:value={grantForm.company} />
             </label>
-            <label class="field">
+            <label class="field wide">
               <span class="small muted">Vesting starts</span>
-              <input class="input" type="date" bind:value={grantForm.grant_date} />
+              <input class="input" type="date" required bind:value={grantForm.grant_date} />
             </label>
             <label class="field">
               <span class="small muted">Units granted</span>
-              <input class="input tabular" inputmode="numeric" bind:value={grantForm.quantity} />
+              <input class="input tabular" type="number" inputmode="numeric" min="1" step="1" required value={grantForm.quantity} oninput={(event) => (grantForm.quantity = event.currentTarget.value)} />
             </label>
             <label class="field">
-              <span class="small muted">Strike price</span>
+              <span class="small muted">Strike price <span aria-hidden="true">({ccy})</span></span>
               <input
                 class="input tabular"
+                aria-label="Strike price"
+                type="number"
                 inputmode="decimal"
+                min="0"
+                step="0.01"
                 placeholder="0.00"
-                bind:value={grantForm.strike}
+                value={grantForm.strike}
+                oninput={(event) => (grantForm.strike = event.currentTarget.value)}
               />
             </label>
             <label class="field">
-              <span class="small muted">Vesting (months)</span>
-              <input class="input tabular" inputmode="numeric" bind:value={grantForm.vest_months} />
+              <span class="small muted">Vesting months</span>
+              <input class="input tabular" aria-label="Vesting (months)" type="number" inputmode="numeric" min="1" step="1" required value={grantForm.vest_months} oninput={(event) => (grantForm.vest_months = event.currentTarget.value)} />
             </label>
             <label class="field">
-              <span class="small muted">Cliff (months)</span>
+              <span class="small muted">Cliff months</span>
               <input
                 class="input tabular"
+                aria-label="Cliff (months)"
+                type="number"
                 inputmode="numeric"
+                min="0"
+                step="1"
                 placeholder="0"
-                bind:value={grantForm.cliff_months}
+                value={grantForm.cliff_months}
+                oninput={(event) => (grantForm.cliff_months = event.currentTarget.value)}
               />
-              <span class="small muted">0 means no cliff.</span>
             </label>
           </div>
-          <label class="field note-field">
-            <span class="small muted">Grant label (optional)</span>
-            <input
-              class="input"
-              placeholder="e.g. Initial grant"
-              bind:value={grantForm.note}
-            />
-          </label>
+          <details class="form-optional" bind:open={grantNoteOpen}>
+            <summary>Grant label (optional)</summary>
+            <label class="field">
+              <span class="sr-only">Grant label (optional)</span>
+              <input class="input" placeholder="e.g. Initial grant" bind:value={grantForm.note} />
+            </label>
+          </details>
           <div class="row form-acts">
-            <button class="btn btn-sm btn-primary" onclick={saveGrant} disabled={busy}>
+            <button class="btn btn-sm btn-primary" type="submit" disabled={busy}>
               {editingGrant !== null ? "Save changes" : "Add grant"}
             </button>
-            <button class="btn btn-sm" onclick={() => (showGrantForm = false)}>Cancel</button>
+            <button class="btn btn-sm" type="button" onclick={() => (showGrantForm = false)}>Cancel</button>
           </div>
-        </div>
+        </form>
       {:else}
         <div class="add-grant">
           <button class="btn btn-primary add" onclick={startAddGrant}>
@@ -599,68 +593,31 @@
     {/if}
 
     {#if tab === "activity"}
-      <p class="small muted lede">
-        Vesting and exercises, grouped by month.
-      </p>
       {#if events.length}
-        <div class="log-scroll">
-          <table class="log">
-            <thead>
-              <tr>
-                <th class="c-date">Date</th>
-                <th class="c-kind">Event</th>
-                <th class="c-units num">Units</th>
-                <th class="c-grant">Grant</th>
-                <th class="c-value num">Value then</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each months as m (m.key)}
-                <tr class="month">
-                  <th colspan="5" scope="colgroup">
-                    <div class="band">
-                      <span>{m.label}</span>
-                      {#if m.released > 0}
-                        <span class="released">
-                          <span class="tabular">+{m.released.toLocaleString()}</span> units released
-                        </span>
-                      {/if}
-                    </div>
-                  </th>
-                </tr>
-                {#each m.rows as e, i (`${e.grant_id}:${e.date}:${e.kind}:${e.quantity}`)}
-                  <tr>
-                    <!-- The full date rather than the day-of-month, because a row read on its own
-                         still has to say when it happened — but hidden, not omitted, where the
-                         row above already carries it: four tranches vest on the same day and
-                         restating the date four times is most of what made this a wall. It stays
-                         in the DOM for assistive tech, and the narrow layout shows it again,
-                         where rows are separate blocks and "same as above" no longer reads. -->
-                    <td
-                      class="c-date tabular muted"
-                      class:repeat={i > 0 && m.rows[i - 1]!.date === e.date}>{formatDate(e.date)}</td
-                    >
-                    <td class="c-kind"
-                      ><span class="kind kind-{EVENT[e.kind].tone}">{EVENT[e.kind].label}</span></td
-                    >
-                    <td class="c-units num tabular">{e.quantity.toLocaleString()}</td>
-                    <td class="c-grant small muted"
-                      >{e.grant_label ?? ""}{e.note ? ` · ${e.note}` : ""}</td
-                    >
-                    <td class="c-value num tabular small">
-                      <span class="mobile-value-label">Value then </span>
-                      {#if e.unit_value_minor != null}
-                        {formatMoney(e.quantity * e.unit_value_minor, ccy)}
-                      {:else}
-                        <span class="faint">no price then</span>
-                      {/if}
-                    </td>
-                  </tr>
-                {/each}
-              {/each}
-            </tbody>
-          </table>
-        </div>
+        <ul class="activity-list" aria-label="Equity activity">
+          {#each events as e (`${e.grant_id}:${e.date}:${e.kind}:${e.quantity}`)}
+            <li class="activity-record">
+              <div class="record-main">
+                <span class="record-kind">{EVENT[e.kind]}</span>
+                <div class="record-meta">
+                  <time datetime={e.date}>{formatDate(e.date)}</time>
+                  {#if equity.grants.length > 1 && e.grant_label}
+                    <span class="record-grant">{e.grant_label}</span>
+                  {/if}
+                  {#if e.note}<span>{e.note}</span>{/if}
+                </div>
+              </div>
+              <div class="record-amount tabular">
+                <span>{e.quantity.toLocaleString()} units</span>
+                {#if e.unit_value_minor != null}
+                  <span class="record-value" aria-label="Value then {formatMoney(e.quantity * e.unit_value_minor, ccy)}">
+                    {formatMoney(e.quantity * e.unit_value_minor, ccy)}
+                  </span>
+                {/if}
+              </div>
+            </li>
+          {/each}
+        </ul>
       {:else}
         <p class="empty-line">Nothing yet — add a grant first.</p>
       {/if}
@@ -817,7 +774,7 @@
     width: 100%;
   }
   .total {
-    text-align: right;
+    text-align: left;
     font-size: 1.5rem;
     font-weight: 680;
     letter-spacing: -0.02em;
@@ -858,10 +815,6 @@
     border: 1px solid var(--border);
     color: var(--text);
   }
-  .lede {
-    margin: 0 0 10px;
-    max-width: 78ch;
-  }
   .empty-line {
     margin: 0;
     padding: 8px 0;
@@ -878,8 +831,13 @@
   .grant-top {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    align-items: baseline;
-    gap: 8px;
+    align-items: start;
+    gap: 0 8px;
+  }
+  .grant-heading {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
   }
   .grant-name {
     font-size: 15px;
@@ -887,24 +845,24 @@
     overflow-wrap: anywhere;
   }
   .grant-value {
-    font-size: 15px;
+    font-size: 18px;
     font-weight: 600;
     white-space: nowrap;
   }
-  .grant-tools {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    margin-top: 4px;
-  }
-  .grant-tools .grant-terms {
-    flex: 1;
-    min-width: 0;
+  .grant-top .grant-terms {
+    grid-column: 1 / -1;
     margin: 0;
+  }
+  .grant-terms summary {
+    text-align: right;
+  }
+  .grant-terms p {
+    text-align: left;
+    overflow-wrap: anywhere;
   }
   .grant-menu {
     position: relative;
-    flex: none;
+    justify-self: end;
   }
   .menu-trigger {
     width: 44px;
@@ -958,9 +916,6 @@
   }
   details p {
     margin: 4px 0 0;
-  }
-  .mobile-value-label {
-    display: none;
   }
   .progress {
     display: flex;
@@ -1054,6 +1009,7 @@
   .sub-title {
     font-size: 14px;
     font-weight: 620;
+    text-align: left;
   }
   .sub-intro {
     margin: 4px 0 10px;
@@ -1062,113 +1018,91 @@
   .form-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    gap: 8px 10px;
+  }
+  .equity-form .field {
+    min-width: 0;
+    gap: 4px;
+    text-align: left;
+  }
+  .equity-form .form-grid .field {
+    justify-content: flex-end;
+  }
+  .equity-form .input {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    font-size: 16px;
+    text-align: left;
+  }
+  .equity-form input[type="date"] {
+    appearance: none;
+  }
+  .form-optional {
+    margin: 4px 0 0;
+    font-size: 13px;
+  }
+  .form-optional summary {
+    min-height: 44px;
+    padding: 12px 0;
+    text-align: left;
   }
   /* The note is the field with the most to say, so it takes the rest of its row rather than
      sharing a 140px cell with the numbers. */
   .form-grid .wide {
     grid-column: 1 / -1;
   }
-  .note-field {
-    margin-top: 10px;
-  }
   .form-acts {
     gap: 8px;
     flex-wrap: wrap;
-    margin-top: 12px;
+    margin-top: 8px;
   }
 
   /* ---- activity ----------------------------------------------------------- */
-  .log-scroll {
-    overflow-x: auto;
+  .activity-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
   }
-  .log {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 14px;
-  }
-  .log thead th {
-    text-align: left;
-    font-weight: 550;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-faint);
-    padding: 4px 8px;
-    border-bottom: 1px solid var(--border);
-  }
-  .log td {
-    padding: 5px 8px;
-    border-bottom: 1px solid var(--border);
-    vertical-align: baseline;
-  }
-  .log tbody tr:hover td {
-    background: var(--hover);
-  }
-  .log tr.month th {
-    text-align: left;
-    padding: 7px 8px;
-    background: var(--inset);
-    border-top: 1px solid var(--border);
+  .activity-record {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 12px;
+    padding: 9px 0;
     border-bottom: 1px solid var(--border);
     font-size: 13px;
-    font-weight: 620;
+    line-height: 1.4;
   }
-  /* Flexed inside the cell, not on it: `display: flex` on a `<th>` takes it out of the table
-     layout and its colspan stops applying, collapsing the band to one column wide. The band is
-     a heading rather than a row of data, so nothing in it wants the columns anyway. */
-  .band {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
+  .activity-record:last-child {
+    border-bottom: 0;
   }
-  .log tr.month .released {
-    font-weight: 450;
-    color: var(--text-muted);
-  }
-  .log .num {
-    text-align: right;
-  }
-  /* Every column but the grant label is short and fixed: `width: 1%` collapses each to its
-     content so the one cell with prose to show takes whatever is left. */
-  .log .c-date,
-  .log .c-kind,
-  .log .c-units,
-  .log .c-value {
-    width: 1%;
-    white-space: nowrap;
-  }
-  /* Hidden rather than dropped, so the column keeps its width and the text keeps existing. */
-  .log .c-date.repeat {
-    visibility: hidden;
-  }
-  .kind {
-    display: inline-block;
-    font-size: 12px;
-    border-radius: 999px;
-    padding: 1px 8px;
-  }
-  /* No chip on the ordinary case — see EVENT above. */
-  .kind-quiet {
-    padding-left: 0;
-    padding-right: 0;
-    color: var(--text-faint);
-  }
-  .kind-mark {
-    border: 1px solid var(--border-strong);
-    color: var(--text-muted);
-  }
-  .kind-strong {
-    background: var(--inset-strong);
-    color: var(--text);
+  .record-kind {
     font-weight: 550;
   }
+  .record-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 8px;
+    color: var(--text-muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+  .record-meta time {
+    white-space: nowrap;
+  }
+  .record-amount {
+    display: grid;
+    text-align: right;
+    font-weight: 550;
+    white-space: nowrap;
+  }
+  .record-value {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 400;
+  }
 
-  /* Five columns need about 520px. Below that each event stacks its date, units, grant and
-     historical value, rather than squeezing the grant into a narrow column or scrolling
-     the table sideways.
-     Keyed on the *panel*, not the viewport: this component also renders inside an account row on
-     the accounts page, where the viewport says nothing about how much room it has. */
   @container (max-width: 520px) {
     .head, .totals, .grant-foot {
       width: 100%;
@@ -1206,7 +1140,7 @@
       grid-column: 1 / -1;
       font-size: 12px;
     }
-    .form-grid, .mark-form {
+    .mark-form {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
       gap: 14px;
@@ -1224,68 +1158,6 @@
     }
     .form-acts .btn-primary, .mark-form .btn {
       flex: 1;
-    }
-    .band {
-      flex-wrap: wrap;
-      gap: 2px;
-    }
-
-    .log,
-    .log tbody,
-    .log tr.month,
-    .log tr.month th,
-    .log td {
-      display: block;
-    }
-    .log thead {
-      display: none;
-    }
-    .log tbody tr {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      column-gap: 8px;
-      row-gap: 1px;
-      padding: 7px 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .log td {
-      padding: 0;
-      border: 0;
-    }
-    .log .c-date,
-    .log .c-kind,
-    .log .c-units,
-    .log .c-value {
-      width: auto;
-    }
-    .log .c-date,
-    .log .c-date.repeat {
-      grid-area: 1 / 1;
-      font-size: 13px;
-      visibility: visible;
-    }
-    .log .c-kind {
-      grid-area: 2 / 1;
-    }
-    .log .c-units {
-      grid-area: 2 / 2;
-    }
-    .log .c-grant {
-      grid-area: 3 / 1 / 4 / -1;
-      overflow-wrap: anywhere;
-      white-space: normal;
-    }
-    .log .c-value {
-      grid-area: 4 / 1 / 5 / -1;
-      text-align: left;
-      color: var(--text-muted);
-    }
-    .mobile-value-label {
-      display: inline;
-    }
-    .log tr.month th {
-      /* Its colspan is gone with `display: block`, so the band spans the row by being one. */
-      border-radius: var(--r-sm);
     }
   }
 

@@ -26,7 +26,7 @@ async function capture(panel: Locator, testInfo: TestInfo, name: string) {
 async function fits(panel: Locator) {
   const overflow = await panel.evaluate((el) => {
     const bounds = el.getBoundingClientRect();
-    return [...el.querySelectorAll("input, button, .figure, .c-grant, .c-value")]
+    return [...el.querySelectorAll("input, button, .figure, .record-grant, .record-value")]
       .filter((node) => node.getBoundingClientRect().width > 0)
       .filter((node) => {
         const r = node.getBoundingClientRect();
@@ -50,8 +50,14 @@ for (const width of [320, 402, 768, 1280]) {
     await expect(panel.locator(".terms")).toHaveCount(0);
     const title = (await panel.locator(".grant-name").boundingBox())!;
     const value = (await panel.locator(".grant-value").boundingBox())!;
-    expect(value.x).toBeGreaterThan(title.x);
-    expect(Math.abs(value.y - title.y)).toBeLessThan(8);
+    expect(Math.abs(value.x - title.x)).toBeLessThan(1);
+    expect(value.y).toBeGreaterThan(title.y);
+    const menu = (await panel.locator(".menu-trigger").boundingBox())!;
+    const schedule = (await panel.locator(".grant-terms summary").boundingBox())!;
+    expect(menu.x).toBeGreaterThan(title.x);
+    expect(Math.abs(menu.y - title.y)).toBeLessThan(8);
+    expect(schedule.y).toBeGreaterThan(menu.y);
+    expect(Math.abs(schedule.x + schedule.width - menu.x - menu.width)).toBeLessThan(1);
     await capture(panel, testInfo, `holdings-${width}`);
     await fits(panel);
     await panel.getByText("Vesting schedule", { exact: true }).click();
@@ -79,9 +85,10 @@ for (const width of [320, 402, 768, 1280]) {
     await panel.getByRole("menuitem", { name: "Exercise", exact: true }).click();
     await capture(panel, testInfo, `exercise-${width}`);
     await fits(panel);
-    await panel.getByRole("button", { name: "Cancel", exact: true }).click();
     await panel.getByRole("button", { name: "Actions for Startco", exact: true }).click();
     await panel.getByRole("menuitem", { name: "Edit", exact: true }).click();
+    await expect(panel.locator("form.equity-form")).toHaveCount(1);
+    await expect(panel.locator(".sub-title")).toHaveText("Edit grant");
     await capture(panel, testInfo, `edit-grant-${width}`);
     await fits(panel);
     await panel.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -91,7 +98,12 @@ for (const width of [320, 402, 768, 1280]) {
     await fits(panel);
     await panel.getByRole("button", { name: "Cancel", exact: true }).click();
     await panel.getByRole("tab", { name: /Activity/ }).click();
-    await expect(panel.locator(".log")).toBeVisible();
+    await expect(panel.getByRole("list", { name: "Equity activity" })).toBeVisible();
+    const eventCount = Number(await panel.getByRole("tab", { name: /Activity/ }).locator(".count").textContent());
+    await expect(panel.locator(".activity-record")).toHaveCount(eventCount);
+    await expect(panel.locator(".activity-record").first()).toContainText("250 units");
+    const record = (await panel.locator(".activity-record").first().boundingBox())!;
+    expect(record.height).toBeLessThan(64);
     await capture(panel, testInfo, `activity-${width}`);
     await fits(panel);
     await panel.getByRole("tab", { name: /Valuations/ }).click();
@@ -129,8 +141,52 @@ test("multiple grants with long labels fit on a small phone and in the account l
     await expect(panel.locator(".grant")).toHaveCount(2);
     await fits(panel);
     await capture(panel, testInfo, "multiple-grants-320");
+    // Exercise the native inputs through the UI, then verify exact persisted cents/units.
+    await panel.getByRole("button", { name: "Add grant", exact: true }).click();
+    let form = panel.locator("form.equity-form");
+    await form.getByLabel("Company", { exact: true }).fill("Startco");
+    await form.getByLabel("Vesting starts", { exact: true }).fill("2024-01-01");
+    const units = form.getByLabel("Units granted", { exact: true });
+    await expect(units).toHaveAttribute("type", "number");
+    await units.fill("1.5");
+    await form.getByRole("button", { name: "Add grant", exact: true }).click();
+    await expect(panel.locator(".grant")).toHaveCount(2);
+    await units.fill("1.25e3");
+    await form.getByLabel("Strike price", { exact: true }).fill("1.234e1");
+    await form.getByLabel("Vesting (months)", { exact: true }).fill("12");
+    await form.getByLabel("Cliff (months)", { exact: true }).fill("0");
+    await form.locator(".form-optional summary").click();
+    const label = form.getByLabel("Grant label (optional)", { exact: true });
+    await label.fill("Touch input grant");
+    await label.fill("");
+    await expect(label).toBeVisible();
+    await label.fill("Touch input grant");
+    await fits(panel);
+    await form.getByRole("button", { name: "Add grant", exact: true }).click();
+    await expect(panel.locator(".grant")).toHaveCount(3);
+    const grants = await (await page.request.get(`/api/accounts/${account.id}/equity-grants`)).json() as Array<{
+      id: number; quantity: number; strike_minor: number; note: string | null;
+    }>;
+    const saved = grants.find((g) => g.note === "Touch input grant")!;
+    expect(saved.quantity).toBe(1250);
+    expect(saved.strike_minor).toBe(1234);
+    await panel.getByRole("button", { name: "Actions for Touch input grant", exact: true }).click();
+    await panel.getByRole("menuitem", { name: "Exercise", exact: true }).click();
+    form = panel.locator("form.equity-form");
+    await expect(form.getByLabel("Date", { exact: true })).toHaveAttribute("type", "date");
+    await form.getByLabel("Date", { exact: true }).fill("2026-07-15");
+    await form.getByLabel("Units", { exact: true }).fill("5e1");
+    await form.getByLabel("Price paid per unit", { exact: true }).fill("1.23");
+    await form.locator(".form-optional summary").click();
+    await form.getByLabel("Note (optional)", { exact: true }).fill("Touch exercise");
+    await form.getByRole("button", { name: "Record exercise", exact: true }).click();
+    await expect(form).toHaveCount(0);
+    const exercises = await (await page.request.get(`/api/equity-grants/${saved.id}/exercises`)).json();
+    expect(exercises).toEqual(expect.arrayContaining([
+      expect.objectContaining({ quantity: 50, price_minor: 123, note: "Touch exercise" }),
+    ]));
     await panel.getByRole("tab", { name: /Activity/ }).click();
-    await expect(panel.locator("td.c-grant").first()).toContainText(/grant/);
+    await expect(panel.locator(".record-grant").first()).toContainText(/grant/);
     await fits(panel);
     await capture(panel, testInfo, "multiple-grants-activity-320");
   } finally {
