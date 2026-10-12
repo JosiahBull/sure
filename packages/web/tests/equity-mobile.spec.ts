@@ -16,7 +16,7 @@ async function capture(panel: Locator, testInfo: TestInfo, name: string) {
     await panel.screenshot({
       path: testInfo.outputPath(`${name}.png`),
       // Keep fixed shell navigation out of these component-only review images.
-      style: ".rail, .subbar { visibility: hidden !important; }",
+      style: ".rail, .subbar, .panel-col { visibility: hidden !important; }",
     });
   } finally {
     await page.setViewportSize(viewport);
@@ -53,17 +53,20 @@ for (const width of [320, 402, 768, 1280]) {
     expect(Math.abs(value.x - title.x)).toBeLessThan(1);
     expect(value.y).toBeGreaterThan(title.y);
     const menu = (await panel.locator(".menu-trigger").boundingBox())!;
-    const schedule = (await panel.locator(".grant-terms summary").boundingBox())!;
     expect(menu.x).toBeGreaterThan(title.x);
     expect(Math.abs(menu.y - title.y)).toBeLessThan(8);
-    expect(schedule.y).toBeGreaterThan(menu.y);
-    expect(Math.abs(schedule.x + schedule.width - menu.x - menu.width)).toBeLessThan(1);
+    await expect(panel.getByText("Vesting schedule", { exact: true })).toHaveCount(0);
     await capture(panel, testInfo, `holdings-${width}`);
     await fits(panel);
-    await panel.getByText("Vesting schedule", { exact: true }).click();
-    await expect(panel.locator(".grant-terms p")).toContainText("48 months");
+    await panel.getByRole("button", { name: "Actions for Startco", exact: true }).click();
+    await panel.getByRole("menuitem", { name: "Vesting schedule", exact: true }).click();
+    await expect(panel.getByRole("menu")).toHaveCount(0);
+    await expect(panel.locator(".grant-terms")).toContainText("48 months");
     await fits(panel);
-    await panel.getByText("Vesting schedule", { exact: true }).click();
+    await panel.getByRole("button", { name: "Actions for Startco", exact: true }).click();
+    await expect(panel.getByRole("menuitem", { name: "Vesting schedule", exact: true })).toHaveAttribute("aria-expanded", "true");
+    await panel.getByRole("menuitem", { name: "Vesting schedule", exact: true }).click();
+    await expect(panel.locator(".grant-terms")).toHaveCount(0);
     await panel.getByRole("button", { name: "Actions for Startco", exact: true }).click();
     await expect(panel.getByRole("menu")).toBeVisible();
     await fits(panel);

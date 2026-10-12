@@ -24,6 +24,7 @@
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
   let openGrantMenu = $state<number | null>(null);
+  let scheduleFor = $state<number | null>(null);
 
   async function toggleGrantMenu(grantId: number) {
     openGrantMenu = openGrantMenu === grantId ? null : grantId;
@@ -395,6 +396,16 @@
                     openGrantMenu = null;
                     startEditGrant(g.grant_id);
                   }}>Edit</button>
+                  <button
+                    role="menuitem"
+                    aria-expanded={scheduleFor === g.grant_id}
+                    aria-controls="grant-schedule-{accountId}-{g.grant_id}"
+                    onclick={() => {
+                      scheduleFor = scheduleFor === g.grant_id ? null : g.grant_id;
+                      document.getElementById(`grant-actions-${accountId}-${g.grant_id}`)?.focus();
+                      openGrantMenu = null;
+                    }}
+                  >Vesting schedule</button>
                   <button role="menuitem" class="delete-action" onclick={() => {
                     openGrantMenu = null;
                     showGrantForm = false;
@@ -404,10 +415,11 @@
                 </div>
               {/if}
             </div>
-            <details class="grant-terms">
-              <summary>Vesting schedule</summary>
-              <p class="small muted">{termsLine(g)}</p>
-            </details>
+            {#if scheduleFor === g.grant_id}
+              <p id="grant-schedule-{accountId}-{g.grant_id}" class="grant-terms small muted">
+                {termsLine(g)}
+              </p>
+            {/if}
           </div>
 
           <div class="progress">
@@ -851,12 +863,7 @@
   }
   .grant-top .grant-terms {
     grid-column: 1 / -1;
-    margin: 0;
-  }
-  .grant-terms summary {
-    text-align: right;
-  }
-  .grant-terms p {
+    margin: 8px 0 0;
     text-align: left;
     overflow-wrap: anywhere;
   }
