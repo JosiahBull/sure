@@ -92,11 +92,18 @@ for (const width of [320, 402, 768, 1280]) {
     await panel.getByRole("menuitem", { name: "Edit", exact: true }).click();
     await expect(panel.locator("form.equity-form")).toHaveCount(1);
     await expect(panel.locator(".sub-title")).toHaveText("Edit grant");
+    await expect(panel.getByLabel("Cliff (months)", { exact: true })).toBeVisible();
+    await expect(panel.getByLabel("Cliff (months)", { exact: true })).toHaveValue("12");
     await capture(panel, testInfo, `edit-grant-${width}`);
     await fits(panel);
     await panel.getByRole("button", { name: "Cancel", exact: true }).click();
     await panel.getByRole("button", { name: "Add grant", exact: true }).click();
     await expect(panel.getByLabel("Company", { exact: true })).toHaveValue("");
+    await expect(panel.getByLabel("Strike price", { exact: true })).toHaveValue("1.2");
+    await expect(panel.getByLabel("Cliff (months)", { exact: true })).toBeHidden();
+    await panel.getByText("Cliff (optional)", { exact: true }).click();
+    await expect(panel.getByLabel("Cliff (months)", { exact: true })).toHaveValue("0");
+    await panel.getByText("Cliff (optional)", { exact: true }).click();
     await capture(panel, testInfo, `add-grant-${width}`);
     await fits(panel);
     await panel.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -112,6 +119,8 @@ for (const width of [320, 402, 768, 1280]) {
     await panel.getByRole("tab", { name: /Valuations/ }).click();
     await expect(panel.getByText("Price per unit", { exact: true })).toBeVisible();
     await expect(panel.getByRole("button", { name: "Record today" })).toBeVisible();
+    await expect(panel.getByLabel("Note (optional)", { exact: true }).first()).toBeHidden();
+    await expect(panel.getByLabel("Note (optional)", { exact: true }).last()).toBeHidden();
     await capture(panel, testInfo, `valuations-${width}`);
     await fits(panel);
   });
@@ -133,7 +142,7 @@ test("multiple grants with long labels fit on a small phone and in the account l
       const grant = await page.request.post(`/api/accounts/${account.id}/equity-grants`, {
         data: {
           company: "Startco", grant_date: "2024-01-01", quantity: 12000,
-          strike_minor: 120, unit_value_minor: 800, vest_months: 48, cliff_months: 12, note,
+          strike_minor: note === "Additional grant" ? 250 : 120, unit_value_minor: 800, vest_months: 48, cliff_months: 12, note,
         },
       });
       expect(grant.ok()).toBe(true);
@@ -147,6 +156,7 @@ test("multiple grants with long labels fit on a small phone and in the account l
     // Exercise the native inputs through the UI, then verify exact persisted cents/units.
     await panel.getByRole("button", { name: "Add grant", exact: true }).click();
     let form = panel.locator("form.equity-form");
+    await expect(form.getByLabel("Strike price", { exact: true })).toHaveValue("2.5");
     await form.getByLabel("Company", { exact: true }).fill("Startco");
     await form.getByLabel("Vesting starts", { exact: true }).fill("2024-01-01");
     const units = form.getByLabel("Units granted", { exact: true });
@@ -157,8 +167,8 @@ test("multiple grants with long labels fit on a small phone and in the account l
     await units.fill("1.25e3");
     await form.getByLabel("Strike price", { exact: true }).fill("1.234e1");
     await form.getByLabel("Vesting (months)", { exact: true }).fill("12");
-    await form.getByLabel("Cliff (months)", { exact: true }).fill("0");
-    await form.locator(".form-optional summary").click();
+    await expect(form.getByLabel("Cliff (months)", { exact: true })).toBeHidden();
+    await form.locator("summary").filter({ hasText: "Grant label (optional)" }).click();
     const label = form.getByLabel("Grant label (optional)", { exact: true });
     await label.fill("Touch input grant");
     await label.fill("");
@@ -168,11 +178,12 @@ test("multiple grants with long labels fit on a small phone and in the account l
     await form.getByRole("button", { name: "Add grant", exact: true }).click();
     await expect(panel.locator(".grant")).toHaveCount(3);
     const grants = await (await page.request.get(`/api/accounts/${account.id}/equity-grants`)).json() as Array<{
-      id: number; quantity: number; strike_minor: number; note: string | null;
+      id: number; quantity: number; strike_minor: number; cliff_months: number; note: string | null;
     }>;
     const saved = grants.find((g) => g.note === "Touch input grant")!;
     expect(saved.quantity).toBe(1250);
     expect(saved.strike_minor).toBe(1234);
+    expect(saved.cliff_months).toBe(0);
     await panel.getByRole("button", { name: "Actions for Touch input grant", exact: true }).click();
     await panel.getByRole("menuitem", { name: "Exercise", exact: true }).click();
     form = panel.locator("form.equity-form");
@@ -192,6 +203,29 @@ test("multiple grants with long labels fit on a small phone and in the account l
     await expect(panel.locator(".record-grant").first()).toContainText(/grant/);
     await fits(panel);
     await capture(panel, testInfo, "multiple-grants-activity-320");
+    await panel.getByRole("tab", { name: /Valuations/ }).click();
+    const markForm = panel.locator(".mark-form");
+    await markForm.locator("summary").click();
+    const markNote = markForm.getByLabel("Note (optional)", { exact: true });
+    await markNote.fill("Synthetic funding round");
+    await markNote.fill("");
+    await expect(markNote).toBeVisible();
+    await markNote.fill("Synthetic funding round");
+    await markForm.getByLabel("Value per unit", { exact: true }).fill("9");
+    await markForm.getByRole("button", { name: "Set price", exact: true }).click();
+    await expect(panel.locator(".mark-note", { hasText: "Synthetic funding round" })).toBeVisible();
+    await expect(markNote).toBeHidden();
+    const valuationForm = panel.locator(".value-form");
+    await valuationForm.locator("summary").click();
+    await valuationForm.getByLabel("Note (optional)", { exact: true }).fill("Synthetic valuation note");
+    await valuationForm.getByLabel("Value", { exact: true }).fill("1000");
+    await valuationForm.getByRole("button", { name: "Set value", exact: true }).click();
+    const valueRow = panel.locator(".valuations .line", { hasText: "Synthetic valuation note" });
+    await expect(valueRow).toBeVisible();
+    await valueRow.getByRole("button", { name: /^Edit value/ }).click();
+    await expect(valuationForm.getByLabel("Note (optional)", { exact: true })).toBeVisible();
+    await expect(valuationForm.getByLabel("Note (optional)", { exact: true })).toHaveValue("Synthetic valuation note");
+    await fits(panel);
   } finally {
     // Remove only the synthetic account this test owns.
     expect((await page.request.delete(`/api/accounts/${account.id}`)).ok()).toBe(true);

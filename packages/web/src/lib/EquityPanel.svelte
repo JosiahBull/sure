@@ -3,6 +3,7 @@
   import { api, formatMoney, formatDate, type Schemas } from "./api";
   import Icon from "./Icon.svelte";
   import InvestmentTabs from "./InvestmentTabs.svelte";
+  import OptionalNote from "./OptionalNote.svelte";
   import ValuationPanel from "./ValuationPanel.svelte";
 
   let { accountId, onchange }: { accountId: number; onchange?: () => void } = $props();
@@ -102,12 +103,18 @@
   let editingGrant = $state<number | null>(null);
   let grantForm = $state(blankGrant());
   let grantNoteOpen = $state(false);
+  let grantCliffOpen = $state(false);
 
   function startAddGrant() {
     exerciseFor = null;
     confirmDeleteGrant = null;
     editingGrant = null;
     grantForm = blankGrant();
+    const latestGrant = Object.values(terms).sort((a, b) =>
+      b.grant_date.localeCompare(a.grant_date) || b.id - a.id
+    )[0];
+    if (latestGrant) grantForm.strike = majorOf(latestGrant.strike_minor);
+    grantCliffOpen = false;
     grantNoteOpen = false;
     showGrantForm = true;
     error = null;
@@ -128,6 +135,7 @@
       cliff_months: String(row.cliff_months),
       note: row.note ?? "",
     };
+    grantCliffOpen = row.cliff_months > 0;
     grantNoteOpen = !!row.note;
     showGrantForm = true;
     error = null;
@@ -237,6 +245,7 @@
     note: "",
   });
   let markForm = $state(blankMark());
+  let markNoteOpen = $state(false);
   let confirmDeleteMark = $state<number | null>(null);
 
   async function saveMark() {
@@ -254,6 +263,7 @@
     busy = false;
     if (e) return fail(e, "Couldn't save that price.");
     markForm = blankMark();
+    markNoteOpen = false;
     await load();
     // The server nudges the equity-rebuild task on this write, so every valuation from this
     // date forward is restated within a second or two. Said in the future tense rather than the
@@ -507,13 +517,7 @@
                   />
                 </label>
               </div>
-              <details class="form-optional" bind:open={exerciseNoteOpen}>
-                <summary>Note (optional)</summary>
-                <label class="field">
-                  <span class="sr-only">Note (optional)</span>
-                  <input class="input" bind:value={exerciseForm.note} />
-                </label>
-              </details>
+              <OptionalNote bind:value={exerciseForm.note} bind:open={exerciseNoteOpen} />
               <div class="row form-acts">
                 <button class="btn btn-sm btn-primary" type="submit" disabled={busy}
                   >Record exercise</button
@@ -566,6 +570,9 @@
               <span class="small muted">Vesting months</span>
               <input class="input tabular" aria-label="Vesting (months)" type="number" inputmode="numeric" min="1" step="1" required value={grantForm.vest_months} oninput={(event) => (grantForm.vest_months = event.currentTarget.value)} />
             </label>
+          </div>
+          <details class="form-optional" bind:open={grantCliffOpen}>
+            <summary>Cliff (optional)</summary>
             <label class="field">
               <span class="small muted">Cliff months</span>
               <input
@@ -580,7 +587,7 @@
                 oninput={(event) => (grantForm.cliff_months = event.currentTarget.value)}
               />
             </label>
-          </div>
+          </details>
           <details class="form-optional" bind:open={grantNoteOpen}>
             <summary>Grant label (optional)</summary>
             <label class="field">
@@ -662,14 +669,7 @@
               <span class="small muted">From</span>
               <input class="input" type="date" bind:value={markForm.as_of} />
             </label>
-            <label class="field f-note">
-              <span class="small muted">Note (optional)</span>
-              <input
-                class="input"
-                placeholder="e.g. Series B funding round"
-                bind:value={markForm.note}
-              />
-            </label>
+            <OptionalNote bind:value={markForm.note} bind:open={markNoteOpen} placeholder="e.g. Series B funding round" />
             <button
               class="btn btn-sm btn-primary"
               onclick={saveMark}
@@ -1152,7 +1152,7 @@
       grid-template-columns: minmax(0, 1fr);
       gap: 14px;
     }
-    .mark-form .f-value, .mark-form .f-note, .field {
+    .mark-form .f-value, .field {
       min-width: 0;
     }
     .field .input {
@@ -1197,15 +1197,10 @@
     gap: 10px;
     align-items: flex-end;
   }
-  /* Floors, not just weights: a flex row shrinks its items before it wraps, so without these
-     the note collapsed to "e.g. Se" on a phone instead of dropping to its own line. */
+  /* Keep the price input readable before the flex row wraps. */
   .mark-form .f-value {
     flex: 1 1 120px;
     min-width: 110px;
-  }
-  .mark-form .f-note {
-    flex: 4 1 180px;
-    min-width: 160px;
   }
   .mark {
     display: grid;

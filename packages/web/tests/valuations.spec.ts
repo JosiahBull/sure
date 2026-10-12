@@ -73,7 +73,8 @@ test("a back-dated balance can be set, and lands in date order", async ({ page }
 
   await page.getByLabel("Value", { exact: true }).fill("650000");
   await page.getByLabel("Value as of").fill("2019-06-01");
-  await page.locator('input[placeholder*="opening balance"]').fill("bought it");
+  await page.locator(".value-form summary").click();
+  await page.getByLabel("Note (optional)", { exact: true }).fill("bought it");
   await page.getByRole("button", { name: "Set value", exact: true }).last().click();
 
   // Newest-first, so a 2019 value is the last row on the page.
