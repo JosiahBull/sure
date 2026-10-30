@@ -1,9 +1,41 @@
-import { createSureClient, type Schemas } from "@sure/client";
+import { createSureClient, type paths, type Schemas } from "@sure/client";
 
+import { mutating } from "./lastKnown";
 import { baseCurrency, isBaseCurrency } from "./money.svelte";
 
 /** Same-origin typed API client (dev proxies /api to the backend). */
 export const api = createSureClient("/");
+
+/**
+ * Every write forgets what `lastKnown` kept, before it is sent — see that module for why this
+ * is the whole of its freshness guarantee. Done here, on the one client every page shares, so a
+ * new mutation cannot forget to.
+ *
+ * Wrapping the verbs rather than registering openapi-fetch middleware, because middleware runs
+ * for reads too and the client `await`s it before calling `fetch`. That one microtask put every
+ * request of a launch behind whatever rendered synchronously first — the kept figures, as it
+ * happens — and measurably delayed the fresh ones. Reads stay exactly as they were.
+ */
+function tracked<F extends (...args: never[]) => Promise<unknown>>(
+  send: F,
+  readOnly: ReadonlySet<string> = new Set(),
+): F {
+  return ((...args: Parameters<F>) =>
+    readOnly.has(args[0] as string) ? send(...args) : mutating(() => send(...args))) as F;
+}
+
+/**
+ * POSTs that only read — a rule preview carries an expression too large for a query string.
+ * Treating it as a write would forget the kept figures and refetch the balances on every
+ * debounced keystroke in the rule builder. Typed against the API's paths, so renaming the route
+ * fails the build here rather than leaving a stale entry nobody notices.
+ */
+const READ_ONLY_POSTS: ReadonlySet<keyof paths> = new Set<keyof paths>(["/api/rules/preview"]);
+
+api.POST = tracked(api.POST, READ_ONLY_POSTS);
+api.PUT = tracked(api.PUT);
+api.PATCH = tracked(api.PATCH);
+api.DELETE = tracked(api.DELETE);
 
 export type { Schemas };
 

@@ -8,16 +8,19 @@
    src/lib/theme.svelte.ts, which resolves the "auto" preference from the
    system). Dark is the default so the app renders correctly even before JS
    runs. System fonts only. */
+/* No brackets in these file names (upstream ships `Geist[wght].woff2`). WebKit requests that
+   as `Geist%5Bwght%5D.woff2` while the service worker's precache keys it with the brackets
+   literal, so on Safari the fonts missed the precache and crossed the network on every launch. */
 @font-face {
   font-family: "Geist";
-  src: url("/fonts/Geist[wght].woff2") format("woff2-variations");
+  src: url("/fonts/Geist-Variable.woff2") format("woff2-variations");
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: "Geist Mono";
-  src: url("/fonts/GeistMono[wght].woff2") format("woff2-variations");
+  src: url("/fonts/GeistMono-Variable.woff2") format("woff2-variations");
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
@@ -507,6 +510,12 @@ label.field {
   text-align: center;
   color: var(--text-faint);
   padding: 32px;
+}
+/* Figures the server has not confirmed yet — drawn from the last launch (src/lib/lastKnown.ts),
+   or predating an edit. Dimmed is the whole signal, deliberately: it says "not this minute's
+   number" without a word, and lifts the moment the refresh lands. */
+[data-stale="true"] {
+  opacity: 0.55;
 }
 .error-banner {
   background: color-mix(in srgb, var(--negative) 12%, transparent);

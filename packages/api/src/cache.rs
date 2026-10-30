@@ -23,7 +23,16 @@
 //! seeing stale numbers, which is worse than the cost. They get revalidation instead: the
 //! ETag layer turns an unchanged report into a 304, saving the payload but not the
 //! recompute. Cutting the recompute needs a server-side cache invalidated by every
-//! mutation, which is a bigger change than this one.
+//! mutation, which is a bigger change than this one — and, measured, not where a slow launch
+//! spends its time: the reports the dashboard opens on take single-digit milliseconds on an
+//! 8,000-transaction ledger, against three network round trips before the first byte on a
+//! connection iOS dropped while the app was suspended.
+//!
+//! That launch cost is met on the client instead, without loosening anything here: the SPA
+//! draws the last answer it saw while this revalidation is in flight, marked stale, and forgets
+//! every kept answer the moment it sends a write (`packages/web/src/lib/lastKnown.ts`). The
+//! headers stay exactly as they are, so the browser's HTTP cache and the service worker still
+//! hold nothing under `/api`.
 
 use std::time::Duration;
 
@@ -474,7 +483,7 @@ mod tests {
         );
         // Copied through verbatim, so the name doesn't change with the bytes.
         assert_eq!(
-            cache_of(Method::GET, None, "/fonts/Geist[wght].woff2"),
+            cache_of(Method::GET, None, "/fonts/Geist-Variable.woff2"),
             CachePolicy::StaticWindow
         );
     }

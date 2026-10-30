@@ -1,4 +1,5 @@
-import { api } from "./api";
+import { api, type Schemas } from "./api";
+import { keep, lastKnown } from "./lastKnown";
 import { setBaseCurrency } from "./money.svelte";
 
 /**
@@ -15,6 +16,12 @@ import { setBaseCurrency } from "./money.svelte";
 
 let started = false;
 
+const KEY = "settings";
+
+// The last-known currency, before anything has drawn a figure: a USD household otherwise
+// launches with every amount labelled against the NZD fallback and relabels a second later.
+setBaseCurrency(lastKnown<Schemas["Settings"]>(KEY)?.data.base_currency_code);
+
 /** Load once per page load. Safe to call from every component that might be the first to mount. */
 export function ensureSettingsLoaded(): void {
   if (started) return;
@@ -30,6 +37,6 @@ export function ensureSettingsLoaded(): void {
  * an error banner over a page of otherwise correct figures.
  */
 export async function refreshSettings(): Promise<void> {
-  const { data } = await api.GET("/api/settings", {});
+  const { data } = await keep(KEY, () => api.GET("/api/settings", {}));
   if (data) setBaseCurrency(data.base_currency_code);
 }

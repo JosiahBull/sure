@@ -1,13 +1,15 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { api, formatMoney, formatDate, type Schemas } from "../lib/api";
-  import { activeRange, filters, periodLinkParams } from "../lib/state.svelte";
+  import { keep, lastKnown, onMutationSettled } from "../lib/lastKnown";
+  import { activeRange, filters, periodKey, periodLinkParams } from "../lib/state.svelte";
   import { navigate } from "../lib/router.svelte";
   import { Tween } from "svelte/motion";
   import { cubicOut } from "svelte/easing";
   import LineChart from "../lib/charts/LineChart.svelte";
   import Sankey, { type SankeyTarget } from "../lib/charts/Sankey.svelte";
   import FxNotice from "../lib/FxNotice.svelte";
+  import LastKnownNote from "../lib/LastKnownNote.svelte";
   import StaleFeedNotice from "../lib/StaleFeedNotice.svelte";
 
   let nw = $state<Schemas["NetWorthSeries"] | null>(null);
@@ -16,6 +18,12 @@
   let forciblyIncludeAll = $state(false);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  /** What is drawn is not yet the server's answer for this period — kept, or another period's. */
+  let stale = $state(false);
+  /** When the kept answer being drawn was fetched, once its refresh has failed. */
+  let failedOverKept = $state<number | null>(null);
+  /** Only the latest load may write: a slow answer for the old period must not land last. */
+  let loadSeq = 0;
 
   /** Sample finer as the window narrows so a zoomed-in range stays legible. */
   function intervalFor(from?: string, to?: string): "day" | "week" | "month" {
@@ -27,33 +35,69 @@
   }
 
   async function load() {
+    const mine = ++loadSeq;
     loading = true;
     error = null;
+    failedOverKept = null;
     hoverIndex = null;
     const { from, to } = activeRange();
     const interval = intervalFor(from, to);
+    const include = forciblyIncludeAll;
+    const period = periodKey();
+    const nwKey = period && `net-worth:${period}`;
+    const flowKey = period && `sankey:${period}:${include ? "all" : "cashflow"}`;
+
+    const answers = Promise.all([
+      keep(nwKey, () => api.GET("/api/reports/net-worth", { params: { query: { from, to, interval } } })),
+      keep(flowKey, () =>
+        api.GET("/api/reports/sankey", { params: { query: { from, to, include_excluded_from_cashflow: include } } }),
+      ),
+    ]);
+    // The last-known answer for this period, drawn now and replaced when the server answers.
+    // Both or neither: a kept chart beside a spinner reads as half a page that failed. Drawn
+    // after the requests above are on the wire, not before: the charts are the most expensive
+    // render in the app, and time spent on them first is time added to the fresh figures.
+    const keptNw = lastKnown<Schemas["NetWorthSeries"]>(nwKey);
+    const keptFlow = lastKnown<Schemas["SankeyGraph"]>(flowKey);
+    const kept = keptNw && keptFlow ? Math.min(keptNw.at, keptFlow.at) : null;
+    if (keptNw && keptFlow) {
+      nw = keptNw.data;
+      sankey = keptFlow.data;
+    }
+    stale = nw !== null;
+
     try {
-      const [a, b] = await Promise.all([
-        api.GET("/api/reports/net-worth", { params: { query: { from, to, interval } } }),
-        api.GET("/api/reports/sankey", { params: { query: { from, to, include_excluded_from_cashflow: forciblyIncludeAll } } }),
-      ]);
+      const [a, b] = await answers;
+      if (mine !== loadSeq) return;
+      if ((a.error || b.error) && kept !== null) {
+        failedOverKept = kept;
+        return;
+      }
       nw = a.data ?? null;
       sankey = b.data ?? null;
+      stale = false;
       if (a.error || b.error) error = "Failed to load reports.";
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      if (mine !== loadSeq) return;
+      // Offline: `fetch` throws. Over a kept answer, keep it and say how old it is.
+      if (kept !== null) failedOverKept = kept;
+      else error = e instanceof Error ? e.message : String(e);
     } finally {
-      loading = false;
+      if (mine === loadSeq) loading = false;
     }
   }
 
   $effect(() => {
-    // Reload whenever the global filters change (preset or brush window).
+    // Reload whenever the global filters change (preset or brush window) — and only then:
+    // `load` reads what is already drawn, which must not become a reason to load again.
     filters.range;
     filters.custom;
     forciblyIncludeAll;
-    load();
+    untrack(load);
   });
+  // And after an edit made while this page is showing — the account panel's "New account" is
+  // beside it — since the figures drawn here predate it.
+  onMount(() => onMutationSettled(load));
 
   /** Bank connections whose stale balances affect both reports. */
   let providers = $state<Schemas["Provider"][]>([]);
@@ -130,6 +174,9 @@
 {#if error}
   <div class="error-banner" style="margin-bottom:16px">{error}</div>
 {/if}
+{#if failedOverKept !== null}
+  <LastKnownNote at={failedOverKept} />
+{/if}
 
 <StaleFeedNotice {providers} href="#/settings/providers" />
 
@@ -139,7 +186,7 @@
   }}
 />
 
-<div class="grid cards">
+<div class="grid cards" data-stale={stale} aria-busy={stale && loading}>
   <section class="card">
     <div class="card-title">
       <h2>Net worth</h2>
@@ -286,6 +333,12 @@
   }
 
   .cards { gap: 16px; }
+  /* Stale, this page dims its figures rather than whole cards: a dimmed checkbox or Expand
+     button reads as disabled, and Expand works without the network. Opacity multiplies down the
+     tree, so the grid itself has to stay at 1 for the titles to escape it. */
+  .cards[data-stale="true"] { opacity: 1; }
+  .cards[data-stale="true"] .card > :global(:not(.card-title)),
+  .cards[data-stale="true"] .badge { opacity: 0.55; }
   .cash-summary { display: flex; flex-wrap: wrap; gap: 16px 32px; margin-bottom: 16px; }
   .cash-summary strong { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
   table { width: 100%; margin-bottom: 20px; font-variant-numeric: tabular-nums; }

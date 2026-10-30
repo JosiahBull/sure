@@ -13,6 +13,7 @@
   // was on screen is exactly what runs.
   import { onMount } from "svelte";
   import { api, formatMoney, type Schemas } from "./api";
+  import { mutating } from "./lastKnown";
   import { ensureLoaded as ensurePeople, ownershipLabel } from "./people.svelte";
   import { uploadBody } from "./zip";
 
@@ -109,11 +110,14 @@
     if (assign) params.set("assign", assign);
     if (cutover) params.set("cutover", cutover);
     if (sourceOverride) params.set("source", sourceOverride);
-    const res = await fetch(`/api/import?${params}`, {
-      method: "POST",
-      headers: { "Content-Type": built.contentType },
-      body: built.body,
-    });
+    // Bracketed by hand: the one write that does not go through the shared client's verbs.
+    const res = await mutating(() =>
+      fetch(`/api/import?${params}`, {
+        method: "POST",
+        headers: { "Content-Type": built.contentType },
+        body: built.body,
+      }),
+    );
     if (!res.ok) {
       const body = await res.json().catch(() => null);
       throw new Error(body?.error?.message ?? "Import failed.");

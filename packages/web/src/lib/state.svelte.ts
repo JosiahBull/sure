@@ -104,6 +104,21 @@ export function activeRange(): { from?: string; to?: string } {
   return rangeDates(filters.range);
 }
 
+/**
+ * The period as a name, for keying what `lastKnown` keeps — the preset, or `null` for a brushed
+ * window, which is not kept at all.
+ *
+ * The preset rather than the dates it resolves to, because most presets end today: keyed by
+ * date, "Last 30 days" would miss on the first launch of every day, which is the launch that
+ * most needs a head start. Yesterday's thirty days, drawn stale for the second it takes the
+ * refresh to land, is the last thing this device saw of that view, which is all a kept answer
+ * claims to be. A brushed window is the opposite case: every drag is a new pair of dates, so
+ * keeping them would only ever evict the presets that a launch does come back to.
+ */
+export function periodKey(): string | null {
+  return filters.custom ? null : filters.range;
+}
+
 // ---- the period, in the URL --------------------------------------------------------------
 
 /** Whether a string is one of the preset keys. */
