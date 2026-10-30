@@ -43,10 +43,14 @@ const ROUTES = [
   "/settings/categories",
   "/settings/rules",
   "/settings/merchants",
+  // Not in the menu: five taps on its version line open it (tests/debug-page.spec.ts).
+  "/settings/debug",
 ];
 
 /** The settings pages whose only route in is the panel — Accounts is the landing page. */
-const DRAWER_ONLY = ROUTES.filter((r) => r.startsWith("/settings/") && r !== "/settings/accounts");
+const DRAWER_ONLY = ROUTES.filter(
+  (r) => r.startsWith("/settings/") && r !== "/settings/accounts" && r !== "/settings/debug",
+);
 
 async function goto(page: Page, route: string) {
   await page.goto(`/#${route}`);

@@ -2213,6 +2213,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/debug/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What this process saw of this request: the HTTP version, the addresses it carried and the
+         *     kind of network each belongs to, the whitelisted proxy headers, and the server's clock and
+         *     version. Never stored.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The request as the server saw it */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RequestEcho"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/equity-exercises/{id}": {
         parameters: {
             query?: never;
@@ -5025,6 +5065,11 @@ export interface components {
             profile: "generic";
         });
         /**
+         * @description Where an address in [`RequestEcho::addresses`] was read from.
+         * @enum {string}
+         */
+        AddressSource: "cf_connecting_ip" | "x_forwarded_for" | "x_real_ip" | "peer";
+        /**
          * @description The unit a property's floor/land area is recorded in.
          * @enum {string}
          */
@@ -5224,7 +5269,7 @@ export interface components {
          * @description A category plus its nested children, for rendering the category tree.
          *
          *     `#[schema(no_recursion)]` is required: this type is self-referential via
-         *     `children`, and utoipa 5 eagerly inlines nested schemas by default, so without it
+         *     `children`, and utoipa (5 and 6) eagerly inlines nested schemas by default, so without it
          *     building the OpenAPI document recurses forever and overflows the stack. The
          *     attribute tells utoipa to emit a `$ref` for the recursive field and terminate.
          */
@@ -5392,6 +5437,12 @@ export interface components {
             /** Format: int64 */
             tax_credit_minor?: number | null;
             currency_code: string;
+        };
+        /** @description One echoed request header. */
+        EchoedHeader: {
+            /** @description Lower-case, as HTTP/2 sends it. */
+            name: string;
+            value: string;
         };
         /**
          * @description One dated change in what an account holds: a vesting tranche or an exercise.
@@ -6046,6 +6097,12 @@ export interface components {
              */
             rates_as_of?: string | null;
         };
+        /**
+         * @description Which kind of network an address belongs to. This is the in-app evidence of the path a
+         *     request took: a tailnet address means it came over Tailscale, a private one means the LAN.
+         * @enum {string}
+         */
+        NetworkClass: "loopback" | "tailscale" | "lan" | "public";
         NewCurrency: {
             code: string;
             name: string;
@@ -6060,6 +6117,12 @@ export interface components {
             /** @description Defaults to the account's currency. */
             currency_code?: string | null;
             note?: string | null;
+        };
+        /** @description One address the request carried, and the kind of network it belongs to. */
+        ObservedAddress: {
+            source: components["schemas"]["AddressSource"];
+            ip: string;
+            network: components["schemas"]["NetworkClass"];
         };
         /**
          * @description Who an account belongs to. Every account has one — there is no unattributed state.
@@ -6408,6 +6471,33 @@ export interface components {
          * @enum {string}
          */
         RepaymentFrequency: "weekly" | "fortnightly" | "monthly";
+        /** @description What this process saw of the request that asked for it. */
+        RequestEcho: {
+            /**
+             * @description The protocol of the connection that reached this process, as hyper names it
+             *     (`HTTP/1.1`, `HTTP/2.0`). Behind a reverse proxy, that is the proxy's connection.
+             */
+            http_version: string;
+            client?: components["schemas"]["ObservedAddress"] | null;
+            /**
+             * @description Every address the request carried, in the order the rate limiter believes them when
+             *     `TRUST_PROXY_HEADERS` is on: `CF-Connecting-IP`, each `X-Forwarded-For` hop from the
+             *     left, `X-Real-IP`, then the TCP peer. A value that is not an IP address is left out
+             *     here and still appears among the headers.
+             */
+            addresses: components["schemas"]["ObservedAddress"][];
+            /** @description The whitelisted request headers, in a fixed order. */
+            headers: components["schemas"]["EchoedHeader"][];
+            /** @description This process's clock when it answered, RFC 3339 in UTC to the millisecond. */
+            server_time: string;
+            /**
+             * Format: int64
+             * @description The same instant in milliseconds since the Unix epoch, for working out clock skew.
+             */
+            server_time_ms: number;
+            /** @description This build's version. */
+            version: string;
+        };
         Rule: {
             /** Format: int64 */
             id: number;

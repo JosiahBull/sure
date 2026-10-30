@@ -16,6 +16,12 @@ function apiSchemaHash(): string {
   return createHash("sha256").update(types).digest("hex").slice(0, 12);
 }
 
+/** The release version, from the root manifest that `scripts/check-versions.sh` holds to Cargo's. */
+function appVersion(): string {
+  const manifest = readFileSync(new URL("../../package.json", import.meta.url), "utf8");
+  return (JSON.parse(manifest) as { version: string }).version;
+}
+
 // The dev server proxies /api to the Rust backend; in production the backend serves
 // the built assets directly (WEB_DIR), so the SPA and API share an origin.
 export default defineConfig({
@@ -75,6 +81,7 @@ export default defineConfig({
   },
   define: {
     __API_SCHEMA_HASH__: JSON.stringify(apiSchemaHash()),
+    __APP_VERSION__: JSON.stringify(appVersion()),
   },
   build: {
     target: "es2022",

@@ -106,6 +106,38 @@ test("the validator changes when the data does", async ({ server, api }) => {
   expect(header(after, "etag")).not.toBe(before);
 });
 
+// ---- Server-Timing --------------------------------------------------------------
+
+/** `app;dur=<ms>`, as `telemetry::stamp_server_timing` writes it. */
+const SERVER_TIMING = /^app;dur=\d+\.\d$/;
+
+test("every response says how long the server held it, a 304 and a compressed one included", async ({
+  server,
+  api,
+}) => {
+  await createAccount(api, "Everyday", "bank");
+  const first = await fetch(`${server.baseURL}/api/accounts`);
+  expect(header(first, "server-timing")).toMatch(SERVER_TIMING);
+
+  // A browser merges a 304's headers into the response it revalidated, so a 304 without its
+  // own figure would report the stored response's.
+  const revalidated = await fetch(`${server.baseURL}/api/accounts`, {
+    headers: { "If-None-Match": header(first, "etag") },
+  });
+  expect(revalidated.status).toBe(304);
+  expect(header(revalidated, "server-timing")).toMatch(SERVER_TIMING);
+
+  const compressed = await fetch(`${server.baseURL}/api/openapi.json`, {
+    headers: { "Accept-Encoding": "br" },
+  });
+  expect(header(compressed, "content-encoding")).toBe("br");
+  expect(header(compressed, "server-timing")).toMatch(SERVER_TIMING);
+
+  const missing = await fetch(`${server.baseURL}/api/accounts/999999`);
+  expect(missing.status).toBe(404);
+  expect(header(missing, "server-timing")).toMatch(SERVER_TIMING);
+});
+
 test("responses that must not be stored carry no validator", async ({ server }) => {
   const res = await fetch(`${server.baseURL}/api/health`);
   expect(res.headers.get("etag")).toBeNull();

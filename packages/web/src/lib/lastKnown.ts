@@ -193,6 +193,16 @@ function remember(key: string, data: unknown): void {
   persist();
 }
 
+/** What is kept now, for the connection page: how many entries, their size, the oldest. */
+export function keptStats(): { entries: number; chars: number; oldestAt: number | null } {
+  const kept = Object.entries(memory);
+  return {
+    entries: kept.length,
+    chars: kept.reduce((sum, [k, entry]) => sum + k.length + JSON.stringify(entry).length, 0),
+    oldestAt: kept.length ? Math.min(...kept.map(([, entry]) => entry.at)) : null,
+  };
+}
+
 /** Forget everything kept, here and in storage. */
 function forgetAll(): void {
   memory = {};

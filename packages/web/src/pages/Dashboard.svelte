@@ -2,6 +2,7 @@
   import { onMount, untrack } from "svelte";
   import { api, formatMoney, formatDate, type Schemas } from "../lib/api";
   import { keep, lastKnown, onMutationSettled } from "../lib/lastKnown";
+  import { FRESH_DRAWN, KEPT_DRAWN, markDrawn } from "../lib/launchTiming";
   import { activeRange, filters, periodKey, periodLinkParams } from "../lib/state.svelte";
   import { navigate } from "../lib/router.svelte";
   import { Tween } from "svelte/motion";
@@ -63,6 +64,7 @@
     if (keptNw && keptFlow) {
       nw = keptNw.data;
       sankey = keptFlow.data;
+      markDrawn(KEPT_DRAWN);
     }
     stale = nw !== null;
 
@@ -77,6 +79,7 @@
       sankey = b.data ?? null;
       stale = false;
       if (a.error || b.error) error = "Failed to load reports.";
+      else markDrawn(FRESH_DRAWN);
     } catch (e) {
       if (mine !== loadSeq) return;
       // Offline: `fetch` throws. Over a kept answer, keep it and say how old it is.
