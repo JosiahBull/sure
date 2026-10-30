@@ -159,6 +159,20 @@ sure-testproxy = { path = "packages/testproxy" }
 [profile.dev]
 debug = "line-tables-only"
 
+# The rules engine, optimised even in debug builds. Every import evaluates each rule against
+# each row, and zen-expression 2 builds every `Variable` string as a `hipstr::HipStr`, whose
+# code is many small functions that only become cheap once inlined. At opt-level 0 that roughly
+# doubled the API suite's large-import tests (6.8s to 14.0s on CI, against a 20s timeout), while
+# release builds measured identical to zen-expression 0.55. Measured 2026-10-30, the 5,000-row
+# CSV import's server CPU in a debug build was 4.5s on 0.55, 6.7s on 2.x, and 1.2s on 2.x with
+# these three crates optimised.
+[profile.dev.package.zen-expression]
+opt-level = 3
+[profile.dev.package.zen-types]
+opt-level = 3
+[profile.dev.package.hipstr]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "thin"
