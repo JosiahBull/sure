@@ -266,14 +266,18 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 16px;
+    /* Turned on its side — which is exactly when someone opens this to get the width — an
+       iPhone has the Dynamic Island against one edge. */
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+      max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
     background: rgba(0, 0, 0, 0.45);
     backdrop-filter: blur(2px);
   }
   .overlay .modal {
     display: flex;
     flex-direction: column;
-    width: min(1650px, 96vw);
+    /* `100%` is the overlay's padded box, so the insets above actually hold. */
+    width: min(1650px, 96vw, 100%);
     padding: 16px;
     border-radius: var(--r-lg);
     border: 1px solid var(--border-strong);

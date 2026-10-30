@@ -209,6 +209,9 @@ button {
   max-width: none;
   margin: 0 auto;
   padding: 0 var(--gutter) calc(48px + env(safe-area-inset-bottom));
+  /* A phone on its side has the Dynamic Island on one edge and reports an inset on both. The
+     left one is the rail's to absorb; the right one is this column's. */
+  padding-right: calc(var(--gutter) + env(safe-area-inset-right));
 }
 /* The one sanctioned way for something to be wider than its column: it scrolls itself, and
    says so by touch. Used by the wide tables and the transactions grid — never by the page. */
@@ -541,6 +544,18 @@ label.field {
    centred, transparent pseudo-element. See `.btn-sm` for where the line between the two fell,
    and why it is not all the way at one end. */
 @media (pointer: coarse) {
+  /* No double-tap zoom on a control. Two quick taps on a button are two presses, not a request
+     to magnify it; pinch-zoom is untouched, and so is double-tap on text. This, and not
+     `maximum-scale` in the viewport, is the right tool: that one disables zoom altogether. */
+  a,
+  button,
+  input,
+  label,
+  select,
+  summary,
+  textarea {
+    touch-action: manipulation;
+  }
   .btn,
   .chip,
   .input,

@@ -314,7 +314,10 @@
   }
 
   .rail {
-    flex: 0 0 var(--rail-w);
+    /* An iPhone on its side is wide enough for this form of the rail, and puts the Dynamic
+       Island against whichever edge it was turned towards. The rail is what sits at the left
+       edge, so it takes the inset: wider by it, with its icons kept clear of it. */
+    flex: 0 0 calc(var(--rail-w) + env(safe-area-inset-left));
     position: sticky;
     top: 0;
     height: 100dvh;
@@ -322,9 +325,14 @@
     flex-direction: column;
     align-items: center;
     gap: 18px;
-    padding: 16px 0;
+    padding: 16px 0 16px env(safe-area-inset-left);
     background: var(--surface);
     border-right: 1px solid var(--border);
+    /* Navigation, not content: a long press on a tab should not offer to preview, copy or open
+       `#/transactions` in Safari, nor start selecting its label. */
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
   .rail-logo {
     display: flex;
@@ -426,7 +434,9 @@
        past the bottom of the screen, which on the settings menu is Categories/Rules/Merchants. */
     height: 100dvh;
     z-index: 60;
-    width: min(320px, 86dvw);
+    /* Plus the left inset, which it pads itself clear of below: on its side, an iPhone's
+       Dynamic Island can be at this edge. */
+    width: calc(min(320px, 86dvw) + env(safe-area-inset-left));
     max-width: 86dvw;
     border-right: 1px solid var(--border);
     box-shadow: 0 0 40px rgba(0, 0, 0, 0.45);
@@ -435,12 +445,13 @@
     /* The drawer is the one place a phone gets the full panel, so it keeps its own safe-area
        padding — an iPhone's home indicator sits over the bottom of it. */
     padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
   }
   .shell.drawer-mode.panel-collapsed .panel-col {
     /* Slid out, not zero-width: a 0px drawer would reflow its contents to nothing on every
        open, and the transition would be a squash rather than a slide. `visibility` is what
        takes it out of the tab order once the slide has finished. */
-    width: min(320px, 86dvw);
+    width: calc(min(320px, 86dvw) + env(safe-area-inset-left));
     transform: translateX(-101%);
     visibility: hidden;
     transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0.28s;
@@ -449,6 +460,9 @@
   .shell.drawer-mode .panel-col > :global(*) {
     width: 100%;
     padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+    /* A swipe that reaches the end of the list stops there, rather than carrying on into the
+       page behind the scrim — which iOS would rubber-band, scroll lock or no. */
+    overscroll-behavior: contain;
   }
   .panel-scrim {
     position: fixed;
@@ -584,6 +598,9 @@
     max-width: none;
     margin: 0 auto;
     padding: 10px clamp(16px, 2.8vw, 40px);
+    /* The bar's background runs to the edge; its controls stop short of the Dynamic Island on a
+       phone turned on its side. */
+    padding-right: calc(clamp(16px, 2.8vw, 40px) + env(safe-area-inset-right));
     display: flex;
     align-items: center;
     justify-content: space-between;

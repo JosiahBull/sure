@@ -118,6 +118,27 @@ off-screen field — lands underneath it. `html` carries `scroll-padding-top`/`-
 bars; the sticky sub-bar's height is measured and published as `--subbar-h` by `App.svelte`,
 because it is one row or two depending on the page.
 
+## Safe areas
+
+`viewport-fit=cover` lets the page draw edge to edge, and in return every edge that something is
+pinned to has to honour its inset. The rule is the one native bars follow: **the background runs
+to the edge, what is drawn on it stops at the inset.**
+
+- **Bottom** — the home indicator, upright and on its side. The tab bar is taller by the inset
+  and pads its tabs above it; the drawer, the page and the bulk-action bar all clear it.
+- **Left and right** — the Dynamic Island, on a phone turned on its side. iOS reports the same
+  inset on *both* sides, whichever way the phone was turned. At 874×402 the app is in its
+  rail-plus-drawer form, so the rail and the drawer take the left inset (each is wider by it), and
+  the sub-bar's controls and the page take the right one. Anything centred on the screen and
+  nearly as wide as it — the bulk-action bar, the expanded money flow — subtracts both.
+- **Top** — zero. With `apple-mobile-web-app-status-bar-style` at `default` the installed app is
+  laid out *below* the status bar (see the comment in `index.html` for why it is not
+  `black-translucent`), and a Safari tab never draws under it either.
+
+`tests/mobile.spec.ts` checks these against real `env()` values: Chromium can report insets
+(`Emulation.setSafeAreaInsetsOverride`), so the suite sets an iPhone 16 Pro's and measures what
+lands inside them.
+
 ## Touch
 
 `@media (pointer: coarse)` in `app.css` raises controls to the 44px both platform guidelines ask
@@ -132,7 +153,15 @@ for a row of them: an account row is `[Edit][Import][×]`, and three 44px phanto
 
 One more thing that rule buys: form fields get `font-size: max(16px, 1em)`. Under 16px, iOS
 Safari zooms the viewport to the focused field and never zooms back, which is the single most
-common way a form "breaks" on an iPhone.
+common way a form "breaks" on an iPhone. That includes a field nobody can see: the transaction
+list's category pill is a drawn pill with a transparent `<select>` on top, and the `<select>` is
+what takes focus. `tests/mobile.spec.ts` measures every rendered field, on every route and in the
+forms that open, and fails on any under 16px.
+
+That test is what makes it safe for the viewport to leave out `maximum-scale=1`. The setting
+would hide a small field from iOS's focus zoom, but in an installed app it also stops pinch-zoom,
+which is how a small figure gets read. Controls carry `touch-action: manipulation` instead, so two
+quick taps on a button are two presses rather than a zoom.
 
 ## Where the phone-specific pieces live
 
@@ -140,6 +169,8 @@ common way a form "breaks" on an iPhone.
 | --- | --- |
 | bottom tab bar, drawer, scrim, sub-bar wrapping | `src/App.svelte` |
 | tokens, breakpoints, touch rules, `.scroll-x`, scroll lock | `src/app.css` |
+| viewport, status bar, touch icon | `index.html` |
+| picking up a new build in an app that is resumed rather than reopened | `src/lib/pwa.ts` |
 | the stacked transaction row (amount on the first line) | `src/pages/Transactions.svelte` |
 | the donut that yields width to its legend | `src/pages/Dashboard.svelte`, `src/lib/charts/PieChart.svelte` |
 

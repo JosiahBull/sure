@@ -152,8 +152,14 @@ const ALLOWED = new Set([
   "012345678SLS",
 ]);
 
-/** Documentation domains and the like are never someone's address. */
-const SAFE_EMAIL = /@(?:[\w-]+\.)*example\.(?:com|org|net)$|\.(?:test|invalid|local|localhost)$/i;
+/**
+ * Documentation domains and the like are never someone's address — and neither is a bare
+ * `noreply@` mailbox, which is what a `Co-Authored-By:` trailer for a tool carries
+ * (`noreply@anthropic.com`). Only the bare local part: GitHub's `<id>+<login>@users.noreply.…`
+ * form does name a person, and stays flagged.
+ */
+const SAFE_EMAIL =
+  /@(?:[\w-]+\.)*example\.(?:com|org|net)$|\.(?:test|invalid|local|localhost)$|^noreply@/i;
 
 const SKIP_FILE = [
   /^pnpm-lock\.yaml$/,
