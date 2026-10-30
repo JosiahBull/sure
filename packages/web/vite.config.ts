@@ -1,6 +1,20 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { VitePWA } from "vite-plugin-pwa";
+
+/**
+ * A hash of the generated API types, which `src/lib/lastKnown.ts` stamps its store with: a
+ * change to any response shape discards what an older build kept, rather than drawing it with
+ * code that expects something else. The types rather than `openapi.json` because they are
+ * committed, so every build has them.
+ */
+function apiSchemaHash(): string {
+  const types = readFileSync(new URL("../client/src/schema.d.ts", import.meta.url));
+  return createHash("sha256").update(types).digest("hex").slice(0, 12);
+}
 
 // The dev server proxies /api to the Rust backend; in production the backend serves
 // the built assets directly (WEB_DIR), so the SPA and API share an origin.
@@ -35,14 +49,18 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Never cache API calls; always hit the network for fresh financial data.
+        // The fonts join the shell in the precache. Left to the HTTP cache (a day, then a week
+        // of stale-while-revalidate) they were the one part of a launch that could still wait
+        // on the network, and a late swap reflows every figure on the page.
+        globPatterns: ["**/*.{js,css,html,woff2}"],
         navigateFallbackDenylist: [/^\/api/],
-        runtimeCaching: [
-          {
-            urlPattern: /^\/api\//,
-            handler: "NetworkOnly",
-          },
-        ],
+        // No runtime route for /api, deliberately: an unrouted request never enters a workbox
+        // handler, so the browser fetches it exactly as it would without a service worker and
+        // nothing here can ever answer one from a cache. Reads that should paint before the
+        // network answers are kept by the app instead (src/lib/lastKnown.ts), where a mutation
+        // can forget them. (The `NetworkOnly` route that used to sit here never matched: a
+        // RegExp route is tested against the full URL, so `^/api/` could not match
+        // `https://host/api/...` — it documented the intent without enforcing anything.)
       },
     }),
   ],
@@ -54,6 +72,9 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  define: {
+    __API_SCHEMA_HASH__: JSON.stringify(apiSchemaHash()),
   },
   build: {
     target: "es2022",

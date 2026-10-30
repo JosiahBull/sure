@@ -1,11 +1,13 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { balances, refresh } from "./balances.svelte";
+  import { onMount, untrack } from "svelte";
+  import { balances, ensureLoaded, refresh } from "./balances.svelte";
   import { groupByClass, type PanelTab } from "./balanceGroups";
-  import { api, formatMoney } from "./api";
-  import { activeRange } from "./state.svelte";
+  import { api, formatMoney, type Schemas } from "./api";
+  import { keep, lastKnown, onMutationSettled } from "./lastKnown";
+  import { activeRange, periodKey } from "./state.svelte";
   import { navigate } from "./router.svelte";
   import Icon from "./Icon.svelte";
+  import LastKnownNote from "./LastKnownNote.svelte";
   import NewAccountModal from "./NewAccountModal.svelte";
 
   const TABS: { key: PanelTab; label: string }[] = [
@@ -18,27 +20,44 @@
   let expandedGroups = $state(new Set<string>());
   let showNew = $state(false);
 
-  onMount(() => {
-    if (!balances.data) refresh();
-  });
+  onMount(ensureLoaded);
 
   // Per-account values as of the active period's start, so each group can show a signed,
   // coloured change % (like the reference) rather than a static allocation figure. Re-fetched
-  // whenever the shared time range changes.
+  // whenever the shared time range changes, and after any edit — a back-dated valuation moves
+  // it — starting from the last-known answer for the period like the balances themselves.
+  type Balances = Schemas["BalancesReport"];
+  const toBaseline = (data: Balances | undefined) =>
+    new Map((data?.accounts ?? []).map((a) => [a.account_id, a.value_minor]));
   let baseline = $state<Map<number, number>>(new Map());
+  let baselineStale = $state(false);
+  let edits = $state(0);
+  onMount(() => onMutationSettled(() => edits++));
   $effect(() => {
+    void edits;
     const { from } = activeRange();
     if (!from) {
       baseline = new Map();
+      baselineStale = false;
       return;
     }
+    const period = periodKey();
+    const key = period && `balances-at-start:${period}`;
+    const kept = lastKnown<Balances>(key);
+    if (kept) baseline = toBaseline(kept.data);
+    // Untracked: the answer below writes `baseline`, and reading it here would re-run this.
+    baselineStale = untrack(() => baseline.size > 0);
     let cancelled = false;
-    api.GET("/api/reports/balances", { params: { query: { to: from } } }).then(({ data }) => {
-      if (cancelled) return;
-      baseline = new Map((data?.accounts ?? []).map((a) => [a.account_id, a.value_minor]));
-    });
+    keep(key, () => api.GET("/api/reports/balances", { params: { query: { to: from } } }))
+      .then(({ data }) => {
+        if (cancelled || !data) return;
+        baseline = toBaseline(data);
+        baselineStale = false;
+      })
+      .catch(() => {});
     return () => (cancelled = true);
   });
+  const stale = $derived(balances.stale || baselineStale);
 
   const currency = $derived(balances.data?.currency ?? "NZD");
   const grouped = $derived(groupByClass(balances.data?.accounts ?? [], activeTab, baseline));
@@ -78,12 +97,13 @@
 
   {#if balances.loading && !balances.data}
     <div class="row" style="justify-content:center;padding:24px"><span class="spinner"></span></div>
-  {:else if balances.error}
+  {:else if balances.error && !balances.data}
     <div class="error-banner small">{balances.error}</div>
   {:else if grouped.groups.length === 0}
     <div class="empty small">No accounts yet.</div>
   {:else}
-    <ul class="kind-list">
+    {#if balances.error && balances.at}<LastKnownNote at={balances.at} />{/if}
+    <ul class="kind-list" data-stale={stale} aria-busy={stale && !balances.error}>
       {#each grouped.groups as g (g.key)}
         <li>
           <button type="button" class="kind-row" onclick={() => toggleGroup(g.key)}>

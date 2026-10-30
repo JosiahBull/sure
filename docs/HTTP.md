@@ -48,7 +48,45 @@ launch, so a precise validator matters there.
 `/api/reports/*` is the expensive part of the API, and holding results for a minute is
 tempting. It would also mean editing a transaction and then seeing stale numbers. They
 revalidate instead: `304` saves the payload but not the recompute. Cutting the recompute
-needs a server-side cache invalidated by every mutation — a bigger change than this.
+needs a server-side cache invalidated by every mutation — a bigger change than this, and not
+where a slow launch spends its time (see the next section).
+
+### On the device
+
+The installed app holds two things locally, and neither is an HTTP cache of `/api`.
+
+**The service worker precaches the shell** — `index.html`, the bundle, the stylesheet, the
+fonts and the icons — so a launch draws the app without the network. It has *no* route for
+`/api`: an unrouted request goes to the network as it would with no service worker at all, so
+nothing there can answer one from a cache. (A `NetworkOnly` route used to stand there and never
+matched — workbox tests a `RegExp` route against the full URL, so `^/api/` could not match
+`https://host/api/...`.) A `StaleWhileRevalidate` route would be the wrong fix for a slow
+launch: it hands the pre-edit response to the read that follows an edit.
+
+**The SPA keeps the last answer it saw for the launch screen** —
+[`lastKnown.ts`](../packages/web/src/lib/lastKnown.ts), in `localStorage`. The reads it keeps
+are drawn at once, dimmed, *while their requests are in flight*, and replaced by whatever the
+server answers; a kept answer never stands in for a request. What makes that safe against the
+paragraph above:
+
+* **Every write forgets everything kept, before it is sent.** The shared client's write verbs
+  are wrapped in it, so a new mutation cannot forget to. A read that overlapped a write is not
+  kept either, since its answer may predate the write.
+* **Only launch-screen summaries are kept**: the base currency, account balances now and at the
+  start of the period, and the dashboard's net-worth series and money-flow graph, per preset
+  period. Never a transaction list.
+* **It is bounded** by shape (the store carries a hash of the API types, and a store from a
+  build with other types is discarded unread — a release that changed no response shape keeps
+  it, so the reload into a new build lands on figures rather than a spinner), by size (32 entries, 384k characters; a launch
+  keeps five, about 30k), and by age (30 days).
+
+Why it is the client and not the server: measured against a release build on a ledger of 8,000
+transactions, the reports a launch waits on take 2–7 ms, and every response a launch makes is
+under 4 KB compressed. A cold launch from the UK is instead three round trips to New Zealand
+before the first byte — TCP, TLS, then the request, because iOS drops the connection while the
+app is suspended — about a second whatever the server does. Drawing the kept figures took the
+first figure on screen from about 1.1 s to under 0.2 s at a 300 ms round trip, and left the
+time to fresh figures where it was.
 
 ### Cloudflare
 
@@ -102,7 +140,11 @@ sees it. Browsers get HTTP/2 and HTTP/3 from whatever terminates TLS:
   advertisement.
 * Self-hosting without Cloudflare, put Caddy in front — it does HTTP/3 with an automatic
   certificate and proxies to this server over HTTP/1.1 or h2c.
-* On a LAN or Tailscale, HTTP/1.1 over a local link is not the bottleneck.
+* On a LAN, HTTP/1.1 over a local link is not the bottleneck. Over a long one — Tailscale
+  from the other side of the world — it is: a launch sends seven API requests at once, a
+  browser opens at most six HTTP/1.1 connections to one host, each with its own handshake, and
+  the seventh waits a full round trip for a free one. Whatever terminates TLS should offer
+  HTTP/2, which carries all seven on one connection.
 
 ## Abuse guards
 
