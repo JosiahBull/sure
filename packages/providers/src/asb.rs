@@ -1059,7 +1059,9 @@ fn read_entries(bytes: &[u8]) -> anyhow::Result<Entries> {
         let Ok(entry) = archive.by_index(i) else {
             continue;
         };
-        let name = entry.name().to_string();
+        let Ok(name) = entry.name().map(|n| n.into_owned()) else {
+            continue;
+        };
         // Skip macOS's resource-fork shadows, which zipping a Finder selection includes.
         let hidden = name.starts_with("__MACOSX/")
             || name.rsplit('/').next().is_some_and(|f| f.starts_with('.'));

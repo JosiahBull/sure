@@ -219,7 +219,7 @@ instrumented.
 Two orderings in `packages/server/src/main.rs` are load-bearing:
 
 1. **The providers are built after `sandbox::apply` and before the tokio runtime.** In
-   opentelemetry 0.32 the periodic metric reader and the batch span/log processors each spawn a
+   opentelemetry 0.33 the periodic metric reader and the batch span/log processors each spawn a
    plain OS thread when the provider is *built*, and `sandbox::apply` refuses to run once the
    process has more than one thread (`landlock_restrict_self` only restricts the caller, so a
    sibling would keep an unrestricted domain). Building them any earlier makes every start fail

@@ -39,7 +39,7 @@ pub fn entry_names(bytes: &[u8]) -> Option<Vec<String>> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
     Some(
         (0..archive.len().min(ENTRIES))
-            .filter_map(|i| Some(archive.by_index_raw(i).ok()?.name().to_string()))
+            .filter_map(|i| Some(archive.by_index_raw(i).ok()?.name().ok()?.into_owned()))
             .collect(),
     )
 }

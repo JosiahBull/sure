@@ -71,7 +71,7 @@ pub struct Category {
 /// A category plus its nested children, for rendering the category tree.
 ///
 /// `#[schema(no_recursion)]` is required: this type is self-referential via
-/// `children`, and utoipa 5 eagerly inlines nested schemas by default, so without it
+/// `children`, and utoipa (5 and 6) eagerly inlines nested schemas by default, so without it
 /// building the OpenAPI document recurses forever and overflows the stack. The
 /// attribute tells utoipa to emit a `$ref` for the recursive field and terminate.
 #[derive(Debug, Serialize, ToSchema)]

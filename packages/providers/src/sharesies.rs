@@ -127,7 +127,7 @@ fn read_entry(
 ) -> anyhow::Result<Option<Vec<u8>>> {
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file.name().to_string();
+        let name = file.name()?.into_owned();
         if name == filename || name.ends_with(&format!("/{filename}")) {
             let declared = file.size();
             return Ok(Some(budget.read(&name, declared, &mut file)?));

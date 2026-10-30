@@ -105,8 +105,6 @@ updates:
         update-types: ["version-update:semver-minor"]
       - dependency-name: "tracing-subscriber"
         update-types: ["version-update:semver-minor"]
-      - dependency-name: "zen-expression"
-        update-types: ["version-update:semver-minor"]
 
   # Node/pnpm packages across the pnpm workspace (pnpm-lock.yaml).
   - package-ecosystem: npm
@@ -141,18 +139,13 @@ updates:
       # `Vec<(Option<i64>, i64)>` as `[number | null, number][]` — degrades to
       # `(number | null)[][]` and fails `pnpm --filter @sure/web check` in
       # src/pages/TaxRates.svelte. Verified against the real package on 2026-08-11 and again
-      # on 2026-08-16 (PR #9, closed); packages/client/package.json holds the full write-up.
+      # on 2026-08-16 (PR #9, closed).
       #
-      # That supersedes the narrow `versions: ["0.17.0"]` pin PR #17 put here, and the
-      # override is deliberate. The pin named the one broken release so a *fixed* 0.17.1
-      # or 0.18 would still be proposed the week it appeared, which a blanket minor ignore
-      # withholds — but it was buying less than it looked. `^0.16.0` cannot resolve any
-      # 0.17.x, so taking one means Dependabot rewriting the range in two package.json files
-      # whose `//openapi-fetch` notes then have to be removed by hand anyway; it was never
-      # going to be an unattended merge. Meanwhile keeping both entries would be incoherent,
-      # and the pin only ever guarded the one break we had already hit rather than the class
-      # of break. So the class wins: raise both caps deliberately once
-      # openapi-ts/openapi-typescript#2673 or #2842 lands.
+      # Both caps were raised to 0.17 by hand on 2026-10-30. The regression is still open
+      # upstream (openapi-ts/openapi-typescript#2673, #2842), but `StoredTaxScale` went in
+      # 2e73f09 and no response type carries a tuple any more, so nothing in the tree hits
+      # it. packages/client/package.json holds the caveat for the next tuple. The entry below
+      # stays because openapi-fetch is still 0.x: an 0.18 is the next break of this kind.
       - dependency-name: "@types/d3-sankey"
         update-types: ["version-update:semver-minor"]
       - dependency-name: "d3-sankey"

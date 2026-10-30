@@ -98,31 +98,31 @@ rust_decimal = { version = "1", features = ["serde"] }
 rust_decimal_macros = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 akahu-client = "0.3"
-utoipa = { version = "5", features = ["axum_extras", "chrono", "decimal", "preserve_order"] }
+utoipa = { version = "6", features = ["axum_extras", "chrono", "decimal", "preserve_order"] }
 thiserror = "2"
 anyhow = "1"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-opentelemetry = "0.32"
-opentelemetry_sdk = "0.32"
-opentelemetry-otlp = { version = "0.32", features = ["gzip-http"] }
-opentelemetry-semantic-conventions = "0.32"
-opentelemetry-appender-tracing = "0.32"
-tracing-opentelemetry = "0.33"
+opentelemetry = "0.33"
+opentelemetry_sdk = "0.33"
+opentelemetry-otlp = { version = "0.33", features = ["gzip-http"] }
+opentelemetry-semantic-conventions = "0.33"
+opentelemetry-appender-tracing = "0.33"
+tracing-opentelemetry = "0.34"
 landlock = "0.4"
 log = "0.4"
 uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 csv = "1"
-zip = { version = "8", default-features = false, features = ["deflate"] }
-calamine = { version = "0.36.1", default-features = false, features = ["dates"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
+calamine = { version = "0.37.0", default-features = false, features = ["dates"] }
 partly-proxy-lib = { git = "https://github.com/thepartly/partly-proxy", rev = "0d9c7450ea9a9af59acaffd4519c07a1ef8bf08a" }
 http = "1"
 bytes = "1"
 tempfile = "3"
 libc = "0.2"
-zen-expression = "0.55"
+zen-expression = "2"
 rand = "0.10"
 rand_distr = "0.6"
 rmcp = { version = "3", features = [
@@ -158,6 +158,20 @@ sure-testproxy = { path = "packages/testproxy" }
 # `RUSTFLAGS="-C debuginfo=2"`.
 [profile.dev]
 debug = "line-tables-only"
+
+# The rules engine, optimised even in debug builds. Every import evaluates each rule against
+# each row, and zen-expression 2 builds every `Variable` string as a `hipstr::HipStr`, whose
+# code is many small functions that only become cheap once inlined. At opt-level 0 that roughly
+# doubled the API suite's large-import tests (6.8s to 14.0s on CI, against a 20s timeout), while
+# release builds measured identical to zen-expression 0.55. Measured 2026-10-30, the 5,000-row
+# CSV import's server CPU in a debug build was 4.5s on 0.55, 6.7s on 2.x, and 1.2s on 2.x with
+# these three crates optimised.
+[profile.dev.package.zen-expression]
+opt-level = 3
+[profile.dev.package.zen-types]
+opt-level = 3
+[profile.dev.package.hipstr]
+opt-level = 3
 
 [profile.release]
 opt-level = 3
