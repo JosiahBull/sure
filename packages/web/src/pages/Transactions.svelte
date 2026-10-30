@@ -2069,6 +2069,9 @@
     opacity: 0;
     cursor: pointer;
     appearance: none;
+    /* Invisible, but it is what takes focus on a tap — and iOS zooms the page into any focused
+       field set under 16px. Free to set, since nothing of it is drawn. */
+    font-size: 16px;
   }
 
   /* Floating bulk-action bar, centred near the bottom of the viewport. */
@@ -2082,7 +2085,9 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 8px;
-    max-width: calc(100vw - 24px);
+    /* Centred on the screen, so trimming both insets keeps it clear of a Dynamic Island on
+       either side. */
+    max-width: calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right));
     padding: 10px 14px;
     border: 1px solid var(--border-strong);
     border-radius: 12px;

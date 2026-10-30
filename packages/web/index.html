@@ -3,11 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="/icon-192.png" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0"
-    />
+    <!-- Square and opaque: iOS applies its own mask (scripts/generate-icons.mjs). -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <!-- No maximum-scale: in an installed app it stops pinch-zoom, which is how a small figure
+         gets read. What it was standing in for — iOS zooming into a focused field under 16px
+         and never zooming back — is prevented by the fields themselves (the touch rules in
+         src/app.css, enforced by tests/mobile.spec.ts). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0b0b0b" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -18,6 +20,11 @@
          invisible on the light theme. "default" lets iOS manage contrast, so the
          bar stays legible in both themes. -->
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <!-- No apple-touch-startup-image, on purpose. iOS matches one only on exact screen size and
+         orientation (44 images per appearance, 88 with dark mode, and every new iPhone gets none
+         until someone adds its pair), and an install keeps whichever image it chose on the day
+         it was added, even after the system appearance changes — so beside a theme that follows
+         the system, a set would flash the wrong colour about as often as it hid a plain one. -->
     <title>Sure</title>
     <!-- Resolve the saved theme before first paint to avoid a flash of the
          wrong palette. Mirrors src/lib/theme.svelte.ts; keep colours in sync. -->
