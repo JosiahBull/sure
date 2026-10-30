@@ -22,7 +22,7 @@
 //!
 //! # Two orderings that are load-bearing
 //!
-//! **Providers must be built after the Landlock sandbox.** In opentelemetry 0.32 the periodic
+//! **Providers must be built after the Landlock sandbox.** In opentelemetry 0.33 the periodic
 //! metric reader and the batch span/log processors each run on a plain OS thread, spawned when
 //! the provider is *built*. `sure_server::sandbox::apply` refuses to run once the process has
 //! more than one thread — `landlock_restrict_self(2)` only restricts the calling thread, so a

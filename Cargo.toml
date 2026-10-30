@@ -98,31 +98,31 @@ rust_decimal = { version = "1", features = ["serde"] }
 rust_decimal_macros = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 akahu-client = "0.3"
-utoipa = { version = "5", features = ["axum_extras", "chrono", "decimal", "preserve_order"] }
+utoipa = { version = "6", features = ["axum_extras", "chrono", "decimal", "preserve_order"] }
 thiserror = "2"
 anyhow = "1"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-opentelemetry = "0.32"
-opentelemetry_sdk = "0.32"
-opentelemetry-otlp = { version = "0.32", features = ["gzip-http"] }
-opentelemetry-semantic-conventions = "0.32"
-opentelemetry-appender-tracing = "0.32"
-tracing-opentelemetry = "0.33"
+opentelemetry = "0.33"
+opentelemetry_sdk = "0.33"
+opentelemetry-otlp = { version = "0.33", features = ["gzip-http"] }
+opentelemetry-semantic-conventions = "0.33"
+opentelemetry-appender-tracing = "0.33"
+tracing-opentelemetry = "0.34"
 landlock = "0.4"
 log = "0.4"
 uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 csv = "1"
-zip = { version = "8", default-features = false, features = ["deflate"] }
-calamine = { version = "0.36.1", default-features = false, features = ["dates"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
+calamine = { version = "0.37.0", default-features = false, features = ["dates"] }
 partly-proxy-lib = { git = "https://github.com/thepartly/partly-proxy", rev = "0d9c7450ea9a9af59acaffd4519c07a1ef8bf08a" }
 http = "1"
 bytes = "1"
 tempfile = "3"
 libc = "0.2"
-zen-expression = "0.55"
+zen-expression = "2"
 rand = "0.10"
 rand_distr = "0.6"
 rmcp = { version = "3", features = [

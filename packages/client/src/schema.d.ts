@@ -5182,7 +5182,7 @@ export interface components {
             counterparty_account_id?: number | null;
             /** @description Present → set the cashflow exclusion flag; absent → leave unchanged. */
             exclude_from_cashflow?: boolean | null;
-            ownership?: null | components["schemas"]["Ownership"];
+            ownership?: components["schemas"]["Ownership"] | null;
         };
         CashflowMonth: {
             month: string;
@@ -5300,7 +5300,7 @@ export interface components {
              *     the web layer.
              */
             subtype?: string | null;
-            tax_treatment?: null | components["schemas"]["TaxTreatment"];
+            tax_treatment?: components["schemas"]["TaxTreatment"] | null;
             /** @description A link to the exchange or block explorer. */
             url?: string | null;
             notes?: string | null;
@@ -5693,7 +5693,7 @@ export interface components {
              */
             account_id?: number | null;
             account_name?: string | null;
-            matched_by?: null | components["schemas"]["ImportMatch"];
+            matched_by?: components["schemas"]["ImportMatch"] | null;
             /** @description The file(s) in the upload this item's rows came from. */
             sources: string[];
             /** @description The source's own name for the thing, where it has one — ASB's product (`Streamline`). */
@@ -5723,8 +5723,8 @@ export interface components {
             held_back: number;
             /** @description The cutover the rows were withheld from, if any feed set one. */
             cutover?: string | null;
-            reconciliation?: null | components["schemas"]["Reconciliation"];
-            blocked?: null | components["schemas"]["ImportBlock"];
+            reconciliation?: components["schemas"]["Reconciliation"] | null;
+            blocked?: components["schemas"]["ImportBlock"] | null;
             /** @description Non-transaction records written. Empty for every source but Sharesies. */
             extras: components["schemas"]["ImportExtra"][];
             /**
@@ -5829,7 +5829,7 @@ export interface components {
             external_id: string;
             /** @description Name for the new `providers` row (not the account itself). */
             name: string;
-            new_account?: null | components["schemas"]["SaveAccount"];
+            new_account?: components["schemas"]["SaveAccount"] | null;
             /**
              * Format: int64
              * @description Or attach to an already-existing local account instead.
@@ -5848,7 +5848,7 @@ export interface components {
             kind: string;
             /** @description The upstream accounts to link (must be non-empty). */
             members: components["schemas"]["LinkGroupMember"][];
-            new_account?: null | components["schemas"]["SaveAccount"];
+            new_account?: components["schemas"]["SaveAccount"] | null;
             /** Format: int64 */
             existing_account_id?: number | null;
         };
@@ -5881,7 +5881,7 @@ export interface components {
              * @description Annual interest rate in basis points (e.g. 8.90% = 890).
              */
             interest_rate_bps?: number | null;
-            rate_type?: null | components["schemas"]["RateType"];
+            rate_type?: components["schemas"]["RateType"] | null;
             /** @description ISO-8601 date the current fixed rate expires. */
             fixed_until?: string | null;
             /**
@@ -5912,7 +5912,7 @@ export interface components {
              * @description The actual contractual repayment, in minor units per `repayment_frequency`.
              */
             repayment_minor?: number | null;
-            repayment_frequency?: null | components["schemas"]["RepaymentFrequency"];
+            repayment_frequency?: components["schemas"]["RepaymentFrequency"] | null;
             url?: string | null;
             notes?: string | null;
         };
@@ -5970,7 +5970,7 @@ export interface components {
              * @description Annual interest rate in basis points (e.g. 5.49% = 549).
              */
             interest_rate_bps?: number | null;
-            rate_type?: null | components["schemas"]["RateType"];
+            rate_type?: components["schemas"]["RateType"] | null;
             /** @description ISO-8601 date the current fixed rate expires. */
             fixed_until?: string | null;
             /**
@@ -6006,7 +6006,7 @@ export interface components {
              *     the lender's own rounding) is projected as it really is rather than idealised.
              */
             repayment_minor?: number | null;
-            repayment_frequency?: null | components["schemas"]["RepaymentFrequency"];
+            repayment_frequency?: components["schemas"]["RepaymentFrequency"] | null;
             /**
              * Format: int64
              * @description Interest paid so far, in minor units.
@@ -6191,7 +6191,7 @@ export interface components {
              * @description Floor area, expressed in `area_unit`s.
              */
             area_value?: number | null;
-            area_unit?: null | components["schemas"]["AreaUnit"];
+            area_unit?: components["schemas"]["AreaUnit"] | null;
             /** @description ISO-8601 date the property was purchased. */
             purchase_date?: string | null;
             /**
@@ -6202,7 +6202,7 @@ export interface components {
             /** @description A link to the listing, council valuation, etc. */
             url?: string | null;
             notes?: string | null;
-            house_pricer?: null | components["schemas"]["HousePricerLink"];
+            house_pricer?: components["schemas"]["HousePricerLink"] | null;
         };
         Provider: {
             /** Format: int64 */
@@ -6219,7 +6219,7 @@ export interface components {
              *     [`Self::last_sync`] for the attempt.
              */
             last_synced_at?: string | null;
-            last_sync?: null | components["schemas"]["ProviderSync"];
+            last_sync?: components["schemas"]["ProviderSync"] | null;
             created_at: string;
             updated_at: string;
         };
@@ -6579,7 +6579,7 @@ export interface components {
             kind: components["schemas"]["AccountKind"];
             currency_code: string;
             institution?: string | null;
-            metadata?: null | components["schemas"]["AccountMetadata"];
+            metadata?: components["schemas"]["AccountMetadata"] | null;
             archived?: boolean;
             /** Format: int64 */
             sort_order?: number;
@@ -6744,7 +6744,7 @@ export interface components {
             merchant?: string | null;
             /** Format: int64 */
             merchant_id?: number | null;
-            ownership?: null | components["schemas"]["Ownership"];
+            ownership?: components["schemas"]["Ownership"] | null;
             notes?: string | null;
             /** Format: int64 */
             category_id?: number | null;
@@ -6995,7 +6995,7 @@ export interface components {
              * @description Which rule (if any) last set this transaction's category.
              */
             categorized_by_rule_id?: number | null;
-            ownership?: null | components["schemas"]["Ownership"];
+            ownership?: components["schemas"]["Ownership"] | null;
             created_at: string;
             updated_at: string;
         };
@@ -7022,7 +7022,7 @@ export interface components {
         };
         UpdateSettings: {
             base_currency_code: string;
-            mcp_mode?: null | components["schemas"]["McpMode"];
+            mcp_mode?: components["schemas"]["McpMode"] | null;
         };
         /**
          * @description A point-in-time value for an account (property price, share holding value, loan
@@ -7063,7 +7063,7 @@ export interface components {
              * @description Odometer reading, expressed in `mileage_unit`s.
              */
             mileage_value?: number | null;
-            mileage_unit?: null | components["schemas"]["MileageUnit"];
+            mileage_unit?: components["schemas"]["MileageUnit"] | null;
             /** @description Registration / licence plate. */
             plate?: string | null;
             /** @description A friendly name, e.g. "the wagon". */

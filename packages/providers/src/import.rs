@@ -383,7 +383,7 @@ mod tests {
         let mut out = Vec::new();
         {
             let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut out));
-            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            let opts = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             for (name, body) in entries {
                 w.start_file(*name, opts).unwrap();

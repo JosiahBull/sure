@@ -200,7 +200,7 @@ fn read_workbooks(bytes: &[u8]) -> anyhow::Result<Vec<Workbook>> {
         .map_err(|e| anyhow::anyhow!("upload is not a .zip or .xlsx file: {e}"))?;
 
     let entries: Vec<String> = (0..archive.len())
-        .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+        .filter_map(|i| Some(archive.by_index(i).ok()?.name().ok()?.into_owned()))
         .filter(|name| {
             // Skip macOS's resource-fork shadows, which zipping a Finder selection includes
             // and which are not readable workbooks.
