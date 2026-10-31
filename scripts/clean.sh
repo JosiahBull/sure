@@ -22,9 +22,8 @@ find . -name node_modules -type d -prune -print -exec rm -rf {} +
 echo "Cleaning Rust build output…"
 rm_path target
 
-echo "Cleaning frontend build + generated client…"
+echo "Cleaning frontend build…"
 rm_path packages/web/dist packages/web/dist-ssr packages/web/.vite
-rm_path packages/client/openapi.json
 
 echo "Cleaning test artifacts…"
 rm_path packages/web/test-results packages/web/playwright-report \

@@ -8,6 +8,9 @@ use utoipa::OpenApi;
 #[openapi(
     info(
         title = "Sure API",
+        // A literal, and not the crate version utoipa would fill in without it: the spec is
+        // committed (packages/client/openapi.json) and CI fails when it is stale, so a version
+        // read from Cargo.toml would make every release's version bump a spec change too.
         version = "0.1.0",
         description = "Local financial tracker API."
     ),

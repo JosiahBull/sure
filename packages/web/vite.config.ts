@@ -8,8 +8,8 @@ import { VitePWA } from "vite-plugin-pwa";
 /**
  * A hash of the generated API types, which `src/lib/lastKnown.ts` stamps its store with: a
  * change to any response shape discards what an older build kept, rather than drawing it with
- * code that expects something else. The types rather than `openapi.json` because they are
- * committed, so every build has them.
+ * code that expects something else. The types rather than `openapi.json` because they are what
+ * this code is compiled against.
  */
 function apiSchemaHash(): string {
   const types = readFileSync(new URL("../client/src/schema.d.ts", import.meta.url));

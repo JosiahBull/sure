@@ -17,9 +17,6 @@ dist-ssr
 *.db-wal
 /data
 
-# Generated OpenAPI artifact (regenerated from the backend)
-/packages/client/openapi.json
-
 # Playwright (keep committed snapshot baselines under tests/*-snapshots/)
 /packages/web/test-results
 /packages/web/playwright-report

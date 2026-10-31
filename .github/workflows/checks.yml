@@ -130,9 +130,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features
 
-  # svelte-check (web) + tsc (api-tests). Both consume the generated client, so the
-  # OpenAPI spec + typed client are produced first (`pnpm gen:client`, which builds and
-  # runs the gen-openapi binary).
+  # svelte-check (web) + tsc (api-tests), and first the check that the client they both compile
+  # against is current. `packages/client/openapi.json` and the `src/schema.d.ts` generated from
+  # it are committed, so everything else — both e2e suites and the release image — uses them as
+  # they are. This is the one job that regenerates them (`pnpm gen:client`, which builds and
+  # runs the gen-openapi binary), and it fails if that changed anything: a backend change that
+  # moved the API without the client moving with it. The diff in the log is the fix — run
+  # `pnpm gen:client` and commit what it writes.
   #
   # The pnpm/setup-node pair below is repeated in the api-tests and web-tests jobs, and both
   # halves are load bearing:
@@ -158,6 +162,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm gen:client
+      - name: Generated client is current
+        run: |
+          git diff --exit-code -- packages/client || {
+            echo "::error::packages/client is stale: run \`pnpm gen:client\` and commit what it changes"
+            exit 1
+          }
       - run: pnpm --filter @sure/web check
       - run: pnpm --filter @sure/api-tests check
 
@@ -181,7 +191,6 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm gen:client
       - run: pnpm test:api
       - uses: actions/upload-artifact@v7
         if: failure()
@@ -231,7 +240,6 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm gen:client
       - run: pnpm test:web
       - uses: actions/upload-artifact@v7
         if: failure()

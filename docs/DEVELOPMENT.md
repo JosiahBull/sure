@@ -23,7 +23,6 @@ fixtures, and what the git hooks enforce — are in [CLAUDE.md](../CLAUDE.md).
 
 ```bash
 pnpm install
-pnpm gen:client          # build the OpenAPI spec + generate the typed client
 pnpm dev                 # api on :8080, web dev server on :5173 (proxies /api)
 ```
 
@@ -63,7 +62,7 @@ themselves are listed in the [README](../README.md#running-it) and in [HTTP.md](
 | `pnpm dev` | Run backend + Vite dev server together (Vite waits for the backend; both reload on save) |
 | `pnpm dev:api` | Backend only, rebuilding and restarting on every Rust/migration/`.env` change |
 | `pnpm dev:api:once` | Backend only, built and run once (`cargo run`, no watcher) |
-| `pnpm gen:client` | Regenerate the OpenAPI spec and the typed client |
+| `pnpm gen:client` | Regenerate the OpenAPI spec and the typed client — after any API change; commit both |
 | `pnpm build` | Generate client, build the release backend, build the SPA |
 | `pnpm docker:build` | Build the release container image locally (`./scripts/build.sh`) |
 | `pnpm seed` | Seed a running backend with demo data |
@@ -110,6 +109,10 @@ scripts/        seed.mjs (demo data), generate-icons.mjs (PWA icons).
 step turns it into typed `paths`/`components`, and the SPA calls the API through
 `openapi-fetch` — so a backend change that breaks a request surfaces as a TypeScript
 error. (See `packages/client/strip-operation-ids.mjs` for why the spec is post-processed.)
+Both the spec (`packages/client/openapi.json`) and the types (`packages/client/src/schema.d.ts`)
+are committed, so a fresh clone needs no build to have them. Change the API and run
+`pnpm gen:client`, then commit both: CI's Typecheck gate and the pre-commit hook regenerate them
+and fail on any diff.
 
 **Key decisions**
 - Money is stored as signed integer **minor units** (cents); decimals (fx rates, share

@@ -31,12 +31,11 @@ scripts/*.mjs
 **/.playwright-mcp
 **/.server.pid
 
-# Generated (regenerated inside the image from the backend)
-packages/client/openapi.json
-
 # NOT ignored, and deliberately: `.sqlx` (compile-time query metadata) and `.cargo/config.toml`
-# (which pins SQLX_OFFLINE=true) are COPYd by both Rust stages of packages/api/Dockerfile. They
+# (which pins SQLX_OFFLINE=true) are COPYd by the Rust stage of packages/api/Dockerfile. They
 # are what let the image compile with no database at all — excluding them breaks the build.
+# Likewise `packages/client/openapi.json` and `packages/client/src/schema.d.ts`: both are
+# committed, and the SPA stage builds from them instead of generating them.
 
 # Editor / OS cruft and loose images
 **/.DS_Store
