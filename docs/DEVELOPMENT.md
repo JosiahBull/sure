@@ -8,8 +8,10 @@ fixtures, and what the git hooks enforce — are in [CLAUDE.md](../CLAUDE.md).
 
 ## Prerequisites
 
-- Rust (nightly is used here; stable ≥ 1.94 also works — that floor is `sqlx` 0.9's MSRV,
-  not ours. The workspace is on edition 2024, which needs only 1.85)
+- Rust, through `rustup`. [`rust-toolchain.toml`](../rust-toolchain.toml) pins the version — the
+  one CI checks with and the release image compiles with — and rustup installs it, with clippy and
+  rustfmt, the first time cargo runs in this repository. Your own default toolchain still applies
+  everywhere else, and `cargo +nightly …` still reaches nightly here when you ask for it
 - Node ≥ 24 and `pnpm` (`corepack enable`)
 - `sqlx-cli`, **only if you change a SQL query or add a migration** —
   `cargo install sqlx-cli@0.9.0 --no-default-features --features sqlite,rustls` — so you can run

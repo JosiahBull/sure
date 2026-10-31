@@ -55,6 +55,20 @@ whenever a version tag is pushed. Everything lives under [`.github/`](../.github
 - **Versions** — `scripts/check-versions.sh`: Cargo.toml and package.json must agree, and
   on a tag the tag must match
 
+### Rust toolchain and caches
+
+Every job that runs cargo installs the version [`rust-toolchain.toml`](../rust-toolchain.toml)
+names, which is also what the pre-commit hook, local builds and the release image compile with —
+so a release is built by the compiler its checks ran on, and a new stable arrives as a Dependabot
+PR that runs every gate rather than silently on the next run. The `rust` and `node` tags in
+`packages/api/Dockerfile` are pinned and bumped by Dependabot too.
+
+The `Swatinem/rust-cache` entries are saved by `main` only. A PR run restores main's entry for
+its job and saves nothing, so open PRs no longer add a 3–4 GB set each to the repository's 10 GB
+cache budget, which they shared with main's set and the release's layer cache. Clippy and sqlx
+offline metadata share one entry, because they build the same dependency artifacts. The comments
+at the top of `checks.yml` have the detail.
+
 ## Releasing
 
 The image version comes from the git tag, which must match the version declared in

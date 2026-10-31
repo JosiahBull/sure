@@ -165,3 +165,38 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  # The two builder images in packages/api/Dockerfile, which pins each by exact tag in its FROM
+  # line (the only place this updater reads one). The major ignore holds node on the 24 LTS line
+  # that `engines.node` and CI's node-version name. The rust tag does not choose the compiler —
+  # rust-toolchain.toml, the next entry, does — so a bump of either alone builds with the right
+  # rustc; the tag only spares the build a download when the two agree.
+  - package-ecosystem: docker
+    directory: "/packages/api"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      docker-minor-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # rust-toolchain.toml: the Rust that CI, the pre-commit hook and the release image all compile
+  # with. A bump arrives as a PR that runs every gate on the new compiler, new clippy lints included,
+  # so auto-merge takes it only once all of them pass.
+  - package-ecosystem: rust-toolchain
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
