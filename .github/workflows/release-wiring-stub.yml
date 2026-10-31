@@ -1,0 +1,20 @@
+name: Release wiring stub (temporary)
+
+# TEMPORARY, deleted before this branch merges. Stands in for checks.yml in
+# release-wiring-test.yml: a reusable workflow that passes or fails on request.
+
+on:
+  workflow_call:
+    inputs:
+      pass:
+        type: boolean
+        required: true
+
+jobs:
+  gate:
+    name: Stub gate
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          PASS: ${{ inputs.pass }}
+        run: '[ "$PASS" = "true" ]'
