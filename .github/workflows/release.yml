@@ -2,13 +2,14 @@ name: Release
 
 # Cut a release when a version tag is pushed:
 #   git tag v0.1.0 && git push origin v0.1.0
-# The tag must match the version declared in Cargo.toml / package.json (enforced by the
-# `versions` gate in the reusable checks workflow).
+# The tag must name a commit on main, match the version declared in Cargo.toml /
+# package.json, and main's CI must have passed on that commit (the `verify` job).
 #
 # The image is built one architecture per job, each on a runner of that architecture, then
 # joined into one multi-arch tag:
 #
-#   checks, meta -> image (amd64), image (arm64) -> merge -> github-release
+#   verify [-> checks, only when main has no result] -> image (amd64), image (arm64)
+#     -> merge -> github-release     (meta runs alongside verify; image needs it too)
 #
 # That is Docker's "distribute build across multiple runners" recipe, written out by hand.
 # Docker now packages it as the docker/github-builder reusable workflow, which also signs and
@@ -31,10 +32,54 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  # Run the full merge-gate suite against the tag before publishing anything. Same
-  # reusable workflow CI runs, so there is no release-only copy of any check — and on a
-  # tag the version gate also asserts the tag matches the declared version.
+  # Nothing is published unless this passes. It does not run the merge gates again: ci.yml
+  # ran checks.yml on this exact commit when it landed on main, and that result is reused.
+  # Running the suite a second time on the tag cost about 8 minutes, and v0.7.0's tag run
+  # failed on a flaky test the same commit had passed on its PR and on main. There is
+  # still no release-only copy of any check.
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    # main-ci-result.sh waits up to 2 minutes for main's run to appear and 30 for it to
+    # finish; this bounds the job if the API hangs.
+    timeout-minutes: 40
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      checks: ${{ steps.ci.outputs.checks }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the ancestry check needs main's history
+
+      # On a tag, also asserts the tag (vX.Y.Z) matches the declared version.
+      - name: Tag matches the declared version
+        run: ./scripts/check-versions.sh
+
+      # Main is where the reused result comes from, so a tag anywhere else has none.
+      - name: Tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::${GITHUB_REF_NAME} names $(git rev-parse --short HEAD), which is not on main"
+            exit 1
+          fi
+
+      # Prints `reuse` (a run on main passed) or `run` (no run, or only cancelled ones),
+      # and fails when main's run failed or did not finish in time. See the script header.
+      - name: Main's CI result for this commit
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/main-ci-result.sh "$(git rev-parse HEAD)"
+
+  # The fallback, for a commit main has no result for. ci.yml cancels a superseded run on
+  # main as well as on a PR, so two merges close together leave the first without one, and
+  # a merge GitHub makes for Dependabot triggers no workflow at all. The identical suite
+  # then runs here, on the tag, as it used to for every release.
   checks:
+    needs: [verify]
+    if: needs.verify.outputs.checks == 'run'
     uses: ./.github/workflows/checks.yml
 
   # The image name, tags and OCI labels, computed once: both architectures then carry
@@ -69,7 +114,14 @@ jobs:
   # no tag can point at a release with only one architecture built.
   image:
     name: Build and push image (${{ matrix.arch }})
-    needs: [checks, meta]
+    needs: [verify, checks, meta]
+    # `checks` is skipped whenever main's result is reused, and by default a skipped need
+    # skips this job too. So: verify passed, and checks either passed or was not needed.
+    if: >-
+      !cancelled()
+      && needs.verify.result == 'success'
+      && needs.meta.result == 'success'
+      && (needs.checks.result == 'success' || needs.checks.result == 'skipped')
     strategy:
       # Let the other architecture finish when one fails, so "Re-run failed jobs" rebuilds
       # only the one that broke.
@@ -133,6 +185,9 @@ jobs:
   merge:
     name: Publish multi-arch image
     needs: [meta, image]
+    # Spelled out because the implicit success() covers every job upstream, not just
+    # `needs`: with `checks` skipped, it would skip this job even after both builds passed.
+    if: ${{ !cancelled() && needs.meta.result == 'success' && needs.image.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -189,6 +244,8 @@ jobs:
   github-release:
     name: Create GitHub release
     needs: [meta, merge]
+    # Explicit for the same reason as `merge`.
+    if: ${{ !cancelled() && needs.meta.result == 'success' && needs.merge.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

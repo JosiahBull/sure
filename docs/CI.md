@@ -8,8 +8,8 @@ whenever a version tag is pushed. Everything lives under [`.github/`](../.github
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `ci.yml` | push to `main`, any PR | Calls the reusable `checks.yml` suite. |
-| `checks.yml` | `workflow_call` | The merge gates (see below). Shared by CI and Release so a release runs the identical checks. |
-| `release.yml` | push tag `v*` | Runs `checks.yml`, builds the image for each architecture on a native runner, publishes them to GHCR as one multi-arch tag, then cuts a GitHub Release. |
+| `checks.yml` | `workflow_call` | The merge gates (see below). Called by CI, and by Release only when `main` has no result for the tagged commit, so a release depends on the identical checks. |
+| `release.yml` | push tag `v*` | Verifies the tag and reuses `main`'s CI result for its commit, builds the image for each architecture on a native runner, publishes them to GHCR as one multi-arch tag, then cuts a GitHub Release. |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Enables auto-merge so green dependency bumps land on their own. |
 
 ### Merge gates (`checks.yml`)
@@ -65,6 +65,27 @@ The image version comes from the git tag, which must match the version declared 
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
+
+Tag a commit on `main`. The release does not run the merge gates again; its `verify` job:
+
+1. runs `scripts/check-versions.sh`, which on a tag also asserts the tag matches the declared
+   version;
+2. asserts the tagged commit is reachable from `origin/main`;
+3. finds the `ci.yml` run on `main` for that exact commit (`scripts/main-ci-result.sh`) and
+   requires it to have succeeded. A run that failed and then passed on a re-run counts. A tag
+   is often pushed seconds after its merge, so it waits up to 2 minutes for the run to appear
+   and up to 30 for it to finish.
+
+When `main` has no result for the commit, the release runs `checks.yml` itself, as every
+release used to. That happens when `ci.yml` cancelled the commit's run because another merge
+landed behind it (its `cancel-in-progress` applies to `main` too), or when the commit never got
+a run, as with a merge GitHub makes for Dependabot. When `main`'s run failed, the release
+stops: fix `main`, or re-run that run, then re-run the release.
+
+Either way the only result a release accepts is one `checks.yml` produced for that commit, so
+there is still no release-only copy of any check. Reusing it saves the 4.5 to 8 minutes the
+suite takes, and the chance of a flake the commit already passed: v0.7.0's tag-time run failed
+on one, though the same commit had passed on its PR and on `main`.
 
 This builds `ghcr.io/<owner>/<repo>` for `linux/amd64` + `linux/arm64`, tags it
 `X.Y.Z`, `X.Y`, and `latest`, pushes to GHCR, and publishes a GitHub Release with
