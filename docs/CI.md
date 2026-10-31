@@ -87,7 +87,7 @@ there is still no release-only copy of any check. Reusing it saves the 4.5 to 8 
 suite takes, and the chance of a flake the commit already passed: v0.7.0's tag-time run failed
 on one, though the same commit had passed on its PR and on `main`.
 
-This builds `ghcr.io/<owner>/<repo>` for `linux/amd64` + `linux/arm64`, tags it
+The release then builds `ghcr.io/<owner>/<repo>` for `linux/amd64` + `linux/arm64`, tags it
 `X.Y.Z`, `X.Y`, and `latest`, pushes to GHCR, and publishes a GitHub Release with
 auto-generated notes.
 
