@@ -190,6 +190,11 @@ updates:
   # rust-toolchain.toml: the Rust that CI, the pre-commit hook and the release image all compile
   # with. A bump arrives as a PR that runs every gate on the new compiler, new clippy lints included,
   # so auto-merge takes it only once all of them pass.
+  #
+  # No `ignore:` here, unlike every other entry. This updater turns a semver-major ignore into the
+  # requirement `>= 2.a`, which its own requirement parser rejects, failing the whole run with
+  # `illformed_requirement` (the first run, on 2026-10-31). Rust has no 2.0 to hold back: breaking
+  # language changes ship as editions, chosen in Cargo.toml.
   - package-ecosystem: rust-toolchain
     directory: "/"
     schedule:
@@ -197,6 +202,3 @@ updates:
     commit-message:
       prefix: chore
       include: scope
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
