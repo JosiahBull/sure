@@ -99,10 +99,6 @@ pnpm config set store-dir /pnpm-store --global >/dev/null 2>&1 || true
 
 echo "▶ pnpm install"
 pnpm install --frozen-lockfile
-echo "▶ pnpm gen:client"
-# Not silenced: on a cold volume this compiles gen-openapi under emulation, which is minutes of
-# apparent silence otherwise.
-pnpm gen:client
 
 playwright_args=(test)
 if [ "$mode" = "update" ]; then

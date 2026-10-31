@@ -15,8 +15,9 @@
 #   checks / Clippy                 → cargo clippy … -D warnings
 #   checks / Cargo tests            → cargo test --workspace --all-features
 #   checks / API e2e tests          → pnpm test:api
-#   checks / Typecheck              → BOTH `--filter @sure/web check` and
-#                                     `--filter @sure/api-tests check` (the CI job runs both)
+#   checks / Typecheck              → `pnpm gen:client` + no diff in packages/client, then BOTH
+#                                     `--filter @sure/web check` and
+#                                     `--filter @sure/api-tests check` (the CI job runs all three)
 #   checks / Web visual tests       → deliberately absent; see the note below
 #
 # Adding a required context without adding it here is the failure this table exists to make
@@ -82,6 +83,13 @@ run cargo clippy --workspace --all-targets --all-features -- -D warnings
 # which for `cargo test` would drop the doctests. See the `test` job in checks.yml.
 run cargo test --workspace --all-features
 run pnpm test:api
+# The generated client is committed, so it has to be regenerated and found unchanged — the first
+# step of the `Typecheck` job. Regenerating writes the working tree and the comparison is against
+# the index, so a client that was regenerated but left unstaged fails here too: the copy that
+# counts is the one being committed.
+run pnpm gen:client
+git diff --quiet -- packages/client \
+  || { echo "✗ \`pnpm gen:client\` changed packages/client — review \`git diff\` and stage it"; exit 1; }
 # Both halves, because the `Typecheck` job runs both — and they check different things: the web
 # one is svelte-check over the SPA plus `tsc` over packages/web/tests, the api-tests one is `tsc`
 # over the backend e2e suite. Running only the first is how a spec that no longer compiles

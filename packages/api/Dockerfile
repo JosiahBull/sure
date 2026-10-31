@@ -8,8 +8,8 @@
 # Build context is the REPO ROOT, not this directory:
 #   docker build -f packages/api/Dockerfile -t sure .
 #
-# Multi-arch: only the Rust release binary is compiled per target arch. The OpenAPI
-# spec and the SPA are architecture-independent, so they build once on the native build
+# Multi-arch: only the Rust release binary is compiled per target arch. The SPA is
+# architecture-independent, so it builds once on the native build
 # platform ($BUILDPLATFORM) — under `docker buildx --platform linux/amd64,linux/arm64`
 # that keeps the slow, emulated work down to just the arm64 Rust compile.
 
@@ -24,40 +24,7 @@ ARG NODE_VERSION=24
 # RUST_VERSION floats on the major so a new stable rustc is picked up without an edit here;
 # NODE_VERSION is pinned to the 24 LTS line to match `engines.node` and CI's node-version.
 
-# ---- Emit the OpenAPI spec (arch-independent → build once, on the native platform) --
-FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-trixie AS spec
-WORKDIR /build
-# Only the Cargo workspace members are needed here (web/client are not Cargo crates).
-COPY Cargo.toml Cargo.lock ./
-# `appbase` and `testproxy` are workspace members, so cargo needs their manifests to load the
-# workspace at all — even though `-p sure-server` never builds testproxy. The same is true of the
-# three upstream wire-format clients below: cargo refuses to load the workspace when a declared
-# member's manifest is absent, whether or not this build would compile it.
-COPY packages/appbase ./packages/appbase
-COPY packages/telemetry ./packages/telemetry
-COPY packages/testproxy ./packages/testproxy
-COPY packages/frankfurter-client ./packages/frankfurter-client
-COPY packages/house-pricer-client ./packages/house-pricer-client
-COPY packages/yahoo-finance-client ./packages/yahoo-finance-client
-COPY packages/core ./packages/core
-COPY packages/scheduler ./packages/scheduler
-COPY packages/dal ./packages/dal
-COPY packages/providers ./packages/providers
-COPY packages/app ./packages/app
-COPY packages/api ./packages/api
-COPY packages/mcp ./packages/mcp
-# `.sqlx` carries the compile-time query metadata every `sqlx::query!` in `sure-dal` is checked
-# against, and `.cargo/config.toml` pins SQLX_OFFLINE=true. Both are required for the build: with
-# no metadata and no database the macros cannot resolve, and the compile fails. Nothing here ever
-# reaches a database — that is the point of shipping the metadata instead.
-COPY .cargo ./.cargo
-COPY .sqlx ./.sqlx
-COPY packages/server ./packages/server
-# gen-openapi writes the spec the TypeScript client is generated from (it creates the
-# parent directory itself). This is the same artifact `pnpm gen:openapi` produces.
-RUN cargo run --locked -p sure-api --bin gen-openapi -- packages/client/openapi.json
-
-# ---- Build the typed client + SPA (arch-independent → build once, native) -----------
+# ---- Build the SPA (arch-independent → build once, native) --------------------------
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-trixie-slim AS web
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 WORKDIR /build
@@ -68,14 +35,16 @@ COPY packages/client/package.json ./packages/client/
 COPY packages/web/package.json ./packages/web/
 COPY packages/api-tests/package.json ./packages/api-tests/
 RUN pnpm install --frozen-lockfile
-# Sources + the generated spec from the `spec` stage.
+# The typed client is source here, not something to generate: `openapi.json` and the
+# `src/schema.d.ts` made from it are both committed, and the Typecheck gate fails when either no
+# longer matches the backend. Generating them in the image cost a debug build of the whole
+# `sure-api` dependency tree — a third cargo build per release — to reproduce a file the commit
+# already carried.
 COPY packages/client ./packages/client
 COPY packages/web ./packages/web
-COPY --from=spec /build/packages/client/openapi.json ./packages/client/openapi.json
-# Generate the typed client, then build the SPA. build:fast = `vite build` without
-# svelte-check (type-checking is a CI gate, not a packaging step).
-RUN pnpm --filter @sure/client generate \
- && pnpm --filter @sure/web build:fast
+# build:fast = `vite build` without svelte-check (type-checking is a CI gate, not a packaging
+# step).
+RUN pnpm --filter @sure/web build:fast
 
 # ---- Compile the release binary (arch-specific → built per target platform) ---------
 # Statically linked against musl, so the runtime image below can be one with no libc, no

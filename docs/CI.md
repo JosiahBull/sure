@@ -40,7 +40,10 @@ whenever a version tag is pushed. Everything lives under [`.github/`](../.github
 - **Clippy** — `cargo clippy --workspace --all-targets --all-features -D warnings`
 - **Cargo tests** — `cargo test --workspace --all-features` (unit, integration and doctests;
   deliberately not `--all-targets`, which for `cargo test` *excludes* doctests)
-- **Typecheck** — `svelte-check` (web) + `tsc` (api-tests), after `pnpm gen:client`
+- **Typecheck** — `pnpm gen:client`, failing if that changed anything in `packages/client`, then
+  `svelte-check` (web) + `tsc` (api-tests). The OpenAPI spec and the typed client generated from
+  it are committed, and this is the one place they are regenerated: everything else, the release
+  image included, uses the committed copies, so this gate is what holds them to the backend
 - **API e2e tests** — `pnpm test:api` (Playwright driving the real backend, no browser)
 - **Web visual tests** — `pnpm test:web` (Playwright screenshot suite), run inside the
   pinned `mcr.microsoft.com/playwright` image so rendering matches the committed baselines.
