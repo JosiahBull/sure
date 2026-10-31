@@ -10,8 +10,10 @@
 #
 # Multi-arch: only the Rust release binary is compiled per target arch. The SPA is
 # architecture-independent, so it builds once on the native build
-# platform ($BUILDPLATFORM) — under `docker buildx --platform linux/amd64,linux/arm64`
-# that keeps the slow, emulated work down to just the arm64 Rust compile.
+# platform ($BUILDPLATFORM). The release workflow builds each arch on a runner of that
+# arch, so nothing there is emulated; a local `docker buildx --platform
+# linux/amd64,linux/arm64` still emulates whichever arch the machine is not, and this split
+# keeps that slow work down to its Rust compile.
 
 ARG RUST_VERSION=1
 ARG NODE_VERSION=24

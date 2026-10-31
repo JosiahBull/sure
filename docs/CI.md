@@ -9,7 +9,7 @@ whenever a version tag is pushed. Everything lives under [`.github/`](../.github
 | --- | --- | --- |
 | `ci.yml` | push to `main`, any PR | Calls the reusable `checks.yml` suite. |
 | `checks.yml` | `workflow_call` | The merge gates (see below). Shared by CI and Release so a release runs the identical checks. |
-| `release.yml` | push tag `v*` | Runs `checks.yml`, builds + pushes the multi-arch image to GHCR, then cuts a GitHub Release. |
+| `release.yml` | push tag `v*` | Runs `checks.yml`, builds the image for each architecture on a native runner, publishes them to GHCR as one multi-arch tag, then cuts a GitHub Release. |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Enables auto-merge so green dependency bumps land on their own. |
 
 ### Merge gates (`checks.yml`)
@@ -70,9 +70,21 @@ This builds `ghcr.io/<owner>/<repo>` for `linux/amd64` + `linux/arm64`, tags it
 `X.Y.Z`, `X.Y`, and `latest`, pushes to GHCR, and publishes a GitHub Release with
 auto-generated notes.
 
-> arm64 is built under QEMU emulation on the amd64 runner, so a release build is slow
-> (tens of minutes). That is the trade-off for a multi-arch image without dedicated
-> arm64 runners.
+Each architecture builds in its own job on a runner of that architecture: `ubuntu-latest` for
+amd64, and `ubuntu-24.04-arm`, free for public repositories, for arm64. Each pushes an untagged
+image by digest; a final job joins the two digests into one manifest list with
+`docker buildx imagetools create` and applies the tags, so no tag exists until both
+architectures do. This is Docker's
+[distribute build across multiple runners](https://docs.docker.com/build/ci/github-actions/multi-platform/#distribute-build-across-multiple-runners)
+recipe written out by hand; that page now points at the `docker/github-builder` reusable
+workflow instead, which also signs and attests what it pushes. Up to v0.7.0, arm64 was built under QEMU on the amd64 runner, where its
+`cargo build --release` took 3,144 s against 433 s for amd64, so the emulated compile alone set
+the length of a release.
+
+Each build job exports a GitHub Actions layer cache (`type=gha,mode=max`) under its own scope.
+That export costs minutes per job (456 s for the old two-architecture build), and a run on a
+tag can read only caches written on that tag or on `main`. Nothing on `main` writes them, so
+the cache only helps a re-run of the same tag's workflow.
 
 ## Running the image
 
