@@ -1,6 +1,6 @@
 {
   "name": "sure",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Sure — a fast, local financial tracker (Rust + Axum + SQLite backend, Svelte SPA frontend).",
   "//packageManager": "Held on pnpm 11.x. pnpm 12 writes pnpm-lock.yaml as two YAML documents (a `packageManagerDependencies` document, then the dependency graph). GitHub's dependency graph reads only the first document, so it sees zero dependencies and Dependabot alerts stop meaning anything. That is dependabot/dependabot-core#15904, still open on 2026-10-30, when 12.16.1 was tried here and produced exactly that lockfile. CI (pnpm/action-setup 6.1) and corepack would both run 12 fine. Move to 12 once #15904 is fixed.",
