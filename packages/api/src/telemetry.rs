@@ -44,7 +44,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use axum::extract::{MatchedPath, Request};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use sure_telemetry::BoxedLayer;
@@ -361,7 +361,7 @@ pub async fn request_context(request: Request, next: Next) -> Response {
     let _active = sure_telemetry::ActiveRequest::enter();
     let started = std::time::Instant::now();
 
-    let response = REQUEST_ID
+    let mut response = REQUEST_ID
         .scope(request_id, async move {
             let response = next.run(request).await;
             let status = response.status();
@@ -383,9 +383,30 @@ pub async fn request_context(request: Request, next: Next) -> Response {
         })
         .await;
 
-    record_request(&method, route.as_ref(), &response, started.elapsed());
+    let elapsed = started.elapsed();
+    stamp_server_timing(&mut response, elapsed);
+    record_request(&method, route.as_ref(), &response, elapsed);
     response
 }
+
+/// Add `Server-Timing: app;dur=<ms>` to a response: how long this process held the request,
+/// so a browser can subtract it from the time to first byte and see what the network cost.
+///
+/// The span is the one [`record_request`] measures, from here until the response head is
+/// ready, so it covers the limiters, the handler, and the ETag layer's buffering, and not a
+/// body still streaming out (compression included). A `304` from the ETag layer passes back
+/// through here and is stamped too, which matters: a browser revalidating a cached response
+/// merges the `304`'s headers into it, so a `304` without one would show the stored response's
+/// old figure as this request's.
+fn stamp_server_timing(response: &mut Response, elapsed: Duration) {
+    let value = format!("app;dur={:.1}", elapsed.as_secs_f64() * 1000.0);
+    // Digits, a dot and an ASCII name: always a valid header value.
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        response.headers_mut().append(SERVER_TIMING, value);
+    }
+}
+
+const SERVER_TIMING: HeaderName = HeaderName::from_static("server-timing");
 
 /// Record `http.server.request.duration` for one finished request.
 ///
@@ -519,6 +540,19 @@ fn rewrite_body(response: Response, detail: ErrorDetail) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_timing_is_milliseconds_to_a_tenth() {
+        let mut response = Response::new(axum::body::Body::empty());
+        stamp_server_timing(&mut response, Duration::from_micros(2_345));
+        assert_eq!(
+            response
+                .headers()
+                .get("server-timing")
+                .map(HeaderValue::as_bytes),
+            Some(&b"app;dur=2.3"[..])
+        );
+    }
 
     /// The whole rule in one table: output is plain unless colour was asked for, and `auto`
     /// is the only spelling that lets the sink have a say. The `(Never, false)` cell is the

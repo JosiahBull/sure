@@ -24,7 +24,7 @@ the private, revalidating policy, never a public one.
 | What | `Cache-Control` | `CDN-Cache-Control` |
 | --- | --- | --- |
 | Any mutation, and every error | `no-store` | `no-store` |
-| `/api/health`, `/api/config/export`, `/api/provider-kinds/{kind}/accounts` | `no-store` | `no-store` |
+| `/api/health`, `/api/config/export`, `/api/provider-kinds/{kind}/accounts`, `/api/debug/request` | `no-store` | `no-store` |
 | **Every other `/api` read** | `private, no-cache` | `no-store` |
 | `/api/accounts/{id}/stock-price` | `private, max-age=300, stale-while-revalidate=1500` | `no-store` |
 | `/assets/**`, `/workbox-*.js` | `public, max-age=31536000, immutable` | same |
@@ -145,6 +145,49 @@ sees it. Browsers get HTTP/2 and HTTP/3 from whatever terminates TLS:
   browser opens at most six HTTP/1.1 connections to one host, each with its own handshake, and
   the seventh waits a full round trip for a free one. Whatever terminates TLS should offer
   HTTP/2, which carries all seven on one connection.
+
+## Server-Timing
+
+Every response carries `Server-Timing: app;dur=<ms>`: how long this process held the request,
+from [`request_context`](../packages/api/src/telemetry.rs) until the response head was ready. It
+is the span the `http.server.request.duration` histogram records. A browser exposes it as
+`PerformanceResourceTiming.serverTiming` (Safari since 16.4), so the time to first byte minus
+`app` is what the network cost.
+
+* It covers the limiters, the handler and the ETag layer's buffering, and not a body still
+  streaming out, compression included.
+* A `304` from the ETag layer carries its own. A browser merges a `304`'s headers into the
+  response it revalidated, so without one it would show the stored response's figure as the new
+  request's.
+* It is not configurable. Anyone who can reach the API can already time it.
+
+## Measuring from a device
+
+The settings menu does not list the connection page (`packages/web/src/pages/Debug.svelte`). Tap
+the version line at the foot of the menu five times to open it, or go to `#/settings/debug`. It
+shows the launch's Navigation and Resource Timing, with `Server-Timing` split out of each request.
+It runs a probe of tiny `no-store` requests, first one after another and then all at once. And it
+shows what the server saw, from `GET /api/debug/request`.
+([Light](screenshots/debug-light.png) and [dark](screenshots/debug-dark.png), from a local
+instance with an invented tailnet address.)
+
+That endpoint echoes the requester's own request and nothing else: the HTTP version of the hop
+that reached the process, every address the request carried, classified as loopback,
+Tailscale (`100.64.0.0/10`), LAN (RFC 1918 and link-local) or public, a whitelist of proxy headers,
+and the server's clock and version. The whitelist is in
+[`routes/debug.rs`](../packages/api/src/routes/debug.rs); cookies, `Authorization` and
+`CF-Access-*` are never echoed.
+
+Two things it cannot show:
+
+* **The browser's protocol to the proxy, if the browser does not report it.** That leg ends at
+  the proxy, so this process only sees the proxy's own connection. `nextHopProtocol` usually
+  answers it. When it comes back empty, have the proxy pass the protocol on, which the page
+  shows as `browser → proxy`. In nginx:
+  `proxy_set_header X-Forwarded-Http-Version $server_protocol;`
+* **Whether a Tailscale path is direct or relayed through DERP.** No browser API exposes it. On
+  the server, `tailscale ping <device>` says `via <ip:port>` for a direct path and
+  `via DERP(<region>)` for a relay; `tailscale status` shows the same per peer.
 
 ## Abuse guards
 

@@ -8,6 +8,7 @@ pub mod brokerage;
 pub mod categories;
 pub mod crons;
 pub mod currencies;
+pub mod debug;
 pub mod equity;
 pub mod health;
 pub mod import;
@@ -31,6 +32,7 @@ pub mod valuations;
 /// the API accepts.
 pub fn router(limits: &Limits) -> Router<AppState> {
     let api = health::router()
+        .merge(debug::router())
         .merge(currencies::router())
         .merge(settings::router())
         .merge(categories::router())

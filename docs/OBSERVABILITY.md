@@ -113,6 +113,9 @@ the authoritative list — it is one file for exactly this reason.
 `http.route` is axum's matched route template, and `error.type` is `AppError::code` — both closed
 sets, so neither can be driven wide by a client.
 
+The same duration goes back to the client on every response as `Server-Timing: app;dur=<ms>`; see
+[HTTP.md](HTTP.md#server-timing).
+
 ### SQLite
 | Metric | Type | Attributes |
 | --- | --- | --- |

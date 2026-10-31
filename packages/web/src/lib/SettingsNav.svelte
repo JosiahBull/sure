@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { router } from "./router.svelte";
+  import { navigate, router } from "./router.svelte";
 
   const GROUPS: { label: string; items: { path: string; label: string }[] }[] = [
     {
@@ -25,6 +25,19 @@
   ];
 
   const activePath = $derived(router.path.split("?")[0]);
+
+  // Five taps on the version line open the connection page, which is not in the menu. An
+  // installed app has no address bar to type #/settings/debug into.
+  const TAPS = 5;
+  const WITHIN_MS = 3000;
+  let taps: number[] = [];
+  function tapVersion() {
+    const now = performance.now();
+    taps = [...taps.filter((t) => now - t < WITHIN_MS), now];
+    if (taps.length < TAPS) return;
+    taps = [];
+    navigate("/settings/debug");
+  }
 </script>
 
 <nav class="settings-nav">
@@ -43,6 +56,7 @@
       </ul>
     </div>
   {/each}
+  <button type="button" class="version" onclick={tapVersion}>Sure {__APP_VERSION__}</button>
 </nav>
 
 <style>
@@ -98,6 +112,19 @@
       min-height: 44px;
       font-size: 15px;
     }
+  }
+  .version {
+    margin-top: auto;
+    align-self: flex-start;
+    padding: 6px 10px;
+    border: 0;
+    background: none;
+    font-size: 12px;
+    color: var(--text-faint);
+    cursor: default;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
   }
   .nav-item:hover {
     background: var(--hover);

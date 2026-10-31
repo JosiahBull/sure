@@ -20,6 +20,7 @@
   import Preferences from "./pages/Preferences.svelte";
   import Appearance from "./pages/Appearance.svelte";
   import ScheduledAdjustments from "./pages/ScheduledAdjustments.svelte";
+  import Debug from "./pages/Debug.svelte";
 
   // The icon rail only surfaces the data-driven views; every management/config page
   // (accounts, rules, categories, merchants, providers, preferences...) lives under Settings,
@@ -47,6 +48,8 @@
     "/settings/categories": "Categories",
     "/settings/rules": "Rules",
     "/settings/merchants": "Merchants",
+    // Not in SettingsNav: reached by tapping the version line there five times.
+    "/settings/debug": "Debug",
   };
   const crumbs = $derived.by(() => {
     if (inSettings) return ["Settings", SETTINGS_LABELS[activePath] ?? ""];
@@ -77,6 +80,8 @@
         return Appearance;
       case "/settings/scheduled":
         return ScheduledAdjustments;
+      case "/settings/debug":
+        return Debug;
       default:
         return Dashboard;
     }

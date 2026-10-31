@@ -205,10 +205,12 @@ fn deadline_for(method: &Method, template: &str) -> Deadline {
     }
 }
 
-/// API reads that must never be stored: liveness, a live upstream call, and the full
-/// database dump.
+/// API reads that must never be stored: liveness, a live upstream call, the full database
+/// dump, and the echo of the request itself (each answer describes one request, and a reused
+/// one would report a connection that is no longer there).
 const API_NO_STORE: &[&str] = &[
     "/api/health",
+    "/api/debug/request",
     "/api/config/export",
     "/api/provider-kinds/{kind}/accounts",
 ];
