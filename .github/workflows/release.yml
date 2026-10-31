@@ -14,7 +14,8 @@ name: Release
 # Docker now packages it as the docker/github-builder reusable workflow, which also signs and
 # attests what it pushes with an OIDC token; adopting that changes what is published, so it
 # is its own decision. arm64 used to be built under QEMU on the amd64 runner, where its
-# `cargo build --release` took 3,144 s against 433 s for amd64 (v0.6.0's log).
+# `cargo build --release` took 5,493 s against 643 s for amd64 (v0.7.0's log); natively it
+# took 254 s.
 
 on:
   push:

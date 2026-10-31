@@ -77,14 +77,19 @@ image by digest; a final job joins the two digests into one manifest list with
 architectures do. This is Docker's
 [distribute build across multiple runners](https://docs.docker.com/build/ci/github-actions/multi-platform/#distribute-build-across-multiple-runners)
 recipe written out by hand; that page now points at the `docker/github-builder` reusable
-workflow instead, which also signs and attests what it pushes. Up to v0.7.0, arm64 was built under QEMU on the amd64 runner, where its
-`cargo build --release` took 3,144 s against 433 s for amd64, so the emulated compile alone set
-the length of a release.
+workflow instead, which also signs and attests what it pushes.
+
+Up to v0.7.0, arm64 was built under QEMU on the amd64 runner, and the emulated compile set the
+length of a release: `cargo build --release` took 3,144 s for arm64 against 433 s for amd64 in
+v0.6.0, and 5,493 s against 643 s in v0.7.0, whose build job ran for 100 minutes. On native
+runners, measured cold before this change merged, it took 254 s on `ubuntu-24.04-arm` and 363 s
+on `ubuntu-latest`; each whole build job, without the push or the cache export, took 5 and 7
+minutes.
 
 Each build job exports a GitHub Actions layer cache (`type=gha,mode=max`) under its own scope.
-That export costs minutes per job (456 s for the old two-architecture build), and a run on a
-tag can read only caches written on that tag or on `main`. Nothing on `main` writes them, so
-the cache only helps a re-run of the same tag's workflow.
+That export costs minutes per job (456 s and 339 s for the two-architecture builds of v0.6.0 and
+v0.7.0), and a run on a tag can read only caches written on that tag or on `main`. Nothing on
+`main` writes them, so the cache only helps a re-run of the same tag's workflow.
 
 ## Running the image
 
