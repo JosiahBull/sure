@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Assert the workspace version is declared consistently in the Rust and Node manifests,
 # and — when running on a tag — that the tag (vX.Y.Z) matches. Pure text parsing, so it
-# needs no toolchain. Run by the Checks workflow (.github/workflows/checks.yml); on a
-# tag build the Release workflow relies on this to reject a mismatched tag.
+# needs no toolchain. Run by the Checks workflow (.github/workflows/checks.yml), and by the
+# Release workflow's `verify` job, which relies on it to reject a mismatched tag.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
