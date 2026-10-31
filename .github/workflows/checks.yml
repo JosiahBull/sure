@@ -1,9 +1,11 @@
 name: Checks
 
-# Reusable suite of merge gates. Called by ci.yml (on push/PR) and by release.yml (on
-# tag push) so a release runs — and depends on — the exact same checks as a PR, with no
-# duplicated logic between the two workflows. On a tag, the `versions` gate additionally
-# asserts the tag matches the declared version (see scripts/check-versions.sh).
+# Reusable suite of merge gates. ci.yml calls it on every push to main and every PR. A release
+# does not run it again: release.yml reuses main's ci.yml result for the tagged commit, and calls
+# this suite itself only when main's run for that commit was cancelled or is missing. Either way
+# the only result a release accepts is one this file produced, so there is no release-only copy
+# of any check. When it does run on a tag, the `versions` gate also asserts the tag matches the
+# declared version (see scripts/check-versions.sh).
 on:
   workflow_call:
 
@@ -11,6 +13,19 @@ env:
   CARGO_TERM_COLOR: always
   # Skip corepack's interactive "download pnpm?" prompt in non-TTY CI.
   COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+
+# Rust. Every job that runs cargo installs its toolchain with a bare `rustup toolchain install`,
+# which takes the version rust-toolchain.toml names — the file the pre-commit hook, local builds
+# and the release image's build stage all compile with — so no gate here floats on whatever stable
+# is today, and the release binary is built by the compiler these checks ran on.
+#
+# Caches. Each Swatinem/rust-cache entry holds the cargo registry and the dependency half of
+# `target/` for one job's build (workspace crates are rebuilt every run), 0.5–0.9 GB apiece. Only
+# `main` saves them. A PR run has `save-if` false: it restores main's entry for its job, by exact
+# key or, when the PR moved Cargo.lock, by prefix, and stores nothing. A full set per PR ref on top
+# of main's is what took the total past the repository's 10 GB budget, where GitHub evicts the
+# least recently used entries, main's included. Main itself saves only when a key changes (the
+# lockfile, a manifest, the toolchain): an exact hit has nothing new to store.
 
 jobs:
   # CLAUDE.md rule 3, and the Akahu-recording guard described in docs/TESTING.md. The
@@ -58,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup toolchain install --no-self-update
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-autoinherit@0.1.6
@@ -81,8 +96,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup toolchain install --no-self-update
       - uses: Swatinem/rust-cache@v2
+        with:
+          # One entry for this job and `clippy`: see `clippy` for why they can share it.
+          shared-key: check
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -100,9 +119,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      - run: rustup toolchain install --no-self-update
       - run: cargo fmt --all --check
 
   clippy:
@@ -110,10 +127,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      - run: rustup toolchain install --no-self-update
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Shared with the `sqlx` job, whose `cargo sqlx prepare` runs `cargo check` with these same
+          # flags. Clippy swaps the compiler for workspace crates only, so both build the same
+          # dependency artifacts: a `cargo check` with these flags straight after this clippy
+          # rebuilds the workspace crates and nothing else.
+          shared-key: check
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   # The Rust `#[cfg(test)]` modules, packages/appbase/tests, and the doctests — nothing else
@@ -126,8 +148,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup toolchain install --no-self-update
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace --all-features
 
   # svelte-check (web) + tsc (api-tests), and first the check that the client they both compile
@@ -153,8 +177,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup toolchain install --no-self-update
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -183,8 +209,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup toolchain install --no-self-update
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -227,13 +255,17 @@ jobs:
       # The container runs as root against a workspace git created; declare it safe so
       # any git calls (and tooling that shells out to git) don't bail on ownership.
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      # The Playwright image has Node + browsers but no Rust/C toolchain.
+      # The Playwright image has Node + browsers but no Rust/C toolchain. rustup goes in with no
+      # toolchain of its own, and the install after it takes the one rust-toolchain.toml names.
       - name: Install Rust + C toolchain
         run: |
           apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config curl
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          "$HOME/.cargo/bin/rustup" toolchain install --no-self-update
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:

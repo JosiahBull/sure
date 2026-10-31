@@ -1,0 +1,10 @@
+# The one place the Rust version is written. rustup reads this file wherever cargo runs in the
+# repository, so CI, the pre-commit hook, `pnpm dev` and the release image's build stage
+# (packages/api/Dockerfile copies it in) all compile with the same rustc, and the release binary
+# is built by exactly the compiler every check ran on. Dependabot bumps it (the `rust-toolchain`
+# ecosystem in .github/dependabot.yml), and that bump is a PR that runs every gate on the new
+# compiler first, new clippy lints included.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

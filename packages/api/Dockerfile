@@ -15,19 +15,23 @@
 # linux/amd64,linux/arm64` still emulates whichever arch the machine is not, and this split
 # keeps that slow work down to its Rust compile.
 
-ARG RUST_VERSION=1
-ARG NODE_VERSION=24
-
 # Both builder stages and the runtime sit on Debian 13 (trixie), which is current stable —
 # bookworm is oldstable. The three are kept on one release deliberately: the ca-certificates
 # bundle the runtime ships and the toolchain that produced the binary then come from the same
 # vintage. (The binary is statically linked against musl, so the runtime's glibc is not part
 # of the contract — distroless/static carries no libc at all — but the certificate store is.)
-# RUST_VERSION floats on the major so a new stable rustc is picked up without an edit here;
-# NODE_VERSION is pinned to the 24 LTS line to match `engines.node` and CI's node-version.
+#
+# Both builder images are pinned to an exact version, written into the FROM lines themselves:
+# Dependabot's docker updater (.github/dependabot.yml) reads a tag only from a literal FROM and
+# skips one built from an ARG. node stays on the 24 LTS line that `engines.node` and CI's
+# node-version name, because the updater is told to leave majors alone. The rust tag does not
+# decide the compiler, though: the `bin` stage copies in rust-toolchain.toml, and rustup compiles
+# with the version that names, the same one CI ran every check on. The tag names that version too
+# (Dependabot bumps both) so the stage starts with the toolchain installed; if the two ever part,
+# the build downloads the right compiler rather than using the wrong one.
 
 # ---- Build the SPA (arch-independent → build once, native) --------------------------
-FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-trixie-slim AS web
+FROM --platform=$BUILDPLATFORM node:24.22.2-trixie-slim AS web
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 WORKDIR /build
 RUN corepack enable
@@ -54,7 +58,7 @@ RUN pnpm --filter @sure/web build:fast
 # --platform override), so under `buildx --platform linux/amd64,linux/arm64` each arch
 # compiles natively-under-emulation and `musl-gcc` is always the one for the arch in hand —
 # no cross toolchain to configure.
-FROM rust:${RUST_VERSION}-trixie AS bin
+FROM rust:1.99.1-trixie AS bin
 WORKDIR /build
 # musl-tools brings `musl-gcc`; cmake and clang are for `aws-lc-sys`, the C/asm crypto
 # backend behind rustls, which every provider adapter's HTTPS goes through. SQLite is
@@ -65,6 +69,11 @@ WORKDIR /build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends musl-tools musl-dev cmake clang \
  && rm -rf /var/lib/apt/lists/*
+# The compiler CI checked with (see the note at the top). Installed in a layer of its own, ahead of
+# the sources, so a source change does not repeat it; with the tag in step it only adds the
+# clippy and rustfmt components the file lists.
+COPY rust-toolchain.toml ./
+RUN rustup toolchain install --no-self-update
 COPY Cargo.toml Cargo.lock ./
 # `appbase` and `testproxy` are workspace members, so cargo needs their manifests to load the
 # workspace at all — even though `-p sure-server` never builds testproxy. The same is true of the
