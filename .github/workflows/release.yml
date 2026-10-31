@@ -4,6 +4,18 @@ name: Release
 #   git tag v0.1.0 && git push origin v0.1.0
 # The tag must match the version declared in Cargo.toml / package.json (enforced by the
 # `versions` gate in the reusable checks workflow).
+#
+# The image is built one architecture per job, each on a runner of that architecture, then
+# joined into one multi-arch tag:
+#
+#   checks, meta -> image (amd64), image (arm64) -> merge -> github-release
+#
+# That is Docker's "distribute build across multiple runners" recipe, written out by hand.
+# Docker now packages it as the docker/github-builder reusable workflow, which also signs and
+# attests what it pushes with an OIDC token; adopting that changes what is published, so it
+# is its own decision. arm64 used to be built under QEMU on the amd64 runner, where its
+# `cargo build --release` took 5,493 s against 643 s for amd64 (v0.7.0's log); natively it
+# took 254 s.
 
 on:
   push:
@@ -25,20 +37,56 @@ jobs:
   checks:
     uses: ./.github/workflows/checks.yml
 
-  # Build the single combined image (SPA + backend) for amd64 + arm64 and push it to
-  # GHCR. arm64 is built under QEMU emulation on the amd64 runner, so this job is slow;
-  # that is the accepted cost of a multi-arch image without dedicated arm64 runners.
-  docker:
-    name: Build and push image
-    needs: [checks]
+  # The image name, tags and OCI labels, computed once: both architectures then carry
+  # identical labels, and the merge job tags exactly what the builds were labelled as.
+  meta:
+    name: Image metadata
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      # GHCR rejects upper case, and `github.repository` keeps the owner's (JosiahBull).
+      # metadata-action lowercases the tags it emits, but the by-digest push and the merge
+      # name the bare repository as well, so it is lowercased here for all three.
+      - id: image
+        run: echo "name=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      # ghcr.io/<owner>/<repo>, tagged 0.1.0, 0.1, and latest.
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+  # One job per architecture, each on a runner of that architecture, so nothing is
+  # emulated. Each pushes an untagged image by digest and hands the digest to `merge`, so
+  # no tag can point at a release with only one architecture built.
+  image:
+    name: Build and push image (${{ matrix.arch }})
+    needs: [checks, meta]
+    strategy:
+      # Let the other architecture finish when one fails, so "Re-run failed jobs" rebuilds
+      # only the one that broke.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v7
 
-      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
@@ -47,33 +95,100 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ghcr.io/<owner>/<repo>, tagged 0.1.0, 0.1, and latest. metadata-action lowercases
-      # the owner/repo for GHCR automatically.
-      - id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
-
-      - uses: docker/build-push-action@v7
+      # The layer cache gets a scope per architecture; sharing the default one, the two
+      # jobs would overwrite each other's entry. A tag's run can read only caches written
+      # on that tag or on main, and nothing on main writes these, so the export (minutes
+      # per job) pays off only when this same tag's run is re-run.
+      - id: build
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: packages/api/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: linux/${{ matrix.arch }}
+          tags: ${{ needs.meta.outputs.image }}
+          labels: ${{ needs.meta.outputs.labels }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,scope=image-${{ matrix.arch }},mode=max
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      # `overwrite` so a re-run replaces this architecture's digest rather than failing on
+      # the name the first attempt already uploaded.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  # Joins the per-architecture digests into one manifest list and tags it X.Y.Z, X.Y and
+  # latest. The only job that tags anything, and it runs only once both builds pushed.
+  merge:
+    name: Publish multi-arch image
+    needs: [meta, image]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
+      TAGS: ${{ needs.meta.outputs.tags }}
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          tags=()
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then tags+=(-t "$tag"); fi
+          done <<< "$TAGS"
+          sources=()
+          for digest in *; do
+            sources+=("${IMAGE}@sha256:${digest}")
+          done
+          if [ "${#sources[@]}" -ne 2 ]; then
+            echo "::error::expected 2 digests (amd64, arm64), got ${#sources[@]}: ${sources[*]}"
+            exit 1
+          fi
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+          platforms=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' \
+            | jq -r '[.manifests[].platform | "\(.os)/\(.architecture)"] | sort | join(" ")')
+          for want in linux/amd64 linux/arm64; do
+            case " $platforms " in
+              *" $want "*) ;;
+              *) echo "::error::${IMAGE}:${VERSION} has no ${want} image (has: ${platforms})"; exit 1 ;;
+            esac
+          done
 
   # Sequenced after the image push so the release page never advertises a tag whose
   # image failed to build. Notes are auto-generated from commits since the previous tag.
   github-release:
     name: Create GitHub release
-    needs: [docker]
+    needs: [meta, merge]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -85,7 +200,7 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}
+          IMAGE: ${{ needs.meta.outputs.image }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
