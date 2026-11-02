@@ -262,41 +262,69 @@ export function makeZip(
 
 // ---- oversized bodies -------------------------------------------------------------------
 
+/**
+ * The server's default body caps, as `sure_api::config::Limits::default` sets them. Every
+ * backend this suite spawns runs on the defaults, so these are what [`postOversized`] has to
+ * exceed, by exactly one byte.
+ */
+export const BODY_LIMITS = {
+  /** Every route without a cap of its own (`MAX_BODY_BYTES`). */
+  global: 2 * 1024 * 1024,
+  /** `POST /api/import`, every file upload (`MAX_IMPORT_BODY_BYTES`, `sure_core::MAX_UPLOAD_BYTES`). */
+  upload: 16 * 1024 * 1024,
+  /** `POST /api/config/import` (`MAX_SNAPSHOT_BODY_BYTES`). */
+  snapshot: 32 * 1024 * 1024,
+} as const;
+
 /** Which endpoint an oversized-body probe should hit. */
 export type OversizedTarget = { path?: string; contentType?: string };
 
 /**
- * One attempt at POSTing `bytes` of body, resolving with the server's answer — or `null`
- * if the connection died before a complete response could be read.
+ * POST a body one byte over `limit` and return the server's refusal.
  *
- * Deliberately not `fetch`. The body cap is enforced part-way through the upload: the
- * server reads up to the limit, answers 413, and closes with the rest of the body still
- * unread in its receive buffer — which makes the close an RST rather than a FIN, and an
- * RST tells the client's kernel to discard whatever it has buffered, response included.
- * `undici` turns that into `TypeError: fetch failed` and loses the 413 it had already
- * been sent. Reading the socket directly wins that race nearly every time, but "nearly"
- * is why [`postOversized`] retries: the outcome is decided in the kernel, not here, which
- * is why this only ever failed under the load of a full suite run.
+ * Deliberately not `fetch`, and deliberately one byte over. The cap is enforced as the body is
+ * read: the server answers 413 and closes as soon as it has read past the limit. Whatever the
+ * client sent beyond that point is still unread in the server's receive buffer, which makes the
+ * close an RST rather than a FIN, and an RST tells the client's kernel to discard what it has
+ * buffered, the 413 included. `undici` reports that as `TypeError: fetch failed`. A raw socket
+ * only wins the race when it reads first, and under the load of a full suite run it lost five
+ * times in a row (a 51 MB body against the 16 MiB upload cap), which failed commits.
+ *
+ * One byte over is a body the server has to read to the end before it can tell it is too big, so
+ * nothing is left unread, the close is a FIN, and the response survives however late it is read.
+ * `Connection: close` makes the server close after answering rather than wait for another
+ * request on a connection whose body it has finished.
+ *
+ * So a reset here is never the race: it means the server refused before the end of the body,
+ * i.e. `limit` is no longer its cap, and the probe fails saying so.
  */
-function attemptOversized(
+export function postOversized(
   baseURL: string,
-  bytes: number,
-  path: string,
-  contentType: string,
-): Promise<Response | null> {
+  limit: number,
+  { path = "/api/accounts", contentType = "application/json" }: OversizedTarget = {},
+): Promise<Response> {
   const url = new URL(baseURL);
-  return new Promise((resolve) => {
+  const bytes = limit + 1;
+  return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: url.hostname, port: Number(url.port) });
     const chunks: Buffer[] = [];
-    // The refusal closes the connection under our feet; that is the expected ending here,
-    // not a failure. A response that never arrives is caught by the test timeout.
-    socket.on("error", () => {});
+    let reset: Error | undefined;
+    socket.on("error", (err) => (reset = err));
     socket.on("data", (chunk) => chunks.push(chunk));
     socket.on("close", () => {
+      if (reset) {
+        return reject(
+          new Error(
+            `the server reset the connection (${reset.message}), so it refused ${path} before ` +
+              `the end of a ${bytes}-byte body: ${limit} is no longer its cap`,
+          ),
+        );
+      }
       const raw = Buffer.concat(chunks).toString("latin1");
       const separator = raw.indexOf("\r\n\r\n");
-      // Reset before the response could be read in full — the caller tries again.
-      if (separator === -1) return resolve(null);
+      if (separator === -1) {
+        return reject(new Error(`the server closed ${path} without a complete response`));
+      }
       const [statusLine, ...headerLines] = raw.slice(0, separator).split("\r\n");
       const headers = new Headers(
         headerLines.map((line) => {
@@ -314,7 +342,7 @@ function attemptOversized(
     });
     socket.on("connect", () => {
       socket.write(
-        `POST ${path} HTTP/1.1\r\nHost: ${url.host}\r\n` +
+        `POST ${path} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n` +
           `Content-Type: ${contentType}\r\nContent-Length: ${bytes}\r\n\r\n`,
       );
       // Written in chunks, and only while the socket is still up: one 3 MB `write` would
@@ -331,26 +359,6 @@ function attemptOversized(
       pump();
     });
   });
-}
-
-/**
- * POST an oversized body and return the server's refusal, retrying past a connection that
- * was reset before the response could be read (see [`attemptOversized`]).
- *
- * Retrying does not weaken what is under test: only the guard produces a response at all,
- * so a server that stopped refusing oversized bodies fails every attempt on the status
- * assertion rather than being retried into passing.
- */
-export async function postOversized(
-  baseURL: string,
-  bytes: number,
-  { path = "/api/accounts", contentType = "application/json" }: OversizedTarget = {},
-): Promise<Response> {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const res = await attemptOversized(baseURL, bytes, path, contentType);
-    if (res) return res;
-  }
-  throw new Error("the server never returned a complete response to an oversized body");
 }
 
 /**

@@ -1,5 +1,6 @@
 import { test, expect } from "../fixtures";
 import {
+  BODY_LIMITS,
   createAccount,
   createCategory,
   createMerchant,
@@ -192,10 +193,9 @@ test("deeply nested JSON is refused rather than exhausting the stack", async ({ 
 });
 
 test("a snapshot body over the size limit is rejected by the server", async ({ server }) => {
-  // The route carries its own 32 MB ceiling, well above any real snapshot. Probed over a raw
-  // socket rather than `fetch`: the cap is enforced part-way through the upload, so the close
-  // is an RST and `undici` discards the 413 it was already sent — see `postOversized`.
-  const res = await postOversized(server.baseURL, 33 * 1024 * 1024, {
+  // The route carries its own 32 MiB ceiling, well above any real snapshot. Probed over a raw
+  // socket rather than `fetch` — see `postOversized`.
+  const res = await postOversized(server.baseURL, BODY_LIMITS.snapshot, {
     path: "/api/config/import",
   });
   expect(res.status).toBe(413);

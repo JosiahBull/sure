@@ -1,6 +1,6 @@
 import { test, expect } from "../fixtures";
 import type { SureClient } from "../../client/src/index";
-import { createAccount, makeZip, postOversized } from "../helpers";
+import { BODY_LIMITS, createAccount, makeZip, postOversized } from "../helpers";
 
 // Akahu serves an account about two years of history; ASB's own CSV export reaches seven, so
 // this upload is how an account's ledger gets extended past the feed. These specs cover what
@@ -663,9 +663,9 @@ test("undo removes this importer's rows and leaves every other source alone", as
 
 test("a body over the size limit is rejected by the server, not the parser", async ({ api, server }) => {
   const acc = await createAccount(api, "Chequing", "bank", "NZD", { institution: "ASB" });
-  // The route carries the shared import body limit (50 MB). Past it the request never reaches
+  // The route carries the shared import body limit (16 MiB). Past it the request never reaches
   // the handler at all. Probed over a raw socket, not `fetch` — see `postOversized`.
-  const res = await postOversized(server.baseURL, 51 * 1024 * 1024, {
+  const res = await postOversized(server.baseURL, BODY_LIMITS.upload, {
     path: "/api/import",
     contentType: "text/csv",
   });
