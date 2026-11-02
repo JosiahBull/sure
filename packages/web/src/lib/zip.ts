@@ -28,6 +28,10 @@ const CENTRAL_HEADER = 0x02014b50;
 const END_OF_CENTRAL = 0x06054b50;
 /** The version-needed-to-extract for a plain stored entry. */
 const VERSION = 20;
+/** Fixed lengths of the three records, each entry's name aside. */
+const LOCAL_SIZE = 30;
+const CENTRAL_SIZE = 46;
+const END_SIZE = 22;
 
 type Entry = { name: Uint8Array; body: Uint8Array; crc: number; offset: number };
 
@@ -44,11 +48,11 @@ export function makeZip(files: { name: string; body: Uint8Array }[]): Uint8Array
   for (const file of files) {
     const name = encoder.encode(file.name);
     entries.push({ name, body: file.body, crc: crc32(file.body), offset: localSize });
-    localSize += 30 + name.length + file.body.length;
+    localSize += LOCAL_SIZE + name.length + file.body.length;
   }
-  const centralSize = entries.reduce((n, e) => n + 46 + e.name.length, 0);
+  const centralSize = entries.reduce((n, e) => n + CENTRAL_SIZE + e.name.length, 0);
 
-  const out = new Uint8Array(localSize + centralSize + 22);
+  const out = new Uint8Array(localSize + centralSize + END_SIZE);
   const view = new DataView(out.buffer);
   let at = 0;
 
@@ -60,9 +64,9 @@ export function makeZip(files: { name: string; body: Uint8Array }[]): Uint8Array
     view.setUint32(at + 18, e.body.length, true);
     view.setUint32(at + 22, e.body.length, true);
     view.setUint16(at + 26, e.name.length, true);
-    out.set(e.name, at + 30);
-    out.set(e.body, at + 30 + e.name.length);
-    at += 30 + e.name.length + e.body.length;
+    out.set(e.name, at + LOCAL_SIZE);
+    out.set(e.body, at + LOCAL_SIZE + e.name.length);
+    at += LOCAL_SIZE + e.name.length + e.body.length;
   }
 
   const centralAt = at;
@@ -75,8 +79,8 @@ export function makeZip(files: { name: string; body: Uint8Array }[]): Uint8Array
     view.setUint32(at + 24, e.body.length, true);
     view.setUint16(at + 28, e.name.length, true);
     view.setUint32(at + 42, e.offset, true);
-    out.set(e.name, at + 46);
-    at += 46 + e.name.length;
+    out.set(e.name, at + CENTRAL_SIZE);
+    at += CENTRAL_SIZE + e.name.length;
   }
 
   view.setUint32(at, END_OF_CENTRAL, true);
@@ -117,6 +121,43 @@ export async function uploadBody(
 }
 
 const isZip = (f: File) => f.name.toLowerCase().endsWith(".zip");
+
+/**
+ * The most one import can send: `sure_core::MAX_UPLOAD_BYTES`, which is also the server's body cap
+ * on `POST /api/import`. Checked before anything is read or sent. Otherwise a person on a slow link
+ * waits on an upload that can only fail, to be told "Payload Too Large." with nothing about what to
+ * do instead, and the server closes on the rest of the body, so a client can lose even that 413 to
+ * the reset (Node's `fetch` does; see `postOversized` in `packages/api-tests/helpers.ts`).
+ */
+export const MAX_UPLOAD_BYTES = 16 * 1024 * 1024;
+
+/** How many bytes [`uploadBody`] would send for `files`, worked out without reading them. */
+function uploadSize(files: File[]): number {
+  if (files.length === 1) return files[0].size;
+  const encoder = new TextEncoder();
+  return files.reduce(
+    (n, f) => n + LOCAL_SIZE + CENTRAL_SIZE + 2 * encoder.encode(f.name).length + f.size,
+    END_SIZE,
+  );
+}
+
+/** Why `files` can't go up as one import, in words, or `null` when they can. */
+export function oversized(files: File[]): string | null {
+  const size = uploadSize(files);
+  if (size <= MAX_UPLOAD_BYTES) return null;
+  const cap = `${megabytes(MAX_UPLOAD_BYTES, Math.floor)} MB`;
+  const total = `${megabytes(size, Math.ceil)} MB`;
+  return files.length === 1
+    ? `${files[0].name} is ${total}, and one import can be at most ${cap}. Export a shorter period and import it in parts.`
+    : `These ${files.length} files come to ${total} together, and one import can be at most ${cap}. Import them a few at a time.`;
+}
+
+/**
+ * Decimal megabytes to one place, as Finder and the Files app show a file's size. Rounded up for
+ * the upload and down for the cap, so a refusal can never read "16.8 MB is over 16.8 MB".
+ */
+const megabytes = (bytes: number, round: (n: number) => number) =>
+  (round(bytes / 100_000) / 10).toFixed(1);
 
 /**
  * Advisory only — every importer tells the formats apart by content — but sending the truth keeps

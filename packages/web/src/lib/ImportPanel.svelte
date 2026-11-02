@@ -15,7 +15,7 @@
   import { api, formatMoney, type Schemas } from "./api";
   import { mutating } from "./lastKnown";
   import { ensureLoaded as ensurePeople, ownershipLabel } from "./people.svelte";
-  import { uploadBody } from "./zip";
+  import { oversized, uploadBody } from "./zip";
 
   let {
     accountId,
@@ -127,6 +127,18 @@
 
   async function choose(files: File[]) {
     if (files.length === 0) return;
+    // Refused before anything is read or sent: see `MAX_UPLOAD_BYTES`. Nothing is held in
+    // `pending` either, so the source picker below stays hidden: what the file is was never the
+    // question.
+    const refusal = oversized(files);
+    if (refusal) {
+      error = refusal;
+      done = null;
+      preview = null;
+      pending = [];
+      if (fileInput) fileInput.value = "";
+      return;
+    }
     busy = "preview";
     error = null;
     done = null;
@@ -349,16 +361,19 @@
   {#if error}
     <div class="error-banner" style="margin-bottom:10px">{error}</div>
     <!-- A file the sniff couldn't place is the one error worth offering a next step for: the
-         upload is probably fine and only its kind is in question. -->
-    <div class="row wrap" style="gap:8px;align-items:center;margin-bottom:10px">
-      <span class="small faint">Not what you expected? Say what the file is:</span>
-      <select class="select" bind:value={sourceOverride} onchange={() => choose(pending)}>
-        <option value="">Work it out from the file</option>
-        {#each Object.entries(SOURCE_LABEL) as [value, label]}
-          <option {value}>{label}</option>
-        {/each}
-      </select>
-    </div>
+         upload is probably fine and only its kind is in question. Only with files in hand to
+         retry with, so not after an undo, or an upload refused for its size. -->
+    {#if pending.length}
+      <div class="row wrap" style="gap:8px;align-items:center;margin-bottom:10px">
+        <span class="small faint">Not what you expected? Say what the file is:</span>
+        <select class="select" bind:value={sourceOverride} onchange={() => choose(pending)}>
+          <option value="">Work it out from the file</option>
+          {#each Object.entries(SOURCE_LABEL) as [value, label]}
+            <option {value}>{label}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
   {/if}
   {#if notice}<div class="ok-banner">{notice}</div>{/if}
   {#each undoWarnings as w}<div class="warn-banner">{w}</div>{/each}

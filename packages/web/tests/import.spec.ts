@@ -229,6 +229,36 @@ test("a file that is no export at all is refused, and offers the source picker",
   await expect(page.locator(".import select")).toBeVisible();
 });
 
+test("an upload over the size cap is refused before a byte is sent", async ({ page }) => {
+  // The server would refuse it too, but only after the upload, and with "Payload Too Large."
+  // rather than anything about what to do instead. See `MAX_UPLOAD_BYTES`.
+  const sent: string[] = [];
+  page.on("request", (r) => {
+    if (new URL(r.url()).pathname === "/api/import") sent.push(r.url());
+  });
+  await goto(page, "/settings/import");
+
+  // One byte over `MAX_UPLOAD_BYTES`; a file of exactly the cap would be sent.
+  await fileInput(page).setInputFiles(
+    csvFile("everything.csv", Buffer.alloc(16 * 1024 * 1024 + 1, "a"))
+  );
+  await expect(page.locator(".import .error-banner")).toHaveText(
+    "everything.csv is 16.8 MB, and one import can be at most 16.7 MB. Export a shorter period " +
+      "and import it in parts."
+  );
+  // Saying what the file is cannot make it smaller, so no source picker.
+  await expect(page.getByText("Not what you expected?")).toBeHidden();
+
+  // Each under the cap, but not together: what is measured is the one zip they would become.
+  const nine = Buffer.alloc(9 * 1024 * 1024, "a");
+  await fileInput(page).setInputFiles([csvFile("a.csv", nine), csvFile("b.csv", nine)]);
+  await expect(page.locator(".import .error-banner")).toContainText(
+    "These 2 files come to 18.9 MB together"
+  );
+
+  expect(sent).toEqual([]);
+});
+
 test("every Import affordance leads to the one import page", async ({ page }) => {
   // The transactions page's button pointed at Settings → Rules for as long as it existed, which is
   // the drift this test exists to stop coming back.
