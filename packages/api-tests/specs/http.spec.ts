@@ -15,7 +15,7 @@
 import http2 from "node:http2";
 
 import { test, expect, allowUnstubbed, startServer, createSureClient } from "../fixtures";
-import { createAccount, postOversized } from "../helpers";
+import { BODY_LIMITS, createAccount, postOversized } from "../helpers";
 
 /** Case-insensitive header read that fails loudly rather than returning null. */
 function header(res: Response, name: string): string {
@@ -256,7 +256,7 @@ test("serves HTTP/2 over cleartext to a client with prior knowledge", async ({ s
 // ---- abuse guards -----------------------------------------------------------------
 
 test("an oversized body is refused in the standard error envelope", async ({ server }) => {
-  const res = await postOversized(server.baseURL, 3 * 1024 * 1024);
+  const res = await postOversized(server.baseURL, BODY_LIMITS.global);
   expect(res.status).toBe(413);
   expect(header(res, "content-type")).toContain("application/json");
   expect(await res.json()).toEqual({

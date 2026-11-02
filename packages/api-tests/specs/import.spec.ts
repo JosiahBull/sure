@@ -1,5 +1,5 @@
 import { test, expect } from "../fixtures";
-import { createAccount, makeZip, postOversized } from "../helpers";
+import { BODY_LIMITS, createAccount, makeZip, postOversized } from "../helpers";
 
 // The behaviours that belong to the *pipeline* rather than to any one source — the ones that only
 // exist because there is now one import endpoint instead of four.
@@ -399,7 +399,7 @@ test("a body over the size limit is refused by the server, whatever it claims to
   server,
 }) => {
   for (const contentType of ["text/csv", "application/zip"]) {
-    const res = await postOversized(server.baseURL, 51 * 1024 * 1024, {
+    const res = await postOversized(server.baseURL, BODY_LIMITS.upload, {
       path: "/api/import",
       contentType,
     });

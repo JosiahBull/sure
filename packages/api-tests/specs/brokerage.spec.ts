@@ -1,5 +1,5 @@
 import { test, expect } from "../fixtures";
-import { createAccount, makeZip, postOversized } from "../helpers";
+import { BODY_LIMITS, createAccount, makeZip, postOversized } from "../helpers";
 
 // Everything the import path can get wrong on its own: parsing the zip, persisting the three
 // ledgers, deduping a re-import, and auto-linking a wallet↔bank transfer. Nothing here is priced —
@@ -343,8 +343,8 @@ test("a zip with absurdly many entries is refused", async ({ api, server }) => {
 
 test("a body over the size limit is rejected by the server, not the parser", async ({ api, server }) => {
   const acc = await createAccount(api, "Sharesies", "brokerage");
-  // Over a raw socket, not `fetch` — the cap trips mid-upload and the RST loses the 413.
-  const res = await postOversized(server.baseURL, 51 * 1024 * 1024, {
+  // Over a raw socket, not `fetch` — see `postOversized`.
+  const res = await postOversized(server.baseURL, BODY_LIMITS.upload, {
     path: "/api/import",
     contentType: "application/zip",
   });
