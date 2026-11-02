@@ -65,7 +65,7 @@ PR that runs every gate rather than silently on the next run. The `rust` and `no
 
 The `Swatinem/rust-cache` entries are saved by `main` only. A PR run restores main's entry for
 its job and saves nothing, so open PRs no longer add a 3–4 GB set each to the repository's 10 GB
-cache budget, which they shared with main's set and the release's layer cache. Clippy and sqlx
+cache budget, which they shared with main's set. Clippy and sqlx
 offline metadata share one entry, because they build the same dependency artifacts. The comments
 at the top of `checks.yml` have the detail.
 
@@ -121,10 +121,12 @@ runners, measured cold before this change merged, it took 254 s on `ubuntu-24.04
 on `ubuntu-latest`; each whole build job, without the push or the cache export, took 5 and 7
 minutes.
 
-Each build job exports a GitHub Actions layer cache (`type=gha,mode=max`) under its own scope.
-That export costs minutes per job (456 s and 339 s for the two-architecture builds of v0.6.0 and
-v0.7.0), and a run on a tag can read only caches written on that tag or on `main`. Nothing on
-`main` writes them, so the cache only helps a re-run of the same tag's workflow.
+The build jobs export no layer cache. A run on a tag can read only caches written on that tag or
+on `main`, and nothing on `main` builds the image, so up to v0.7.1 every release wrote a
+`type=gha,mode=max` cache that no later release could read. Its export took 456 s and 339 s in
+the QEMU builds of v0.6.0 and v0.7.0, and 210 s (amd64) and 134 s (arm64) of v0.7.1's
+9-minute run, and each release's set held about 2.8 GB of the 10 GB cache budget. Without it, a
+re-run of one architecture compiles from cold, which takes about four minutes.
 
 ## Running the image
 

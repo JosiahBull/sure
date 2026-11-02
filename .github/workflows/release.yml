@@ -147,10 +147,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The layer cache gets a scope per architecture; sharing the default one, the two
-      # jobs would overwrite each other's entry. A tag's run can read only caches written
-      # on that tag or on main, and nothing on main writes these, so the export (minutes
-      # per job) pays off only when this same tag's run is re-run.
+      # No layer cache. A tag's run can read only caches written on that tag or on main,
+      # and nothing on main builds the image, so every release paid minutes per job to
+      # export a cache that only a re-run of the same tag could read.
       - id: build
         uses: docker/build-push-action@v7
         with:
@@ -160,8 +159,6 @@ jobs:
           tags: ${{ needs.meta.outputs.image }}
           labels: ${{ needs.meta.outputs.labels }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=image-${{ matrix.arch }}
-          cache-to: type=gha,scope=image-${{ matrix.arch }},mode=max
 
       - name: Export digest
         env:
