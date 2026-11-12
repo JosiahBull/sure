@@ -48,7 +48,6 @@
   const paramEnd = params.get("end");
   const paramSearch = params.get("q") ?? "";
   const paramPage = num(params.get("page"));
-  const paramTab = params.get("tab");
 
   type Tx = Schemas["Transaction"];
   type Val = Schemas["Valuation"];
@@ -133,10 +132,6 @@
     filters.range = "all";
     filters.custom = null;
   }
-
-  // Matches the reference's "Transactions / Upcoming" tab bar. We don't project recurring/
-  // upcoming transactions yet, so that panel is an honest empty state rather than faked data.
-  let activeTab = $state<"transactions" | "upcoming">(paramTab === "upcoming" ? "upcoming" : "transactions");
 
   let showAdd = $state(false);
   let form = $state({
@@ -397,7 +392,6 @@
       p.set("end", filters.custom.to);
     }
     if (search.trim()) p.set("q", search.trim());
-    if (activeTab !== "transactions") p.set("tab", activeTab);
     // Only the non-default half of the sort is worth carrying: `sort` when it isn't date, and
     // `dir` when it isn't that column's own default — so the plain newest-first view still
     // produces a clean URL, and `?sort=amount` alone means "amount, the useful way round".
@@ -464,7 +458,7 @@
   $effect(() => {
     // Depend on the full filter/paging surface so the shareable URL tracks every change.
     page;
-    void [categoryId, accountId, cashflowOnly, cashflowAccountId, typeFilter, filters.includeExcludedFromCashflow, filters.custom?.from, filters.custom?.to, search, activeTab, sortKey, sortDir];
+    void [categoryId, accountId, cashflowOnly, cashflowAccountId, typeFilter, filters.includeExcludedFromCashflow, filters.custom?.from, filters.custom?.to, search, sortKey, sortDir];
     if (didInitPage) syncUrl();
   });
 
@@ -957,26 +951,7 @@
   </section>
 {/if}
 
-<div class="tabs-nav">
-  <button class="tab-btn" class:active={activeTab === "transactions"} onclick={() => (activeTab = "transactions")}>
-    Transactions
-  </button>
-  <button class="tab-btn" class:active={activeTab === "upcoming"} onclick={() => (activeTab = "upcoming")}>
-    Upcoming
-  </button>
-</div>
-
-{#if activeTab === "upcoming"}
-  <section class="card">
-    <div class="empty">
-      <p>Nothing scheduled yet</p>
-      <p class="small faint" style="margin-top:4px">
-        Upcoming/recurring transaction projections aren't tracked in this build.
-      </p>
-    </div>
-  </section>
-{:else}
-<section class="card">
+<section class="card" style="margin-top:16px">
   <div class="row" style="gap:8px;margin-bottom:16px">
     <div class="search-box grow">
       <Icon name="search" size={18} />
@@ -1303,7 +1278,6 @@
     </div>
   {/if}
 </section>
-{/if}
 
 {#if selected.size > 0}
   <!-- Floating action bar: fixed to the viewport so it stays reachable no matter how far
@@ -1418,42 +1392,6 @@
       gap: 12px;
       padding: 12px 14px;
     }
-  }
-
-  /* ---- Tabs (Transactions / Upcoming) ------------------------------------------- */
-  .tabs-nav {
-    display: inline-flex;
-    gap: 2px;
-    width: fit-content;
-    padding: 4px;
-    border-radius: var(--r-sm);
-    background: var(--surface-2);
-    /* Symmetric with the bottom margin — the stat card above carries no margin of its own
-       (its padding lives on the cells), so without this the tab bar sits flush against it. */
-    margin-top: 16px;
-    margin-bottom: 16px;
-  }
-  .tab-btn {
-    all: unset;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 5px 24px;
-    border-radius: 6px;
-    font-size: 14px;
-    font-weight: 550;
-    color: var(--text-muted);
-    transition: background 0.15s, color 0.15s;
-  }
-  .tab-btn:hover:not(.active) {
-    background: var(--hover);
-    color: var(--text);
-  }
-  .tab-btn.active {
-    background: var(--surface);
-    color: var(--text);
-    box-shadow: var(--shadow);
   }
 
   /* ---- Header "…" action menu --------------------------------------------------- */
@@ -2157,9 +2095,6 @@
       /* 16px, or iOS Safari zooms the viewport to the field on focus and never zooms back. */
       font-size: 16px;
       align-self: stretch;
-    }
-    .tab-btn {
-      padding: 11px 24px;
     }
     .sort-btn {
       /* 14px either side of a 16px line box is 44px, and the matching negative margin keeps
