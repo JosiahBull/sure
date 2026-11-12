@@ -39,7 +39,29 @@ test("a phone row is a line of text, not a card of controls", async ({ page }) =
 
   // The first day's heading is on the first screen, not under three cards.
   const head = await page.locator(".day-head").first().boundingBox();
-  expect(head!.y, "the list starts too far down the screen").toBeLessThan(260);
+  expect(head!.y, "the list starts too far down the screen").toBeLessThan(200);
+});
+
+test("search and filter sit in the top bar, and the page's own name does not", async ({ page }) => {
+  await goto(page, "/transactions");
+  const bar = page.locator(".subbar");
+  await expect(bar.getByRole("searchbox", { name: "Search transactions" })).toBeVisible();
+  await expect(bar.getByRole("button", { name: "Filter", exact: true })).toBeVisible();
+  await expect(bar.getByLabel("Time range")).toBeVisible();
+  // The tab bar already says where you are.
+  await expect(bar.locator(".breadcrumb")).toBeHidden();
+
+  // Two rows of chrome — the bar and the stats — before the list, not three.
+  const barBox = (await bar.boundingBox())!;
+  expect(barBox.height, "the top bar wrapped").toBeLessThan(64);
+  const stats = (await page.locator(".stat-row").boundingBox())!;
+  expect(stats.y + stats.height, "more than two rows of chrome above the list").toBeLessThan(150);
+
+  // The whole period label is readable, and search still has room to type in.
+  const sel = (await bar.getByLabel("Time range").boundingBox())!;
+  const search = (await bar.getByRole("searchbox").boundingBox())!;
+  expect(search.width, "search is squeezed to nothing").toBeGreaterThan(70);
+  expect(sel.width, "the period select is wider than its label needs").toBeLessThan(170);
 });
 
 test("the filter sheet stays open while choosing, and closes when asked to", async ({ page }) => {

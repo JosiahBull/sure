@@ -264,6 +264,9 @@
             {/each}
           </nav>
         </div>
+        <!-- A page may move its own controls in here (the phone transactions list puts search and
+             filter beside the period). Empty everywhere else. -->
+        <div class="subbar-tools" id="subbar-tools"></div>
         {#if showFilters}
           <!-- Two groups, not one row of controls. On a wide bar they sit side by side and read
                as one group anyway; on a phone the range select needs the whole width to show
@@ -617,6 +620,16 @@
     gap: 10px;
     min-width: 0;
   }
+  .subbar-tools {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .subbar-tools:empty {
+    display: none;
+  }
   .subbar-selects {
     display: flex;
     align-items: center;
@@ -656,6 +669,17 @@
     .breadcrumb .crumb-sep-first {
       display: none;
     }
+    /* Dashboard and Transactions: the tab bar already names the page, and the room is better
+       spent on the controls. Pages with no period select keep their trail. */
+    .subbar-inner:has(.subbar-selects) .breadcrumb {
+      display: none;
+    }
+    .subbar-inner:has(.subbar-selects) .subbar-lead {
+      flex: 0 0 auto;
+    }
+    .subbar-inner:has(.subbar-selects) .subbar-selects {
+      margin-left: auto;
+    }
     .breadcrumb {
       min-width: 0;
     }
@@ -665,7 +689,7 @@
       white-space: nowrap;
     }
     .subbar-selects {
-      flex: 0 1 auto;
+      flex: 0 0 auto;
       min-width: 0;
       margin-left: 0;
       gap: 8px;
@@ -673,10 +697,15 @@
     /* Sized by its label and allowed to shrink with an ellipsis when a long one meets a narrow
        bar, rather than stretched across a row of its own. */
     .subbar-selects :global(.select) {
-      flex: 0 1 auto;
+      flex: 0 0 auto;
       min-width: 0;
       max-width: 100%;
       text-overflow: ellipsis;
+      /* A native select is as wide as its longest option plus padding (~195px here), which left
+         the search beside it 70px. Sized for "Last 12 months" instead; the inline width:auto on
+         the element is why this needs !important. */
+      width: 9.4em !important;
+      padding-inline: 10px 6px;
     }
     .subbar-switch {
       display: none;
@@ -685,6 +714,12 @@
   /* Narrower than any current phone's width but a real one on a small or split window: the page
      name is also on the tab bar below, and the period is what this bar is for. */
   @container main (max-width: 360px) {
+    .subbar-selects {
+      flex: 0 1 auto;
+    }
+    .subbar-selects :global(.select) {
+      flex: 0 1 auto;
+    }
     .subbar-inner:has(.subbar-selects) .breadcrumb {
       display: none;
     }

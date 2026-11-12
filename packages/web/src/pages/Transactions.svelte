@@ -493,6 +493,12 @@
   // the accounts panel docked, a 768px tablet leaves it narrower than a phone. A phone is
   // compact whatever its page measures, so the first paint is already right.
   const COMPACT_MAX = 576;
+  // Moves a node into the app's top bar (App.svelte's #subbar-tools), where the phone layout
+  // keeps search and filter. The wide layout never renders anything that asks for this.
+  function toSubbar(node: HTMLElement) {
+    document.getElementById("subbar-tools")?.appendChild(node);
+    return { destroy: () => node.remove() };
+  }
   const phoneQuery = typeof matchMedia === "function" ? matchMedia("(max-width: 720px)") : null;
   let pageEl = $state<HTMLElement | null>(null);
   let compact = $state(phoneQuery?.matches ?? false);
@@ -1060,6 +1066,36 @@
   </label>
 {/snippet}
 
+{#if compact}
+  <!-- The search and the filter live in the app's top bar, beside the period: one row of chrome
+       for everything that narrows the list, and the page title is gone (the tab bar says it). -->
+  <div class="tb-tools" use:toSubbar>
+    <div class="search-box grow">
+      <Icon name="search" size={18} />
+      <input
+        class="search-input"
+        type="search"
+        enterkeyhint="search"
+        placeholder="Search"
+        aria-label="Search transactions"
+        bind:value={search}
+      />
+    </div>
+    <button
+      type="button"
+      class="tb-btn"
+      class:on={filterCount > 0}
+      aria-label="Filter"
+      title={filterCount > 0 ? `${filterCount} active` : "Filter"}
+      onclick={() => (showFilterSheet = true)}
+    >
+      <Icon name="list-filter" size={18} />
+      {#if filterCount > 0}<span class="tb-badge tabular" aria-hidden="true">{filterCount}</span>{/if}
+    </button>
+  </div>
+{/if}
+
+<div class:stat-row={compact}>
 {#if !(loading && txns.length === 0)}
   <section class="card statcard">
     <div class="statbar">
@@ -1078,6 +1114,18 @@
     </div>
   </section>
 {/if}
+{#if compact}
+  <button type="button" class="tb-btn" aria-label="More actions" onclick={() => (showMoreSheet = true)}>
+    <Icon name="more-horizontal" size={18} />
+  </button>
+  <button type="button" class="tb-btn primary" aria-label="New transaction" onclick={() => {
+      error = null;
+      showAdd = true;
+    }}>
+    <Icon name="plus" size={18} />
+  </button>
+{/if}
+</div>
 
 <section class="card list-card">
   {#if compact && selecting}
@@ -1086,7 +1134,7 @@
       <span class="small faint tabular">{selected.size} selected</span>
       <button type="button" class="link-btn strong" onclick={endSelecting}>Done</button>
     </div>
-  {:else}
+  {:else if !compact}
   <div class="row toolbar">
     <div class="search-box grow">
       <Icon name="search" size={18} />
@@ -1099,28 +1147,6 @@
         bind:value={search}
       />
     </div>
-    {#if compact}
-      <button
-        type="button"
-        class="tb-btn"
-        class:on={filterCount > 0}
-        aria-label="Filter"
-        title={filterCount > 0 ? `${filterCount} active` : "Filter"}
-        onclick={() => (showFilterSheet = true)}
-      >
-        <Icon name="list-filter" size={18} />
-        {#if filterCount > 0}<span class="tb-badge tabular" aria-hidden="true">{filterCount}</span>{/if}
-      </button>
-      <button type="button" class="tb-btn" aria-label="More actions" onclick={() => (showMoreSheet = true)}>
-        <Icon name="more-horizontal" size={18} />
-      </button>
-      <button type="button" class="tb-btn primary" aria-label="New transaction" onclick={() => {
-          error = null;
-          showAdd = true;
-        }}>
-        <Icon name="plus" size={18} />
-      </button>
-    {:else}
     <div class="filter-wrap">
       <button
         type="button"
@@ -1143,7 +1169,6 @@
         </div>
       {/if}
     </div>
-    {/if}
   </div>
   {/if}
 
@@ -2216,7 +2241,7 @@
     border-radius: var(--r);
   }
   .compact .statbar {
-    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.3fr) minmax(0, 1.3fr);
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
   }
   .compact .statbar .stat {
     flex-direction: column;
@@ -2224,8 +2249,17 @@
     justify-content: flex-start;
     gap: 1px;
     min-width: 0;
-    padding: 8px 10px;
+    padding: 8px 9px;
     border-bottom: 0;
+  }
+  /* The count is the least of the three; on a very narrow screen the two sums need its room. */
+  @media (max-width: 360px) {
+    .compact .statbar .stat:first-child {
+      display: none;
+    }
+    .compact .statbar {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
   }
   .compact .statbar .stat:not(:last-child) {
     border-right: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
@@ -2236,7 +2270,7 @@
   }
   .compact .statbar .value {
     max-width: 100%;
-    font-size: clamp(13px, 4vw, 16px);
+    font-size: clamp(13px, 3.9vw, 16px);
     font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
@@ -2254,13 +2288,37 @@
     background: none;
     box-shadow: none;
   }
-  .compact .toolbar {
+  /* Stats and the two actions share one row. */
+  .stat-row {
+    display: flex;
+    align-items: stretch;
     gap: 6px;
-    margin-bottom: 8px;
   }
-  .compact .search-box {
+  .stat-row > .statcard {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .stat-row > .tb-btn {
+    height: auto;
+    min-height: 40px;
+    width: 38px;
+  }
+  /* Lives in the top bar (portalled there), so it is not under .tx-page and takes its own rules. */
+  :global(.tb-tools) {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  :global(.tb-tools .search-box) {
+    flex: 1 1 0;
+    min-width: 0;
     min-height: 40px;
     padding: 0 10px;
+  }
+  :global(.tb-tools .search-input) {
+    min-width: 0;
   }
   .tb-btn {
     position: relative;
