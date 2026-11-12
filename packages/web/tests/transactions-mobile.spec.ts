@@ -42,34 +42,32 @@ test("a phone row is a line of text, not a card of controls", async ({ page }) =
   expect(head!.y, "the list starts too far down the screen").toBeLessThan(140);
 });
 
-test("search and filter sit in the top bar, and the page's own name does not", async ({ page }) => {
+test("search, filter and new float at the bottom, and the top bar is only the period", async ({ page }) => {
   await goto(page, "/transactions");
   const bar = page.locator(".subbar");
-  await expect(bar.getByRole("searchbox", { name: "Search transactions" })).toBeVisible();
-  await expect(bar.getByRole("button", { name: "Filter", exact: true })).toBeVisible();
   await expect(bar.getByLabel("Time range")).toBeVisible();
+  await expect(bar.getByRole("searchbox")).toHaveCount(0);
   // The tab bar already says where you are.
   await expect(bar.locator(".breadcrumb")).toBeHidden();
-
-  // One row of chrome before the list, and no stat strip.
-  const barBox = (await bar.boundingBox())!;
-  expect(barBox.height, "the top bar wrapped").toBeLessThan(64);
+  expect((await bar.boundingBox())!.height, "the top bar wrapped").toBeLessThan(64);
   await expect(page.locator(".statcard")).toHaveCount(0);
+
+  // The thumb's end of the screen: a row above the tab bar, inside the screen's edges.
+  const dock = (await page.locator(".dock").boundingBox())!;
+  const rail = (await page.locator(".rail").boundingBox())!;
+  expect(dock.y + dock.height, "the dock sits under the tab bar").toBeLessThanOrEqual(rail.y);
+  expect(rail.y - (dock.y + dock.height), "the dock floats far above the tab bar").toBeLessThan(24);
+  expect(dock.x + dock.width, "the dock is off the right edge").toBeLessThanOrEqual(402);
+  for (const name of ["Filter", "New transaction"]) {
+    const b = (await page.locator(".dock").getByRole("button", { name, exact: true }).boundingBox())!;
+    expect(Math.min(b.width, b.height), `${name} is too small to tap`).toBeGreaterThanOrEqual(44);
+  }
+  const search = (await page.locator(".dock").getByRole("searchbox").boundingBox())!;
+  expect(search.width, "search is squeezed to nothing").toBeGreaterThan(150);
+
+  // The list starts straight under the top bar.
   const head = (await page.locator(".day-head").first().boundingBox())!;
-  expect(head.y, "more than one row of chrome above the list").toBeLessThan(120);
-
-  // New transaction is a floating button, clear of the tab bar.
-  const fab = page.getByRole("button", { name: "New transaction" });
-  const f = (await fab.boundingBox())!;
-  const tabs = (await page.locator(".rail").boundingBox())!;
-  expect(f.y + f.height, "the button sits under the tab bar").toBeLessThanOrEqual(tabs.y);
-  expect(f.x + f.width, "the button is off the right edge").toBeLessThanOrEqual(402);
-
-  // The whole period label is readable, and search still has room to type in.
-  const sel = (await bar.getByLabel("Time range").boundingBox())!;
-  const search = (await bar.getByRole("searchbox").boundingBox())!;
-  expect(search.width, "search is squeezed to nothing").toBeGreaterThan(70);
-  expect(sel.width, "the period select is wider than its label needs").toBeLessThan(170);
+  expect(head.y, "more chrome above the list than the top bar").toBeLessThan(120);
 });
 
 test("the filter sheet stays open while choosing, and closes when asked to", async ({ page }) => {
@@ -177,7 +175,7 @@ test.describe("in a very narrow window", () => {
 
     const geom = await page.evaluate(() => {
       const de = document.documentElement;
-      const outside = [...document.querySelectorAll<HTMLElement>(".tx-row .amt-cell, .fab, .tb-tools > *")]
+      const outside = [...document.querySelectorAll<HTMLElement>(".tx-row .amt-cell, .dock > *")]
         .map((el) => ({ cls: el.className, r: el.getBoundingClientRect() }))
         .filter(({ r }) => r.width > 0 && (r.right > de.clientWidth + 1 || r.left < -1))
         .map(({ cls }) => String(cls));

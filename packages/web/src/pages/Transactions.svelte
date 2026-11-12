@@ -493,12 +493,6 @@
   // the accounts panel docked, a 768px tablet leaves it narrower than a phone. A phone is
   // compact whatever its page measures, so the first paint is already right.
   const COMPACT_MAX = 576;
-  // Moves a node into the app's top bar (App.svelte's #subbar-tools), where the phone layout
-  // keeps search and filter. The wide layout never renders anything that asks for this.
-  function toSubbar(node: HTMLElement) {
-    document.getElementById("subbar-tools")?.appendChild(node);
-    return { destroy: () => node.remove() };
-  }
   const phoneQuery = typeof matchMedia === "function" ? matchMedia("(max-width: 720px)") : null;
   let pageEl = $state<HTMLElement | null>(null);
   let compact = $state(phoneQuery?.matches ?? false);
@@ -1066,10 +1060,10 @@
   </label>
 {/snippet}
 
-{#if compact}
-  <!-- The search and the filter live in the app's top bar, beside the period: one row of chrome
-       for everything that narrows the list, and the page title is gone (the tab bar says it). -->
-  <div class="tb-tools" use:toSubbar>
+{#if compact && !selecting}
+  <!-- Search, Filter and New float at the bottom, over the tab bar's edge: the thumb's end of the
+       screen, where the controls used most are reachable one-handed. -->
+  <div class="dock">
     <div class="search-box grow">
       <Icon name="search" size={18} />
       <input
@@ -1091,6 +1085,17 @@
     >
       <Icon name="list-filter" size={18} />
       {#if filterCount > 0}<span class="tb-badge tabular" aria-hidden="true">{filterCount}</span>{/if}
+    </button>
+    <button
+      type="button"
+      class="tb-btn primary"
+      aria-label="New transaction"
+      onclick={() => {
+        error = null;
+        showAdd = true;
+      }}
+    >
+      <Icon name="plus" size={22} />
     </button>
   </div>
 {/if}
@@ -1114,19 +1119,6 @@
   </section>
 {/if}
 
-{#if compact && !selecting}
-  <button
-    type="button"
-    class="fab"
-    aria-label="New transaction"
-    onclick={() => {
-      error = null;
-      showAdd = true;
-    }}
-  >
-    <Icon name="plus" size={24} />
-  </button>
-{/if}
 
 <section class="card list-card">
   {#if compact && selecting}
@@ -2257,47 +2249,34 @@
     background: none;
     box-shadow: none;
   }
-  /* The new-transaction button floats over the list, above the tab bar and clear of the home
-     indicator; the list leaves room under its last row so nothing is stuck beneath it. */
-  .fab {
+  /* Floats over the list, above the tab bar and clear of the home indicator; the page leaves
+     room under its last row so nothing is stuck beneath it. */
+  .dock {
     position: fixed;
-    right: calc(16px + env(safe-area-inset-right));
-    bottom: calc(var(--tabbar-h, 0px) + env(safe-area-inset-bottom) + 16px);
+    left: calc(12px + env(safe-area-inset-left));
+    right: calc(12px + env(safe-area-inset-right));
+    bottom: calc(var(--tabbar-h, 0px) + env(safe-area-inset-bottom) + 10px);
     z-index: 30;
-    display: grid;
-    place-items: center;
-    width: 56px;
-    height: 56px;
-    padding: 0;
-    border: 0;
-    border-radius: 50%;
-    background: var(--accent);
-    color: var(--accent-ink);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
-    cursor: pointer;
-  }
-  .fab:active {
-    transform: scale(0.96);
-  }
-  .compact {
-    padding-bottom: 80px;
-  }
-  /* Lives in the top bar (portalled there), so it is not under .tx-page and takes its own rules. */
-  :global(.tb-tools) {
     display: flex;
-    flex: 1 1 auto;
     align-items: center;
-    gap: 6px;
-    min-width: 0;
+    gap: 8px;
   }
-  :global(.tb-tools .search-box) {
+  .dock .search-box {
     flex: 1 1 0;
     min-width: 0;
-    min-height: 40px;
-    padding: 0 10px;
+    min-height: 48px;
+    padding: 0 14px;
+    border-radius: 24px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
   }
-  :global(.tb-tools .search-input) {
-    min-width: 0;
+  .dock .tb-btn {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  }
+  .compact {
+    padding-bottom: 76px;
   }
   .tb-btn {
     position: relative;

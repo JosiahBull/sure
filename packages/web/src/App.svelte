@@ -264,9 +264,6 @@
             {/each}
           </nav>
         </div>
-        <!-- A page may move its own controls in here (the phone transactions list puts search and
-             filter beside the period). Empty everywhere else. -->
-        <div class="subbar-tools" id="subbar-tools"></div>
         {#if showFilters}
           <!-- Two groups, not one row of controls. On a wide bar they sit side by side and read
                as one group anyway; on a phone the range select needs the whole width to show
@@ -619,16 +616,6 @@
     align-items: center;
     gap: 10px;
     min-width: 0;
-  }
-  .subbar-tools {
-    display: flex;
-    flex: 1 1 auto;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-  .subbar-tools:empty {
-    display: none;
   }
   .subbar-selects {
     display: flex;
