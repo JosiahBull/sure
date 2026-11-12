@@ -498,7 +498,8 @@ test.describe("installed on an iPhone's Home Screen", () => {
       const reloaded = page.waitForEvent("load");
       await page.locator(".rail a[href='#/transactions']").click();
       await reloaded;
-      await expect(page).toHaveURL(/#\/transactions$/);
+      // The period picked a moment ago is remembered, so it rides along.
+      await expect(page).toHaveURL(/#\/transactions(\?range=ytd)?$/);
       expect(await loadedBefore(page)).toBe("reloaded");
       await expect(page.locator(".tx-row").first()).toBeVisible();
     });
