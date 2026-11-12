@@ -1095,12 +1095,11 @@
   </div>
 {/if}
 
-<div class:stat-row={compact}>
-{#if !(loading && txns.length === 0)}
+{#if !compact && !(loading && txns.length === 0)}
   <section class="card statcard">
     <div class="statbar">
       <div class="stat">
-        <span class="label">{compact ? "Count" : "Total transactions"}</span>
+        <span class="label">Total transactions</span>
         <span class="value tabular">{stats.count}</span>
       </div>
       <div class="stat">
@@ -1114,18 +1113,20 @@
     </div>
   </section>
 {/if}
-{#if compact}
-  <button type="button" class="tb-btn" aria-label="More actions" onclick={() => (showMoreSheet = true)}>
-    <Icon name="more-horizontal" size={18} />
-  </button>
-  <button type="button" class="tb-btn primary" aria-label="New transaction" onclick={() => {
+
+{#if compact && !selecting}
+  <button
+    type="button"
+    class="fab"
+    aria-label="New transaction"
+    onclick={() => {
       error = null;
       showAdd = true;
-    }}>
-    <Icon name="plus" size={18} />
+    }}
+  >
+    <Icon name="plus" size={24} />
   </button>
 {/if}
-</div>
 
 <section class="card list-card">
   {#if compact && selecting}
@@ -1672,6 +1673,17 @@
         Reset filters and sort
       </button>
     {/snippet}
+    <button
+      type="button"
+      class="btn btn-block"
+      style="margin-top:14px"
+      onclick={() => {
+        showFilterSheet = false;
+        showMoreSheet = true;
+      }}
+    >
+      More actions…
+    </button>
   </Sheet>
 
   <Sheet bind:open={detailOpen} title="Transaction" onclose={() => (detailId = null)}>
@@ -2237,49 +2249,6 @@
 
      Markup is switched in script (`compact`), not here, so these rules style elements that
      exist only in this layout and nothing below can half-apply to the wide table. */
-  .compact .statcard {
-    border-radius: var(--r);
-  }
-  .compact .statbar {
-    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
-  }
-  .compact .statbar .stat {
-    flex-direction: column;
-    align-items: flex-start;
-    justify-content: flex-start;
-    gap: 1px;
-    min-width: 0;
-    padding: 8px 9px;
-    border-bottom: 0;
-  }
-  /* The count is the least of the three; on a very narrow screen the two sums need its room. */
-  @media (max-width: 360px) {
-    .compact .statbar .stat:first-child {
-      display: none;
-    }
-    .compact .statbar {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    }
-  }
-  .compact .statbar .stat:not(:last-child) {
-    border-right: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
-    border-bottom: 0;
-  }
-  .compact .statbar .label {
-    font-size: 11px;
-  }
-  .compact .statbar .value {
-    max-width: 100%;
-    font-size: clamp(13px, 3.9vw, 16px);
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .compact .statbar .stat:nth-child(2) .value {
-    color: var(--positive);
-  }
-
   .compact .list-card {
     margin-top: 10px;
     padding: 0;
@@ -2288,20 +2257,30 @@
     background: none;
     box-shadow: none;
   }
-  /* Stats and the two actions share one row. */
-  .stat-row {
-    display: flex;
-    align-items: stretch;
-    gap: 6px;
+  /* The new-transaction button floats over the list, above the tab bar and clear of the home
+     indicator; the list leaves room under its last row so nothing is stuck beneath it. */
+  .fab {
+    position: fixed;
+    right: calc(16px + env(safe-area-inset-right));
+    bottom: calc(var(--tabbar-h, 0px) + env(safe-area-inset-bottom) + 16px);
+    z-index: 30;
+    display: grid;
+    place-items: center;
+    width: 56px;
+    height: 56px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-ink);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+    cursor: pointer;
   }
-  .stat-row > .statcard {
-    flex: 1 1 auto;
-    min-width: 0;
+  .fab:active {
+    transform: scale(0.96);
   }
-  .stat-row > .tb-btn {
-    height: auto;
-    min-height: 40px;
-    width: 38px;
+  .compact {
+    padding-bottom: 80px;
   }
   /* Lives in the top bar (portalled there), so it is not under .tx-page and takes its own rules. */
   :global(.tb-tools) {

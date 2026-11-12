@@ -39,7 +39,7 @@ test("a phone row is a line of text, not a card of controls", async ({ page }) =
 
   // The first day's heading is on the first screen, not under three cards.
   const head = await page.locator(".day-head").first().boundingBox();
-  expect(head!.y, "the list starts too far down the screen").toBeLessThan(200);
+  expect(head!.y, "the list starts too far down the screen").toBeLessThan(140);
 });
 
 test("search and filter sit in the top bar, and the page's own name does not", async ({ page }) => {
@@ -51,11 +51,19 @@ test("search and filter sit in the top bar, and the page's own name does not", a
   // The tab bar already says where you are.
   await expect(bar.locator(".breadcrumb")).toBeHidden();
 
-  // Two rows of chrome — the bar and the stats — before the list, not three.
+  // One row of chrome before the list, and no stat strip.
   const barBox = (await bar.boundingBox())!;
   expect(barBox.height, "the top bar wrapped").toBeLessThan(64);
-  const stats = (await page.locator(".stat-row").boundingBox())!;
-  expect(stats.y + stats.height, "more than two rows of chrome above the list").toBeLessThan(150);
+  await expect(page.locator(".statcard")).toHaveCount(0);
+  const head = (await page.locator(".day-head").first().boundingBox())!;
+  expect(head.y, "more than one row of chrome above the list").toBeLessThan(120);
+
+  // New transaction is a floating button, clear of the tab bar.
+  const fab = page.getByRole("button", { name: "New transaction" });
+  const f = (await fab.boundingBox())!;
+  const tabs = (await page.locator(".rail").boundingBox())!;
+  expect(f.y + f.height, "the button sits under the tab bar").toBeLessThanOrEqual(tabs.y);
+  expect(f.x + f.width, "the button is off the right edge").toBeLessThanOrEqual(402);
 
   // The whole period label is readable, and search still has room to type in.
   const sel = (await bar.getByLabel("Time range").boundingBox())!;
@@ -169,7 +177,7 @@ test.describe("in a very narrow window", () => {
 
     const geom = await page.evaluate(() => {
       const de = document.documentElement;
-      const outside = [...document.querySelectorAll<HTMLElement>(".tx-row .amt-cell, .statbar .value, .toolbar > *")]
+      const outside = [...document.querySelectorAll<HTMLElement>(".tx-row .amt-cell, .fab, .tb-tools > *")]
         .map((el) => ({ cls: el.className, r: el.getBoundingClientRect() }))
         .filter(({ r }) => r.width > 0 && (r.right > de.clientWidth + 1 || r.left < -1))
         .map(({ cls }) => String(cls));

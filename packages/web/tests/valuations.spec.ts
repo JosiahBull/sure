@@ -69,6 +69,7 @@ test("a day with only a valuation offers no checkbox and claims no total", async
 
 test("a back-dated balance can be set, and lands in date order", async ({ page }) => {
   await goto(page, HOME);
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("button", { name: "Set value", exact: true }).click();
 
@@ -104,6 +105,8 @@ test("select-all ignores valuation rows entirely", async ({ page }) => {
   await goto(page, HOME);
   await expect(page.locator(".val-row").first()).toBeVisible();
   expect(await page.locator(".tx-row:not(.val-row)").count()).toBe(0);
+
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
 
   await page.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("button", { name: "Select transactions" }).click();
@@ -142,6 +145,7 @@ test("choosing another account from the side panel actually changes the view", a
 
 test("a manual value can be edited in place", async ({ page }) => {
   await goto(page, HOME);
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("button", { name: "Set value", exact: true }).click();
 

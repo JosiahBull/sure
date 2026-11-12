@@ -223,6 +223,7 @@ test.describe("on the smallest supported screen", () => {
     // cannot click it — an artefact of the harness, not of the page: the app's one programmatic
     // scroll (the `?tx=` deep link) uses `block: "center"` and lands in open space.
     // Checkboxes exist only in select mode, which is how a phone keeps them off every row.
+    await page.getByRole("button", { name: "Filter", exact: true }).click();
     await page.getByRole("button", { name: "More actions" }).click();
     await page.getByRole("button", { name: "Select transactions" }).click();
     await page.evaluate(() => window.scrollBy(0, 400));
