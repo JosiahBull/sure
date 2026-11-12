@@ -90,8 +90,11 @@ fi
 # forty lines into the log is worth one line of diagnosis here.
 corepack enable >/dev/null 2>&1 || true
 if ! command -v pnpm >/dev/null 2>&1; then
-  echo "✗ no pnpm in the image and 'corepack enable' did not provide one." >&2
-  echo "  Install it in this script (npm i -g pnpm@\$(node -p \"require('/work/package.json').packageManager.split('@')[1]\"))." >&2
+  # Node 26 dropped corepack, so the image has no pnpm: install the pinned version directly.
+  npm i -g "pnpm@$(node -p "require('/work/package.json').packageManager.split('@')[1]")" >/dev/null
+fi
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "✗ no pnpm in the image, and 'npm i -g pnpm' did not provide one." >&2
   exit 1
 fi
 # The store is a named volume, so the second run installs from disk rather than the network.
