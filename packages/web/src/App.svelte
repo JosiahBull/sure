@@ -253,9 +253,9 @@
             <Icon name="panel-left" size={16} />
           </button>
           <nav class="breadcrumb row" style="gap:6px" aria-label="Breadcrumb">
-            <a href="#/" class="crumb-link">Home</a>
+            <a href="#/" class="crumb-link crumb-home">Home</a>
             {#each crumbs as c, i}
-              <Icon name="chevron-right" size={13} />
+              <span class="crumb-sep" class:crumb-sep-first={i === 0}><Icon name="chevron-right" size={13} /></span>
               {#if i === crumbs.length - 1}
                 <span class="crumb-current">{c}</span>
               {:else}
@@ -302,7 +302,7 @@
       </div>
     </div>
 
-    <main class="container" style="padding-top:20px">
+    <main class="container" style="padding-top:var(--main-pt, 20px)">
       {#key activePath}
         <Page />
       {/key}
@@ -636,49 +636,73 @@
      content underneath them, which is how a click on a column header landed on the rail.
      Wrapping them onto their own line keeps every control at full size, reachable by thumb,
      and the document exactly one viewport wide. */
-  /* Two rows, arranged so nothing has to be abbreviated and the sticky bar costs no more of the
-     screen than it must:
+  /* One row. The bar is sticky, so every pixel of it is a pixel of the list that is never on
+     screen; it used to be two rows and ~110px, nearly an eighth of a phone.
 
-         [▤]  Home › Dashboard              ( ) Forcibly Include All
-         [ Last 12 months  ▾ ] [ Whole household ▾ ]
+         [▤]  Transactions                      [ Year to date ▾ ]
 
-     The breadcrumb leaves ~230px spare on its row and the toggle wants ~100px, so the toggle
-     rides along there and the two selects get the whole of the second row — ~180px each, which
-     is what it takes to read them. Squeezing all three onto one row was tried first and turned
-     "Last 12 months" into "Last 12 m". */
+     "Home ›" goes: the tab bar's first tab is Home, and a crumb that is always the same word is
+     the least informative thing on the screen. The toggle that sat beside it ("Forcibly Include
+     All") is a filter, so it lives with the other filters, in the transactions page's sheet. */
   @container main (max-width: 700px) {
     .subbar-inner {
-      flex-wrap: wrap;
-      align-items: center;
-      row-gap: 8px;
-      column-gap: 10px;
+      flex-wrap: nowrap;
+      gap: 8px;
     }
     .subbar-lead {
       flex: 1 1 auto;
     }
+    .breadcrumb a.crumb-home,
+    .breadcrumb .crumb-sep-first {
+      display: none;
+    }
+    .breadcrumb {
+      min-width: 0;
+    }
+    .crumb-current {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .subbar-selects {
-      order: 3;
-      width: 100%;
-      flex: 1 1 auto;
+      flex: 0 1 auto;
+      min-width: 0;
       margin-left: 0;
       gap: 8px;
     }
-    /* `auto` basis, not `0`: sized from their own content and only then sharing what is left
-       over, rather than splitting the row in half whatever is in them. The halves were equal
-       and the labels are not — "Month to date (MTD)" needs ~160px and "Whole household" ~120px,
-       so an even split truncated the longer one while the shorter sat in spare space. Both fit
-       at their natural widths here; if a long enough household name ever means they do not,
-       they shrink together instead of one of them alone. */
+    /* Sized by its label and allowed to shrink with an ellipsis when a long one meets a narrow
+       bar, rather than stretched across a row of its own. */
     .subbar-selects :global(.select) {
-      flex: 1 1 auto;
+      flex: 0 1 auto;
       min-width: 0;
-      width: auto !important;
+      max-width: 100%;
+      text-overflow: ellipsis;
+    }
+    .subbar-switch {
+      display: none;
+    }
+  }
+  /* Narrower than any current phone's width but a real one on a small or split window: the page
+     name is also on the tab bar below, and the period is what this bar is for. */
+  @container main (max-width: 360px) {
+    .subbar-inner:has(.subbar-selects) .breadcrumb {
+      display: none;
+    }
+    .subbar-inner:has(.subbar-selects) .subbar-lead {
+      flex: 0 0 auto;
+    }
+    .subbar-inner:has(.subbar-selects) .subbar-selects {
+      flex: 1 1 auto;
     }
   }
   @media (max-width: 720px) {
     .subbar-inner {
-      padding-top: 8px;
-      padding-bottom: 8px;
+      padding-top: 6px;
+      padding-bottom: 6px;
+    }
+    /* The gap under the bar is the one place left that is spacing for its own sake. */
+    .main-col {
+      --main-pt: 10px;
     }
   }
   .icon-btn {
@@ -709,6 +733,9 @@
       /* Negative margin so the taller box does not push the bar's height up with it. */
       margin: -12px 0;
     }
+  }
+  .crumb-sep {
+    display: inline-flex;
   }
   .crumb-current {
     color: var(--text);

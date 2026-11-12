@@ -35,14 +35,18 @@ test("the cashflow header offers a period, while transactions can include exclud
     await expect(subbar.locator(`select[aria-label="${label}"]`)).toHaveCount(0);
   }
   await goto(page, "/transactions");
-  await expect(subbar.locator(".switch")).toBeVisible();
+  // On a phone the toggle is one of the filters, so it is in the filter sheet rather than the bar.
+  await expect(subbar.locator(".switch")).toBeHidden();
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Filter and sort" }).locator(".switch")).toBeVisible();
 });
 
 test("the transactions filter panel offers no owner filter", async ({ page }) => {
   await goto(page, "/transactions");
   await page.getByRole("button", { name: /filter/i }).first().click();
 
-  const panel = page.locator(".filter-panel");
+  // A sheet on a phone, a popover on a wide screen — the same fields in either.
+  const panel = page.getByRole("dialog", { name: "Filter and sort" });
   await expect(panel).toBeVisible();
   // The controls that remain are the ones about the rows themselves, not about whose they are.
   await expect(panel.locator('select[aria-label="Filter by category"]')).toBeVisible();
