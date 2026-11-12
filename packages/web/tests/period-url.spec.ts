@@ -42,6 +42,23 @@ test("picking a period puts it in the URL, and it survives a reload", async ({ p
   await expect(page.locator(RANGE)).toHaveValue("last_90");
 });
 
+test("the last period picked is the one a later visit with no URL starts on", async ({ page }) => {
+  await goto(page, "/");
+  await page.selectOption(RANGE, "ytd");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("sure:range"))).toBe("ytd");
+
+  // A fresh launch of the app: no period in the address, same storage.
+  await page.goto("/#/");
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  await expect(page.locator(RANGE)).toHaveValue("ytd");
+
+  // A link that names a period still wins over what was remembered.
+  await goto(page, "/?range=last_90");
+  await page.reload();
+  await expect(page.locator(RANGE)).toHaveValue("last_90");
+});
+
 test("a period in the URL is adopted on arrival", async ({ page }) => {
   await goto(page, "/?range=ytd");
   await expect(page.locator(RANGE)).toHaveValue("ytd");

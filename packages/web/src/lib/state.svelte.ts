@@ -39,8 +39,20 @@ export const RANGES: { key: RangeKey; label: string }[] = [
  */
 export const DEFAULT_RANGE: RangeKey = "last_3m";
 
+const RANGE_STORAGE_KEY = "sure:range";
+
+/** The preset last chosen on this device, or the default. Storage can throw (private mode). */
+function readStoredRange(): RangeKey {
+  try {
+    const stored = localStorage.getItem(RANGE_STORAGE_KEY);
+    return RANGES.some((r) => r.key === stored) ? (stored as RangeKey) : DEFAULT_RANGE;
+  } catch {
+    return DEFAULT_RANGE;
+  }
+}
+
 export const filters = $state({
-  range: DEFAULT_RANGE as RangeKey,
+  range: readStoredRange(),
   includeExcludedFromCashflow: false,
   /** Brush-selected window (Grafana-style zoom) that overrides `range` while set. */
   custom: null as { from: string; to: string } | null,
@@ -210,6 +222,18 @@ export function syncPeriodWithUrl(): void {
       const next = asked.custom;
       if (next?.from !== now?.from || next?.to !== now?.to) filters.custom = next;
     });
+  });
+
+  // filters → localStorage, so the preset survives closing the app (browser tab or
+  // home-screen PWA alike; each keeps its own storage). A URL that names a period still wins
+  // on arrival, via the reader above.
+  $effect(() => {
+    const range = filters.range;
+    try {
+      localStorage.setItem(RANGE_STORAGE_KEY, range);
+    } catch {
+      // Storage unavailable: the period simply won't persist.
+    }
   });
 
   // filters → URL. Replace rather than push: picking four ranges in a row should leave one
