@@ -222,6 +222,10 @@ test.describe("on the smallest supported screen", () => {
     // scroll-into-view uses "nearest", which parks the row directly beneath that bar and then
     // cannot click it — an artefact of the harness, not of the page: the app's one programmatic
     // scroll (the `?tx=` deep link) uses `block: "center"` and lands in open space.
+    // Checkboxes exist only in select mode, which is how a phone keeps them off every row.
+    await page.getByRole("button", { name: "Filter", exact: true }).click();
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("button", { name: "Select transactions" }).click();
     await page.evaluate(() => window.scrollBy(0, 400));
     const row = page.locator(".tx-row").filter({ has: page.locator("label.tx-check") }).nth(2);
     await row.locator("input[type=checkbox]").check();
@@ -426,8 +430,19 @@ test.describe("installed on an iPhone's Home Screen", () => {
     // category and owner pills are the case that was wrong: a transparent <select> over the
     // drawn pill, so its size never showed, but it is what takes focus on a tap.
     await goto(page, "/transactions");
-    await expect(page.locator(".tx-row .pill-select").first()).toBeAttached();
+    await expect(page.locator(".tx-row").first()).toBeVisible();
     expect(await smallFields(), "on the transaction list").toEqual([]);
+
+    // The pickers that used to sit on every row now live in the row's sheet, and the filters
+    // in theirs. Both are a transparent or native <select> that takes focus on a tap.
+    await page.locator(".tx-row .tx-tap").first().click();
+    await expect(page.getByRole("dialog").locator(".pill-select").first()).toBeAttached();
+    expect(await smallFields(), "in a transaction's sheet").toEqual([]);
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Filter", exact: true }).click();
+    await expect(page.getByLabel("Filter by account")).toBeVisible();
+    expect(await smallFields(), "in the filter sheet").toEqual([]);
+    await page.keyboard.press("Escape");
 
     await goto(page, "/settings/accounts");
     await page.locator(".acct", { hasText: "Everyday" }).getByRole("button", { name: "Edit" }).click();

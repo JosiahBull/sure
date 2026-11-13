@@ -263,7 +263,9 @@ test("every Import affordance leads to the one import page", async ({ page }) =>
   // The transactions page's button pointed at Settings → Rules for as long as it existed, which is
   // the drift this test exists to stop coming back.
   await goto(page, "/transactions");
-  await expect(page.getByRole("link", { name: "Import" })).toHaveAttribute(
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await page.getByRole("button", { name: "More actions" }).click();
+  await expect(page.getByRole("dialog").getByRole("link", { name: "Import" })).toHaveAttribute(
     "href",
     "#/settings/import"
   );

@@ -11,6 +11,8 @@
   import EquityPanel from "../lib/EquityPanel.svelte";
   import { queryParams, router } from "../lib/router.svelte";
   import Icon from "../lib/Icon.svelte";
+  import Sheet from "../lib/Sheet.svelte";
+  import SwipeRow from "../lib/SwipeRow.svelte";
   import {
     people,
     ensureLoaded as ensurePeopleLoaded,
@@ -115,6 +117,14 @@
   }
   const sortLabel = (key: SortKey) =>
     sortKey !== key ? "not sorted" : sortDir === "asc" ? "sorted ascending" : "sorted descending";
+  // The phone has no column header to click, so the same four sorts are a control in the filter
+  // sheet — named for what a person calls them, not for the column that used to carry them.
+  const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+    { key: "date", label: "Date" },
+    { key: "description", label: "Name" },
+    { key: "category", label: "Category" },
+    { key: "amount", label: "Amount" },
+  ];
   // Time range / cashflow exclusion are the header's shared filters (App.svelte), not page-local —
   // deep links still get to steer them, though: an explicit `?range=` wins, and a
   // deep-linked transaction/account (which implies "show me everything relevant", not
@@ -477,6 +487,75 @@
     prevFilterSig = sig;
   });
 
+  // ---- Phone layout ---------------------------------------------------------------------
+  // Below this width the list stops being a table. Measured on the page itself rather than read
+  // from the window, because the page's width is what decides whether three columns fit — with
+  // the accounts panel docked, a 768px tablet leaves it narrower than a phone. A phone is
+  // compact whatever its page measures, so the first paint is already right.
+  const COMPACT_MAX = 576;
+  const phoneQuery = typeof matchMedia === "function" ? matchMedia("(max-width: 720px)") : null;
+  let pageEl = $state<HTMLElement | null>(null);
+  let compact = $state(phoneQuery?.matches ?? false);
+  $effect(() => {
+    const el = pageEl;
+    if (!el) return;
+    const measure = (w: number) => (compact = (phoneQuery?.matches ?? false) || w <= COMPACT_MAX);
+    const ro = new ResizeObserver(([entry]) => measure(entry.contentRect.width));
+    ro.observe(el);
+    measure(el.getBoundingClientRect().width);
+    return () => ro.disconnect();
+  });
+
+  // What the phone layout opens instead of a popover, a menu and a row of buttons: each is a
+  // sheet that rises from the bottom, because that is where the thumb already is.
+  let showFilterSheet = $state(false);
+  let showMoreSheet = $state(false);
+  // Select mode, as in Mail and Photos: checkboxes exist only while it is on, instead of
+  // spending 44px of every row's width on a control used a few times a month.
+  let selecting = $state(false);
+  // The one row whose swipe actions are showing.
+  let openSwipe = $state<number | null>(null);
+  // A transaction opened from its row. By id, so the sheet shows the row as it is after a save
+  // reloads the list rather than the copy it was opened with.
+  let detailId = $state<number | null>(null);
+  let detailOpen = $state(false);
+  const detailTx = $derived(detailId === null ? null : (txns.find((t) => t.id === detailId) ?? null));
+  let deleting = $state<Tx | null>(null);
+  let deletingOpen = $state(false);
+  let deleteBusy = $state(false);
+
+  function openDetail(t: Tx) {
+    openSwipe = null;
+    detailId = t.id;
+    detailOpen = true;
+  }
+  function askDelete(t: Tx) {
+    openSwipe = null;
+    deleting = t;
+    deletingOpen = true;
+  }
+  async function confirmDeleteOne() {
+    const t = deleting;
+    if (!t) return;
+    deleteBusy = true;
+    error = null;
+    const { error: e } = await api.DELETE("/api/transactions/{id}", { params: { path: { id: t.id } } });
+    deleteBusy = false;
+    deletingOpen = false;
+    if (e) {
+      error = "Failed to delete the transaction.";
+      return;
+    }
+    detailOpen = false;
+    detailId = null;
+    selected = new Set([...selected].filter((id) => id !== t.id));
+    await loadTx();
+  }
+  function endSelecting() {
+    selecting = false;
+    clearSelection();
+  }
+
   // ---- Filter panel: account/category/type tucked behind one "Filter" button + popover,
   // matching the reference's search-bar + Filter-button layout. ----
   let showFilterPanel = $state(false);
@@ -517,6 +596,18 @@
       chips.push({ key: "q", icon: "search", label: `"${search.trim()}"`, clear: () => (search = "") });
     return chips;
   });
+  // The search text has a box of its own, so it is not one of the "filters" the button counts.
+  const filterCount = $derived(activeChips.filter((c) => c.key !== "q").length + (grouped ? 0 : 1));
+  function resetFilters() {
+    cashflowOnly = false;
+    cashflowAccountId = "";
+    filters.custom = null;
+    categoryId = "";
+    accountId = "";
+    typeFilter = "";
+    sortKey = "date";
+    sortDir = DEFAULT_DIR.date;
+  }
   $effect(() => {
     if (!showFilterPanel) return;
     function onDocClick(e: MouseEvent) {
@@ -803,7 +894,13 @@
   }
 </script>
 
-<div class="tx-page">
+<div class="tx-page" class:compact bind:this={pageEl}>
+<!-- On a phone the shell's bar already names the page, and a second "Transactions" with its own
+     row of buttons under it was 130px of screen spent before the first transaction. Still in the
+     document, for a screen reader's heading list. -->
+{#if compact}
+  <h1 class="sr-only">Transactions</h1>
+{:else}
 <div class="row spread wrap" style="margin-bottom:14px;gap:10px">
   <h1 style="font-size:20px;font-weight:500">Transactions</h1>
   <div class="row" style="gap:8px">
@@ -844,6 +941,7 @@
     </button>
   </div>
 </div>
+{/if}
 
 {#if error}<div class="error-banner" style="margin-bottom:12px">{error}</div>{/if}
 
@@ -892,8 +990,7 @@
   </section>
 {/if}
 
-{#if showAdd}
-  <section class="card" style="margin-bottom:14px">
+{#snippet addFields()}
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
       <label class="field">Account
         <select class="select" bind:value={form.account_id}>
@@ -922,6 +1019,11 @@
         </select>
       </label>
     </div>
+{/snippet}
+
+{#if showAdd && !compact}
+  <section class="card" style="margin-bottom:14px">
+    {@render addFields()}
     <div class="row spread" style="margin-top:12px">
       <label class="switch">
         <input type="checkbox" bind:checked={form.exclude_from_cashflow} /><span class="track"></span>
@@ -932,7 +1034,73 @@
   </section>
 {/if}
 
-{#if !(loading && txns.length === 0)}
+{#snippet filterFields()}
+  <label class="field">Account
+    <select class="select" aria-label="Filter by account" bind:value={accountId}>
+      <option value="">All accounts</option>
+      {#each accounts as a}<option value={a.id}>{a.name}</option>{/each}
+    </select>
+  </label>
+  <label class="field">Category
+    <select class="select" aria-label="Filter by category" bind:value={categoryId}>
+      <option value="">All categories</option>
+      <!-- Above the list, not filed in it alphabetically: it selects the absence of a
+           category rather than one of them, and it's the filter you reach for when
+           tidying up after an import. -->
+      <option value="none">Uncategorised</option>
+      {#each categoryOptions(categories) as o}<option value={o.id}>{o.label}</option>{/each}
+    </select>
+  </label>
+  <label class="field">Type
+    <select class="select" aria-label="Filter by type" bind:value={typeFilter}>
+      <option value="">All types</option>
+      <option value="income">Income</option>
+      <option value="expense">Outgoings</option>
+    </select>
+  </label>
+{/snippet}
+
+{#if compact && !selecting}
+  <!-- Search, Filter and New float at the bottom, over the tab bar's edge: the thumb's end of the
+       screen, where the controls used most are reachable one-handed. -->
+  <div class="dock">
+    <div class="search-box grow">
+      <Icon name="search" size={18} />
+      <input
+        class="search-input"
+        type="search"
+        enterkeyhint="search"
+        placeholder="Search"
+        aria-label="Search transactions"
+        bind:value={search}
+      />
+    </div>
+    <button
+      type="button"
+      class="tb-btn"
+      class:on={filterCount > 0}
+      aria-label="Filter"
+      title={filterCount > 0 ? `${filterCount} active` : "Filter"}
+      onclick={() => (showFilterSheet = true)}
+    >
+      <Icon name="list-filter" size={18} />
+      {#if filterCount > 0}<span class="tb-badge tabular" aria-hidden="true">{filterCount}</span>{/if}
+    </button>
+    <button
+      type="button"
+      class="tb-btn primary"
+      aria-label="New transaction"
+      onclick={() => {
+        error = null;
+        showAdd = true;
+      }}
+    >
+      <Icon name="plus" size={22} />
+    </button>
+  </div>
+{/if}
+
+{#if !compact && !(loading && txns.length === 0)}
   <section class="card statcard">
     <div class="statbar">
       <div class="stat">
@@ -951,11 +1119,26 @@
   </section>
 {/if}
 
-<section class="card" style="margin-top:16px">
-  <div class="row" style="gap:8px;margin-bottom:16px">
+
+<section class="card list-card">
+  {#if compact && selecting}
+    <div class="select-bar">
+      <button type="button" class="link-btn" onclick={toggleAll}>{allSelected ? "Deselect all" : "Select all"}</button>
+      <span class="small faint tabular">{selected.size} selected</span>
+      <button type="button" class="link-btn strong" onclick={endSelecting}>Done</button>
+    </div>
+  {:else if !compact}
+  <div class="row toolbar">
     <div class="search-box grow">
       <Icon name="search" size={18} />
-      <input class="search-input" placeholder="Search transactions ..." bind:value={search} />
+      <input
+        class="search-input"
+        type="search"
+        enterkeyhint="search"
+        placeholder={compact ? "Search" : "Search transactions ..."}
+        aria-label="Search transactions"
+        bind:value={search}
+      />
     </div>
     <div class="filter-wrap">
       <button
@@ -970,33 +1153,17 @@
       </button>
       {#if showFilterPanel}
         <div class="filter-panel" bind:this={filterPanelEl}>
-          <label class="field">Account
-            <select class="select" aria-label="Filter by account" bind:value={accountId}>
-              <option value="">All accounts</option>
-              {#each accounts as a}<option value={a.id}>{a.name}</option>{/each}
-            </select>
-          </label>
-          <label class="field">Category
-            <select class="select" aria-label="Filter by category" bind:value={categoryId}>
-              <option value="">All categories</option>
-              <!-- Above the list, not filed in it alphabetically: it selects the absence of a
-                   category rather than one of them, and it's the filter you reach for when
-                   tidying up after an import. -->
-              <option value="none">Uncategorised</option>
-              {#each categoryOptions(categories) as o}<option value={o.id}>{o.label}</option>{/each}
-            </select>
-          </label>
-          <label class="field">Type
-            <select class="select" aria-label="Filter by type" bind:value={typeFilter}>
-              <option value="">All types</option>
-              <option value="income">Income</option>
-              <option value="expense">Outgoings</option>
-            </select>
+          {@render filterFields()}
+          <label class="switch pop-switch" title="Include transactions marked Exclude From Cashflow">
+            <input type="checkbox" bind:checked={filters.includeExcludedFromCashflow} />
+            <span class="track"></span>
+            <span>Forcibly Include All</span>
           </label>
         </div>
       {/if}
     </div>
   </div>
+  {/if}
 
   {#if activeChips.length > 0}
     <ul class="chip-row">
@@ -1038,6 +1205,7 @@
          narrow phone screen, so this scrolls horizontally rather than crushing the
          description to zero width. -->
     <div class="tx-scroll scroll-x">
+    {#if !compact}
     <div class="tx-head">
       <div class="th-tx">
         <span class="tx-check">
@@ -1059,6 +1227,7 @@
       {@render sortHeader("category", "Category label", "th-cat")}
       {@render sortHeader("amount", "Amount", "th-amt")}
     </div>
+    {/if}
     <div class="tx-list" class:grouped>
       {#if grouped}
         {#each renderGroups as g (g.dateKey)}
@@ -1069,7 +1238,7 @@
               <div class="day-head-left">
                 <!-- `[].every(...)` is `true`, so a day holding only a valuation would render a
                      ticked box that selects nothing. No transactions, no checkbox. -->
-                {#if txRows.length > 0}
+                {#if txRows.length > 0 && (!compact || selecting)}
                   <span class="tx-check">
                     <input
                       type="checkbox"
@@ -1166,6 +1335,9 @@
     {/snippet}
 
     {#snippet row(t: Tx)}
+      {#if compact}
+        {@render compactRow(t)}
+      {:else}
       {@const title = t.description || txName(t) || "—"}
       {@const merchant = merchantName.get(t.merchant_id ?? -1) ?? t.merchant ?? ""}
       {@const cat = t.category_id != null ? catById.get(t.category_id) : null}
@@ -1259,6 +1431,76 @@
           {formatMoney(t.amount_minor, currencyOf.get(t.account_id) ?? t.currency_code)}
         </span>
       </div>
+      {/if}
+    {/snippet}
+
+    <!-- The phone's row: a name, an amount, and one quiet line saying where it went. No avatar
+         (its letter repeated the name), no pills (the category is a coloured dot and a word),
+         no checkbox outside select mode, no inline pickers — those are what the sheet is for,
+         and each one was a <select> carrying every category, a thousand times over.
+         Swiping left reveals Edit and Delete; a long swipe is Delete. -->
+    {#snippet compactRow(t: Tx)}
+      {@const title = t.description || txName(t) || "—"}
+      {@const merchant = merchantName.get(t.merchant_id ?? -1) ?? t.merchant ?? ""}
+      {@const cat = t.category_id != null ? catById.get(t.category_id) : null}
+      {@const cc = cat
+        ? (cat.color ??
+          categoryColor({
+            rootId: rootIdOf(categories, cat.id),
+            depth: depthOf(categories, cat.id),
+            dark: resolvedTheme() === "dark",
+          }))
+        : categoryColor({ rootId: null, depth: 0, dark: resolvedTheme() === "dark" })}
+      {@const money = formatMoney(t.amount_minor, currencyOf.get(t.account_id) ?? t.currency_code)}
+      <SwipeRow
+        open={openSwipe === t.id && !selecting}
+        onopen={() => (openSwipe = t.id)}
+        onclose={() => {
+          if (openSwipe === t.id) openSwipe = null;
+        }}
+        onfull={() => askDelete(t)}
+      >
+        {#snippet actions()}
+          <button type="button" class="sw-edit" onclick={() => openDetail(t)}>Edit</button>
+          <button type="button" class="sw-del" onclick={() => askDelete(t)}>Delete</button>
+        {/snippet}
+        <div
+          id={`tx-${t.id}`}
+          class="tx-row"
+          class:highlight={t.id === highlightId}
+          class:selected={selected.has(t.id)}
+        >
+          {#if selecting}
+            <label class="tx-check">
+              <input
+                type="checkbox"
+                aria-label="Select transaction"
+                checked={selected.has(t.id)}
+                onchange={(e) => toggleOne(t.id, e.currentTarget.checked)}
+              />
+            </label>
+          {/if}
+          <button
+            type="button"
+            class="tx-tap"
+            aria-label={`${title}, ${money}`}
+            onclick={() => (selecting ? toggleOne(t.id, !selected.has(t.id)) : openDetail(t))}
+          >
+            <span class="tx-l1">
+              <span class="ell tx-name">{title}</span>
+              <span class="amt-cell tabular" class:pos={t.amount_minor >= 0}>{money}</span>
+            </span>
+            <span class="tx-l2">
+              <span class="cat-pill" style="--c:{cc}"><span class="ell">{cat?.name ?? "Uncategorised"}</span></span>
+              <span class="tx-sub ell">
+                {#if merchant}{merchant} • {/if}{accountName.get(t.account_id) ?? "—"}{grouped ? "" : ` · ${formatDate(t.posted_at)}`}
+              </span>
+              {#if t.linked_transaction_id}<span class="tx-flag" title="Transfer">⇄</span>{/if}
+              {#if t.exclude_from_cashflow}<span class="tx-flag" title="Excluded from cashflow">excl.</span>{/if}
+            </span>
+          </button>
+        </div>
+      </SwipeRow>
     {/snippet}
 
     <div class="pagination row spread wrap">
@@ -1340,6 +1582,190 @@
     {/if}
     {#if bulkBusy}<span class="spinner" style="margin-left:4px"></span>{/if}
   </div>
+{/if}
+
+{#if compact}
+  <Sheet bind:open={showAdd} title="New transaction" closeLabel="Cancel">
+    <div class="sheet-form">
+      {#if error}<div class="error-banner" style="margin-bottom:12px">{error}</div>{/if}
+      {@render addFields()}
+      <label class="switch sw-row" style="margin-top:12px">
+        <input type="checkbox" bind:checked={form.exclude_from_cashflow} /><span class="track"></span>
+        <span>Exclude From Cashflow</span>
+      </label>
+    </div>
+    {#snippet footer()}
+      <button type="button" class="btn btn-primary btn-block" onclick={addTx}>Save transaction</button>
+    {/snippet}
+  </Sheet>
+
+  <Sheet bind:open={showMoreSheet} title="Transactions">
+    <ul class="menu-list">
+      <li>
+        <button
+          type="button"
+          onclick={() => {
+            showMoreSheet = false;
+            selecting = true;
+          }}
+        >
+          Select transactions
+        </button>
+      </li>
+      <li>
+        <a href="#/settings/import"><Icon name="download" size={18} />Import</a>
+      </li>
+      {#if accountId !== "" && unitsPanel === null}
+        <li>
+          <button
+            type="button"
+            onclick={() => {
+              showMoreSheet = false;
+              showValuation = !showValuation;
+            }}
+          >
+            {showValuation ? "Close value editor" : "Set value"}
+          </button>
+        </li>
+      {/if}
+    </ul>
+    <ul class="menu-list">
+      <li><a href="#/settings/rules">Edit rules</a></li>
+      <li><a href="#/settings/categories">Edit categories</a></li>
+      <li><a href="#/settings/merchants">Edit merchants</a></li>
+    </ul>
+  </Sheet>
+
+  <Sheet bind:open={showFilterSheet} title="Filter and sort">
+    <div class="f-label">Sort by</div>
+    <div class="seg" role="group" aria-label="Sort by">
+      {#each SORT_OPTIONS as o (o.key)}
+        <button
+          type="button"
+          class="seg-btn"
+          class:active={sortKey === o.key}
+          aria-label={`${o.label} — ${sortLabel(o.key)}. Tap to sort by ${o.label}.`}
+          onclick={() => setSort(o.key)}
+        >
+          {o.label}
+          {#if sortKey === o.key}<span class="caret" aria-hidden="true">{sortDir === "asc" ? "▲" : "▼"}</span>{/if}
+        </button>
+      {/each}
+    </div>
+    <div class="sheet-fields">
+      {@render filterFields()}
+    </div>
+    <label class="switch sw-row" style="margin-top:14px">
+      <input type="checkbox" bind:checked={filters.includeExcludedFromCashflow} />
+      <span class="track"></span>
+      <span>Include transactions excluded from cashflow</span>
+    </label>
+    {#snippet footer()}
+      <button type="button" class="btn btn-block" disabled={filterCount === 0} onclick={resetFilters}>
+        Reset filters and sort
+      </button>
+    {/snippet}
+    <button
+      type="button"
+      class="btn btn-block"
+      style="margin-top:14px"
+      onclick={() => {
+        showFilterSheet = false;
+        showMoreSheet = true;
+      }}
+    >
+      More actions…
+    </button>
+  </Sheet>
+
+  <Sheet bind:open={detailOpen} title="Transaction" onclose={() => (detailId = null)}>
+    {#if detailTx}
+      {@const t = detailTx}
+      {@const title = t.description || txName(t) || "—"}
+      {@const merchant = merchantName.get(t.merchant_id ?? -1) ?? t.merchant ?? ""}
+      {@const cat = t.category_id != null ? catById.get(t.category_id) : null}
+      {@const owner = people.list.length > 0 ? ownerOf(t) : null}
+      <div class="d-hero">
+        <div class="d-amt tabular" class:pos={t.amount_minor >= 0}>
+          {formatMoney(t.amount_minor, currencyOf.get(t.account_id) ?? t.currency_code)}
+        </div>
+        <div class="d-title">{title}</div>
+        <div class="d-date">{formatDateLong(t.posted_at.slice(0, 10))}</div>
+      </div>
+      <div class="d-card">
+        <div class="d-row">
+          <span class="d-k">Category</span>
+          <span class="d-v">{cat?.name ?? "Uncategorised"}<Icon name="chevron-right" size={16} /></span>
+          <select
+            class="pill-select"
+            aria-label="Category"
+            value={t.category_id ?? ""}
+            onchange={(e) => setCategory(t, e.currentTarget.value === "" ? "" : Number(e.currentTarget.value))}
+          >
+            <option value="">— none —</option>
+            {#each categoryOptions(categories) as o}<option value={o.id}>{o.label}</option>{/each}
+          </select>
+        </div>
+        {#if owner}
+          <div class="d-row">
+            <span class="d-k">Attributed to</span>
+            <span class="d-v">
+              {ownershipLabel(owner.ownership)}{owner.inherited ? " (account)" : ""}<Icon name="chevron-right" size={16} />
+            </span>
+            <select
+              class="pill-select"
+              aria-label="Attributed to"
+              value={t.ownership ? ownershipKey(t.ownership) : "inherit"}
+              onchange={(e) => setOwner(t, e.currentTarget.value)}
+            >
+              <option value="inherit">Follow the account</option>
+              {#each ownershipOptions() as o (o.key)}
+                <option value={o.key}>{o.label}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+        <div class="d-row">
+          <span class="d-k">Account</span>
+          <span class="d-v">{accountName.get(t.account_id) ?? "—"}</span>
+        </div>
+        {#if merchant}
+          <div class="d-row"><span class="d-k">Merchant</span><span class="d-v">{merchant}</span></div>
+        {/if}
+        {#if t.linked_transaction_id}
+          <div class="d-row"><span class="d-k">Transfer</span><span class="d-v">Linked to another account ⇄</span></div>
+        {/if}
+        {#if t.notes}
+          <div class="d-row stack"><span class="d-k">Notes</span><span class="d-v wrap-text">{t.notes}</span></div>
+        {/if}
+        <label class="switch d-row">
+          <input
+            type="checkbox"
+            checked={t.exclude_from_cashflow}
+            onchange={(e) => saveTx(t, { exclude_from_cashflow: e.currentTarget.checked })}
+          />
+          <span class="track"></span>
+          <span class="d-k">Exclude from cashflow</span>
+        </label>
+      </div>
+      <button type="button" class="d-delete" onclick={() => askDelete(t)}>Delete transaction</button>
+    {/if}
+  </Sheet>
+
+  <Sheet bind:open={deletingOpen} title="Delete transaction?" closeLabel="Cancel" onclose={() => (deleteBusy = false)}>
+    {#if deleting}
+      <p class="d-warn">
+        <strong>{deleting.description || txName(deleting) || "This transaction"}</strong>
+        ({formatMoney(deleting.amount_minor, currencyOf.get(deleting.account_id) ?? deleting.currency_code)},
+        {formatDate(deleting.posted_at)}) will be removed permanently.
+      </p>
+    {/if}
+    {#snippet footer()}
+      <button type="button" class="btn btn-danger btn-block" disabled={deleteBusy} onclick={confirmDeleteOne}>
+        {deleteBusy ? "Deleting…" : "Delete"}
+      </button>
+    {/snippet}
+  </Sheet>
 {/if}
 </div>
 
@@ -1789,106 +2215,521 @@
     font-size: 14px;
   }
 
-  /* ---- Narrow: the row stops being a table and becomes a card ------------------------------
-     Three columns needing 560px cannot be squeezed into a phone, and scrolling them sideways
-     put the *amount* — the one number anyone opens this page for — permanently off-screen
-     behind a gesture nothing advertised. So below the width where the columns fit, the same
-     three cells re-flow into two lines:
+  .list-card {
+    margin-top: 16px;
+  }
+  .toolbar {
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  /* Wide enough to need the filter popover's switch only where the shell's bar has dropped its
+     own (App.svelte hides that one at this same 700px). */
+  @container main (min-width: 701px) {
+    .pop-switch {
+      display: none;
+    }
+  }
 
-         [✓] (A)  Countdown                -$82.40
-                  Everyday · 12 Jun
-                  [ Groceries ]
+  /* ---- Phone ---------------------------------------------------------------------------------
+     Below ~576px of page the three columns cannot all fit, and the grid that used to be squeezed
+     into them — then a card per transaction, with a pill and a badge row and a checkbox — spent
+     most of the screen on chrome. This is a list in the sense iOS means it: grouped by day,
+     one 56px row per transaction (name and amount, then a line saying where it went), a thin
+     rule between them, nothing else. Everything a row used to carry inline — the category and
+     owner pickers, the checkbox, the delete — moved to where it is out of the way until wanted:
+     a tap opens the row's sheet, a swipe reveals Edit and Delete, Select is a mode.
 
-     Every cell keeps its markup, its handlers and its accessible name; only the grid changes —
-     no `display: contents` anywhere, so the checkbox, avatar and sub-line stay exactly where
-     their own component put them. 560px is the same number .tx-head and .tx-row pin their
-     min-width to, so the layout switches precisely when the columns stop fitting rather than
-     at a guessed phone width. */
-  @container main (max-width: 560px) {
-    .tx-scroll {
-      /* Nothing to scroll sideways any more, and a scroll container here would swallow the
-         horizontal component of a vertical flick. */
-      overflow-x: visible;
-    }
-    .tx-head,
-    .tx-row {
-      min-width: 0;
-    }
-    .tx-row {
-      grid-template-columns: minmax(0, 1fr) auto;
-      grid-template-areas:
-        "name amount"
-        "category category";
-      align-items: start;
-      gap: 8px 10px;
-      padding: 12px;
-    }
-    .tx-name-cell {
-      grid-area: name;
-      grid-column: auto;
-      align-items: flex-start;
-      gap: 10px;
-    }
-    .amt-cell {
-      grid-area: amount;
-      grid-column: auto;
-      align-self: start;
-      /* It is the number this page exists to show; give it the weight to match now that it is
-         no longer competing with three other columns. */
-      font-size: 15px;
-      font-weight: 600;
-    }
-    .cat-cell {
-      grid-area: category;
-      grid-column: auto;
-      /* Indented to the name's text, not the row's edge: 18px checkbox + 10px gap + 30px
-         avatar + 10px gap. Lines the pill up under the description it belongs to. */
-      padding-left: 68px;
-    }
-    .tx-name-row {
-      flex-wrap: wrap;
-      row-gap: 2px;
-    }
-    .avatar {
-      width: 30px;
-      height: 30px;
-      font-size: 13px;
-    }
-    .cat-pill {
-      max-width: 100%;
-    }
-    /* The valuation row has no checkbox — it has a spacer of the same name — so the same
-       indent lines its pill-less second row up with everything else. */
-    .val-icon {
-      width: 30px;
-      height: 30px;
-    }
+     Markup is switched in script (`compact`), not here, so these rules style elements that
+     exist only in this layout and nothing below can half-apply to the wide table. */
+  .compact .list-card {
+    margin-top: 10px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+  }
+  /* Floats over the list, above the tab bar and clear of the home indicator; the page leaves
+     room under its last row so nothing is stuck beneath it. */
+  .dock {
+    position: fixed;
+    left: calc(12px + env(safe-area-inset-left));
+    right: calc(12px + env(safe-area-inset-right));
+    bottom: calc(var(--tabbar-h, 0px) + env(safe-area-inset-bottom) + 10px);
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dock .search-box {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 48px;
+    padding: 0 14px;
+    border-radius: 24px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  }
+  .dock .tb-btn {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  }
+  .compact {
+    padding-bottom: 76px;
+  }
+  .tb-btn {
+    position: relative;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-sm);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .tb-btn.on {
+    border-color: var(--accent);
+  }
+  .tb-btn.primary {
+    border-color: transparent;
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .tb-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    display: grid;
+    place-items: center;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 4px;
+    border-radius: 9px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 11px;
+    font-weight: 650;
+  }
+  .select-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 40px;
+    margin-bottom: 8px;
+  }
+  .link-btn {
+    min-height: 44px;
+    padding: 0 4px;
+    margin: -2px 0;
+    border: 0;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 16px;
+    cursor: pointer;
+  }
+  .link-btn.strong {
+    font-weight: 650;
+  }
+  /* One line that scrolls, not a block that wraps: a wrapped chip row is the same vertical
+     cost as the filters it summarises. */
+  .compact .chip-row {
+    flex-wrap: nowrap;
+    gap: 6px;
+    margin: 0 -14px 8px;
+    padding: 0 14px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .compact .chip-row::-webkit-scrollbar {
+    display: none;
+  }
+  .compact .chip {
+    flex: none;
+    padding: 3px 4px 3px 10px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .compact .chip-x {
+    padding: 5px;
+  }
 
-    /* The header stops being a set of column labels — there are no columns left to label — and
-       becomes what it still needs to be: the four sort controls, plus select-all, wrapping on
-       one line. Keeping it (rather than hiding it, which is the easy answer) is what stops
-       "sort by amount" being a desktop-only feature. */
-    .tx-head {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 10px 14px;
-      padding: 10px 12px;
-      margin-bottom: 12px;
-    }
-    .th-tx {
-      grid-column: auto;
-      flex-wrap: wrap;
-      gap: 10px 14px;
-    }
-    .th-cat,
-    .th-amt {
-      grid-column: auto;
-      justify-self: auto;
-    }
-    .th-date {
-      margin-left: 0;
-    }
+  .compact .tx-scroll {
+    overflow-x: visible;
+  }
+  .compact .tx-list.grouped {
+    gap: 12px;
+  }
+  .compact .day-group {
+    padding: 0;
+    background: none;
+  }
+  /* The day names itself while you are inside it. */
+  .compact .day-head {
+    position: sticky;
+    top: var(--subbar-h, 0px);
+    z-index: 4;
+    padding: 6px 4px;
+    background: var(--topbar-bg);
+    backdrop-filter: blur(12px);
+  }
+  .compact .day-head-left {
+    gap: 8px;
+  }
+  .compact .day-rows,
+  .compact .tx-list:not(.grouped) {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    background: var(--surface);
+    box-shadow: none;
+  }
+  .compact .tx-row {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+  }
+  .compact .tx-row:hover {
+    background: none;
+  }
+  .compact .tx-row.selected {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  .compact .tx-row::after {
+    content: "";
+    position: absolute;
+    left: 14px;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    background: var(--border);
+  }
+  /* Whole-selector :global — `.swipe` belongs to SwipeRow, and :global may not sit mid-selector. */
+  :global(.tx-page.compact .day-rows > .swipe:last-child .tx-row::after),
+  :global(.tx-page.compact .tx-list:not(.grouped) > .swipe:last-child .tx-row::after),
+  .compact .day-rows > .tx-row:last-child::after {
+    display: none;
+  }
+  .compact .tx-row > .tx-check {
+    align-self: stretch;
+    padding: 0 0 0 14px;
+    margin: 0;
+  }
+  .tx-tap {
+    all: unset;
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 56px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    padding: 9px 14px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .tx-tap:active {
+    background: var(--hover);
+  }
+  .tx-tap:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .tx-l1 {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    min-width: 0;
+  }
+  .tx-l1 .tx-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 15px;
+  }
+  .tx-l1 .amt-cell {
+    flex: none;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .tx-l2 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-size: 12.5px;
+    color: var(--text-muted);
+  }
+  /* The category is a dot and a word. The colour survives as the dot; the word stays legible
+     in the text colour, because a pale category colour as text on white is not. */
+  .compact .cat-pill {
+    flex: 0 1 auto;
+    max-width: 55%;
+    gap: 5px;
+    padding: 0;
+    border: 0;
+    background: none;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--text-muted);
+    cursor: inherit;
+  }
+  .compact .cat-pill::before {
+    content: "";
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--c);
+  }
+  .compact .tx-sub {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12.5px;
+  }
+  .compact .tx-sub::before {
+    content: "·";
+    margin-right: 6px;
+  }
+  .tx-flag {
+    flex: none;
+    font-size: 11px;
+    color: var(--text-faint);
+  }
+  .sw-edit {
+    background: color-mix(in srgb, var(--text) 42%, var(--bg));
+  }
+  .sw-del {
+    background: var(--negative);
+  }
+  .compact .tx-row.val-row {
+    gap: 10px;
+    padding: 10px 14px;
+    align-items: center;
+  }
+  .compact .val-row .tx-name-cell {
+    flex: 1 1 auto;
+    gap: 10px;
+  }
+  .compact .val-row .tx-check,
+  .compact .val-row .cat-cell {
+    display: none;
+  }
+  .compact .val-row .amt-cell {
+    flex: none;
+  }
+  .compact .pagination {
+    margin-top: 10px;
+    padding-top: 10px;
+    justify-content: center;
+  }
+  /* One line that scrolls, like the chips: five bulk pickers wrapped to four lines was a
+     quarter of the screen. */
+  .compact .bulkbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: 8px 12px;
+    scrollbar-width: none;
+  }
+  .compact .bulkbar::-webkit-scrollbar {
+    display: none;
+  }
+  .compact .bulkbar .count,
+  .compact .bulkbar :global(.btn) {
+    flex: none;
+    white-space: nowrap;
+  }
+  .compact .bulkbar :global(.select) {
+    flex: 0 0 150px;
+  }
+
+  /* ---- Sheets ------------------------------------------------------------------------------ */
+  .btn-block {
+    width: 100%;
+    justify-content: center;
+  }
+  .sw-row {
+    display: flex;
+    flex-direction: row-reverse;
+    justify-content: space-between;
+    font-size: 15px;
+    color: var(--text);
+  }
+  .sheet-form .grid {
+    grid-template-columns: 1fr !important;
+    gap: 12px;
+  }
+  .menu-list {
+    list-style: none;
+    margin: 0 0 12px;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    background: var(--surface);
+  }
+  .menu-list li + li {
+    border-top: 1px solid var(--border);
+  }
+  .menu-list :is(a, button) {
+    all: unset;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 50px;
+    padding: 0 16px;
+    font-size: 16px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .menu-list :is(a, button):active {
+    background: var(--hover);
+  }
+  .menu-list :is(a, button):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .f-label {
+    margin: 6px 0 8px;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .seg {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2px;
+    padding: 3px;
+    border-radius: 10px;
+    background: var(--surface-2);
+  }
+  .seg-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 38px;
+    padding: 0 2px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .seg-btn.active {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow);
+  }
+  .seg-btn .caret {
+    opacity: 1;
+  }
+  .sheet-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 18px;
+  }
+  .d-hero {
+    padding: 4px 0 16px;
+    text-align: center;
+  }
+  .d-amt {
+    font-size: 32px;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+  }
+  .d-title {
+    margin-top: 4px;
+    font-size: 16px;
+    font-weight: 500;
+    overflow-wrap: anywhere;
+  }
+  .d-date {
+    margin-top: 2px;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  .d-card {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    background: var(--surface);
+  }
+  .d-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 48px;
+    padding: 8px 16px;
+  }
+  .d-row + .d-row {
+    border-top: 1px solid var(--border);
+  }
+  .d-row.stack {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .d-k {
+    flex: none;
+    font-size: 15px;
+    color: var(--text);
+  }
+  .d-v {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    font-size: 15px;
+    color: var(--text-muted);
+    text-align: right;
+  }
+  .d-v.wrap-text {
+    text-align: left;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .d-row.switch {
+    flex-direction: row-reverse;
+    font-size: 15px;
+  }
+  .d-delete {
+    width: 100%;
+    min-height: 50px;
+    margin-top: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    background: var(--surface);
+    color: var(--negative);
+    font: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .d-warn {
+    margin: 4px 0 8px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
   }
 
   .tx-check {

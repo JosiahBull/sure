@@ -56,7 +56,10 @@ test("the time-range dropdown offers month-to-date, and it means the 1st to toda
 
 test("the toggle's knob rests centred, in both states", async ({ page }) => {
   await goto(page, "/transactions");
-  const track = page.locator(".subbar-switch .track");
+  // On a phone the toggle is a filter like the rest, so it lives in the filter sheet; the shell's
+  // bar no longer carries it at this width.
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  const track = page.getByRole("dialog").locator(".sw-row .track");
 
   // The knob is a pseudo-element positioned inside the track, and an absolutely positioned
   // child's offsets resolve against the *padding* box — which the track's 1px border insets.
@@ -86,8 +89,8 @@ test("the toggle's knob rests centred, in both states", async ({ page }) => {
   // Resting at the near end, so the gap there is the one that must equal the vertical gaps.
   expect(off.left, "the knob's resting gap differs from its vertical gap").toBeCloseTo(off.above, 1);
 
-  await page.locator(".subbar-switch").click();
-  await expect(page.locator(".subbar-switch input")).toBeChecked();
+  await page.getByRole("dialog").locator(".sw-row").click();
+  await expect(page.getByRole("dialog").locator(".sw-row input")).toBeChecked();
   // Polled, not read once: the knob slides over 0.15s, and a mid-transition matrix is a real
   // position — just not the resting one this test is about. The assertion is the whole point of
   // deriving the travel distance rather than hard-coding it: it has to leave the same gap at
@@ -175,6 +178,8 @@ test("every column header sorts the transactions list", async ({ page }) => {
       .locator(".tx-row .amt-cell")
       .evaluateAll((els) => els.map((el) => parseFloat((el.textContent ?? "").replace(/[^0-9.-]/g, ""))));
   const texts = async (sel: string) => (await page.locator(sel).allInnerTexts()).map((s) => s.trim().toLowerCase());
+  // The phone has no column header: the same four sorts are a control in the filter sheet.
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
   const header = (name: string) => page.getByRole("button", { name: new RegExp(`^${name} —`) });
 
   // The default is date/newest-first, the one order the day-grouped cards are valid for.
@@ -197,20 +202,20 @@ test("every column header sorts the transactions list", async ({ page }) => {
 
   // Names sort A→Z on the name the row actually shows (merchant-preferred), not the raw
   // description behind it. Plain string order, matching the comparison `sortValue` feeds.
-  await header("transaction").click();
+  await header("Name").click();
   const names = await texts(".tx-row .tx-name");
   expect(names).toEqual([...names].sort());
 
   // Categories sort A→Z with uncategorised rows clustered at the front rather than filed
   // under "U" — the empty-string sort key in `sortValue`.
-  await header("Category label").click();
+  await header("Category").click();
   const cats = await texts(".tx-row .cat-pill > .ell");
   const named = cats.filter((c) => c !== "uncategorised");
   expect(cats.slice(0, cats.length - named.length).every((c) => c === "uncategorised")).toBe(true);
   expect(named).toEqual([...named].sort());
 
   // Date brings the grouped view back, so it is never a dead end.
-  await header("date").click();
+  await header("Date").click();
   await expect(page.locator(".day-group").first()).toBeVisible();
 });
 
