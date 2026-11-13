@@ -612,6 +612,8 @@ impl SureMcp {
                 search: params.search.clone(),
                 uncategorized: params.uncategorized,
                 attributed_to: parse_attribution(params.attributed_to.as_deref())?,
+                flow: None,
+                include_subcategories: false,
                 limit: Some(sure_core::transactions::MAX_BULK_IDS as i64 + 1),
                 offset: None,
             })

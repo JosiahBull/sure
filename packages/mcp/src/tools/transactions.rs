@@ -109,6 +109,8 @@ impl SureMcp {
                 search: params.search,
                 uncategorized: params.uncategorized,
                 attributed_to,
+                flow: None,
+                include_subcategories: false,
                 limit: Some(limit + 1),
                 offset: Some(offset),
             })

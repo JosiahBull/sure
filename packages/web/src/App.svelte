@@ -500,6 +500,13 @@
     }
   }
 
+  /* While a page's search field holds the keyboard (Transactions' `searchingOnPhone`), the tab
+     bar steps aside: iOS would otherwise carry it up above the keyboard, between the field and
+     the list. */
+  :global(html.phone-searching) .rail {
+    display: none;
+  }
+
   /* ---- Phone: the rail becomes a bottom tab bar -------------------------------------------
      80px of permanent left rail is a fifth of a 402px screen, and the bottom of the screen is
      where a thumb already is. Same links, same active state, laid on their side. */

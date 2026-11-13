@@ -180,7 +180,15 @@ test("every column header sorts the transactions list", async ({ page }) => {
   const texts = async (sel: string) => (await page.locator(sel).allInnerTexts()).map((s) => s.trim().toLowerCase());
   // The phone has no column header: the same four sorts are a control in the filter sheet.
   await page.getByRole("button", { name: "Filter", exact: true }).click();
-  const header = (name: string) => page.getByRole("button", { name: new RegExp(`^${name} —`) });
+  // The server sorts now, so each click is a round trip: wait for the page it asked for.
+  const header = (name: string) => ({
+    click: async () => {
+      const reply = page.waitForResponse((r) => r.url().includes("/api/transactions/feed"));
+      await page.getByRole("button", { name: new RegExp(`^${name} —`) }).click();
+      await reply;
+      await page.waitForLoadState("networkidle");
+    },
+  });
 
   // The default is date/newest-first, the one order the day-grouped cards are valid for.
   await expect(page.locator(".day-group").first()).toBeVisible();
@@ -230,7 +238,10 @@ test("the category filter can select the rows that have no category", async ({ p
   expect(before.some((c) => c.trim() !== "Uncategorised")).toBe(true);
 
   await page.getByRole("button", { name: "Filter" }).click();
+  const reply = page.waitForResponse((r) => r.url().includes("/api/transactions/feed") && r.url().includes("uncategorized=true"));
   await page.getByLabel("Filter by category").selectOption("none");
+  await reply;
+  await page.waitForLoadState("networkidle");
 
   // Only uncategorised rows survive, and at least one does.
   await expect(pills().first()).toBeVisible();

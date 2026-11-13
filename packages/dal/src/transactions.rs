@@ -2,8 +2,9 @@ use sqlx::{AssertSqlSafe, FromRow, QueryBuilder, Sqlite};
 use sure_core::transactions::MAX_BULK_IDS;
 use sure_core::{AppError, AppResult, Ownership};
 pub use sure_core::{
-    BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,
-    TxQuery,
+    BulkDelete, BulkResult, BulkUpdate, CursorKey, DayTotal, Flow, LinkRequest, SaveTransaction,
+    SortDir, Transaction, TransferRequest, TxCursor, TxFeedQuery, TxPage, TxQuery, TxSort,
+    TxSummary,
 };
 
 use crate::Db;
@@ -145,26 +146,41 @@ pub async fn credits_since(
     .collect()
 }
 
-#[tracing::instrument(level = "debug", skip_all)]
-pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
-    // `t.*`, not `*`: the join below would otherwise splice the account's own `ownership`
-    // and `person_id` columns into the row and shadow the transaction's.
-    // Not `sqlx::query_as!`: which filters are present decides the SQL text, and the macro
-    // needs a literal. One of four such sites in this module (with `bulk_update`,
-    // `bulk_delete` and `amounts_for_matching`); everything else here is compile-time checked.
-    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
-        "SELECT t.* FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE 1=1",
-    );
-    if let Some(ids) = q.ids {
+/// Every table a transaction filter or sort can reach. `t.*`, not `*`, is what callers select:
+/// the joins would otherwise splice the account's own `ownership` and `person_id` columns (and the
+/// category's and merchant's names and ids) into the row and shadow the transaction's. The two
+/// `LEFT JOIN`s are on primary keys, so carrying them on every query costs a lookup per row.
+const TX_FROM: &str = " FROM transactions t JOIN accounts a ON a.id = t.account_id \
+     LEFT JOIN categories c ON c.id = t.category_id \
+     LEFT JOIN merchants m ON m.id = t.merchant_id WHERE 1=1";
+
+/// The calendar-day key: the first ten characters of `posted_at`, which is a bare `YYYY-MM-DD`
+/// for a hand-entered row and an RFC-3339 datetime for an imported one. Not `date(..)`, which
+/// would shift an offset-stamped import to its UTC day and disagree with the day the SPA heads
+/// it under.
+const DAY_KEY: &str = "substr(t.posted_at, 1, 10)";
+
+/// Append `q`'s filters to a query that already ends in [`TX_FROM`]. Shared by `list`, `feed`,
+/// the feed's day totals and `summary`, so the four can never disagree about which rows match.
+fn push_filters(qb: &mut QueryBuilder<Sqlite>, q: &TxQuery) {
+    if let Some(ids) = &q.ids {
         qb.push(" AND t.id IN (SELECT value FROM json_each(")
-            .push_bind(sqlx::types::Json(ids))
+            .push_bind(sqlx::types::Json(ids.clone()))
             .push("))");
     }
     if let Some(account_id) = q.account_id {
         qb.push(" AND t.account_id = ").push_bind(account_id);
     }
     if let Some(category_id) = q.category_id {
-        qb.push(" AND t.category_id = ").push_bind(category_id);
+        if q.include_subcategories {
+            qb.push(
+                " AND t.category_id IN (WITH RECURSIVE sub(id) AS (SELECT ",
+            )
+            .push_bind(category_id)
+            .push(" UNION SELECT k.id FROM categories k JOIN sub ON k.parent_id = sub.id) SELECT id FROM sub)");
+        } else {
+            qb.push(" AND t.category_id = ").push_bind(category_id);
+        }
     }
     if let Some(from) = q.from.as_deref() {
         qb.push(" AND date(t.posted_at) >= date(")
@@ -186,11 +202,21 @@ pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
             " AND t.category_id IS NOT NULL"
         });
     }
-    if let Some(search) = q.search.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(flow) = q.flow {
+        qb.push(match flow {
+            Flow::Income => " AND t.amount_minor >= 0",
+            Flow::Expense => " AND t.amount_minor < 0",
+        });
+    }
+    if let Some(search) = q.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        // The merchant's own name too: a row linked to a merchant shows that name, and a search
+        // that cannot find what is on screen reads as broken.
         let like = format!("%{}%", search.to_lowercase());
         qb.push(" AND (lower(t.description) LIKE ")
             .push_bind(like.clone())
             .push(" OR lower(coalesce(t.merchant,'')) LIKE ")
+            .push_bind(like.clone())
+            .push(" OR lower(coalesce(m.name,'')) LIKE ")
             .push_bind(like.clone())
             .push(" OR lower(coalesce(t.notes,'')) LIKE ")
             .push_bind(like)
@@ -215,6 +241,17 @@ pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
             }
         }
     }
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
+    // Not `sqlx::query_as!`: which filters are present decides the SQL text, and the macro
+    // needs a literal. One of the few such sites in this module (with `feed`, `summary`,
+    // `bulk_update`, `bulk_delete` and `amounts_for_matching`); everything else here is
+    // compile-time checked.
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("SELECT t.*");
+    qb.push(TX_FROM);
+    push_filters(&mut qb, &q);
     qb.push(" ORDER BY date(t.posted_at) DESC, t.id DESC");
     let limit = q.limit.unwrap_or(1000).clamp(1, 10_000);
     qb.push(" LIMIT ").push_bind(limit);
@@ -226,6 +263,170 @@ pub async fn list(db: &Db, q: TxQuery) -> AppResult<Vec<Transaction>> {
         .into_iter()
         .map(Transaction::try_from)
         .collect()
+}
+
+/// The SQL a feed order sorts by, and whether its value is text or an integer. Each mirrors
+/// what the SPA shows in that column, lower-cased where the order is case-insensitive.
+fn sort_expr(sort: TxSort) -> &'static str {
+    match sort {
+        TxSort::Date => DAY_KEY,
+        TxSort::Description => "lower(coalesce(nullif(t.description, ''), m.name, t.merchant, ''))",
+        TxSort::Category => "lower(coalesce(c.name, ''))",
+        TxSort::Amount => "t.amount_minor",
+    }
+}
+
+/// A feed row: the transaction, plus the value it was ordered by — read back from SQL rather
+/// than recomputed in Rust, so the cursor holds exactly what the next page's `WHERE` compares.
+#[derive(Debug, FromRow)]
+struct FeedRow {
+    #[sqlx(flatten)]
+    row: TransactionRow,
+    sort_text: Option<String>,
+    sort_int: Option<i64>,
+}
+
+/// One page of the transaction list, in any of the SPA's orders, with a keyset cursor to the
+/// next and the full-set totals of each day it touches.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn feed(db: &Db, q: TxFeedQuery) -> AppResult<TxPage> {
+    let expr = sort_expr(q.sort);
+    let is_int = match q.sort {
+        TxSort::Amount => true,
+        TxSort::Date | TxSort::Description | TxSort::Category => false,
+    };
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("SELECT t.*, ");
+    if is_int {
+        qb.push(format_args!("NULL AS sort_text, {expr} AS sort_int"));
+    } else {
+        qb.push(format_args!("{expr} AS sort_text, NULL AS sort_int"));
+    }
+    qb.push(TX_FROM);
+    push_filters(&mut qb, &q.filter);
+    let (past, dir) = match q.dir {
+        SortDir::Asc => (">", "ASC"),
+        SortDir::Desc => ("<", "DESC"),
+    };
+    if let Some(cursor) = &q.cursor {
+        // Strictly after the last row: further along the sort, or level with it and later in
+        // the id tiebreak — which always ascends, whichever way the sort runs.
+        qb.push(format_args!(" AND ({expr} {past} "));
+        push_cursor_key(&mut qb, &cursor.key);
+        qb.push(format_args!(" OR ({expr} = "));
+        push_cursor_key(&mut qb, &cursor.key);
+        qb.push(" AND t.id > ").push_bind(cursor.id).push("))");
+    }
+    qb.push(format_args!(" ORDER BY {expr} {dir}, t.id ASC LIMIT "));
+    // One past the page: whether it exists is how `next_cursor` knows there is more.
+    qb.push_bind(q.limit + 1);
+
+    let mut rows = qb.build_query_as::<FeedRow>().fetch_all(db).await?;
+    let more = rows.len() as i64 > q.limit;
+    rows.truncate(q.limit as usize);
+    let next_cursor = match (more, rows.last()) {
+        (true, Some(last)) => {
+            let key = if is_int {
+                CursorKey::Int(last.sort_int.unwrap_or_default())
+            } else {
+                CursorKey::Text(last.sort_text.clone().unwrap_or_default())
+            };
+            Some(
+                TxCursor {
+                    sort: q.sort,
+                    dir: q.dir,
+                    key,
+                    id: last.row.id,
+                }
+                .encode(),
+            )
+        }
+        (true, None) | (false, _) => None,
+    };
+    let items = rows
+        .into_iter()
+        .map(|r| Transaction::try_from(r.row))
+        .collect::<AppResult<Vec<_>>>()?;
+    let days = day_totals(db, &q.filter, &items).await?;
+    Ok(TxPage {
+        items,
+        next_cursor,
+        days,
+    })
+}
+
+fn push_cursor_key(qb: &mut QueryBuilder<Sqlite>, key: &CursorKey) {
+    match key {
+        CursorKey::Text(s) => qb.push_bind(s.clone()),
+        CursorKey::Int(n) => qb.push_bind(*n),
+    };
+}
+
+#[derive(Debug, FromRow)]
+struct DayRow {
+    day: String,
+    count: i64,
+    net_minor: i64,
+}
+
+/// Count and net of every matching row on each calendar day that `items` touches — over the
+/// whole filtered set, not just the page.
+async fn day_totals(db: &Db, filter: &TxQuery, items: &[Transaction]) -> AppResult<Vec<DayTotal>> {
+    let mut days: Vec<String> = items
+        .iter()
+        .map(|t| t.posted_at.chars().take(10).collect())
+        .collect();
+    days.dedup();
+    if days.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(format!(
+        "SELECT {DAY_KEY} AS day, COUNT(*) AS count, COALESCE(SUM(t.amount_minor), 0) AS net_minor"
+    ));
+    qb.push(TX_FROM);
+    push_filters(&mut qb, filter);
+    qb.push(format_args!(
+        " AND {DAY_KEY} IN (SELECT value FROM json_each("
+    ))
+    .push_bind(sqlx::types::Json(days))
+    .push(format_args!(
+        ")) GROUP BY {DAY_KEY} ORDER BY {DAY_KEY} DESC"
+    ));
+    Ok(qb
+        .build_query_as::<DayRow>()
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .map(|d| DayTotal {
+            date: d.day,
+            count: d.count,
+            net_minor: d.net_minor,
+        })
+        .collect())
+}
+
+#[derive(Debug, FromRow)]
+struct SummaryRow {
+    count: i64,
+    income_minor: i64,
+    expenses_minor: i64,
+}
+
+/// Count, income and outgoings over everything `q` matches; its `limit`/`offset` are ignored.
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn summary(db: &Db, q: TxQuery) -> AppResult<TxSummary> {
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "SELECT COUNT(*) AS count, \
+         COALESCE(SUM(CASE WHEN t.amount_minor >= 0 THEN t.amount_minor END), 0) AS income_minor, \
+         COALESCE(SUM(CASE WHEN t.amount_minor < 0 THEN t.amount_minor END), 0) AS expenses_minor",
+    );
+    qb.push(TX_FROM);
+    push_filters(&mut qb, &q);
+    let r = qb.build_query_as::<SummaryRow>().fetch_one(db).await?;
+    Ok(TxSummary {
+        count: r.count,
+        income_minor: r.income_minor,
+        expenses_minor: r.expenses_minor,
+    })
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -958,6 +1159,353 @@ mod tests {
         .await
         .unwrap()
         .id
+    }
+
+    // ---- feed / summary ---------------------------------------------------------------
+
+    async fn sub_category(db: &Db, name: &str, parent_id: Option<i64>) -> i64 {
+        crate::categories::create(
+            db,
+            sure_core::SaveCategory {
+                name: name.to_string(),
+                parent_id,
+                kind: Default::default(),
+                color: None,
+                icon: None,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    async fn rich_tx(
+        db: &Db,
+        account_id: i64,
+        posted_at: &str,
+        amount_minor: i64,
+        description: &str,
+        category_id: Option<i64>,
+        merchant_id: Option<i64>,
+    ) -> i64 {
+        create(
+            db,
+            SaveTransaction {
+                account_id,
+                posted_at: IsoDate::parse(posted_at).unwrap(),
+                amount_minor: Money::new(amount_minor).unwrap(),
+                currency_code: Some("NZD".to_string()),
+                description: description.to_string(),
+                merchant: None,
+                notes: None,
+                category_id,
+                exclude_from_cashflow: false,
+                merchant_id,
+                ownership: None,
+                counterparty_account_id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    /// Twenty-four rows with deliberate ties on every sort column — several per day, repeated
+    /// descriptions in mixed case, shared categories, repeated amounts — so a page boundary
+    /// lands inside a run of equal keys, which is where a keyset goes wrong if it is going to.
+    async fn feed_fixture(db: &Db) -> (i64, i64, i64) {
+        let acct = account(db, "Bank").await;
+        let food = sub_category(db, "Food", None).await;
+        let grocery = sub_category(db, "groceries", Some(food)).await;
+        let rent = sub_category(db, "Rent", None).await;
+        let shop = crate::merchants::create(
+            db,
+            sure_core::SaveMerchant {
+                name: "Corner Shop".to_string(),
+                category_id: None,
+                note: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+        let descs = ["Bakery", "bakery", "ATM", "Zoo", ""];
+        let cats = [Some(food), Some(grocery), None, Some(rent)];
+        for i in 0..24_i64 {
+            let day = format!("2026-03-{:02}", 1 + i / 4);
+            let amount = [-500, 1_200, -500, 0][(i % 4) as usize];
+            let desc = descs[(i % 5) as usize];
+            let merchant = if desc.is_empty() { Some(shop) } else { None };
+            rich_tx(
+                db,
+                acct,
+                &day,
+                amount,
+                desc,
+                cats[(i % 4) as usize],
+                merchant,
+            )
+            .await;
+        }
+        (acct, food, grocery)
+    }
+
+    async fn walk(
+        db: &Db,
+        filter: impl Fn() -> TxQuery,
+        sort: TxSort,
+        dir: SortDir,
+        limit: i64,
+    ) -> Vec<i64> {
+        let mut out = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = feed(
+                db,
+                TxFeedQuery {
+                    filter: filter(),
+                    sort,
+                    dir,
+                    cursor: cursor.take(),
+                    limit,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(page.items.len() as i64 <= limit);
+            out.extend(page.items.iter().map(|t| t.id));
+            match page.next_cursor {
+                Some(c) => cursor = Some(TxCursor::decode(&c, sort, dir).unwrap()),
+                None => return out,
+            }
+        }
+    }
+
+    /// Paging any order in small pages yields exactly the rows of one big page, in the same
+    /// order: nothing repeated, nothing skipped, ties broken the same way on both sides of a
+    /// boundary.
+    #[tokio::test]
+    async fn feed_pages_concatenate_to_the_unpaged_order_for_every_sort() {
+        let db = test_db().await;
+        feed_fixture(&db).await;
+        for sort in [
+            TxSort::Date,
+            TxSort::Description,
+            TxSort::Category,
+            TxSort::Amount,
+        ] {
+            for dir in [SortDir::Asc, SortDir::Desc] {
+                let whole = walk(&db, TxQuery::default, sort, dir, 500).await;
+                assert_eq!(whole.len(), 24, "{sort:?} {dir:?}");
+                for limit in [1, 3, 5, 7] {
+                    let paged = walk(&db, TxQuery::default, sort, dir, limit).await;
+                    assert_eq!(paged, whole, "{sort:?} {dir:?} in pages of {limit}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn feed_orders_match_what_the_list_shows() {
+        let db = test_db().await;
+        feed_fixture(&db).await;
+        let all = list(
+            &db,
+            TxQuery {
+                limit: Some(100),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let by_id: std::collections::HashMap<i64, Transaction> =
+            all.into_iter().map(|t| (t.id, t)).collect();
+
+        let date_desc = walk(&db, TxQuery::default, TxSort::Date, SortDir::Desc, 5).await;
+        let days: Vec<&str> = date_desc
+            .iter()
+            .map(|id| &by_id[id].posted_at[..10])
+            .collect();
+        assert!(
+            days.windows(2).all(|w| w[0] >= w[1]),
+            "dates descend: {days:?}"
+        );
+        // Within a day, oldest-entered first even though the days run backwards.
+        assert!(
+            date_desc.windows(2).all(|w| by_id[&w[0]].posted_at[..10]
+                != by_id[&w[1]].posted_at[..10]
+                || w[0] < w[1])
+        );
+
+        let amount_asc = walk(&db, TxQuery::default, TxSort::Amount, SortDir::Asc, 5).await;
+        let amounts: Vec<i64> = amount_asc.iter().map(|id| by_id[id].amount_minor).collect();
+        assert!(
+            amounts.windows(2).all(|w| w[0] <= w[1]),
+            "amounts ascend: {amounts:?}"
+        );
+
+        // Case-insensitive, and a row with no description sorts under its merchant's name.
+        let desc_asc = walk(&db, TxQuery::default, TxSort::Description, SortDir::Asc, 5).await;
+        let titles: Vec<String> = desc_asc
+            .iter()
+            .map(|id| match by_id[id].description.as_str() {
+                "" => "corner shop".to_string(),
+                d => d.to_lowercase(),
+            })
+            .collect();
+        assert!(
+            titles.windows(2).all(|w| w[0] <= w[1]),
+            "titles ascend: {titles:?}"
+        );
+    }
+
+    /// A row inserted ahead of the cursor mid-walk does not shift the rest of the walk — the
+    /// point of a keyset over an offset, which would show the boundary row twice.
+    #[tokio::test]
+    async fn a_row_landing_mid_walk_does_not_repeat_or_skip_later_rows() {
+        let db = test_db().await;
+        let (acct, _, _) = feed_fixture(&db).await;
+        let first = feed(
+            &db,
+            TxFeedQuery {
+                limit: 6,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        rich_tx(&db, acct, "2026-03-30", -1, "Synced", None, None).await;
+        let mut seen: Vec<i64> = first.items.iter().map(|t| t.id).collect();
+        let mut cursor = first.next_cursor;
+        while let Some(c) = cursor {
+            let page = feed(
+                &db,
+                TxFeedQuery {
+                    cursor: Some(TxCursor::decode(&c, TxSort::Date, SortDir::Desc).unwrap()),
+                    limit: 6,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            seen.extend(page.items.iter().map(|t| t.id));
+            cursor = page.next_cursor;
+        }
+        let unique: std::collections::HashSet<_> = seen.iter().collect();
+        assert_eq!(unique.len(), seen.len(), "a row was shown twice");
+        assert_eq!(
+            seen.len(),
+            24,
+            "every original row, and not the new one above the cursor"
+        );
+    }
+
+    /// A page that ends partway through a day still reports that day's full count and net.
+    #[tokio::test]
+    async fn day_totals_cover_the_whole_day_not_the_page() {
+        let db = test_db().await;
+        feed_fixture(&db).await;
+        // Days are four rows each, newest first; a page of six ends two rows into the second.
+        let page = feed(
+            &db,
+            TxFeedQuery {
+                limit: 6,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            page.days,
+            vec![
+                DayTotal {
+                    date: "2026-03-06".into(),
+                    count: 4,
+                    net_minor: 200
+                },
+                DayTotal {
+                    date: "2026-03-05".into(),
+                    count: 4,
+                    net_minor: 200
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn subcategories_flow_and_summary_filter_together() {
+        let db = test_db().await;
+        let (_, food, grocery) = feed_fixture(&db).await;
+        let parent_only = |include_subcategories| TxQuery {
+            category_id: Some(food),
+            include_subcategories,
+            ..Default::default()
+        };
+        // Food and its child "groceries" each hold 6 of the 24.
+        assert_eq!(summary(&db, parent_only(false)).await.unwrap().count, 6);
+        assert_eq!(summary(&db, parent_only(true)).await.unwrap().count, 12);
+        let child = TxQuery {
+            category_id: Some(grocery),
+            include_subcategories: true,
+            ..Default::default()
+        };
+        assert_eq!(summary(&db, child).await.unwrap().count, 6);
+
+        let all = summary(&db, TxQuery::default()).await.unwrap();
+        // Per day: -500 + 1200 - 500 + 0, six days.
+        assert_eq!(
+            all,
+            TxSummary {
+                count: 24,
+                income_minor: 7_200,
+                expenses_minor: -6_000
+            }
+        );
+        let out = summary(
+            &db,
+            TxQuery {
+                flow: Some(Flow::Expense),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out,
+            TxSummary {
+                count: 12,
+                income_minor: 0,
+                expenses_minor: -6_000
+            }
+        );
+        // Zero counts as income, as the stat bar has it.
+        let inc = summary(
+            &db,
+            TxQuery {
+                flow: Some(Flow::Income),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(inc.count, 12);
+
+        // The feed and the summary agree on what a filter matches.
+        let walked = walk(&db, || parent_only(true), TxSort::Amount, SortDir::Desc, 5).await;
+        assert_eq!(walked.len(), 12);
+    }
+
+    #[tokio::test]
+    async fn search_finds_a_row_by_its_merchants_name() {
+        let db = test_db().await;
+        feed_fixture(&db).await;
+        let q = TxQuery {
+            search: Some("  corner ".into()),
+            ..Default::default()
+        };
+        // Rows 4, 9, 14 and 19 have no description and is linked to "Corner Shop".
+        assert_eq!(summary(&db, q).await.unwrap().count, 4);
     }
 
     #[tokio::test]

@@ -188,8 +188,159 @@ pub struct TxQuery {
     /// Restrict to transactions whose *effective* attribution (override, else the account's
     /// owner) is this. Parsed from `?attributed_to=joint|<person id>` at the HTTP edge.
     pub attributed_to: Option<Ownership>,
+    /// Income (`amount >= 0`) or outgoings (`amount < 0`) only; omitted means both.
+    pub flow: Option<Flow>,
+    /// When set, `category_id` matches that category *and every category beneath it* — the
+    /// way the reports roll spend up the tree. Off for the plain list, whose callers (report
+    /// drill-downs, MCP) have always meant one category exactly.
+    #[serde(skip)]
+    #[param(ignore)]
+    pub include_subcategories: bool,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+}
+
+/// The sign-of-amount split the stat bar draws: money in, or money out. Zero counts as income,
+/// matching the stat bar.
+#[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum Flow {
+    Income,
+    Expense,
+}
+
+/// The column the transaction feed is ordered by. Every order breaks ties on ascending id
+/// (import order), so a day reads oldest-entered first whichever way the dates run.
+#[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TxSort {
+    /// The calendar day of `posted_at` — its first ten characters, the same key the SPA
+    /// groups its day headings by.
+    #[default]
+    Date,
+    /// The row's title: its description, else its merchant's name. Case-insensitive.
+    Description,
+    /// The category's name; uncategorised sorts as the empty string. Case-insensitive.
+    Category,
+    /// The signed amount in minor units, so descending is biggest-income-first.
+    Amount,
+}
+
+#[derive(Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SortDir {
+    Asc,
+    #[default]
+    Desc,
+}
+
+/// The sort value of the last row a page returned. Text for the three columns that sort as
+/// text, an integer for the amount — a cursor whose key is the wrong kind for its sort is
+/// refused rather than compared across types.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorKey {
+    Text(String),
+    Int(i64),
+}
+
+/// Where the next page of the feed begins: strictly after the row with this sort value and id.
+///
+/// A keyset rather than an offset, so a sync landing mid-scroll cannot shift later pages and
+/// show a row twice or skip one. Stamped with the order it was cut from, because a key from a
+/// date ordering means nothing in an amount ordering.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TxCursor {
+    pub sort: TxSort,
+    pub dir: SortDir,
+    pub key: CursorKey,
+    pub id: i64,
+}
+
+impl TxCursor {
+    /// The opaque wire form: hex over compact JSON. Opaque so no client builds one by hand;
+    /// hex so it needs no escaping in a query string.
+    pub fn encode(&self) -> String {
+        let json = serde_json::to_vec(self).expect("a cursor always serialises");
+        json.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Parse a cursor a client sent back, refusing one that is malformed, cut from a
+    /// different order than the one requested, or whose key is the wrong kind for its sort.
+    pub fn decode(raw: &str, sort: TxSort, dir: SortDir) -> AppResult<Self> {
+        let bad = || AppError::bad_request("cursor is not one this endpoint issued");
+        if !raw.len().is_multiple_of(2) || !raw.is_ascii() {
+            return Err(bad());
+        }
+        let bytes = (0..raw.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&raw[i..i + 2], 16))
+            .collect::<Result<Vec<u8>, _>>()
+            .map_err(|_| bad())?;
+        let cursor: TxCursor = serde_json::from_slice(&bytes).map_err(|_| bad())?;
+        if cursor.sort != sort || cursor.dir != dir {
+            return Err(AppError::bad_request(
+                "cursor belongs to a different sort order; start again without one",
+            ));
+        }
+        let key_fits = match (cursor.sort, &cursor.key) {
+            (TxSort::Date | TxSort::Description | TxSort::Category, CursorKey::Text(_)) => true,
+            (TxSort::Amount, CursorKey::Int(_)) => true,
+            (TxSort::Date | TxSort::Description | TxSort::Category, CursorKey::Int(_)) => false,
+            (TxSort::Amount, CursorKey::Text(_)) => false,
+        };
+        if !key_fits {
+            return Err(bad());
+        }
+        Ok(cursor)
+    }
+}
+
+/// One page of the feed: the filters of [`TxQuery`] (its `limit`/`offset` are ignored) plus an
+/// order and a place in it.
+#[derive(Debug, Default)]
+pub struct TxFeedQuery {
+    pub filter: TxQuery,
+    pub sort: TxSort,
+    pub dir: SortDir,
+    pub cursor: Option<TxCursor>,
+    /// Rows per page, already clamped to [`FEED_MAX_LIMIT`] by the caller.
+    pub limit: i64,
+}
+
+/// Rows per feed page when the client does not say.
+pub const FEED_DEFAULT_LIMIT: i64 = 100;
+/// The most rows one feed page may carry.
+pub const FEED_MAX_LIMIT: i64 = 500;
+
+/// A calendar day's totals over the *whole* filtered set — not just the rows on this page —
+/// so a day split across two pages still heads with its true count and net.
+#[derive(Serialize, Deserialize, ToSchema, Clone, Debug, PartialEq, Eq)]
+pub struct DayTotal {
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    pub count: i64,
+    pub net_minor: i64,
+}
+
+#[derive(Serialize, ToSchema, Clone, Debug)]
+pub struct TxPage {
+    pub items: Vec<Transaction>,
+    /// Pass back as `cursor` for the next page; `null` once the list is exhausted.
+    pub next_cursor: Option<String>,
+    /// Totals for each calendar day that appears in `items`, over the whole filtered set.
+    pub days: Vec<DayTotal>,
+}
+
+/// Totals over everything a feed query matches. Amounts are summed in raw minor units across
+/// whatever currencies match — the same deliberate approximation the stat bar has always made.
+#[derive(Serialize, Deserialize, ToSchema, Clone, Debug, PartialEq, Eq)]
+pub struct TxSummary {
+    pub count: i64,
+    /// Sum of every amount `>= 0`.
+    pub income_minor: i64,
+    /// Sum of every amount `< 0` (so zero or negative).
+    pub expenses_minor: i64,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -288,6 +439,52 @@ pub struct TransferRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cursor_round_trips_through_its_wire_form() {
+        let c = TxCursor {
+            sort: TxSort::Description,
+            dir: SortDir::Asc,
+            key: CursorKey::Text("pak'n save & co".into()),
+            id: 42,
+        };
+        let raw = c.encode();
+        assert!(
+            raw.bytes().all(|b| b.is_ascii_hexdigit()),
+            "needs no query-string escaping"
+        );
+        assert_eq!(
+            TxCursor::decode(&raw, TxSort::Description, SortDir::Asc).unwrap(),
+            c
+        );
+    }
+
+    #[test]
+    fn a_cursor_from_another_order_or_of_the_wrong_kind_is_refused() {
+        let date = TxCursor {
+            sort: TxSort::Date,
+            dir: SortDir::Desc,
+            key: CursorKey::Text("2026-01-01".into()),
+            id: 1,
+        }
+        .encode();
+        assert!(TxCursor::decode(&date, TxSort::Date, SortDir::Asc).is_err());
+        assert!(TxCursor::decode(&date, TxSort::Amount, SortDir::Desc).is_err());
+        let wrong_kind = TxCursor {
+            sort: TxSort::Amount,
+            dir: SortDir::Desc,
+            key: CursorKey::Text("x".into()),
+            id: 1,
+        }
+        .encode();
+        assert!(TxCursor::decode(&wrong_kind, TxSort::Amount, SortDir::Desc).is_err());
+        for junk in ["", "z", "abc", "zz", "7b7d", "é"] {
+            assert!(
+                TxCursor::decode(junk, TxSort::Date, SortDir::Desc).is_err(),
+                "{junk:?}"
+            );
+        }
+    }
 
     fn ids(n: usize) -> Vec<i64> {
         (1..=n as i64).collect()
