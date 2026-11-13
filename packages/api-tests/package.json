@@ -11,7 +11,7 @@
   "//openapi-fetch": "Must stay identical to packages/client's range; see the note there for the tuple caveat that still applies to 0.17. fixtures.ts imports the client by relative path (`../client/src/index`), so the copy that decides response types is the client's. Keeping the two ranges equal is what keeps a single openapi-fetch in the tree.",
   "//@types/node": "Tracks the Node major this repo runs, not npm `latest`. `engines.node` is \">=24\" and every workflow in .github pins `node-version: 24`, so ^24 types against the runtime CI actually uses; `latest` is 26.x, which would let code typecheck against APIs Node 24 does not have. 24.19.2 is the newest 24.x (2026-10-30). Raise this together with the Node pin, not on its own.",
   "devDependencies": {
-    "@playwright/test": "^1.64.1",
+    "@playwright/test": "^1.65.0",
     "@types/node": "^24.19.2",
     "openapi-fetch": "^0.17.0",
     "typescript": "^5.9.3"
