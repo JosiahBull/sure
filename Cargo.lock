@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "frankfurter-client"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "reqwest",
@@ -1146,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "house-pricer-client"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "reqwest",
@@ -3132,7 +3132,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sure-api"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3157,7 +3157,7 @@ dependencies = [
 
 [[package]]
 name = "sure-app"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3177,7 +3177,7 @@ dependencies = [
 
 [[package]]
 name = "sure-appbase"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -3189,7 +3189,7 @@ dependencies = [
 
 [[package]]
 name = "sure-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3204,7 +3204,7 @@ dependencies = [
 
 [[package]]
 name = "sure-dal"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3223,7 +3223,7 @@ dependencies = [
 
 [[package]]
 name = "sure-mcp"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3241,7 +3241,7 @@ dependencies = [
 
 [[package]]
 name = "sure-providers"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akahu-client",
  "anyhow",
@@ -3272,7 +3272,7 @@ dependencies = [
 
 [[package]]
 name = "sure-scheduler"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3286,7 +3286,7 @@ dependencies = [
 
 [[package]]
 name = "sure-server"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3312,7 +3312,7 @@ dependencies = [
 
 [[package]]
 name = "sure-telemetry"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "opentelemetry",
@@ -3328,7 +3328,7 @@ dependencies = [
 
 [[package]]
 name = "sure-testproxy"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4186,7 +4186,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "yahoo-finance-client"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "reqwest",
