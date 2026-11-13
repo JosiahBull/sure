@@ -4588,6 +4588,147 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/transactions/feed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One page of transactions in any order, for an infinitely-scrolling list. Follow
+         *     `next_cursor` until it is `null`; `days` carries the full-set totals of each day on the page.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    cashflow_categories_only?: boolean;
+                    cashflow_account_id?: number;
+                    account_id?: number;
+                    /** @description This category and every category beneath it. */
+                    category_id?: number;
+                    from?: string;
+                    to?: string;
+                    include_excluded_from_cashflow?: boolean;
+                    search?: string;
+                    uncategorized?: boolean;
+                    attributed_to?: string;
+                    flow?: "income" | "expense";
+                    /** @description The column to order by. Defaults to `date`. Ties always break on ascending id. */
+                    sort?: "date" | "description" | "category" | "amount";
+                    /** @description Defaults to `desc`. */
+                    dir?: "asc" | "desc";
+                    /**
+                     * @description The previous page's `next_cursor`; omit for the first page. Only valid with the same
+                     *     `sort` and `dir` it was issued under — anything else is a 400.
+                     */
+                    cursor?: string;
+                    /** @description Rows per page, 1–500. Defaults to 100. */
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["TxPage"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/transactions/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Count, income and outgoings over everything the filters match — the stat bar's figures,
+         *     which cover the whole set rather than the pages loaded so far.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Only cashflow category transactions; excludes internal transfers and account crossings. */
+                    cashflow_categories_only?: boolean;
+                    /** @description Cashflow across the perimeter to/from this account, excluding its bookkeeping. */
+                    cashflow_account_id?: number;
+                    account_id?: number;
+                    /** @description This category and every category beneath it. */
+                    category_id?: number;
+                    /** @description Inclusive lower bound on the transaction date (ISO-8601). */
+                    from?: string;
+                    /** @description Inclusive upper bound on the transaction date (ISO-8601). */
+                    to?: string;
+                    /** @description When false, transactions excluded from cashflow are excluded. Defaults to true. */
+                    include_excluded_from_cashflow?: boolean;
+                    /**
+                     * @description Case-insensitive substring match on description, merchant text, the linked merchant's
+                     *     name, and notes.
+                     */
+                    search?: string;
+                    /** @description `true` keeps only uncategorised rows, `false` only categorised ones; omitted means both. */
+                    uncategorized?: boolean;
+                    /** @description Whose transactions to show: `joint`, or a household member's id. */
+                    attributed_to?: string;
+                    /** @description Money in (`income`, amount ≥ 0) or out (`expense`); omitted means both. */
+                    flow?: "income" | "expense";
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["TxSummary"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/transactions/{id}": {
         parameters: {
             query?: never;
@@ -5362,6 +5503,18 @@ export interface components {
             decimal_places: number;
             created_at: string;
         };
+        /**
+         * @description A calendar day's totals over the *whole* filtered set — not just the rows on this page —
+         *     so a day split across two pages still heads with its true count and net.
+         */
+        DayTotal: {
+            /** @description `YYYY-MM-DD`. */
+            date: string;
+            /** Format: int64 */
+            count: number;
+            /** Format: int64 */
+            net_minor: number;
+        };
         /** @description Bank / cash / savings / card accounts. */
         DepositoryMeta: {
             /**
@@ -5622,6 +5775,12 @@ export interface components {
             /** @description The area this source can answer for, for the UI to explain a miss with. */
             coverage: string;
         };
+        /**
+         * @description The sign-of-amount split the stat bar draws: money in, or money out. Zero counts as income,
+         *     matching the stat bar.
+         * @enum {string}
+         */
+        Flow: "income" | "expense";
         /** @description Any other asset or liability. */
         GenericMeta: {
             url?: string | null;
@@ -6932,6 +7091,8 @@ export interface components {
             url?: string | null;
             notes?: string | null;
         };
+        /** @enum {string} */
+        SortDir: "asc" | "desc";
         /**
          * @description A single day's cached closing price for a ticker (see
          *     `sure_providers::StockPriceProvider`), keyed by `(ticker, exchange, as_of)`.
@@ -7109,6 +7270,37 @@ export interface components {
             description?: string;
             /** Format: int64 */
             category_id?: number | null;
+        };
+        TxPage: {
+            items: components["schemas"]["Transaction"][];
+            /** @description Pass back as `cursor` for the next page; `null` once the list is exhausted. */
+            next_cursor?: string | null;
+            /** @description Totals for each calendar day that appears in `items`, over the whole filtered set. */
+            days: components["schemas"]["DayTotal"][];
+        };
+        /**
+         * @description The column the transaction feed is ordered by. Every order breaks ties on ascending id
+         *     (import order), so a day reads oldest-entered first whichever way the dates run.
+         * @enum {string}
+         */
+        TxSort: "date" | "description" | "category" | "amount";
+        /**
+         * @description Totals over everything a feed query matches. Amounts are summed in raw minor units across
+         *     whatever currencies match — the same deliberate approximation the stat bar has always made.
+         */
+        TxSummary: {
+            /** Format: int64 */
+            count: number;
+            /**
+             * Format: int64
+             * @description Sum of every amount `>= 0`.
+             */
+            income_minor: number;
+            /**
+             * Format: int64
+             * @description Sum of every amount `< 0` (so zero or negative).
+             */
+            expenses_minor: number;
         };
         UpdateSettings: {
             base_currency_code: string;

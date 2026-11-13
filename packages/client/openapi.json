@@ -4361,6 +4361,317 @@
         }
       }
     },
+    "/api/transactions/feed": {
+      "get": {
+        "tags": [
+          "transactions"
+        ],
+        "summary": "One page of transactions in any order, for an infinitely-scrolling list. Follow\n`next_cursor` until it is `null`; `days` carries the full-set totals of each day on the page.",
+        "parameters": [
+          {
+            "name": "cashflow_categories_only",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "cashflow_account_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "category_id",
+            "in": "query",
+            "description": "This category and every category beneath it.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_excluded_from_cashflow",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "uncategorized",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "attributed_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "flow",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "The sign-of-amount split the stat bar draws: money in, or money out. Zero counts as income,\nmatching the stat bar.",
+              "enum": [
+                "income",
+                "expense"
+              ]
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "The column to order by. Defaults to `date`. Ties always break on ascending id.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "The column the transaction feed is ordered by. Every order breaks ties on ascending id\n(import order), so a day reads oldest-entered first whichever way the dates run.",
+              "enum": [
+                "date",
+                "description",
+                "category",
+                "amount"
+              ]
+            }
+          },
+          {
+            "name": "dir",
+            "in": "query",
+            "description": "Defaults to `desc`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The previous page's `next_cursor`; omit for the first page. Only valid with the same\n`sort` and `dir` it was issued under — anything else is a 400.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per page, 1–500. Defaults to 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TxPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/transactions/summary": {
+      "get": {
+        "tags": [
+          "transactions"
+        ],
+        "summary": "Count, income and outgoings over everything the filters match — the stat bar's figures,\nwhich cover the whole set rather than the pages loaded so far.",
+        "parameters": [
+          {
+            "name": "cashflow_categories_only",
+            "in": "query",
+            "description": "Only cashflow category transactions; excludes internal transfers and account crossings.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "cashflow_account_id",
+            "in": "query",
+            "description": "Cashflow across the perimeter to/from this account, excluding its bookkeeping.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "category_id",
+            "in": "query",
+            "description": "This category and every category beneath it.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive lower bound on the transaction date (ISO-8601).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Inclusive upper bound on the transaction date (ISO-8601).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_excluded_from_cashflow",
+            "in": "query",
+            "description": "When false, transactions excluded from cashflow are excluded. Defaults to true.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive substring match on description, merchant text, the linked merchant's\nname, and notes.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "uncategorized",
+            "in": "query",
+            "description": "`true` keeps only uncategorised rows, `false` only categorised ones; omitted means both.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "attributed_to",
+            "in": "query",
+            "description": "Whose transactions to show: `joint`, or a household member's id.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "flow",
+            "in": "query",
+            "description": "Money in (`income`, amount ≥ 0) or out (`expense`); omitted means both.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "The sign-of-amount split the stat bar draws: money in, or money out. Zero counts as income,\nmatching the stat bar.",
+              "enum": [
+                "income",
+                "expense"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TxSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/transactions/{id}": {
       "get": {
         "tags": [
@@ -5819,6 +6130,29 @@
           }
         }
       },
+      "DayTotal": {
+        "type": "object",
+        "description": "A calendar day's totals over the *whole* filtered set — not just the rows on this page —\nso a day split across two pages still heads with its true count and net.",
+        "required": [
+          "date",
+          "count",
+          "net_minor"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "`YYYY-MM-DD`."
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "net_minor": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "DepositoryMeta": {
         "type": "object",
         "description": "Bank / cash / savings / card accounts.",
@@ -6403,6 +6737,14 @@
             "description": "The area this source can answer for, for the UI to explain a miss with."
           }
         }
+      },
+      "Flow": {
+        "type": "string",
+        "description": "The sign-of-amount split the stat bar draws: money in, or money out. Zero counts as income,\nmatching the stat bar.",
+        "enum": [
+          "income",
+          "expense"
+        ]
       },
       "GenericMeta": {
         "type": "object",
@@ -9231,6 +9573,13 @@
           }
         }
       },
+      "SortDir": {
+        "type": "string",
+        "enum": [
+          "asc",
+          "desc"
+        ]
+      },
       "StockPrice": {
         "type": "object",
         "description": "A single day's cached closing price for a ticker (see\n`sure_providers::StockPriceProvider`), keyed by `(ticker, exchange, as_of)`.",
@@ -9542,6 +9891,70 @@
               "null"
             ],
             "format": "int64"
+          }
+        }
+      },
+      "TxPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "days"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Transaction"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` for the next page; `null` once the list is exhausted."
+          },
+          "days": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DayTotal"
+            },
+            "description": "Totals for each calendar day that appears in `items`, over the whole filtered set."
+          }
+        }
+      },
+      "TxSort": {
+        "type": "string",
+        "description": "The column the transaction feed is ordered by. Every order breaks ties on ascending id\n(import order), so a day reads oldest-entered first whichever way the dates run.",
+        "enum": [
+          "date",
+          "description",
+          "category",
+          "amount"
+        ]
+      },
+      "TxSummary": {
+        "type": "object",
+        "description": "Totals over everything a feed query matches. Amounts are summed in raw minor units across\nwhatever currencies match — the same deliberate approximation the stat bar has always made.",
+        "required": [
+          "count",
+          "income_minor",
+          "expenses_minor"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "income_minor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sum of every amount `>= 0`."
+          },
+          "expenses_minor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sum of every amount `< 0` (so zero or negative)."
           }
         }
       },

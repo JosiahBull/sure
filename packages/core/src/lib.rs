@@ -60,8 +60,9 @@ pub use rules::{
 pub use settings::{McpMode, Settings, UpdateSettings};
 pub use stock_prices::StockPrice;
 pub use transactions::{
-    BulkDelete, BulkResult, BulkUpdate, LinkRequest, SaveTransaction, Transaction, TransferRequest,
-    TxQuery,
+    BulkDelete, BulkResult, BulkUpdate, CursorKey, DayTotal, FEED_DEFAULT_LIMIT, FEED_MAX_LIMIT,
+    Flow, LinkRequest, SaveTransaction, SortDir, Transaction, TransferRequest, TxCursor,
+    TxFeedQuery, TxPage, TxQuery, TxSort, TxSummary,
 };
 pub use types::{
     Account, AccountClass, AccountKind, AccountMetadata, AreaUnit, BrokerageMeta, CryptoMeta,

@@ -10,8 +10,9 @@ use crate::extract::Json;
 use crate::state::AppState;
 
 pub use sure_core::{
-    BulkDelete, BulkResult, BulkUpdate, LinkRequest, Ownership, SaveTransaction, Transaction,
-    TransferRequest, TxQuery,
+    BulkDelete, BulkResult, BulkUpdate, DayTotal, FEED_DEFAULT_LIMIT, FEED_MAX_LIMIT, Flow,
+    LinkRequest, Ownership, SaveTransaction, SortDir, Transaction, TransferRequest, TxCursor,
+    TxFeedQuery, TxPage, TxQuery, TxSort, TxSummary,
 };
 
 /// The wire form of [`TxQuery`]. A twin, for one field: `attributed_to` arrives as text
@@ -65,14 +66,174 @@ impl TryFrom<TxQueryParams> for TxQuery {
             include_excluded_from_cashflow: q.include_excluded_from_cashflow,
             search: q.search,
             uncategorized: q.uncategorized,
+            flow: None,
+            include_subcategories: false,
             limit: q.limit,
             offset: q.offset,
         })
     }
 }
 
+/// The filters `/transactions/feed` and `/transactions/summary` share. Unlike the plain list,
+/// `category_id` here takes in the category's whole subtree — the way the reports roll spend
+/// up, and so the SPA's category filter agrees with them.
+#[derive(Debug, Deserialize, IntoParams, Default)]
+#[into_params(parameter_in = Query)]
+pub struct TxFilterParams {
+    /// Only cashflow category transactions; excludes internal transfers and account crossings.
+    pub cashflow_categories_only: Option<bool>,
+    /// Cashflow across the perimeter to/from this account, excluding its bookkeeping.
+    pub cashflow_account_id: Option<i64>,
+    pub account_id: Option<i64>,
+    /// This category and every category beneath it.
+    pub category_id: Option<i64>,
+    /// Inclusive lower bound on the transaction date (ISO-8601).
+    pub from: Option<String>,
+    /// Inclusive upper bound on the transaction date (ISO-8601).
+    pub to: Option<String>,
+    /// When false, transactions excluded from cashflow are excluded. Defaults to true.
+    pub include_excluded_from_cashflow: Option<bool>,
+    /// Case-insensitive substring match on description, merchant text, the linked merchant's
+    /// name, and notes.
+    pub search: Option<String>,
+    /// `true` keeps only uncategorised rows, `false` only categorised ones; omitted means both.
+    pub uncategorized: Option<bool>,
+    /// Whose transactions to show: `joint`, or a household member's id.
+    pub attributed_to: Option<String>,
+    /// Money in (`income`, amount ≥ 0) or out (`expense`); omitted means both.
+    #[param(inline)]
+    pub flow: Option<Flow>,
+}
+
+/// `/transactions/feed`'s query: [`TxFilterParams`] plus an order and a place in it. Flat
+/// rather than `#[serde(flatten)]`ed, because flattening routes a query string through serde's
+/// untyped buffer, where `?account_id=3` is the string `"3"` and no longer parses as a number.
+#[derive(Debug, Deserialize, IntoParams, Default)]
+#[into_params(parameter_in = Query)]
+pub struct TxFeedParams {
+    pub cashflow_categories_only: Option<bool>,
+    pub cashflow_account_id: Option<i64>,
+    pub account_id: Option<i64>,
+    /// This category and every category beneath it.
+    pub category_id: Option<i64>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub include_excluded_from_cashflow: Option<bool>,
+    pub search: Option<String>,
+    pub uncategorized: Option<bool>,
+    pub attributed_to: Option<String>,
+    #[param(inline)]
+    pub flow: Option<Flow>,
+    /// The column to order by. Defaults to `date`. Ties always break on ascending id.
+    #[param(inline)]
+    pub sort: Option<TxSort>,
+    /// Defaults to `desc`.
+    #[param(inline)]
+    pub dir: Option<SortDir>,
+    /// The previous page's `next_cursor`; omit for the first page. Only valid with the same
+    /// `sort` and `dir` it was issued under — anything else is a 400.
+    pub cursor: Option<String>,
+    /// Rows per page, 1–500. Defaults to 100.
+    pub limit: Option<i64>,
+}
+
+impl TxFeedParams {
+    fn split(
+        self,
+    ) -> (
+        TxFilterParams,
+        Option<TxSort>,
+        Option<SortDir>,
+        Option<String>,
+        Option<i64>,
+    ) {
+        let TxFeedParams {
+            cashflow_categories_only,
+            cashflow_account_id,
+            account_id,
+            category_id,
+            from,
+            to,
+            include_excluded_from_cashflow,
+            search,
+            uncategorized,
+            attributed_to,
+            flow,
+            sort,
+            dir,
+            cursor,
+            limit,
+        } = self;
+        let filter = TxFilterParams {
+            cashflow_categories_only,
+            cashflow_account_id,
+            account_id,
+            category_id,
+            from,
+            to,
+            include_excluded_from_cashflow,
+            search,
+            uncategorized,
+            attributed_to,
+            flow,
+        };
+        (filter, sort, dir, cursor, limit)
+    }
+}
+
+/// Parse the shared filters into a [`TxQuery`], resolving the two cashflow modes into the id set
+/// the reports would count — the same resolution the plain list does.
+async fn resolve_filter(st: &AppState, f: TxFilterParams) -> AppResult<TxQuery> {
+    let cashflow = f.cashflow_categories_only.unwrap_or(false) || f.cashflow_account_id.is_some();
+    let mut query = TxQuery {
+        ids: None,
+        attributed_to: f
+            .attributed_to
+            .as_deref()
+            .map(str::parse::<Ownership>)
+            .transpose()
+            .map_err(AppError::bad_request)?,
+        account_id: f.account_id,
+        category_id: f.category_id,
+        from: f.from,
+        to: f.to,
+        include_excluded_from_cashflow: f.include_excluded_from_cashflow,
+        search: f.search,
+        uncategorized: f.uncategorized,
+        flow: f.flow,
+        include_subcategories: true,
+        limit: None,
+        offset: None,
+    };
+    if cashflow {
+        query.ids = Some(cashflow_ids(st, &query, f.cashflow_account_id).await?);
+    }
+    Ok(query)
+}
+
+async fn cashflow_ids(
+    st: &AppState,
+    query: &TxQuery,
+    counterparty: Option<i64>,
+) -> AppResult<Vec<i64>> {
+    st.reports
+        .cashflow_transaction_ids(
+            &sure_app::reports::ReportQuery {
+                from: query.from.clone(),
+                to: query.to.clone(),
+                include_excluded_from_cashflow: query.include_excluded_from_cashflow,
+                attributed_to: query.attributed_to,
+                ..Default::default()
+            },
+            counterparty,
+        )
+        .await
+}
+
 // OTEL span names for this module's handlers.
 const TRANSACTIONS_LIST: &str = "transactions.list";
+const TRANSACTIONS_FEED: &str = "transactions.feed";
+const TRANSACTIONS_SUMMARY: &str = "transactions.summary";
 const TRANSACTIONS_GET: &str = "transactions.get";
 const TRANSACTIONS_CREATE: &str = "transactions.create";
 const TRANSACTIONS_UPDATE: &str = "transactions.update";
@@ -102,22 +263,71 @@ pub async fn list(
     let counterparty = q.cashflow_account_id;
     let mut query: TxQuery = q.try_into()?;
     if cashflow {
-        query.ids = Some(
-            st.reports
-                .cashflow_transaction_ids(
-                    &sure_app::reports::ReportQuery {
-                        from: query.from.clone(),
-                        to: query.to.clone(),
-                        include_excluded_from_cashflow: query.include_excluded_from_cashflow,
-                        attributed_to: query.attributed_to,
-                        ..Default::default()
-                    },
-                    counterparty,
-                )
-                .await?,
-        );
+        query.ids = Some(cashflow_ids(&st, &query, counterparty).await?);
     }
     Ok(Json(st.transactions.list(query).await?))
+}
+
+/// One page of transactions in any order, for an infinitely-scrolling list. Follow
+/// `next_cursor` until it is `null`; `days` carries the full-set totals of each day on the page.
+#[utoipa::path(get, path = "/api/transactions/feed", tag = "transactions", params(TxFeedParams),
+    responses((status = 200, body = TxPage), (status = 400, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = TRANSACTIONS_FEED,
+    level = "debug",
+    skip_all,
+    fields(query = ?q),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn feed(
+    State(st): State<AppState>,
+    Query(q): Query<TxFeedParams>,
+) -> AppResult<Json<TxPage>> {
+    let (filter, sort, dir, cursor, limit) = q.split();
+    let sort = sort.unwrap_or_default();
+    let dir = dir.unwrap_or_default();
+    let cursor = cursor
+        .as_deref()
+        .map(|raw| TxCursor::decode(raw, sort, dir))
+        .transpose()?;
+    let limit = limit.unwrap_or(FEED_DEFAULT_LIMIT);
+    if !(1..=FEED_MAX_LIMIT).contains(&limit) {
+        return Err(AppError::bad_request(format!(
+            "limit must be between 1 and {FEED_MAX_LIMIT}"
+        )));
+    }
+    let filter = resolve_filter(&st, filter).await?;
+    Ok(Json(
+        st.transactions
+            .feed(TxFeedQuery {
+                filter,
+                sort,
+                dir,
+                cursor,
+                limit,
+            })
+            .await?,
+    ))
+}
+
+/// Count, income and outgoings over everything the filters match — the stat bar's figures,
+/// which cover the whole set rather than the pages loaded so far.
+#[utoipa::path(get, path = "/api/transactions/summary", tag = "transactions", params(TxFilterParams),
+    responses((status = 200, body = TxSummary), (status = 400, body = crate::error::ErrorBody)))]
+#[tracing::instrument(
+    name = TRANSACTIONS_SUMMARY,
+    level = "debug",
+    skip_all,
+    fields(query = ?q),
+    ret(level = tracing::Level::DEBUG),
+    err(level = tracing::Level::WARN),
+)]
+pub async fn summary(
+    State(st): State<AppState>,
+    Query(q): Query<TxFilterParams>,
+) -> AppResult<Json<TxSummary>> {
+    let filter = resolve_filter(&st, q).await?;
+    Ok(Json(st.transactions.summary(filter).await?))
 }
 
 /// Fetch one transaction.
@@ -312,6 +522,8 @@ pub async fn create_transfer(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/transactions", get(list).post(create))
+        .route("/transactions/feed", get(feed))
+        .route("/transactions/summary", get(summary))
         .route("/transactions/bulk-update", post(bulk_update))
         .route("/transactions/bulk-delete", post(bulk_delete))
         .route(

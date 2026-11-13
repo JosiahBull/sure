@@ -2,10 +2,10 @@
   import { onMount, untrack } from "svelte";
   import { api, formatMoney, formatDate, formatDateLong, type Schemas } from "../lib/api";
   import { categoryColor } from "../lib/color";
-  import { categoryOptions, depthOf, qualifiedName, rootIdOf, subtreeIds } from "../lib/categories";
+  import { categoryOptions, depthOf, qualifiedName, rootIdOf } from "../lib/categories";
   import { resolvedTheme } from "../lib/theme.svelte";
   import { ICONS } from "../lib/icons";
-  import { RANGES, activeRange, filters, type RangeKey } from "../lib/state.svelte";
+  import { RANGES, activeRange, filters, periodLinkParams, type RangeKey } from "../lib/state.svelte";
   import ValuationPanel from "../lib/ValuationPanel.svelte";
   import BrokeragePanel from "../lib/BrokeragePanel.svelte";
   import EquityPanel from "../lib/EquityPanel.svelte";
@@ -29,7 +29,6 @@
   //   ?account=<id>   filter to a single account (from the accounts list)
   //   ?type=<kind>    filter to income or outgoings (from the overview pies/Sankey)
   //   ?range=<key>    apply a preset time range
-  //   ?at=<id>        resume the scroll position around a transaction (written as the list scrolls)
   const params = new URLSearchParams(router.path.split("?")[1] ?? "");
   if (params.get("cashflow") === "1" || params.has("cashflow_account")) filters.includeExcludedFromCashflow = params.get("include_excluded") === "1";
   const num = (v: string | null) => (v && Number.isFinite(Number(v)) ? Number(v) : null);
@@ -43,13 +42,11 @@
   const paramAccount = num(params.get("account"));
   const paramType = params.get("type");
   const paramRange = params.get("range");
-  const paramAnchor = num(params.get("at"));
-  // Shareable links preserve the date window, page, search text and tab.
+  // Shareable links preserve the date window, search text, sort and filters.
   const isDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
   const paramStart = params.get("start");
   const paramEnd = params.get("end");
   const paramSearch = params.get("q") ?? "";
-  const paramPage = num(params.get("page"));
 
   type Tx = Schemas["Transaction"];
   type Val = Schemas["Valuation"];
@@ -57,7 +54,23 @@
   type Category = Schemas["Category"];
   type Merchant = Schemas["Merchant"];
 
+  // The rows loaded so far, already filtered and ordered by the server (`/api/transactions/feed`):
+  // every filter, the search and the sort run there, so this is only ever a prefix of the full
+  // list and grows as it scrolls.
   let txns = $state<Tx[]>([]);
+  // The order `txns` is actually in — the last one the server answered, which trails `sortKey` /
+  // `sortDir` for the length of a round trip. Everything that depends on the rows' order reads
+  // this: grouping by day the moment Date is chosen, over rows still in category order, splits
+  // one day into several groups (and duplicates their keys).
+  let shown = $state<{ sort: "date" | "description" | "category" | "amount"; dir: "asc" | "desc" }>({ sort: "date", dir: "desc" });
+  // Where the next page starts; null once the list is exhausted.
+  let nextCursor = $state<string | null>(null);
+  let loadingMore = $state(false);
+  // Each day's count and net over the *whole* filtered set — the server's, because a day the
+  // loaded prefix only partly covers would otherwise head with a partial total.
+  let dayTotals = $state<Map<string, { count: number; net: number }>>(new Map());
+  // The stat bar's figures, over the whole filtered set rather than what has loaded.
+  let summary = $state<{ count: number; income: number; expenses: number }>({ count: 0, income: 0, expenses: 0 });
   let valuations = $state<Val[]>([]);
   // Every source by default. Filtering to `manual` made an account whose value is *only* ever
   // synced — a loan the lender reports a balance for and nothing else — render an empty page,
@@ -86,6 +99,15 @@
   let categoryId = $state<CategoryFilter>(paramCategory ?? "");
   let typeFilter = $state<TypeFilter>(isTypeFilter(paramType) ? paramType : "");
   let search = $state(paramSearch);
+  // What the server is asked to match: `search` once typing pauses, so each keystroke is not
+  // its own round trip.
+  let searchQuery = $state(paramSearch.trim());
+  $effect(() => {
+    const next = search.trim();
+    if (next === untrack(() => searchQuery)) return;
+    const t = setTimeout(() => (searchQuery = next), 250);
+    return () => clearTimeout(t);
+  });
 
   // Every column label in the header bar is a sort control. The default — date, newest first —
   // is the reference's grouped view; any other key or direction renders the flat list instead
@@ -212,115 +234,28 @@
     return account ? { ownership: account, inherited: true } : null;
   }
   const currencyOf = $derived(new Map(accounts.map((a) => [a.id, a.currency_code])));
-  const categoryName = $derived(new Map(categories.map((c) => [c.id, c.name])));
   const merchantName = $derived(new Map(merchants.map((m) => [m.id, m.name])));
-
-  function sortValue(t: Tx, key: SortKey) {
-    switch (key) {
-      case "date":
-        // Date-only, matching both the server's `date(t.posted_at)` ordering and the day-group
-        // key below. `posted_at` is a bare `YYYY-MM-DD` for a hand-entered row but a full
-        // RFC-3339 datetime for an imported one, so comparing the raw strings would sort every
-        // manual entry ahead of every import within the same day and defeat the id tiebreak.
-        return t.posted_at.slice(0, 10);
-      case "description":
-        // The name the row actually shows (merchant-preferred, same expression as `row`'s
-        // `title`) — sorting a column by a value it isn't displaying just reads as broken.
-        return (t.description || txName(t) || "").toLowerCase();
-      case "category":
-        // Uncategorised sorts as "", clustering those rows at one end rather than scattering
-        // them under whatever letter the word "Uncategorised" happens to land on.
-        return (categoryName.get(t.category_id ?? -1) ?? "").toLowerCase();
-      case "amount":
-        // Signed, so descending reads biggest-income-first and ascending biggest-expense-first.
-        // Across currencies this compares raw minor units — the same deliberate approximation
-        // the stat bar and day totals below make, and for the same reason.
-        return t.amount_minor;
-    }
-  }
-
-  // The selected category plus all its descendants. The reports roll spend up the tree, so
-  // filtering by a parent must include its children's transactions to agree with them. Null
-  // for both of the states that name no category — "" and "none" — which `sortedFiltered`
-  // tells apart itself.
-  const categorySubtree = $derived(
-    categoryId === "" || categoryId === "none" ? null : subtreeIds(categories, categoryId),
-  );
-
-  const sortedFiltered = $derived.by(() => {
-    const filtered = txns.filter((t) => {
-      if (categoryId === "none") {
-        if (t.category_id != null) return false;
-      } else if (categorySubtree && !(t.category_id != null && categorySubtree.has(t.category_id)))
-        return false;
-      // Income/outgoings is the same sign-of-amount split the stat bar below uses — not a
-      // separate server-side concept, just a client-side view over the same rows.
-      if (typeFilter === "income" && t.amount_minor < 0) return false;
-      if (typeFilter === "expense" && t.amount_minor >= 0) return false;
-      if (search && !`${t.description} ${t.merchant ?? ""}`.toLowerCase().includes(search.toLowerCase()))
-        return false;
-      return true;
-    });
-    const dir = sortDir === "asc" ? 1 : -1;
-    return filtered.sort((a, b) => {
-      const va = sortValue(a, sortKey);
-      const vb = sortValue(b, sortKey);
-      if (va < vb) return -dir;
-      if (va > vb) return dir;
-      // Stable within a day: ascending id (import order), matching the reference's intra-day
-      // ordering so grouped days read oldest-entered first.
-      return a.id - b.id;
-    });
-  });
 
   // The reference's date-grouped, stat-headed layout only reads correctly while the list is
   // in its natural newest-first order; any other sort falls back to the flat list, where each
   // row carries its own date in the sub-line instead. Clicking a column header from the grouped
   // view re-sorts (switching to that flat list); clicking Date returns here — so the grouped
   // view is never a dead end, and no sort column is ever unreachable.
-  const grouped = $derived(sortKey === "date" && sortDir === "desc");
+  const grouped = $derived(shown.sort === "date" && shown.dir === "desc");
 
   const catById = $derived(new Map(categories.map((c) => [c.id, c])));
   const txName = (t: Tx) => merchantName.get(t.merchant_id ?? -1) ?? t.merchant ?? t.description ?? "";
 
-  // Header stats + per-day summaries are derived from the current filtered set (the same set
-  // the "{n} transactions" footer counts), entirely client-side. Amounts can span currencies;
-  // the stat/day totals are shown in a single representative currency (the filtered account's,
-  // else the first row's) — a deliberate approximation, not a converted total.
+  // Amounts can span currencies; the stat/day totals are shown in a single representative
+  // currency (the filtered account's, else the first row's) — a deliberate approximation, not a
+  // converted total.
   const statCurrency = $derived(
-    accountId !== "" ? (currencyOf.get(accountId) ?? "NZD") : (sortedFiltered[0]?.currency_code ?? "NZD"),
+    accountId !== "" ? (currencyOf.get(accountId) ?? "NZD") : (txns[0]?.currency_code ?? "NZD"),
   );
-  const stats = $derived.by(() => {
-    let income = 0;
-    let expenses = 0;
-    for (const t of sortedFiltered) {
-      if (t.amount_minor >= 0) income += t.amount_minor;
-      else expenses += t.amount_minor;
-    }
-    return { count: sortedFiltered.length, income, expenses };
-  });
-  // Calendar-day → { count, net } over the whole filtered set, so a day heading always shows
-  // that day's full totals even when virtualisation has only mounted part of the day.
-  const dayGroups = $derived.by(() => {
-    const m = new Map<string, { count: number; net: number }>();
-    for (const t of sortedFiltered) {
-      const k = t.posted_at.slice(0, 10);
-      const g = m.get(k);
-      if (g) {
-        g.count++;
-        g.net += t.amount_minor;
-      } else m.set(k, { count: 1, net: t.amount_minor });
-    }
-    return m;
-  });
 
-  // Fixed-size pagination over the filtered and sorted history.
-  const PAGE_SIZE = 1000;
-  let page = $state(paramPage && paramPage > 0 ? paramPage : 1); // 1-indexed
-  // A valuation is a *level*, not a movement, so it deliberately never reaches `sortedFiltered`
-  // — which every sum on this page (`stats`, `dayGroups`, `statCurrency`) derives from. Merging
-  // only at the pagination boundary keeps those correct by construction rather than by
-  // remembering a guard at each one.
+  // A valuation is a *level*, not a movement, so it is never part of `txns` — which the day
+  // totals and the stat bar describe. Merging only at render time keeps those correct by
+  // construction rather than by remembering a guard at each one.
   type HistoryRow =
     | { kind: "tx"; key: string; date: string; tx: Tx }
     | { kind: "val"; key: string; date: string; val: Val };
@@ -331,8 +266,17 @@
     return valuations.filter((v) => (!from || v.as_of >= from) && (!to || v.as_of <= to));
   });
 
+  // A valuation is placed among the loaded rows only once the list has reached its date: while
+  // older pages are still to come, one dated before the last loaded row would otherwise sit at
+  // the bottom, ahead of the transactions that belong above it.
+  const loadedValuations = $derived.by(() => {
+    const last = txns[txns.length - 1]?.posted_at.slice(0, 10);
+    if (nextCursor === null || !last) return visibleValuations;
+    return visibleValuations.filter((v) => (shown.dir === "desc" ? v.as_of >= last : v.as_of <= last));
+  });
+
   const historyRows = $derived.by<HistoryRow[]>(() => {
-    const txRows: HistoryRow[] = sortedFiltered.map((t) => ({
+    const txRows: HistoryRow[] = txns.map((t) => ({
       kind: "tx",
       key: `tx-${t.id}`,
       date: t.posted_at.slice(0, 10),
@@ -340,14 +284,14 @@
     }));
     // Only under a date sort: a valuation has no description, category or amount, so it has no
     // position in an ordering over those columns.
-    if (sortKey !== "date" || visibleValuations.length === 0) return txRows;
-    const valRows: HistoryRow[] = visibleValuations.map((v) => ({
+    if (shown.sort !== "date" || loadedValuations.length === 0) return txRows;
+    const valRows: HistoryRow[] = loadedValuations.map((v) => ({
       kind: "val",
       key: `val-${v.id}`,
       date: v.as_of,
       val: v,
     }));
-    const dir = sortDir === "asc" ? 1 : -1;
+    const dir = shown.dir === "asc" ? 1 : -1;
     return [...txRows, ...valRows].sort((a, b) => {
       if (a.date !== b.date) return a.date < b.date ? -dir : dir;
       // Within a day: the movements, then the level they landed at.
@@ -356,62 +300,42 @@
     });
   });
 
-  const pageCount = $derived(Math.max(1, Math.ceil(historyRows.length / PAGE_SIZE)));
-  const paged = $derived(historyRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE));
   // The reference nests each day as its own two-tier card (a subtle outer wrapper holding a
-  // brighter inner card of rows) — bucket the current page's rows into contiguous same-day runs
-  // to render that. Only meaningful when `grouped` (paged is already date-desc, so same-day rows
-  // are always contiguous); otherwise rows render flat with no day wrapper.
+  // brighter inner card of rows) — bucket the loaded rows into contiguous same-day runs to
+  // render that. Only meaningful when `grouped` (the rows are already date-desc, so same-day
+  // rows are always contiguous); otherwise rows render flat with no day wrapper.
   const renderGroups = $derived.by(() => {
     const out: { dateKey: string; rows: HistoryRow[] }[] = [];
-    for (const r of paged) {
+    for (const r of historyRows) {
       const last = out[out.length - 1];
       if (last && last.dateKey === r.date) last.rows.push(r);
       else out.push({ dateKey: r.date, rows: [r] });
     }
     return out;
   });
-  // Condensed page-number list — first, last, current ±1, with "…" gaps — same shape as the
-  // reference's "1 2 3 4 5 … 757".
-  const pageNumbers = $derived.by(() => {
-    const nums = new Set([1, pageCount, page - 1, page, page + 1]);
-    const sorted = [...nums].filter((n) => n >= 1 && n <= pageCount).sort((a, b) => a - b);
-    const out: (number | "…")[] = [];
-    let prev = 0;
-    for (const n of sorted) {
-      if (prev && n - prev > 1) out.push("…");
-      out.push(n);
-      prev = n;
-    }
-    return out;
-  });
-
-  // Reflect the whole filter/paging state into the hash query so the URL is a shareable link
-  // (the reference keeps its filters — categories, date window and page — in the URL for
-  // exactly this reason). Kept in sync on every relevant change below.
+  // Reflect the whole filter state into the hash query so the URL is a shareable link (the
+  // reference keeps its filters and date window in the URL for exactly this reason). Kept in
+  // sync on every relevant change below.
   function syncUrl() {
     const p = new URLSearchParams();
+    // A deep-linked row stays named, first, as the link that opened the page had it — so a
+    // refresh finds and highlights it again.
+    if (highlightId != null) p.set("tx", String(highlightId));
     if (cashflowOnly) p.set("cashflow", "1");
     if (filters.includeExcludedFromCashflow) p.set("include_excluded", "1");
     if (cashflowAccountId !== "") p.set("cashflow_account", String(cashflowAccountId));
     if (categoryId !== "") p.set("category", String(categoryId));
     if (accountId !== "") p.set("account", String(accountId));
     if (typeFilter) p.set("type", typeFilter);
-    if (filters.custom) {
-      p.set("start", filters.custom.from);
-      p.set("end", filters.custom.to);
-    }
+    // The whole period, as the shell writes it (`syncPeriodWithUrl`) — this rewrite replaces the
+    // query outright, so leaving out `range` would erase the shell's.
+    for (const [k, v] of Object.entries(periodLinkParams())) p.set(k, v);
     if (search.trim()) p.set("q", search.trim());
     // Only the non-default half of the sort is worth carrying: `sort` when it isn't date, and
     // `dir` when it isn't that column's own default — so the plain newest-first view still
     // produces a clean URL, and `?sort=amount` alone means "amount, the useful way round".
     if (sortKey !== "date") p.set("sort", sortKey);
     if (sortDir !== DEFAULT_DIR[sortKey]) p.set("dir", sortDir);
-    if (page > 1) p.set("page", String(page));
-    // Still a transaction id: `?at=` is a shared-link contract, and the rules audit log
-    // deep-links `?tx=` into the same resolution.
-    const anchorTx = paged.find((r) => r.kind === "tx")?.tx.id;
-    if (anchorTx != null) p.set("at", String(anchorTx));
     const base = router.path.split("?")[0];
     const qs = p.toString();
     history.replaceState(null, "", `#${base}${qs ? "?" + qs : ""}`);
@@ -438,7 +362,6 @@
       cashflowAccountId = num(query.get("cashflow_account")) ?? "";
       if (fromUrl === accountId) return;
       accountId = fromUrl;
-      page = 1;
       // The same widening a fresh deep-link does, so switching accounts shows what opening
       // that account's URL directly would have: an account's history is usually older than
       // whatever window happened to be selected.
@@ -449,41 +372,18 @@
     });
   });
 
-  // Resolve the initial page (from a highlight deep-link or a resumed `?at=`) once the data
-  // it refers to has loaded — lands on whichever page contains that transaction.
-  let didInitPage = false;
+  // Keep the shareable URL in step with every filter.
   $effect(() => {
-    if (didInitPage || historyRows.length === 0) return;
-    didInitPage = true;
-    const initial = highlightId ?? paramAnchor;
-    if (initial != null) {
-      // Pagination is over the merged list now, so the index has to come from it.
-      const idx = historyRows.findIndex((r) => r.kind === "tx" && r.tx.id === initial);
-      if (idx >= 0) page = Math.floor(idx / PAGE_SIZE) + 1;
-    }
-    page = Math.min(page, pageCount);
-  });
-  // Persist the current page's leading transaction to `?at=` so a refresh resumes on the same
-  // page. Guarded on didInitPage so this doesn't clobber a still-pending deep-link resolution.
-  $effect(() => {
-    // Depend on the full filter/paging surface so the shareable URL tracks every change.
-    page;
     void [categoryId, accountId, cashflowOnly, cashflowAccountId, typeFilter, filters.includeExcludedFromCashflow, filters.custom?.from, filters.custom?.to, search, sortKey, sortDir];
-    if (didInitPage) syncUrl();
+    syncUrl();
   });
 
-  // Filters or sorting changing what's in the list makes the current page meaningless —
-  // jump back to page 1. (A reload with the same filters, e.g. after saving a row, is not a
-  // change here, so the current page survives it.)
+  // A change to what the list shows clears the selection, which could otherwise act on rows the
+  // user can no longer see. (A same-filter reload, e.g. after a save, isn't a change.)
   let prevFilterSig: string | null = null;
   $effect(() => {
-    const sig = `${accountId}|${cashflowOnly}|${cashflowAccountId}|${categoryId}|${typeFilter}|${search}|${filters.includeExcludedFromCashflow}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}`;
-    if (prevFilterSig != null && sig !== prevFilterSig) {
-      // The visible set changed, so a lingering selection could act on rows the user can
-      // no longer see — clear it. (A same-filter reload, e.g. after a save, isn't a change.)
-      if (selected.size > 0) clearSelection();
-      page = 1;
-    }
+    const sig = `${accountId}|${cashflowOnly}|${cashflowAccountId}|${categoryId}|${typeFilter}|${searchQuery}|${filters.includeExcludedFromCashflow}|${filters.range}|${filters.custom?.from}|${filters.custom?.to}|${sortKey}|${sortDir}`;
+    if (prevFilterSig != null && sig !== prevFilterSig && untrack(() => selected.size > 0)) clearSelection();
     prevFilterSig = sig;
   });
 
@@ -504,6 +404,37 @@
     ro.observe(el);
     measure(el.getBoundingClientRect().width);
     return () => ro.disconnect();
+  });
+
+  // ---- Searching on a phone -------------------------------------------------------------
+  // While the dock's search field has focus, the screen is the list and the field: the tab bar
+  // and the dock's other buttons step aside, and the field sits directly on the keyboard.
+  //
+  // The keyboard is why this needs script. It shrinks the *visual* viewport, but a fixed element
+  // is placed against the *layout* viewport, which iOS leaves full height — so a dock anchored to
+  // the bottom ends up behind the keyboard, and the tab bar (anchored by `dvh`) gets carried up
+  // above it. `visualViewport` is the one measure of what is actually visible; its bottom edge,
+  // in layout-viewport coordinates, is published as `--vv-bottom` for the dock to sit on.
+  let searchFocused = $state(false);
+  const searchingOnPhone = $derived(searchFocused && compact);
+  $effect(() => {
+    if (!searchingOnPhone) return;
+    const root = document.documentElement;
+    root.classList.add("phone-searching");
+    const vv = window.visualViewport;
+    const place = () => {
+      const bottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+      root.style.setProperty("--vv-bottom", `${bottom}px`);
+    };
+    place();
+    vv?.addEventListener("resize", place);
+    vv?.addEventListener("scroll", place);
+    return () => {
+      root.classList.remove("phone-searching");
+      root.style.removeProperty("--vv-bottom");
+      vv?.removeEventListener("resize", place);
+      vv?.removeEventListener("scroll", place);
+    };
   });
 
   // What the phone layout opens instead of a popover, a menu and a row of buttons: each is a
@@ -549,7 +480,7 @@
     detailOpen = false;
     detailId = null;
     selected = new Set([...selected].filter((id) => id !== t.id));
-    await loadTx();
+    await loadTx({ keep: true });
   }
   function endSelecting() {
     selecting = false;
@@ -684,33 +615,120 @@
     valuations = data ?? [];
   }
 
-  async function loadTx() {
-    loading = true;
-    error = null;
+  // Rows per request. Big enough that a phone screen never sees the end of a page, small enough
+  // that the first one is quick on a long history.
+  const PAGE_SIZE = 100;
+
+  /** The filters, search and sort as the feed and summary endpoints take them. */
+  function feedFilters(): Record<string, unknown> {
     const { from, to } = activeRange();
-    const query: Record<string, unknown> = { from, to, include_excluded_from_cashflow: filters.includeExcludedFromCashflow, limit: 2000 };
+    const query: Record<string, unknown> = { from, to, include_excluded_from_cashflow: filters.includeExcludedFromCashflow };
     if (cashflowOnly && cashflowAccountId === "") query.cashflow_categories_only = true;
     if (cashflowAccountId !== "") query.cashflow_account_id = cashflowAccountId;
     if (accountId !== "") query.account_id = accountId;
-    // Category is filtered client-side (subtree-aware) in `sortedFiltered`, not on the server.
-    const { data, error: e } = await api.GET("/api/transactions", { params: { query } });
-    txns = data ?? [];
-    if (e) error = "Failed to load transactions.";
-    loading = false;
+    // The server takes in the category's whole subtree, as the reports roll it up.
+    if (categoryId === "none") query.uncategorized = true;
+    else if (categoryId !== "") query.category_id = categoryId;
+    if (typeFilter) query.flow = typeFilter;
+    if (searchQuery) query.search = searchQuery;
+    return query;
+  }
+
+  function mergeDays(days: Schemas["DayTotal"][], into: Map<string, { count: number; net: number }>) {
+    for (const d of days) into.set(d.date, { count: d.count, net: d.net_minor });
+    return into;
+  }
+
+  // Only the newest request may write: a slow reply for "Pa" must not land over the one for
+  // "Pak". Bumped by every reload; a load that finds it moved on discards what it fetched.
+  let generation = 0;
+  let inflight: AbortController | null = null;
+
+  /**
+   * Load the list from the top. After an edit (`keep`), as many rows as were already loaded, so
+   * saving a row a few hundred down neither collapses the list nor loses the reader's place.
+   */
+  async function loadTx({ keep = false }: { keep?: boolean } = {}) {
+    inflight?.abort();
+    const ctrl = new AbortController();
+    inflight = ctrl;
+    const gen = ++generation;
+    const want = keep ? Math.max(PAGE_SIZE, untrack(() => txns.length)) : PAGE_SIZE;
+    const filter = untrack(feedFilters);
+    const order = { sort: untrack(() => sortKey), dir: untrack(() => sortDir) };
+    loading = true;
+    error = null;
+    // Settled either way here, so an abort while the pages are loading is not also an unhandled
+    // rejection from this request.
+    const summaryReq = api
+      .GET("/api/transactions/summary", { params: { query: filter }, signal: ctrl.signal })
+      .catch(() => ({ data: undefined }));
+    const rows: Tx[] = [];
+    const days = new Map<string, { count: number; net: number }>();
+    let cursor: string | null = null;
+    let failed = false;
+    try {
+      do {
+        const { data, error: e }: { data?: Schemas["TxPage"]; error?: unknown } = await api.GET("/api/transactions/feed", {
+          params: { query: { ...filter, ...order, limit: Math.min(500, want - rows.length), ...(cursor ? { cursor } : {}) } },
+          signal: ctrl.signal,
+        });
+        if (e || !data) {
+          failed = true;
+          break;
+        }
+        rows.push(...data.items);
+        mergeDays(data.days, days);
+        cursor = data.next_cursor ?? null;
+      } while (cursor && rows.length < want);
+      const { data: sum } = await summaryReq;
+      if (gen !== generation) return;
+      txns = rows;
+      shown = order;
+      dayTotals = days;
+      nextCursor = failed ? null : cursor;
+      if (sum) summary = { count: sum.count, income: sum.income_minor, expenses: sum.expenses_minor };
+      if (failed) error = "Failed to load transactions.";
+    } catch (err) {
+      // An abort is a newer load taking over, not a failure.
+      if (ctrl.signal.aborted) return;
+      throw err;
+    } finally {
+      if (gen === generation) loading = false;
+    }
+  }
+
+  /** Append the next page. A no-op while one is already on its way or the list is exhausted. */
+  async function loadMore() {
+    const cursor = nextCursor;
+    if (!cursor || loadingMore || loading) return;
+    const gen = generation;
+    loadingMore = true;
+    const { data, error: e } = await api.GET("/api/transactions/feed", {
+      params: { query: { ...feedFilters(), ...shown, limit: PAGE_SIZE, cursor } },
+      signal: inflight?.signal,
+    }).catch(() => ({ data: undefined, error: true }));
+    loadingMore = false;
+    if (gen !== generation) return;
+    if (e || !data) {
+      error = "Failed to load more transactions.";
+      nextCursor = null;
+      return;
+    }
+    const seen = new Set(txns.map((t) => t.id));
+    txns = [...txns, ...data.items.filter((t) => !seen.has(t.id))];
+    dayTotals = mergeDays(data.days, new Map(dayTotals));
+    nextCursor = data.next_cursor ?? null;
   }
 
   onMount(async () => {
     await Promise.all([loadRefs(), ensurePeopleLoaded()]);
   });
   $effect(() => {
-    // Category is filtered client-side, so it isn't a reload trigger.
-    accountId;
-    cashflowOnly;
-    cashflowAccountId;
-    filters.includeExcludedFromCashflow;
-    filters.range;
-    filters.custom;
-    loadTx();
+    // Everything the server filters or orders by.
+    void [accountId, cashflowOnly, cashflowAccountId, categoryId, typeFilter, searchQuery, sortKey, sortDir];
+    void [filters.includeExcludedFromCashflow, filters.range, filters.custom];
+    untrack(() => loadTx());
   });
   // Separate from `loadTx`: valuations are not date-filtered server-side (there are few once
   // `source=manual` applies), so `visibleValuations` windows them client-side and only the
@@ -721,11 +739,39 @@
     loadValuations();
   });
 
-  // Once the page containing a `?tx=` deep-link has rendered, flash-scroll it into view. A
-  // resumed `?at=` needs no scrolling — it already landed on the right page, near the top.
-  let didScroll = false;
+  // Infinite scroll: a marker under the last row, watched against the viewport with a screen's
+  // worth of margin so the next page is usually in before the reader reaches the end. Whether it
+  // is in range is state rather than a one-shot callback, because an observer only fires on a
+  // *change* — a page too short to push the marker back out of range would otherwise stall.
+  let sentinelEl = $state<HTMLElement | null>(null);
+  let sentinelNear = $state(false);
   $effect(() => {
-    void paged.length; // re-run once the target page's rows are rendered
+    const el = sentinelEl;
+    if (!el) return;
+    const io = new IntersectionObserver(([entry]) => (sentinelNear = entry.isIntersecting), {
+      rootMargin: "0px 0px 1200px 0px",
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  });
+
+  // A `?tx=` deep link names a row that may be far down the list: keep paging until it has
+  // loaded, then flash-scroll it into view. Bounded, so a link to a row the filters exclude
+  // stops after a few thousand rows instead of walking the whole history.
+  const HUNT_MAX_PAGES = 20;
+  let huntPages = 0;
+  let didScroll = $state(false);
+  const hunting = $derived(
+    highlightId != null && !didScroll && !loading && !txns.some((t) => t.id === highlightId) && huntPages < HUNT_MAX_PAGES,
+  );
+  $effect(() => {
+    if (!nextCursor || loadingMore || loading) return;
+    if (!(sentinelNear || hunting)) return;
+    if (hunting) huntPages++;
+    untrack(() => loadMore());
+  });
+  $effect(() => {
+    void historyRows.length; // re-run once the target row has rendered
     if (highlightId == null || didScroll) return;
     const el = document.getElementById(`tx-${highlightId}`);
     if (!el) return;
@@ -793,7 +839,7 @@
         ...patch,
       },
     });
-    loadTx();
+    loadTx({ keep: true });
   }
 
   const setCategory = (t: Tx, cat: number | "") =>
@@ -806,16 +852,14 @@
   // ---- Bulk selection & actions ----
   // Selected transaction ids. Reassigned (never mutated in place) on every change so
   // Svelte's reactivity picks it up — a plain Set isn't deeply reactive. Selection is by
-  // id, so it survives scrolling/virtualisation and a post-save reload, and it spans the
-  // whole filtered list rather than just the rendered window — which is what "select all"
-  // has to mean here (only ~60 rows are ever mounted at once).
+  // id, so it survives scrolling and a post-save reload.
   let selected = $state<Set<number>>(new Set());
   let bulkBusy = $state(false);
   let confirmingDelete = $state(false);
 
-  const allSelected = $derived(
-    sortedFiltered.length > 0 && sortedFiltered.every((t) => selected.has(t.id)),
-  );
+  // "All" is every *loaded* row: the rest of the list has not been fetched, so it has no ids to
+  // select. Scrolling further and selecting again takes in the newly loaded rows.
+  const allSelected = $derived(txns.length > 0 && txns.every((t) => selected.has(t.id)));
   const someSelected = $derived(selected.size > 0 && !allSelected);
 
   function toggleOne(id: number, on: boolean) {
@@ -825,7 +869,7 @@
     selected = next;
   }
   function toggleAll() {
-    selected = allSelected ? new Set() : new Set(sortedFiltered.map((t) => t.id));
+    selected = allSelected ? new Set() : new Set(txns.map((t) => t.id));
   }
   function clearSelection() {
     selected = new Set();
@@ -843,7 +887,7 @@
       return;
     }
     clearSelection();
-    await loadTx();
+    await loadTx({ keep: true });
   }
 
   const bulkPatch = (patch: Partial<Schemas["BulkUpdate"]>) =>
@@ -1063,7 +1107,7 @@
 {#if compact && !selecting}
   <!-- Search, Filter and New float at the bottom, over the tab bar's edge: the thumb's end of the
        screen, where the controls used most are reachable one-handed. -->
-  <div class="dock">
+  <div class="dock" class:searching={searchingOnPhone}>
     <div class="search-box grow">
       <Icon name="search" size={18} />
       <input
@@ -1073,8 +1117,16 @@
         placeholder="Search"
         aria-label="Search transactions"
         bind:value={search}
+        onfocus={() => (searchFocused = true)}
+        onblur={() => (searchFocused = false)}
+        onkeydown={(e) => {
+          // The keyboard's Search key: the results are already showing, so it puts the
+          // keyboard away to read them.
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
       />
     </div>
+    {#if !searchingOnPhone}
     <button
       type="button"
       class="tb-btn"
@@ -1097,6 +1149,7 @@
     >
       <Icon name="plus" size={22} />
     </button>
+    {/if}
   </div>
 {/if}
 
@@ -1105,15 +1158,15 @@
     <div class="statbar">
       <div class="stat">
         <span class="label">Total transactions</span>
-        <span class="value tabular">{stats.count}</span>
+        <span class="value tabular">{summary.count}</span>
       </div>
       <div class="stat">
         <span class="label">Income</span>
-        <span class="value tabular">{formatMoney(stats.income, statCurrency)}</span>
+        <span class="value tabular">{formatMoney(summary.income, statCurrency)}</span>
       </div>
       <div class="stat">
         <span class="label">Expenses</span>
-        <span class="value tabular">{formatMoney(Math.abs(stats.expenses), statCurrency)}</span>
+        <span class="value tabular">{formatMoney(Math.abs(summary.expenses), statCurrency)}</span>
       </div>
     </div>
   </section>
@@ -1193,7 +1246,7 @@
   {#if loading && txns.length === 0}
     <div class="row" style="justify-content:center;padding:30px"><span class="spinner"></span></div>
   {:else if historyRows.length === 0}
-    <!-- `historyRows`, not `sortedFiltered`: an account can have no transactions and still have
+    <!-- `historyRows`, not `txns`: an account can have no transactions and still have
          a history worth showing. A property or a loan whose balance is only ever recorded as a
          valuation would otherwise say "No transactions." over the top of its own history. -->
     <div class="empty">Nothing to show.</div>
@@ -1231,7 +1284,7 @@
     <div class="tx-list" class:grouped>
       {#if grouped}
         {#each renderGroups as g (g.dateKey)}
-          {@const day = dayGroups.get(g.dateKey)}
+          {@const day = dayTotals.get(g.dateKey)}
           {@const txRows = g.rows.flatMap((r) => (r.kind === "tx" ? [r.tx] : []))}
           <div class="day-group">
             <div class="day-head">
@@ -1273,7 +1326,7 @@
           </div>
         {/each}
       {:else}
-        {#each paged as r (r.key)}
+        {#each historyRows as r (r.key)}
           {#if r.kind === "tx"}{@render row(r.tx)}{:else}{@render valuationRow(r.val)}{/if}
         {/each}
       {/if}
@@ -1503,20 +1556,9 @@
       </SwipeRow>
     {/snippet}
 
-    <div class="pagination row spread wrap">
-      <nav class="pager" aria-label="Pagination">
-        <button class="pager-nav" disabled={page <= 1} onclick={() => (page = page - 1)} aria-label="Previous page">‹</button>
-        <div class="pager-pill">
-          {#each pageNumbers as n}
-            {#if n === "…"}
-              <span class="pager-ellipsis">…</span>
-            {:else}
-              <button class="pager-num" class:active={n === page} onclick={() => (page = n)}>{n}</button>
-            {/if}
-          {/each}
-        </div>
-        <button class="pager-nav" disabled={page >= pageCount} onclick={() => (page = page + 1)} aria-label="Next page">›</button>
-      </nav>
+    <!-- Infinite scroll's trigger: see `sentinelNear`. -->
+    <div class="list-end" bind:this={sentinelEl}>
+      {#if loadingMore}<span class="spinner" aria-label="Loading more transactions"></span>{/if}
     </div>
   {/if}
 </section>
@@ -1880,65 +1922,12 @@
     }
   }
 
-  /* ---- Pagination --------------------------------------------------------------- */
-  .pagination {
-    margin-top: 14px;
-    padding-top: 14px;
-    border-top: 1px solid var(--border);
-  }
-  .pager {
+  /* ---- Infinite scroll ----------------------------------------------------------- */
+  .list-end {
     display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  /* Plain icon buttons (not bordered boxes) for prev/next, matching the reference. */
-  .pager-nav {
-    all: unset;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    padding: 6px 8px;
-    font-size: 15px;
-    color: var(--text-muted);
-  }
-  .pager-nav:hover:not(:disabled) {
-    color: var(--text);
-  }
-  .pager-nav:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-  /* Page numbers live together in one inset pill; the active page is its own raised,
-     bordered sub-pill — a segmented control, not individually-boxed buttons. */
-  .pager-pill {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    padding: 4px;
-    border-radius: var(--r);
-    background: var(--surface-2);
-  }
-  .pager-num {
-    all: unset;
-    cursor: pointer;
-    padding: 5px 9px;
-    border-radius: var(--r-sm);
-    font-size: 13px;
-    font-weight: 550;
-    color: var(--text-muted);
-  }
-  .pager-num:hover {
-    color: var(--text);
-  }
-  .pager-num.active {
-    background: var(--surface);
-    border: 1px solid var(--border-strong);
-    box-shadow: var(--shadow);
-    color: var(--text);
-  }
-  .pager-ellipsis {
-    padding: 0 9px;
-    color: var(--text-faint);
+    justify-content: center;
+    min-height: 1px;
+    padding: 12px 0;
   }
 
   /* ---- Search box + filter chips ---------------------------------------------- */
@@ -2260,6 +2249,13 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  /* Searching: on the keyboard's top edge (see `searchingOnPhone`), with the tab bar gone.
+     `top` + `translateY(-100%)` puts the dock's bottom edge on that line whatever its height. */
+  .dock.searching {
+    top: calc(var(--vv-bottom, 100dvh) - 8px);
+    bottom: auto;
+    transform: translateY(-100%);
   }
   .dock .search-box {
     flex: 1 1 0;

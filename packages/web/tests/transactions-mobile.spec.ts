@@ -189,3 +189,70 @@ test.describe("in a very narrow window", () => {
     expect(bar!.height, "the top bar wrapped").toBeLessThan(72);
   });
 });
+
+/**
+ * No pager: the list loads a page at a time as it is scrolled, until it holds every row the
+ * stat figures count. The demo data is a little over one page (the SPA asks for 100 at a time),
+ * so reaching the end means at least one page was fetched by scrolling alone.
+ */
+test("the list keeps loading as it scrolls, with no pager", async ({ page }) => {
+  // The figure the page itself was given for its filters, so it is the count it should reach.
+  const summaryResponse = page.waitForResponse((r) => r.url().includes("/api/transactions/summary"));
+  await goto(page, "/transactions?range=all");
+  const summary = await (await summaryResponse).json();
+  await expect(page.locator(".tx-row").first()).toBeVisible();
+  await expect(page.locator(".pagination, .pager")).toHaveCount(0);
+  expect(summary.count, "the demo data no longer spans more than one page").toBeGreaterThan(100);
+  expect(await page.locator(".tx-row").count()).toBeLessThanOrEqual(100);
+
+  await expect(async () => {
+    await page.mouse.wheel(0, 20_000);
+    expect(await page.locator(".tx-row").count()).toBe(summary.count);
+  }).toPass({ timeout: 10_000 });
+});
+
+/**
+ * Searching on a phone is the field and the results. iOS's keyboard shrinks the visual viewport
+ * and leaves the layout viewport alone, which carried the tab bar up over the list and left the
+ * dock behind the keyboard. Chromium has no on-screen keyboard to raise, so `visualViewport` is
+ * replaced with one reporting what a 300px keyboard leaves visible.
+ */
+test("searching hides the tab bar and sits the field on the keyboard", async ({ page }) => {
+  await page.addInitScript(() => {
+    // Literal sizes: `innerHeight` is not settled this early in a mobile context.
+    const fake = Object.assign(new EventTarget(), {
+      height: 874 - 300,
+      width: 402,
+      offsetTop: 0,
+      offsetLeft: 0,
+      pageTop: 0,
+      pageLeft: 0,
+      scale: 1,
+    });
+    Object.defineProperty(window, "visualViewport", { get: () => fake });
+  });
+  await goto(page, "/transactions");
+  const dock = page.locator(".dock");
+  const box = dock.getByRole("searchbox");
+  await box.click();
+  await box.fill("pak");
+
+  await expect(page.locator(".rail")).toBeHidden();
+  await expect(dock.getByRole("button", { name: "Filter", exact: true })).toHaveCount(0);
+  await expect(dock.getByRole("button", { name: "New transaction" })).toHaveCount(0);
+  const keyboardTop = 874 - 300;
+  const d = (await dock.boundingBox())!;
+  expect(Math.abs(d.y + d.height - (keyboardTop - 8)), "the dock is not on the keyboard").toBeLessThan(2);
+
+  // The server's search, not a filter over what had loaded — once the typing pause has passed.
+  await expect(async () => {
+    const names = await page.locator(".tx-row .tx-name").allTextContents();
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) expect(name.toLowerCase()).toContain("pak");
+  }).toPass({ timeout: 5_000 });
+
+  // The keyboard's Search key puts it away, and the screen comes back.
+  await box.press("Enter");
+  await expect(page.locator(".rail")).toBeVisible();
+  await expect(dock.getByRole("button", { name: "Filter", exact: true })).toBeVisible();
+});

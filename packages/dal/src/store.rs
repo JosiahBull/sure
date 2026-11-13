@@ -26,7 +26,8 @@ use sure_core::{
     Rule, RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory,
     SaveCron, SaveExercise, SaveGrant, SaveHoldingLot, SaveMark, SaveMerchant, SavePerson,
     SaveProvider, SaveRule, SaveTransaction, Settings, StockPrice, SyncOutcome, Transaction,
-    TransferRequest, TxQuery, UpdateSettings, Valuation, ValuationQuery, VestingStatus,
+    TransferRequest, TxFeedQuery, TxPage, TxQuery, TxSummary, UpdateSettings, Valuation,
+    ValuationQuery, VestingStatus,
 };
 
 use crate::Db;
@@ -835,6 +836,14 @@ impl TransferRepo for SqliteStore {
 impl TransactionRepo for SqliteStore {
     async fn list(&self, q: TxQuery) -> AppResult<Vec<Transaction>> {
         crate::transactions::list(&self.db, q).await
+    }
+
+    async fn feed(&self, q: TxFeedQuery) -> AppResult<TxPage> {
+        crate::transactions::feed(&self.db, q).await
+    }
+
+    async fn summary(&self, q: TxQuery) -> AppResult<TxSummary> {
+        crate::transactions::summary(&self.db, q).await
     }
 
     async fn get(&self, id: i64) -> AppResult<Transaction> {

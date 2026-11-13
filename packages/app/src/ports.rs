@@ -24,8 +24,8 @@ use sure_core::{
     Ownership, Person, Provider, ProviderAccount, ProviderKind, ProviderSync, Rule,
     RuleApplicationDetail, RuleRun, RuleRunKind, RunResult, SaveAccount, SaveCategory, SaveCron,
     SaveExercise, SaveGrant, SaveHoldingLot, SaveMerchant, SavePerson, SaveProvider, SaveRule,
-    SaveTransaction, Settings, StockPrice, SyncOutcome, Transaction, TransferRequest, TxQuery,
-    UpdateSettings, Valuation, ValuationQuery, VestingStatus,
+    SaveTransaction, Settings, StockPrice, SyncOutcome, Transaction, TransferRequest, TxFeedQuery,
+    TxPage, TxQuery, TxSummary, UpdateSettings, Valuation, ValuationQuery, VestingStatus,
 };
 pub use sure_core::{EquityEvent, EquityMark, RebuildResult, SaveMark};
 
@@ -1112,6 +1112,10 @@ pub trait TransferRepo: Send + Sync {
 #[async_trait]
 pub trait TransactionRepo: Send + Sync {
     async fn list(&self, q: TxQuery) -> AppResult<Vec<Transaction>>;
+    /// One keyset-paged page of the list in any of the SPA's orders, with full-set day totals.
+    async fn feed(&self, q: TxFeedQuery) -> AppResult<TxPage>;
+    /// Count, income and outgoings over everything `q` matches.
+    async fn summary(&self, q: TxQuery) -> AppResult<TxSummary>;
     async fn get(&self, id: i64) -> AppResult<Transaction>;
     async fn create(&self, input: SaveTransaction) -> AppResult<Transaction>;
     async fn update(&self, id: i64, input: SaveTransaction) -> AppResult<Transaction>;
