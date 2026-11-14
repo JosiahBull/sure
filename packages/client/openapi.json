@@ -2110,26 +2110,6 @@
         }
       }
     },
-    "/api/debug/request": {
-      "get": {
-        "tags": [
-          "meta"
-        ],
-        "summary": "What this process saw of this request: the HTTP version, the addresses it carried and the\nkind of network each belongs to, the whitelisted proxy headers, and the server's clock and\nversion. Never stored.",
-        "responses": {
-          "200": {
-            "description": "The request as the server saw it",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RequestEcho"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/equity-exercises/{id}": {
       "delete": {
         "tags": [
@@ -5448,16 +5428,6 @@
         ],
         "description": "Typed configuration for an account. The variant (`profile`) is determined by the\naccount's `kind`; see [`AccountMetadata::profile_for`]."
       },
-      "AddressSource": {
-        "type": "string",
-        "description": "Where an address in [`RequestEcho::addresses`] was read from.",
-        "enum": [
-          "cf_connecting_ip",
-          "x_forwarded_for",
-          "x_real_ip",
-          "peer"
-        ]
-      },
       "AreaUnit": {
         "type": "string",
         "description": "The unit a property's floor/land area is recorded in.",
@@ -6348,23 +6318,6 @@
             "format": "int64"
           },
           "currency_code": {
-            "type": "string"
-          }
-        }
-      },
-      "EchoedHeader": {
-        "type": "object",
-        "description": "One echoed request header.",
-        "required": [
-          "name",
-          "value"
-        ],
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "Lower-case, as HTTP/2 sends it."
-          },
-          "value": {
             "type": "string"
           }
         }
@@ -7728,16 +7681,6 @@
           }
         }
       },
-      "NetworkClass": {
-        "type": "string",
-        "description": "Which kind of network an address belongs to. This is the in-app evidence of the path a\nrequest took: a tailnet address means it came over Tailscale, a private one means the LAN.",
-        "enum": [
-          "loopback",
-          "tailscale",
-          "lan",
-          "public"
-        ]
-      },
       "NewCurrency": {
         "type": "object",
         "required": [
@@ -7787,26 +7730,6 @@
               "string",
               "null"
             ]
-          }
-        }
-      },
-      "ObservedAddress": {
-        "type": "object",
-        "description": "One address the request carried, and the kind of network it belongs to.",
-        "required": [
-          "source",
-          "ip",
-          "network"
-        ],
-        "properties": {
-          "source": {
-            "$ref": "#/components/schemas/AddressSource"
-          },
-          "ip": {
-            "type": "string"
-          },
-          "network": {
-            "$ref": "#/components/schemas/NetworkClass"
           }
         }
       },
@@ -8422,62 +8345,6 @@
           "fortnightly",
           "monthly"
         ]
-      },
-      "RequestEcho": {
-        "type": "object",
-        "description": "What this process saw of the request that asked for it.",
-        "required": [
-          "http_version",
-          "addresses",
-          "headers",
-          "server_time",
-          "server_time_ms",
-          "version"
-        ],
-        "properties": {
-          "http_version": {
-            "type": "string",
-            "description": "The protocol of the connection that reached this process, as hyper names it\n(`HTTP/1.1`, `HTTP/2.0`). Behind a reverse proxy, that is the proxy's connection."
-          },
-          "client": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/ObservedAddress",
-                "description": "The requester, as far as this process can tell: the first of [`Self::addresses`]."
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "addresses": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ObservedAddress"
-            },
-            "description": "Every address the request carried, in the order the rate limiter believes them when\n`TRUST_PROXY_HEADERS` is on: `CF-Connecting-IP`, each `X-Forwarded-For` hop from the\nleft, `X-Real-IP`, then the TCP peer. A value that is not an IP address is left out\nhere and still appears among the headers."
-          },
-          "headers": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/EchoedHeader"
-            },
-            "description": "The whitelisted request headers, in a fixed order."
-          },
-          "server_time": {
-            "type": "string",
-            "description": "This process's clock when it answered, RFC 3339 in UTC to the millisecond."
-          },
-          "server_time_ms": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The same instant in milliseconds since the Unix epoch, for working out clock skew."
-          },
-          "version": {
-            "type": "string",
-            "description": "This build's version."
-          }
-        }
       },
       "Rule": {
         "type": "object",
