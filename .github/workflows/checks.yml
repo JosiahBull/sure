@@ -171,7 +171,7 @@ jobs:
   #     (`package-manager-cache`, default true), but v6 narrowed that to `packageManager`
   #     fields naming *npm* — ours names pnpm, so nothing is cached unless this input says so.
   # pnpm/action-setup needs no `with:`: it reads the version from the root package.json
-  # `packageManager` field (pnpm@11.20.0), which is also the single place to bump it.
+  # `packageManager` field, which is also the single place to bump it.
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest

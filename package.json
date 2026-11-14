@@ -3,8 +3,8 @@
   "version": "0.9.0",
   "private": true,
   "description": "Sure — a fast, local financial tracker (Rust + Axum + SQLite backend, Svelte SPA frontend).",
-  "//packageManager": "Held on pnpm 11.x. pnpm 12 writes pnpm-lock.yaml as two YAML documents (a `packageManagerDependencies` document, then the dependency graph). GitHub's dependency graph reads only the first document, so it sees zero dependencies and Dependabot alerts stop meaning anything. That is dependabot/dependabot-core#15904, still open on 2026-10-30, when 12.16.1 was tried here and produced exactly that lockfile. CI (pnpm/action-setup 6.1) and corepack would both run 12 fine. Move to 12 once #15904 is fixed.",
-  "packageManager": "pnpm@11.28.9",
+  "//packageManager": "pnpm 12 writes pnpm-lock.yaml as two YAML documents (a `packageManagerDependencies` document, then the dependency graph). Until dependabot/dependabot-core#15904, GitHub's dependency graph read only the first and saw zero dependencies, which held this on 11.x. #15904 was closed as completed on 2026-11-03; the move to 12.18.0 on 2026-11-14 is checked by the dependency graph on main still listing the npm packages (486 on 11.x), via `gh api repos/{owner}/{repo}/dependency-graph/sbom`. If that count drops to zero, go back to 11.x.",
+  "packageManager": "pnpm@12.18.0",
   "engines": {
     "node": ">=24"
   },
