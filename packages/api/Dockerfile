@@ -31,7 +31,7 @@
 # the build downloads the right compiler rather than using the wrong one.
 
 # ---- Build the SPA (arch-independent → build once, native) --------------------------
-FROM --platform=$BUILDPLATFORM node:24.22.2-trixie-slim AS web
+FROM --platform=$BUILDPLATFORM node:24.22.3-trixie-slim AS web
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 WORKDIR /build
 RUN corepack enable
