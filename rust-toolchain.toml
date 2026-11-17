@@ -5,6 +5,6 @@
 # ecosystem in .github/dependabot.yml), and that bump is a PR that runs every gate on the new
 # compiler first, new clippy lints included.
 [toolchain]
-channel = "1.99.1"
+channel = "1.100.0"
 components = ["clippy", "rustfmt"]
 profile = "minimal"
