@@ -7,8 +7,7 @@ use utoipa::ToSchema;
 #[serde(rename_all = "snake_case")]
 pub enum CategoryKind {
     Income,
-    /// Most enrichment (a category created from a provider's own classification, or a
-    /// blank new-category form) is spend-side, so this is the default.
+    /// A blank new-category form defaults to spending.
     #[default]
     Expense,
     /// Internal money movement (a wallet ↔ bank transfer, funding a trade), excluded
@@ -50,7 +49,7 @@ impl std::str::FromStr for CategoryKind {
 /// The money-flow report draws exactly this many columns per side and the category
 /// pickers qualify a name with its ancestors, so a deeper tree could be built but never
 /// fully shown. Enforced on the CRUD path only (`sure_dal::categories::validate`): the
-/// provider imports' `find_or_create` and the snapshot restore write rows directly, so a
+/// snapshot restore writes rows directly, so a
 /// deeper tree can still reach the reports and they have to roll it up rather than assume
 /// the cap holds.
 pub const MAX_CATEGORY_DEPTH: i64 = 3;

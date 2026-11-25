@@ -71,25 +71,19 @@ pub struct ProviderTransaction {
     pub description: String,
     pub merchant: Option<String>,
     /// The source's own classification for this transaction (e.g. Akahu's NZFCC
-    /// enrichment), if it has one — used to find-or-create a matching Sure category (and,
-    /// for a newly-seen merchant, its default category) instead of leaving imported
-    /// transactions uncategorized.
+    /// enrichment), if it has one — used to find an existing Sure category and suggest a
+    /// default for a newly-seen merchant. Imports never recreate removed categories.
     pub category: Option<ProviderCategory>,
 }
 
 /// A merchant category as classified by the provider's own taxonomy.
 #[derive(Debug, Clone)]
 pub struct ProviderCategory {
-    /// Specific category name (e.g. "Cafes and restaurants") — becomes a Sure category,
-    /// nested under `group` when the source has one.
+    /// Specific category name (e.g. "Cafes and restaurants"), matched under `group`.
     pub name: String,
-    /// Broader grouping (e.g. "Lifestyle"), if the source has one — becomes that
-    /// category's parent.
+    /// Broader grouping (e.g. "Lifestyle"), if the source has one.
     pub group: Option<String>,
-    /// Flow direction hint applied when the category is first created. Most enrichment
-    /// is spending, so `None` defaults to expense on the DAL side; a broker's dividend
-    /// row sets `Income`, an internal wallet ↔ bank movement sets `Transfer` so it's
-    /// excluded from spend/income reports.
+    /// The source's flow direction hint. The matched Sure category keeps its existing kind.
     pub kind: Option<CategoryKind>,
 }
 

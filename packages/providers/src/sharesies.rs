@@ -274,7 +274,7 @@ fn is_cancelled_order(reason: &str, description: &str) -> bool {
 
 fn transfer_category() -> ProviderCategory {
     ProviderCategory {
-        // "Transfer", matching what `asb.rs` emits. `find_or_create` keys on the literal name
+        // "Transfer", matching what `asb.rs` emits. Category lookup keys on the literal name
         // (`name = ?1 COLLATE NOCASE AND parent_id IS ?2`), so two adapters spelling one concept
         // differently created two transfer roots in a real database — 1,861 rows under one and 349
         // under the other, which then had to be merged by hand.
