@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE rules SET enabled=0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "711e9eb7f84c7da684528cc1ae8496a397b93fb29a144a393529c2338d4c9890"
+}

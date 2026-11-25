@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM category_mappings",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "478927c2ada364223cabeae977484ad3cd6c29d681e0f7af16dbc664b81fba20"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO category_mappings(id,source,source_group,source_name,category_id,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "1a340c4ced16c2150fd994b46d5d76f01238391c21cbd7902717198e23f17c5f"
+}

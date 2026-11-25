@@ -957,6 +957,8 @@ pub trait FxRatesRepo: Send + Sync {
 #[async_trait]
 pub trait RuleRepo: Send + Sync {
     async fn load_contexts(&self) -> AppResult<Vec<TxCtx>>;
+    /// Consume pending import-category fallbacks after the explicit rules have run.
+    async fn apply_import_categories(&self, ids: &[i64]) -> AppResult<()>;
     /// The same, narrowed to transactions that have no category yet.
     ///
     /// What the unattended pass after an import or a sync evaluates
@@ -1155,6 +1157,17 @@ pub trait TransactionRepo: Send + Sync {
 
 #[async_trait]
 pub trait CategoryRepo: Send + Sync {
+    async fn list_mappings(&self) -> AppResult<Vec<sure_core::CategoryMapping>>;
+    async fn create_mapping(
+        &self,
+        input: sure_core::SaveCategoryMapping,
+    ) -> AppResult<sure_core::CategoryMapping>;
+    async fn update_mapping(
+        &self,
+        id: i64,
+        input: sure_core::SaveCategoryMapping,
+    ) -> AppResult<sure_core::CategoryMapping>;
+
     async fn list(&self) -> AppResult<Vec<Category>>;
     async fn tree(&self) -> AppResult<Vec<CategoryNode>>;
     async fn create(&self, input: SaveCategory) -> AppResult<Category>;

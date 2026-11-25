@@ -18,6 +18,8 @@ pub struct Snapshot {
     pub currencies: Vec<CurrencyRow>,
     pub exchange_rates: Vec<ExchangeRateRow>,
     pub categories: Vec<CategoryRow>,
+    #[serde(default)]
+    pub category_mappings: Vec<sure_core::CategoryMapping>,
     pub merchants: Vec<MerchantRow>,
     /// The household. `#[serde(default)]` so a snapshot taken before people existed still
     /// imports — as an empty household, which is exactly what it had.
@@ -152,6 +154,8 @@ pub struct TransactionRow {
     pub merchant: Option<String>,
     pub notes: Option<String>,
     pub category_id: Option<i64>,
+    #[serde(default)]
+    pub pending_category_id: Option<i64>,
     #[serde(alias = "is_one_off")]
     pub exclude_from_cashflow: bool,
     pub linked_transaction_id: Option<i64>,
@@ -383,6 +387,12 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
              FROM categories ORDER BY id"#
     );
     table!(
+        "category_mappings",
+        sure_core::CategoryMapping,
+        r#"SELECT id AS "id!", source, source_group, source_name, category_id, created_at, updated_at
+             FROM category_mappings ORDER BY id"#
+    );
+    table!(
         "merchants",
         MerchantRow,
         r#"SELECT id AS "id!", name, category_id, note, created_at, updated_at
@@ -409,7 +419,7 @@ pub async fn export_bytes(db: &Db) -> AppResult<Vec<u8>> {
         "transactions",
         TransactionRow,
         r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
-                  merchant, notes, category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
+                  merchant, notes, category_id, pending_category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
                   linked_transaction_id, counterparty_account_id, provider, external_id,
                   categorized_by_rule_id,
                   merchant_id, ownership, person_id, created_at, updated_at
@@ -526,6 +536,11 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         )
         .fetch_all(db)
         .await?,
+        category_mappings: sqlx::query_as!(
+            sure_core::CategoryMapping,
+            r#"SELECT id AS "id!", source, source_group, source_name, category_id, created_at, updated_at
+                 FROM category_mappings ORDER BY id"#
+        ).fetch_all(db).await?,
         merchants: sqlx::query_as!(
             MerchantRow,
             r#"SELECT id AS "id!", name, category_id, note, created_at, updated_at
@@ -555,7 +570,7 @@ pub async fn export(db: &Db) -> AppResult<Snapshot> {
         transactions: sqlx::query_as!(
             TransactionRow,
             r#"SELECT id AS "id!", account_id, posted_at, amount_minor, currency_code,
-                      description, merchant, notes, category_id,
+                      description, merchant, notes, category_id, pending_category_id,
                       exclude_from_cashflow AS "exclude_from_cashflow!: bool", linked_transaction_id,
                       counterparty_account_id, provider,
                       external_id, categorized_by_rule_id, merchant_id, ownership, person_id,
@@ -687,6 +702,7 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         // After `accounts`, which references it.
         "DELETE FROM accounts",
         "DELETE FROM people",
+        "DELETE FROM category_mappings",
         "DELETE FROM categories",
         "DELETE FROM exchange_rates",
         "DELETE FROM currencies",
@@ -752,6 +768,12 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         )
         .execute(&mut *txn)
         .await?;
+    }
+    for m in &snap.category_mappings {
+        sqlx::query!(
+            "INSERT INTO category_mappings(id,source,source_group,source_name,category_id,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            m.id,m.source,m.source_group,m.source_name,m.category_id,m.created_at,m.updated_at
+        ).execute(&mut *txn).await?;
     }
     for m in &snap.merchants {
         sqlx::query!(
@@ -833,8 +855,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
                 (id, account_id, posted_at, amount_minor, currency_code, description, merchant,
                  notes, category_id, exclude_from_cashflow, linked_transaction_id, provider, external_id,
                  categorized_by_rule_id, merchant_id, ownership, person_id, created_at,
-                 updated_at, counterparty_account_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+                 updated_at, counterparty_account_id, pending_category_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
             t.id,
             t.account_id,
             t.posted_at,
@@ -854,7 +876,8 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
             t.person_id,
             t.created_at,
             t.updated_at,
-            t.counterparty_account_id
+            t.counterparty_account_id,
+            t.pending_category_id
         )
         .execute(&mut *txn)
         .await?;
@@ -1065,6 +1088,7 @@ pub async fn import(db: &Db, snap: Snapshot) -> AppResult<Value> {
         "counts": {
             "currencies": snap.currencies.len(),
             "categories": snap.categories.len(),
+            "category_mappings": snap.category_mappings.len(),
             "merchants": snap.merchants.len(),
             "people": snap.people.len(),
             "accounts": snap.accounts.len(),

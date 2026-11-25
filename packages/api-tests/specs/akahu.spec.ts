@@ -1292,3 +1292,37 @@ test("a mortgage whose drawdown predates the feed's window is suggested nothing"
     server.stop();
   }
 });
+
+
+test("configured mappings are fallbacks behind rules and only affect future imports", async ({ testproxy }) => {
+  const { server, api } = await configured(NO_COOLDOWN);
+  try {
+    const acc = await createAccount(api, "Everyday", "bank");
+    const provider = await akahuProvider(api, acc.id);
+    const target = (await api.POST("/api/categories", { body: { name: "Everyday groceries", kind: "expense" } })).data!;
+    const special = (await api.POST("/api/categories", { body: { name: "Special purchases", kind: "expense" } })).data!;
+    const mapping = (await api.GET("/api/category-mappings", {})).data!.find(m => m.source === "akahu" && m.source_name === "Supermarkets and grocery stores")!;
+    const body = { source: mapping.source, source_group: mapping.source_group, source_name: mapping.source_name, category_id: target.id };
+    await api.PUT("/api/category-mappings/{id}", { params: { path: { id: mapping.id } }, body });
+    await api.POST("/api/rules", { body: { name: "Specific purchase", expression: "description == 'Specific purchase'", set_category_id: special.id, priority: -100, stop_on_match: true } });
+    const first = txn({ id: "trans_mapping01", date: "2026-01-06T09:00:00.000Z", description: "Everyday purchase", amount: -10, merchant: "The Grocer" });
+    const ruled = txn({ id: "trans_mapping02", date: "2026-01-06T10:00:00.000Z", description: "Specific purchase", amount: -20, merchant: "The Grocer" });
+    await stubSync(testproxy, { items: [first, ruled], balance: account({ balance: 100 }) });
+    expect((await api.POST("/api/providers/{id}/sync", { params: { path: { id: provider.id } }, body: {} })).response.status).toBe(200);
+    const before = (await api.GET("/api/transactions", { params: { query: { account_id: acc.id } } })).data!;
+    expect(before.find(t => t.external_id === "trans_mapping01")!.category_id).toBe(target.id);
+    expect(before.find(t => t.external_id === "trans_mapping02")!.category_id).toBe(special.id);
+    await api.PUT("/api/category-mappings/{id}", { params: { path: { id: mapping.id } }, body: { ...body, category_id: null } });
+    const next = txn({ id: "trans_mapping03", date: "2026-01-07T09:00:00.000Z", description: "Everyday purchase", amount: -30, merchant: "The Grocer" });
+    await testproxy.clearStubs("akahu");
+    await stubSync(testproxy, { items: [first, ruled, next], balance: account({ balance: 70 }) });
+    const secondSync = await api.POST("/api/providers/{id}/sync", { params: { path: { id: provider.id } }, body: {} });
+    expect(secondSync.response.status).toBe(200);
+    expect(secondSync.data?.imported).toBe(1);
+    expect(secondSync.data?.skipped).toBe(2);
+    const after = (await api.GET("/api/transactions", { params: { query: { account_id: acc.id } } })).data!;
+    expect(after).toHaveLength(3);
+    expect(after.find(t => t.external_id === "trans_mapping01")!.category_id).toBe(target.id);
+    expect(after.find(t => t.external_id === "trans_mapping03")!.category_id).toBeNull();
+  } finally { server.stop(); }
+});

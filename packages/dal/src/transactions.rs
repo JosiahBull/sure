@@ -488,7 +488,7 @@ pub async fn update(db: &Db, id: i64, input: SaveTransaction) -> AppResult<Trans
               currency_code=?5, description=?6, merchant=?7, notes=?8, category_id=?9,
               exclude_from_cashflow=?10, merchant_id=?11, ownership=?12, person_id=?13,
               counterparty_account_id=?14,
-              categorized_by_rule_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              categorized_by_rule_id=NULL, pending_category_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE id=?1
            RETURNING id AS "id!", account_id, posted_at, amount_minor, currency_code, description,
                      merchant, merchant_id, notes, category_id, exclude_from_cashflow AS "exclude_from_cashflow!: bool",
@@ -574,6 +574,7 @@ pub async fn bulk_update(db: &Db, input: BulkUpdate) -> AppResult<i64> {
             // Manually reassigning the category clears the "categorised by rule" marker so a
             // later rule re-run won't clobber the manual choice — same as the single update.
             set.push("categorized_by_rule_id = NULL");
+            set.push("pending_category_id = NULL");
         }
         if let Some(mid) = merchant_id {
             set.push("merchant_id = ");
