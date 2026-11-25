@@ -493,6 +493,9 @@ fn tx_ctx(r: crate::rules::TxCtx) -> TxCtx {
 
 #[async_trait]
 impl RuleRepo for SqliteStore {
+    async fn apply_import_categories(&self, ids: &[i64]) -> AppResult<()> {
+        crate::category_mappings::apply_pending(&self.db, ids).await
+    }
     async fn load_contexts(&self) -> AppResult<Vec<TxCtx>> {
         Ok(crate::rules::load_contexts(&self.db)
             .await?
@@ -922,6 +925,23 @@ impl TransactionRepo for SqliteStore {
 
 #[async_trait]
 impl CategoryRepo for SqliteStore {
+    async fn list_mappings(&self) -> AppResult<Vec<sure_core::CategoryMapping>> {
+        crate::category_mappings::list(&self.db).await
+    }
+    async fn create_mapping(
+        &self,
+        input: sure_core::SaveCategoryMapping,
+    ) -> AppResult<sure_core::CategoryMapping> {
+        crate::category_mappings::create(&self.db, input).await
+    }
+    async fn update_mapping(
+        &self,
+        id: i64,
+        input: sure_core::SaveCategoryMapping,
+    ) -> AppResult<sure_core::CategoryMapping> {
+        crate::category_mappings::update(&self.db, id, input).await
+    }
+
     async fn list(&self) -> AppResult<Vec<Category>> {
         crate::categories::list(&self.db).await
     }

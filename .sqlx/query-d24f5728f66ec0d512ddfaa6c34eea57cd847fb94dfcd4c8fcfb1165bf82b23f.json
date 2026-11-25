@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO category_mappings (source, source_group, source_name, category_id)\n           VALUES (?1, ?2, ?3, ?4)\n           RETURNING id AS \"id!\", source, source_group, source_name, category_id AS \"category_id?\",\n                     created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "category_mappings",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "source",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "category_mappings",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "name": "source_group",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "category_mappings",
+            "name": "source_group"
+          }
+        }
+      },
+      {
+        "name": "source_name",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "category_mappings",
+            "name": "source_name"
+          }
+        }
+      },
+      {
+        "name": "category_id?",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "category_mappings",
+            "name": "category_id"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "category_mappings",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "category_mappings",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d24f5728f66ec0d512ddfaa6c34eea57cd847fb94dfcd4c8fcfb1165bf82b23f"
+}

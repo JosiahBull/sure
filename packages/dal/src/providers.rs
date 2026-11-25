@@ -10,45 +10,6 @@ pub use sure_core::{
 use crate::Db;
 
 #[tracing::instrument(level = "debug", skip_all)]
-async fn resolve_category(
-    db: &Db,
-    category_cache: &mut HashMap<(String, Option<String>), Option<i64>>,
-    group_cache: &mut HashMap<String, Option<i64>>,
-    name: &str,
-    group: Option<&str>,
-) -> AppResult<Option<i64>> {
-    let key = (name.to_string(), group.map(str::to_string));
-    if let Some(&id) = category_cache.get(&key) {
-        return Ok(id);
-    }
-    let parent_id = if let Some(group) = group {
-        let group_id = match group_cache.get(group) {
-            Some(&id) => id,
-            None => {
-                let id = crate::categories::find(db, group, None)
-                    .await?
-                    .map(|c| c.id);
-                group_cache.insert(group.to_string(), id);
-                id
-            }
-        };
-        let Some(id) = group_id else {
-            // A removed group must not turn a nested lookup into a top-level match.
-            category_cache.insert(key, None);
-            return Ok(None);
-        };
-        Some(id)
-    } else {
-        None
-    };
-    let id = crate::categories::find(db, name, parent_id)
-        .await?
-        .map(|c| c.id);
-    category_cache.insert(key, id);
-    Ok(id)
-}
-
-#[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_merchant(
     db: &Db,
     cache: &mut HashMap<String, (i64, Option<i64>)>,
@@ -375,11 +336,12 @@ struct ResolvedRow {
     currency_code: String,
     merchant_id: Option<i64>,
     category_id: Option<i64>,
+    pending_category_id: Option<i64>,
 }
 
 /// Insert fetched transactions, deduping on (provider, external_id). Reuses existing
-/// categories and finds or creates merchants from source-supplied enrichment. An existing
-/// merchant's default takes precedence over the source's category. Returns (imported, skipped).
+/// category mappings and finds or creates merchants from source-supplied enrichment. An
+/// existing merchant's default takes precedence; mapped categories wait for explicit rules. Returns (imported, skipped).
 ///
 /// Writes in chunked transactions of [`IMPORT_CHUNK_ROWS`]. Row-at-a-time autocommit — what
 /// this did before — took the database's write lock once per row, so a 100 000-row backfill
@@ -401,7 +363,7 @@ pub async fn import_transactions(
     // (the common case) doesn't re-look-up the same name on every row.
     let mut merchant_cache = HashMap::new();
     let mut category_cache = HashMap::new();
-    let mut group_cache = HashMap::new();
+    let source = provider_tag.split('#').next().unwrap_or(provider_tag);
 
     for chunk in rows.chunks(IMPORT_CHUNK_ROWS) {
         // Resolve merchants/categories *before* opening the write transaction. Find-or-create
@@ -409,26 +371,34 @@ pub async fn import_transactions(
         // open would hold the single write lock across every one of those round trips.
         let mut resolved = Vec::with_capacity(chunk.len());
         for t in chunk {
-            let category_id = match &t.category_name {
+            let pending_category_id = match &t.category_name {
                 Some(name) if !name.trim().is_empty() => {
-                    resolve_category(
-                        db,
-                        &mut category_cache,
-                        &mut group_cache,
-                        name,
-                        t.category_group.as_deref(),
-                    )
-                    .await?
+                    let key = (name.clone(), t.category_group.clone());
+                    if let Some(&id) = category_cache.get(&key) {
+                        id
+                    } else {
+                        let id = crate::category_mappings::resolve(
+                            db,
+                            source,
+                            t.category_group.as_deref(),
+                            name,
+                        )
+                        .await?;
+                        category_cache.insert(key, id);
+                        id
+                    }
                 }
                 _ => None,
             };
+            // Imported labels are fallbacks, not saved merchant preferences. New merchants
+            // have no manual default; existing user defaults still take precedence.
             let (merchant_id, category_id) = match &t.merchant {
                 Some(name) if !name.trim().is_empty() => {
                     let (id, default_category_id) =
-                        resolve_merchant(db, &mut merchant_cache, name, category_id).await?;
+                        resolve_merchant(db, &mut merchant_cache, name, None).await?;
                     (Some(id), default_category_id)
                 }
-                _ => (None, category_id),
+                _ => (None, None),
             };
             resolved.push(ResolvedRow {
                 currency_code: t
@@ -437,6 +407,11 @@ pub async fn import_transactions(
                     .unwrap_or_else(|| account_currency.to_string()),
                 merchant_id,
                 category_id,
+                pending_category_id: if category_id.is_none() {
+                    pending_category_id
+                } else {
+                    None
+                },
             });
         }
 
@@ -470,12 +445,12 @@ async fn insert_chunk(
     let mut tx = db.begin().await?;
     // The one query in this module the compile-time checker cannot see: the number of
     // `VALUES` tuples is the chunk's length, so the SQL text is only known at runtime and
-    // `sqlx::query!` needs a literal. The column list and its eleven `push_bind`s below are
+    // `sqlx::query!` needs a literal. The column list and its twelve `push_bind`s below are
     // therefore matched by hand — keep them in step.
     let mut builder = sqlx::QueryBuilder::new(
         "INSERT OR IGNORE INTO transactions
             (account_id, posted_at, amount_minor, currency_code, description, merchant,
-             merchant_id, category_id, provider, external_id, exclude_from_cashflow) ",
+             merchant_id, category_id, pending_category_id, provider, external_id, exclude_from_cashflow) ",
     );
     builder.push_values(chunk.iter().zip(resolved), |mut row, (t, r)| {
         row.push_bind(account_id)
@@ -486,6 +461,7 @@ async fn insert_chunk(
             .push_bind(t.merchant.as_deref())
             .push_bind(r.merchant_id)
             .push_bind(r.category_id)
+            .push_bind(r.pending_category_id)
             .push_bind(provider_tag)
             .push_bind(t.external_id.as_str())
             .push_bind(t.exclude_from_cashflow);
@@ -1104,6 +1080,18 @@ mod tests {
         .unwrap()
     }
 
+    async fn finish_import(db: &Db) {
+        let ids: Vec<_> = crate::rules::load_uncategorized_contexts(db)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        crate::category_mappings::apply_pending(db, &ids)
+            .await
+            .unwrap();
+    }
+
     async fn imported_row(db: &Db, external_id: &str) -> sure_core::Transaction {
         sqlx::query_as!(
             crate::transactions::TransactionRow,
@@ -1160,6 +1148,7 @@ mod tests {
         .await
         .unwrap();
 
+        finish_import(&db).await;
         let txn = imported_row(&db, "trans_1").await;
         let merchant_id = txn.merchant_id.expect("merchant should be resolved");
         let category_id = txn.category_id.expect("category should be resolved");
@@ -1181,8 +1170,8 @@ mod tests {
             .find(|m| m.id == merchant_id)
             .unwrap();
         assert_eq!(merchant.name, "The Roastery");
-        // A newly-seen merchant gets the imported category as its suggested default.
-        assert_eq!(merchant.category_id, Some(category_id));
+        // Provider mappings stay separate from manual merchant defaults.
+        assert_eq!(merchant.category_id, None);
     }
 
     #[tokio::test]
@@ -1228,6 +1217,7 @@ mod tests {
         .await
         .unwrap();
 
+        finish_import(&db).await;
         let txn = imported_row(&db, "trans_2").await;
         assert_eq!(txn.category_id, Some(existing.id));
         // No duplicate was created for the differently-cased name.
@@ -1430,6 +1420,7 @@ mod tests {
         import_transactions(&db, account.id, "NZD", "akahu#1", &[row])
             .await
             .unwrap();
+        finish_import(&db).await;
         let first = imported_row(&db, "trans_1").await;
         let category_id = first.category_id.unwrap();
         let old_group = crate::categories::list(&db)
@@ -1483,12 +1474,16 @@ mod tests {
                 .unwrap(),
             (2, 1),
         );
+        finish_import(&db).await;
         assert_eq!(
             imported_row(&db, "trans_2").await.category_id,
             Some(category_id),
             "a known merchant keeps the renamed category",
         );
-        assert_eq!(imported_row(&db, "trans_3").await.category_id, None);
+        assert_eq!(
+            imported_row(&db, "trans_3").await.category_id,
+            Some(category_id)
+        );
         assert_eq!(
             serde_json::to_value(crate::categories::list(&db).await.unwrap()).unwrap(),
             before,
@@ -1629,5 +1624,167 @@ mod tests {
         for external_id in ["trans_1", "trans_2"] {
             assert_eq!(imported_row(&db, external_id).await.category_id, None);
         }
+    }
+    #[tokio::test]
+    async fn mapping_fallbacks_run_after_rules_and_do_not_backfill_old_transactions() {
+        let db = test_db().await;
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
+        let target = crate::categories::find(&db, "Education", None)
+            .await
+            .unwrap()
+            .unwrap();
+        let rule = crate::rules::create(
+            &db,
+            serde_json::from_value(json!({
+                "name":"Specific coffee purchase", "expression":"description == 'Rule wins'",
+                "set_category_id":target.id, "priority":-100,"stop_on_match":true
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut first = enriched_row(
+            "mapping_rule",
+            "The Roastery",
+            "Cafes and restaurants",
+            "Lifestyle",
+        );
+        first.description = "Rule wins".into();
+        let mut second = enriched_row(
+            "mapping_fallback",
+            "A New Cafe",
+            "Cafes and restaurants",
+            "Lifestyle",
+        );
+        second.description = "Unmatched item".into();
+        let third = enriched_row(
+            "mapping_unknown",
+            "Unknown Shop",
+            "Unseen label",
+            "Unseen group",
+        );
+        import_transactions(&db, account.id, "NZD", "akahu#1", &[first, second, third])
+            .await
+            .unwrap();
+        let service = sure_app::rules::RuleService::new(std::sync::Arc::new(
+            crate::store::SqliteStore::new(db.clone()),
+        ));
+        service.categorize_new().await.unwrap();
+        let first = imported_row(&db, "mapping_rule").await;
+        let second = imported_row(&db, "mapping_fallback").await;
+        assert_eq!(first.category_id, Some(target.id));
+        assert_eq!(first.categorized_by_rule_id, Some(rule.id));
+        assert_ne!(second.category_id, None);
+        assert_ne!(second.category_id, Some(target.id));
+        assert_eq!(second.categorized_by_rule_id, None);
+        let mapping = crate::category_mappings::list(&db)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.source_name == "Unseen label")
+            .unwrap();
+        crate::category_mappings::update(
+            &db,
+            mapping.id,
+            sure_core::SaveCategoryMapping {
+                source: mapping.source,
+                source_group: mapping.source_group,
+                source_name: mapping.source_name,
+                category_id: Some(target.id),
+            },
+        )
+        .await
+        .unwrap();
+        // No explicit rule is needed for mapping fallback to finish an import.
+        sqlx::query!("UPDATE rules SET enabled=0")
+            .execute(&db)
+            .await
+            .unwrap();
+        let next = enriched_row(
+            "mapping_future",
+            "Unknown Shop",
+            "Unseen label",
+            "Unseen group",
+        );
+        import_transactions(&db, account.id, "NZD", "akahu#1", &[next])
+            .await
+            .unwrap();
+        service.categorize_new().await.unwrap();
+        assert_eq!(
+            imported_row(&db, "mapping_future").await.category_id,
+            Some(target.id)
+        );
+        assert_eq!(imported_row(&db, "mapping_unknown").await.category_id, None);
+        assert_eq!(
+            imported_row(&db, "mapping_fallback").await.category_id,
+            second.category_id
+        );
+        // Clearing an existing result does not cause the old import's mapping to run again.
+        crate::transactions::bulk_update(
+            &db,
+            serde_json::from_value(json!({"ids":[second.id],"category_id":null})).unwrap(),
+        )
+        .await
+        .unwrap();
+        service.categorize_new().await.unwrap();
+        assert_eq!(
+            imported_row(&db, "mapping_fallback").await.category_id,
+            None
+        );
+    }
+    #[tokio::test]
+    async fn a_concurrent_import_cannot_receive_fallbacks_before_its_rules() {
+        let db = test_db().await;
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
+        let first = enriched_row(
+            "first_batch",
+            "The Roastery",
+            "Cafes and restaurants",
+            "Lifestyle",
+        );
+        import_transactions(&db, account.id, "NZD", "akahu#1", &[first])
+            .await
+            .unwrap();
+        let considered = vec![imported_row(&db, "first_batch").await.id];
+        let second = enriched_row(
+            "second_batch",
+            "Another Cafe",
+            "Cafes and restaurants",
+            "Lifestyle",
+        );
+        import_transactions(&db, account.id, "NZD", "akahu#1", &[second])
+            .await
+            .unwrap();
+        crate::category_mappings::apply_pending(&db, &considered)
+            .await
+            .unwrap();
+        assert!(imported_row(&db, "first_batch").await.category_id.is_some());
+        assert_eq!(imported_row(&db, "second_batch").await.category_id, None);
+        let target = crate::categories::find(&db, "Education", None)
+            .await
+            .unwrap()
+            .unwrap();
+        crate::rules::create(
+            &db,
+            serde_json::from_value(json!({
+                "name":"Specific pending purchase", "expression":"description == 'Flat White'",
+                "set_category_id":target.id,"priority":-100,"stop_on_match":true
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let service = sure_app::rules::RuleService::new(std::sync::Arc::new(
+            crate::store::SqliteStore::new(db.clone()),
+        ));
+        service.categorize_new().await.unwrap();
+        assert_eq!(
+            imported_row(&db, "second_batch").await.category_id,
+            Some(target.id)
+        );
     }
 }

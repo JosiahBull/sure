@@ -73,6 +73,7 @@ use std::time::Duration;
 pub mod accounts;
 pub mod brokerage;
 pub mod categories;
+pub mod category_mappings;
 pub mod crons;
 pub mod currencies;
 pub mod equity;

@@ -1704,6 +1704,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/category-mappings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CategoryMapping"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveCategoryMapping"];
+                };
+            };
+            responses: {
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CategoryMapping"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/category-mappings/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaveCategoryMapping"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CategoryMapping"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config/export": {
         parameters: {
             query?: never;
@@ -5362,6 +5482,22 @@ export interface components {
          */
         CategoryKind: "income" | "expense" | "transfer";
         /**
+         * @description A source category translated into a user-managed category. A null destination disables
+         *     the mapping without forgetting the source label on the next import.
+         */
+        CategoryMapping: {
+            /** Format: int64 */
+            id: number;
+            /** @description An adapter or upload source key, shared across its accounts (for example `akahu`). */
+            source: string;
+            source_group: string;
+            source_name: string;
+            /** Format: int64 */
+            category_id?: number | null;
+            created_at: string;
+            updated_at: string;
+        };
+        /**
          * @description A category plus its nested children, for rendering the category tree.
          *
          *     `#[schema(no_recursion)]` is required: this type is self-referential via
@@ -6778,6 +6914,13 @@ export interface components {
             icon?: string | null;
             /** Format: int64 */
             sort_order?: number;
+        };
+        SaveCategoryMapping: {
+            source: string;
+            source_group?: string;
+            source_name: string;
+            /** Format: int64 */
+            category_id?: number | null;
         };
         SaveCron: {
             name: string;

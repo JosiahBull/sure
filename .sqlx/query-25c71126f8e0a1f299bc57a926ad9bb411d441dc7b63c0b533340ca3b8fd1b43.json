@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO category_mappings (source, source_group, source_name, category_id) VALUES (?1,?2,?3,?4) ON CONFLICT(source,source_group,source_name) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "25c71126f8e0a1f299bc57a926ad9bb411d441dc7b63c0b533340ca3b8fd1b43"
+}

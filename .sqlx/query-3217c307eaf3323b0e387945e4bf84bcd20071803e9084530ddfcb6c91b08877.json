@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT category_id FROM category_mappings WHERE source=?1 AND source_group=?2 AND source_name=?3",
+  "describe": {
+    "columns": [
+      {
+        "name": "category_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "category_mappings",
+            "name": "category_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "3217c307eaf3323b0e387945e4bf84bcd20071803e9084530ddfcb6c91b08877"
+}

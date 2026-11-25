@@ -6,6 +6,7 @@ use crate::state::AppState;
 pub mod accounts;
 pub mod brokerage;
 pub mod categories;
+pub mod category_mappings;
 pub mod crons;
 pub mod currencies;
 pub mod equity;
@@ -34,6 +35,7 @@ pub fn router(limits: &Limits) -> Router<AppState> {
         .merge(currencies::router())
         .merge(settings::router())
         .merge(categories::router())
+        .merge(category_mappings::router())
         .merge(merchants::router())
         .merge(people::router())
         .merge(accounts::router())

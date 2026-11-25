@@ -29,8 +29,8 @@ use crate::ports::{PlannedApplication, RuleRepo, TxCtx};
 /// [`RuleService::categorize_new`].
 #[async_trait]
 pub trait AutoCategorize: Send + Sync {
-    /// Apply the enabled rules to everything still uncategorised. `Ok(None)` means there was
-    /// nothing to do and nothing was written.
+    /// Apply enabled rules, then pending import-category fallbacks, to uncategorised rows.
+    /// `Ok(None)` means no rule-run audit entry was needed.
     async fn categorize_new(&self) -> AppResult<Option<RunResult>>;
 }
 
@@ -175,26 +175,26 @@ impl RuleService {
     ///   bury the audit log — the one place a person looks to see what a rule actually did —
     ///   under a standing stream of empty entries.
     ///
-    /// Returns `None` in that second case, and otherwise the persisted run, which is undoable
-    /// from the rules page like any other.
+    /// Returns the persisted rule run, if any. Import-category fallbacks finish afterwards
+    /// without creating a rule-run record.
     pub async fn categorize_new(&self) -> AppResult<Option<RunResult>> {
         let rules = self.rules.enabled_rules().await?;
-        if rules.is_empty() {
-            return Ok(None);
-        }
         let rows = self.rules.load_uncategorized_contexts().await?;
-        if rows.is_empty() {
-            return Ok(None);
-        }
         let (matched, applications) = plan_run(&rules, &rows);
-        if applications.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(
-            self.rules
-                .persist_run(None, RuleRunKind::Auto, matched, applications)
-                .await?,
-        ))
+        let run = if applications.is_empty() {
+            None
+        } else {
+            Some(
+                self.rules
+                    .persist_run(None, RuleRunKind::Auto, matched, applications)
+                    .await?,
+            )
+        };
+        // Another import can commit while rules are evaluated. Only finish fallbacks for
+        // the rows these rules actually considered, so a concurrent batch cannot skip them.
+        let ids: Vec<_> = rows.iter().map(|r| r.id).collect();
+        self.rules.apply_import_categories(&ids).await?;
+        Ok(run)
     }
 
     /// Preview which transactions an expression would match, without changing anything.
@@ -622,6 +622,9 @@ mod tests {
     }
     #[async_trait]
     impl RuleRepo for FakeRules {
+        async fn apply_import_categories(&self, _ids: &[i64]) -> AppResult<()> {
+            Ok(())
+        }
         async fn load_contexts(&self) -> AppResult<Vec<TxCtx>> {
             Ok(self.contexts.clone())
         }

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", account_id, posted_at, amount_minor, currency_code,\n                      description, merchant, notes, category_id,\n                      exclude_from_cashflow AS \"exclude_from_cashflow!: bool\", linked_transaction_id,\n                      counterparty_account_id, provider,\n                      external_id, categorized_by_rule_id, merchant_id, ownership, person_id,\n                      created_at, updated_at\n                 FROM transactions ORDER BY id",
+  "query": "UPDATE transactions SET account_id=?2, posted_at=?3, amount_minor=?4,\n              currency_code=?5, description=?6, merchant=?7, notes=?8, category_id=?9,\n              exclude_from_cashflow=?10, merchant_id=?11, ownership=?12, person_id=?13,\n              counterparty_account_id=?14,\n              categorized_by_rule_id=NULL, pending_category_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n           WHERE id=?1\n           RETURNING id AS \"id!\", account_id, posted_at, amount_minor, currency_code, description,\n                     merchant, merchant_id, notes, category_id, exclude_from_cashflow AS \"exclude_from_cashflow!: bool\",\n                     linked_transaction_id, counterparty_account_id,\n                     provider, external_id, categorized_by_rule_id,\n                     ownership, person_id, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -81,8 +81,19 @@
         }
       },
       {
-        "name": "notes",
+        "name": "merchant_id",
         "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "merchant_id"
+          }
+        }
+      },
+      {
+        "name": "notes",
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "category_id",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "exclude_from_cashflow!: bool",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -115,7 +126,7 @@
       },
       {
         "name": "linked_transaction_id",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -126,7 +137,7 @@
       },
       {
         "name": "counterparty_account_id",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -137,7 +148,7 @@
       },
       {
         "name": "provider",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -148,7 +159,7 @@
       },
       {
         "name": "external_id",
-        "ordinal": 13,
+        "ordinal": 14,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -159,23 +170,12 @@
       },
       {
         "name": "categorized_by_rule_id",
-        "ordinal": 14,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "transactions",
-            "name": "categorized_by_rule_id"
-          }
-        }
-      },
-      {
-        "name": "merchant_id",
         "ordinal": 15,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "transactions",
-            "name": "merchant_id"
+            "name": "categorized_by_rule_id"
           }
         }
       },
@@ -225,10 +225,10 @@
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 14
     },
     "nullable": [
-      false,
+      null,
       false,
       false,
       false,
@@ -237,8 +237,8 @@
       true,
       true,
       true,
-      false,
       true,
+      false,
       true,
       true,
       true,
@@ -250,5 +250,5 @@
       false
     ]
   },
-  "hash": "e84a487aa610eadbcf806dbfac15f8c336de9ea55d92f479ce443fb80fd823d5"
+  "hash": "405539507d77ace31dd96b3251cd858071c2486ae85539855cf6f4c92c98e126"
 }

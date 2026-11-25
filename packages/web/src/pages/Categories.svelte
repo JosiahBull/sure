@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import CategoryMappings from "../lib/CategoryMappings.svelte";
+  import { queryParams } from "../lib/router.svelte";
+  const showMappings = $derived(queryParams().get("view") === "mappings");
   import { api, type Schemas } from "../lib/api";
   import { categoryColor } from "../lib/color";
   import { categoryOptions, MAX_CATEGORY_DEPTH, rootIdOf, subtreeHeight, subtreeIds } from "../lib/categories";
@@ -11,6 +14,7 @@
   let tree = $state<Node[]>([]);
   let error = $state<string | null>(null);
   let loading = $state(true);
+  let loadError = $state<string | null>(null);
 
   let adding = $state(false);
   let editingId = $state<number | null>(null);
@@ -62,8 +66,10 @@
 
   async function load() {
     loading = true;
+    error = null;
+    loadError = null;
     const { data, error: e } = await api.GET("/api/categories/tree", {});
-    if (e) error = msgOf(e);
+    if (e) { error = msgOf(e); loadError = error; }
     tree = data ?? [];
     loading = false;
   }
@@ -204,10 +210,20 @@
 {/snippet}
 
 <div class="row spread wrap" style="margin-bottom:14px;gap:10px">
-  <h1 style="font-size:20px">Categories</h1>
-  <button class="btn btn-primary btn-sm" onclick={openAdd}>+ New category</button>
+  <h1 style="font-size:20px">{showMappings ? "Import mappings" : "Categories"}</h1>
+  {#if !showMappings}<button class="btn btn-primary btn-sm" onclick={openAdd}>+ New category</button>{/if}
 </div>
 
+<nav class="row wrap" aria-label="Category settings" style="gap:8px;margin-bottom:18px">
+  <a class="btn btn-sm" class:btn-primary={!showMappings} aria-current={!showMappings ? "page" : undefined} href="#/settings/categories">Categories</a>
+  <a class="btn btn-sm" class:btn-primary={showMappings} aria-current={showMappings ? "page" : undefined} href="#/settings/categories?view=mappings">Import mappings</a>
+</nav>
+
+{#if showMappings}
+  {#if loading}<div role="status">Loading categories…</div>
+  {:else if loadError}<div class="error-banner" role="alert">{loadError}<button class="btn btn-sm" onclick={load}>Try again</button></div>
+  {:else}<CategoryMappings categories={flatCategories} />{/if}
+{:else}
 {#if adding}
   {@render formCard("New category")}
 {/if}
@@ -251,6 +267,8 @@
       {/each}
     {/if}
   </section>
+{/if}
+
 {/if}
 
 <style>

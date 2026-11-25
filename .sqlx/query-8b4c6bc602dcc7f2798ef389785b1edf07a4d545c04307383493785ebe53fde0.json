@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE transactions SET category_id=COALESCE(category_id,pending_category_id),\n                  pending_category_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')\n            WHERE pending_category_id IS NOT NULL\n              AND (category_id IS NOT NULL OR id IN (SELECT value FROM json_each(?1)))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "8b4c6bc602dcc7f2798ef389785b1edf07a4d545c04307383493785ebe53fde0"
+}

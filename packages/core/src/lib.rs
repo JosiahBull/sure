@@ -9,6 +9,7 @@
 
 pub mod brokerage;
 pub mod categories;
+pub mod category_mappings;
 pub mod crons;
 pub mod currencies;
 pub mod equity;
@@ -31,6 +32,7 @@ pub use brokerage::{
     HoldingLot, LotKind, Position, SaveHoldingLot, WalletBalance,
 };
 pub use categories::{Category, CategoryKind, CategoryNode, MAX_CATEGORY_DEPTH, SaveCategory};
+pub use category_mappings::{CategoryMapping, SaveCategoryMapping};
 pub use crons::{Cron, CronKind, CronRun, CronRunResult, SaveCron};
 pub use currencies::{Currency, NewCurrency};
 pub use equity::{
