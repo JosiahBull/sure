@@ -12,32 +12,38 @@ use crate::Db;
 #[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_category(
     db: &Db,
-    category_cache: &mut HashMap<(String, Option<String>), i64>,
-    group_cache: &mut HashMap<String, i64>,
+    category_cache: &mut HashMap<(String, Option<String>), Option<i64>>,
+    group_cache: &mut HashMap<String, Option<i64>>,
     name: &str,
     group: Option<&str>,
-    kind: CategoryKind,
-) -> AppResult<i64> {
+) -> AppResult<Option<i64>> {
     let key = (name.to_string(), group.map(str::to_string));
     if let Some(&id) = category_cache.get(&key) {
         return Ok(id);
     }
-    let parent_id = match group {
-        Some(g) => Some(match group_cache.get(g) {
+    let parent_id = if let Some(group) = group {
+        let group_id = match group_cache.get(group) {
             Some(&id) => id,
             None => {
-                let id = crate::categories::find_or_create(db, g, None, kind)
+                let id = crate::categories::find(db, group, None)
                     .await?
-                    .id;
-                group_cache.insert(g.to_string(), id);
+                    .map(|c| c.id);
+                group_cache.insert(group.to_string(), id);
                 id
             }
-        }),
-        None => None,
+        };
+        let Some(id) = group_id else {
+            // A removed group must not turn a nested lookup into a top-level match.
+            category_cache.insert(key, None);
+            return Ok(None);
+        };
+        Some(id)
+    } else {
+        None
     };
-    let id = crate::categories::find_or_create(db, name, parent_id, kind)
+    let id = crate::categories::find(db, name, parent_id)
         .await?
-        .id;
+        .map(|c| c.id);
     category_cache.insert(key, id);
     Ok(id)
 }
@@ -45,19 +51,18 @@ async fn resolve_category(
 #[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_merchant(
     db: &Db,
-    cache: &mut HashMap<String, i64>,
+    cache: &mut HashMap<String, (i64, Option<i64>)>,
     name: &str,
     default_category_id: Option<i64>,
-) -> AppResult<i64> {
+) -> AppResult<(i64, Option<i64>)> {
     let key = name.to_lowercase();
     if let Some(&id) = cache.get(&key) {
         return Ok(id);
     }
-    let id = crate::merchants::find_or_create(db, name, default_category_id)
-        .await?
-        .id;
-    cache.insert(key, id);
-    Ok(id)
+    let merchant = crate::merchants::find_or_create(db, name, default_category_id).await?;
+    let resolved = (merchant.id, merchant.category_id);
+    cache.insert(key, resolved);
+    Ok(resolved)
 }
 
 #[derive(Debug)]
@@ -103,17 +108,16 @@ pub struct ImportRow {
     pub description: String,
     pub merchant: Option<String>,
     /// The source's own classification for this transaction (e.g. Akahu's NZFCC
-    /// category), if any — resolved to a Sure category (find-or-create) rather than
-    /// left uncategorized. `category_group` becomes that category's parent.
+    /// category), if any — matched to an existing Sure category under `category_group`.
+    /// Unknown or removed categories are left for the user's rules or manual edits.
     pub category_name: Option<String>,
     pub category_group: Option<String>,
     /// Excluded from spend/income reports, but still counted towards balances and net
     /// worth. What an opening-balance row needs: it moves the account's value without
     /// being money earned or spent.
     pub exclude_from_cashflow: bool,
-    /// Flow direction for a newly-created category; `None` defaults to expense (most
-    /// enrichment is spend-side). Only affects creation — an existing category keeps
-    /// its kind.
+    /// The provider's category kind. Imports reuse the user's category and its kind rather
+    /// than creating a new category from this hint.
     pub category_kind: Option<CategoryKind>,
 }
 
@@ -373,10 +377,9 @@ struct ResolvedRow {
     category_id: Option<i64>,
 }
 
-/// Insert fetched transactions, deduping on (provider, external_id). Reuses (or creates)
-/// a matching merchant/category per row from any source-supplied classification, so
-/// providers that carry their own enrichment (e.g. Akahu's NZFCC categories) don't leave
-/// every imported transaction uncategorized. Returns (imported, skipped).
+/// Insert fetched transactions, deduping on (provider, external_id). Reuses existing
+/// categories and finds or creates merchants from source-supplied enrichment. An existing
+/// merchant's default takes precedence over the source's category. Returns (imported, skipped).
 ///
 /// Writes in chunked transactions of [`IMPORT_CHUNK_ROWS`]. Row-at-a-time autocommit — what
 /// this did before — took the database's write lock once per row, so a 100 000-row backfill
@@ -396,9 +399,9 @@ pub async fn import_transactions(
     let mut skipped = 0i64;
     // Caches so a sync of many transactions sharing a handful of merchants/categories
     // (the common case) doesn't re-look-up the same name on every row.
-    let mut merchant_cache: HashMap<String, i64> = HashMap::new();
-    let mut category_cache: HashMap<(String, Option<String>), i64> = HashMap::new();
-    let mut group_cache: HashMap<String, i64> = HashMap::new();
+    let mut merchant_cache = HashMap::new();
+    let mut category_cache = HashMap::new();
+    let mut group_cache = HashMap::new();
 
     for chunk in rows.chunks(IMPORT_CHUNK_ROWS) {
         // Resolve merchants/categories *before* opening the write transaction. Find-or-create
@@ -407,24 +410,25 @@ pub async fn import_transactions(
         let mut resolved = Vec::with_capacity(chunk.len());
         for t in chunk {
             let category_id = match &t.category_name {
-                Some(name) if !name.trim().is_empty() => Some(
+                Some(name) if !name.trim().is_empty() => {
                     resolve_category(
                         db,
                         &mut category_cache,
                         &mut group_cache,
                         name,
                         t.category_group.as_deref(),
-                        t.category_kind.unwrap_or_default(),
                     )
-                    .await?,
-                ),
-                _ => None,
-            };
-            let merchant_id = match &t.merchant {
-                Some(name) if !name.trim().is_empty() => {
-                    Some(resolve_merchant(db, &mut merchant_cache, name, category_id).await?)
+                    .await?
                 }
                 _ => None,
+            };
+            let (merchant_id, category_id) = match &t.merchant {
+                Some(name) if !name.trim().is_empty() => {
+                    let (id, default_category_id) =
+                        resolve_merchant(db, &mut merchant_cache, name, category_id).await?;
+                    (Some(id), default_category_id)
+                }
+                _ => (None, category_id),
             };
             resolved.push(ResolvedRow {
                 currency_code: t
@@ -1134,8 +1138,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn import_finds_or_creates_a_nested_category_and_merchant() {
+    async fn import_reuses_a_seeded_category_and_creates_a_merchant() {
         let db = test_db().await;
+        let initial_categories = crate::categories::list(&db).await.unwrap();
         let account = crate::accounts::create(&db, new_account_input("Everyday"))
             .await
             .unwrap();
@@ -1160,6 +1165,7 @@ mod tests {
         let category_id = txn.category_id.expect("category should be resolved");
 
         let cats = crate::categories::list(&db).await.unwrap();
+        assert_eq!(cats.len(), initial_categories.len());
         let category = cats.iter().find(|c| c.id == category_id).unwrap();
         assert_eq!(category.name, "Cafes and restaurants");
         let parent_id = category
@@ -1403,11 +1409,225 @@ mod tests {
             .into_iter()
             .find(|m| m.name == "The Roastery")
             .unwrap();
-        // The user's own default category choice is untouched...
+        // Both the merchant and its newly imported transaction follow the user's default.
         assert_eq!(merchant.category_id, Some(user_category.id));
-        // ...even though this transaction is still categorized from the import.
         let txn = imported_row(&db, "trans_3").await;
-        assert_ne!(txn.category_id, Some(user_category.id));
-        assert!(txn.category_id.is_some());
+        assert_eq!(txn.category_id, Some(user_category.id));
+    }
+
+    #[tokio::test]
+    async fn import_preserves_a_renamed_and_flattened_category() {
+        let db = test_db().await;
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
+        let row = enriched_row(
+            "trans_1",
+            "The Roastery",
+            "Cafes and restaurants",
+            "Lifestyle",
+        );
+        import_transactions(&db, account.id, "NZD", "akahu#1", &[row])
+            .await
+            .unwrap();
+        let first = imported_row(&db, "trans_1").await;
+        let category_id = first.category_id.unwrap();
+        let old_group = crate::categories::list(&db)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == category_id)
+            .unwrap()
+            .parent_id
+            .unwrap();
+        crate::categories::update(
+            &db,
+            category_id,
+            sure_core::SaveCategory {
+                name: "Eating out".to_string(),
+                parent_id: None,
+                kind: CategoryKind::Expense,
+                color: None,
+                icon: None,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+        crate::categories::delete(&db, old_group).await.unwrap();
+        let before = serde_json::to_value(crate::categories::list(&db).await.unwrap()).unwrap();
+
+        let rows = [
+            enriched_row(
+                "trans_1",
+                "The Roastery",
+                "Cafes and restaurants",
+                "Lifestyle",
+            ),
+            enriched_row(
+                "trans_2",
+                "The Roastery",
+                "Cafes and restaurants",
+                "Lifestyle",
+            ),
+            enriched_row(
+                "trans_3",
+                "A New Cafe",
+                "Cafes and restaurants",
+                "Lifestyle",
+            ),
+        ];
+        assert_eq!(
+            import_transactions(&db, account.id, "NZD", "akahu#1", &rows)
+                .await
+                .unwrap(),
+            (2, 1),
+        );
+        assert_eq!(
+            imported_row(&db, "trans_2").await.category_id,
+            Some(category_id),
+            "a known merchant keeps the renamed category",
+        );
+        assert_eq!(imported_row(&db, "trans_3").await.category_id, None);
+        assert_eq!(
+            serde_json::to_value(crate::categories::list(&db).await.unwrap()).unwrap(),
+            before,
+            "neither the old group nor its category should be recreated",
+        );
+    }
+
+    #[tokio::test]
+    async fn import_does_not_reseed_deleted_or_unknown_categories() {
+        let db = test_db().await;
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
+        import_transactions(
+            &db,
+            account.id,
+            "NZD",
+            "akahu#1",
+            &[enriched_row(
+                "trans_1",
+                "The Roastery",
+                "Cafes and restaurants",
+                "Lifestyle",
+            )],
+        )
+        .await
+        .unwrap();
+        for category in crate::categories::list(&db).await.unwrap() {
+            if category.parent_id.is_none() {
+                crate::categories::delete(&db, category.id).await.unwrap();
+            }
+        }
+        // Startup runs the migration runner again; completed setup must stay completed.
+        crate::migrate(&db).await.unwrap();
+        for external_id in ["trans_2", "trans_3"] {
+            import_transactions(
+                &db,
+                account.id,
+                "NZD",
+                "akahu#1",
+                &[
+                    enriched_row(
+                        external_id,
+                        "The Roastery",
+                        "Cafes and restaurants",
+                        "Lifestyle",
+                    ),
+                    enriched_row(
+                        &format!("{external_id}_new"),
+                        "A New Cafe",
+                        "Unseen category",
+                        "Unseen group",
+                    ),
+                ],
+            )
+            .await
+            .unwrap();
+            assert_eq!(imported_row(&db, external_id).await.category_id, None);
+        }
+        assert!(crate::categories::list(&db).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn missing_provider_group_does_not_match_a_top_level_category() {
+        let db = test_db().await;
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
+        crate::categories::create(
+            &db,
+            sure_core::SaveCategory {
+                name: "Groceries".to_string(),
+                parent_id: None,
+                kind: CategoryKind::Expense,
+                color: None,
+                icon: None,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+        import_transactions(
+            &db,
+            account.id,
+            "NZD",
+            "akahu#1",
+            &[enriched_row(
+                "trans_1",
+                "The Grocer",
+                "Groceries",
+                "Removed group",
+            )],
+        )
+        .await
+        .unwrap();
+        assert_eq!(imported_row(&db, "trans_1").await.category_id, None);
+        assert!(
+            crate::categories::find(&db, "Removed group", None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn import_respects_an_explicitly_cleared_merchant_default() {
+        let db = test_db().await;
+        let account = crate::accounts::create(&db, new_account_input("Everyday"))
+            .await
+            .unwrap();
+        crate::merchants::create(
+            &db,
+            sure_core::SaveMerchant {
+                name: "The Roastery".to_string(),
+                category_id: None,
+                note: None,
+            },
+        )
+        .await
+        .unwrap();
+        let rows = [
+            enriched_row(
+                "trans_1",
+                "The Roastery",
+                "Cafes and restaurants",
+                "Lifestyle",
+            ),
+            enriched_row(
+                "trans_2",
+                "The Roastery",
+                "Cafes and restaurants",
+                "Lifestyle",
+            ),
+        ];
+        import_transactions(&db, account.id, "NZD", "akahu#1", &rows)
+            .await
+            .unwrap();
+        for external_id in ["trans_1", "trans_2"] {
+            assert_eq!(imported_row(&db, external_id).await.category_id, None);
+        }
     }
 }

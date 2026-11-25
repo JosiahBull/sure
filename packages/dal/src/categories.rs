@@ -105,23 +105,16 @@ pub async fn update(db: &Db, id: i64, input: SaveCategory) -> AppResult<Category
     .try_into()
 }
 
-/// Find an existing category by name (case-insensitive, scoped to the given parent) or
-/// create one. Used by provider imports to reuse a source's own classification (e.g.
-/// Akahu's NZFCC categories) without duplicating a category on every sync. There's no
-/// uniqueness constraint on `(name, parent_id)` — categories are otherwise entirely
-/// user-managed — so this is a plain check-then-insert, not an atomic upsert.
+/// Find an existing category by name (case-insensitive, scoped to the given parent).
+/// Imports may reuse categories, but only setup migrations and explicit user edits create
+/// them: recreating a provider's taxonomy would undo a user's renames and merges.
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn find_or_create(
-    db: &Db,
-    name: &str,
-    parent_id: Option<i64>,
-    kind: CategoryKind,
-) -> AppResult<Category> {
+pub async fn find(db: &Db, name: &str, parent_id: Option<i64>) -> AppResult<Option<Category>> {
     let name = name.trim();
     // One statement rather than the two the untyped version needed: `IS` (not `=`) matches a
     // NULL bind against a NULL `parent_id`, so the top-level lookup is the same query with a
     // NULL parameter — and the macro needs a single literal string either way.
-    let existing: Option<Category> = sqlx::query_as!(
+    sqlx::query_as!(
         CategoryRow,
         r#"SELECT id AS "id!", name, parent_id, kind, color, icon, sort_order, created_at
              FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id IS ?2"#,
@@ -131,23 +124,7 @@ pub async fn find_or_create(
     .fetch_optional(db)
     .await?
     .map(Category::try_from)
-    .transpose()?;
-    if let Some(existing) = existing {
-        return Ok(existing);
-    }
-    let kind = kind.as_str();
-    sqlx::query_as!(
-        CategoryRow,
-        r#"INSERT INTO categories (name, parent_id, kind) VALUES (?1, ?2, ?3)
-           RETURNING id AS "id!", name, parent_id AS "parent_id?", kind, color, icon,
-                     sort_order, created_at"#,
-        name,
-        parent_id,
-        kind
-    )
-    .fetch_one(db)
-    .await?
-    .try_into()
+    .transpose()
 }
 
 /// Delete a category. Child categories and transaction links cascade per schema
